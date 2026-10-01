@@ -17,7 +17,8 @@
   "vars": {
     "SUPABASE_URL": "https://dfaxmxschvzmlozxjaxf.supabase.co",
     "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_zNc8TQjoFQ-OI2nKbiNOPA_5ukCoCY6",
-    "APP_ORIGIN": "https://app.claritude.io"
+    "APP_ORIGIN": "https://app.claritude.io",
+    "RESEND_FROM": "Claritude <alerts@claritude.io>"
   },
   "observability": { "enabled": true, "head_sampling_rate": 1 }
 }
