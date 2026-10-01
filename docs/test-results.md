@@ -23,6 +23,16 @@
 - Resend `claritude.io` domain is verified; sender is `Claritude <alerts@claritude.io>`.
 - Supabase redirect allowlist contains both the Workers preview and `app.claritude.io` wildcard paths.
 
-## Live verification still required
+## Live acceptance and production cutover — 2 October 2026
 
-Two-user RLS isolation, real registration email, password reset, queue/cron job execution against a configured property, controlled incident/recovery email, installed tracking script ingestion, and production custom-domain cutover must be recorded here. Configuration alone is not counted as a pass.
+- The disposable `scripts/verify-live.mjs` acceptance harness passed first on the Worker preview and again on `https://app.claritude.io`; it removes only the exact accounts and auth users it creates and restores the registry check it toggles.
+- Three confirmed test users completed onboarding into separate accounts and workspaces with `pro_early_access`; a second tenant could neither read nor start an audit against the first tenant's property.
+- A cookieless pageview was accepted by `/collect` and appeared in the authenticated analytics summary. A separate public property completed tracking/header verification.
+- A queued audit completed as `partial` with all 306 catalogue entries represented. The run recorded immutable title, logic-version and configuration-version snapshots.
+- Disabling `seo.metadata.title.present` in the database excluded it from the next audit snapshot; restoring it to active included it again. The original lifecycle was restored before cleanup.
+- A controlled HTTP 503 target reached the configured two-failure threshold, opened one incident and sent a downtime alert. Changing the same target to HTTP 200 closed the incident and sent one recovery notice.
+- Resend shows `Delivered` for the production run's confirmation email, password-reset email, downtime alert and recovery notice.
+- Supabase Auth Site URL is `https://app.claritude.io`; both the production and Workers preview wildcard redirect URLs remain allowlisted.
+- Production DNS preserves the previous CNAME target `b1f7ad4d7d266b31.vercel-dns-017.com` for rollback, with Cloudflare proxying enabled. The version-controlled route `app.claritude.io/*` sends production traffic to `claritude-app`.
+- Production `/`, `/health`, `/audit` and `/tracker.js` return HTTP 200; unauthenticated `/api/bootstrap` returns HTTP 401; `/api/config` reports `https://app.claritude.io` as the application origin.
+- Chrome rendered the production sign-in route at `https://app.claritude.io/auth/sign-in` successfully.

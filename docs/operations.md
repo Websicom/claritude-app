@@ -7,12 +7,12 @@
 3. Configure Resend SMTP in Supabase Auth and set Site URL plus redirect URLs for the Worker preview and `https://app.claritude.io`.
 4. Deploy from GitHub to a `claritude-app.*.workers.dev` preview. Set secrets only in Cloudflare.
 5. Verify `/health`, deep links, registration, confirmation, reset, onboarding, analytics ingestion, audit queue processing and a controlled uptime incident/recovery.
-6. After preview acceptance, add the `app.claritude.io` custom-domain route to `wrangler.jsonc`, deploy, and change only the replaced app subdomain record.
+6. After preview acceptance, add the `app.claritude.io/*` route to `wrangler.jsonc`, deploy it, and enable Cloudflare proxying only on the existing `app` CNAME. Preserve its Vercel target for rollback.
 7. Repeat authentication callback, reset and deep-link tests on production.
 
 ## Rollback
 
-Detach the Worker custom domain or restore the recorded `app` DNS record to the existing Vercel target. Leave Supabase migrations in place; they are additive. Disable queue producers and cron triggers if jobs must stop. Never roll back by deleting tenant data. The previous Vercel deployment remains the application rollback target through Stage 1 verification.
+Remove or disable the `app.claritude.io/*` Worker route and change the existing `app` CNAME from Proxied back to DNS only. Its preserved target is `b1f7ad4d7d266b31.vercel-dns-017.com`; the Vercel project was not deleted. Leave Supabase migrations in place because they are additive. Disable queue producers and cron triggers if jobs must stop. Never roll back by deleting tenant data.
 
 ## Alerts and privacy
 
