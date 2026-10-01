@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { secureHeaders } from 'hono/secure-headers';
 import { AUDIT_REGISTRY } from '../shared/audit-registry.generated';
+import { buildRegistrySnapshot, scoreAuditResults, type AuditRegistrySnapshot } from '../shared/audit-runtime';
 
 type Env = {
   SUPABASE_URL: string;
@@ -124,7 +125,13 @@ app.post('/api/audits', async (c) => {
   if (!property) return c.json({ error: 'property_not_found' }, 404);
   const target = validPublicUrl(b.pageUrl || property.url);
   if (!target || target.hostname !== new URL(property.url).hostname) return c.json({ error: 'page_must_belong_to_property' }, 400);
-  const snapshot = AUDIT_REGISTRY.filter((x) => x.lifecycle === 'active').map(({ id, logicVersion, configurationVersion, title, weight }) => ({ id, logicVersion, configurationVersion, title, weight }));
+  const { data: registryRows, error: registryError } = await db.from('audit_check_definitions')
+    .select('id,title,weight,logic_version,configuration_version')
+    .eq('lifecycle', 'active')
+    .order('id');
+  if (registryError) return c.json({ error: 'audit_registry_unavailable' }, 503);
+  const snapshot = buildRegistrySnapshot(registryRows || [], new Set(AUDIT_REGISTRY.map((check) => check.id)));
+  if (!snapshot.length) return c.json({ error: 'audit_registry_empty' }, 503);
   const { data: run, error } = await db.from('audit_runs').insert({ property_id: property.id, page_url: target.href, status: 'queued', registry_snapshot: snapshot, scoring_version: '1.0.0' }).select().single();
   if (error) return c.json({ error: error.message }, 400);
   await c.env.JOBS.send({ type: 'audit', id: run.id });
@@ -173,11 +180,15 @@ async function runAudit(env: Env, id: string) {
   if (!run) return;
   try {
     const res = await safeFetch(run.page_url, { headers: { 'user-agent': 'Claritude-Audit/1.0 (+https://claritude.io)' } });
-    const html = await limitedText(res, 2_000_000); const results = evaluateSourceChecks(run.registry_snapshot, res, html);
-    await db.from('audit_results').insert(results.map((r) => ({ ...r, audit_run_id: id, logic_version: registry(r.check_id)?.logicVersion || '1.0.0', configuration_version: registry(r.check_id)?.configurationVersion || 1, title_snapshot: registry(r.check_id)?.title || r.check_id })));
-    const scored = results.filter((r) => ['pass', 'warning', 'fail'].includes(r.outcome));
-    const score = scored.length ? Math.round(scored.reduce((n, r) => n + (r.outcome === 'pass' ? 1 : r.outcome === 'warning' ? .5 : 0), 0) / scored.length * 100) : null;
-    await db.from('audit_runs').update({ status: results.some((r) => r.outcome === 'unable_to_test') ? 'partial' : 'completed', score, coverage: Math.round(scored.length / results.length * 100), completed_at: new Date().toISOString(), duration_ms: Date.now() - started }).eq('id', id);
+    const snapshot = run.registry_snapshot as AuditRegistrySnapshot[];
+    const html = await limitedText(res, 2_000_000); const results = evaluateSourceChecks(snapshot, res, html);
+    const snapshotById = new Map(snapshot.map((check) => [check.id, check]));
+    await db.from('audit_results').insert(results.map((r) => {
+      const check = snapshotById.get(r.check_id);
+      return { ...r, audit_run_id: id, logic_version: check?.logicVersion || 'unknown', configuration_version: check?.configurationVersion || 1, title_snapshot: check?.title || r.check_id };
+    }));
+    const { score, coverage } = scoreAuditResults(snapshot, results);
+    await db.from('audit_runs').update({ status: results.some((r) => r.outcome === 'unable_to_test') ? 'partial' : 'completed', score, coverage, completed_at: new Date().toISOString(), duration_ms: Date.now() - started }).eq('id', id);
   } catch (e) { await db.from('audit_runs').update({ status: 'failed', error: errorMessage(e), completed_at: new Date().toISOString(), duration_ms: Date.now() - started }).eq('id', id); }
 }
 
