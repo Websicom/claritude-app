@@ -8,6 +8,8 @@
 - Client output: 374.87 kB JavaScript (113.27 kB gzip) and 9.98 kB CSS (2.87 kB gzip).
 - Worker output: 1.05 MB before platform compression.
 - Cloudflare runtime used locally supports compatibility date 2025-10-08 and warned while falling back from the configured 2026-10-01 date. Provider build should use the deployed platform runtime; pin to the latest supported provider date if Workers Builds reports the same warning.
+- Supabase schema: 24 public tables, 29 RLS policies, 306 seeded registry checks, additive migration ledger present.
+- Supabase Security Advisor: zero errors. The intentional authenticated `complete_onboarding` SECURITY DEFINER warning is documented; the temporary dashboard `rls_auto_enable` helper is removed by the follow-up migration.
 
 ## Live verification still required
 
