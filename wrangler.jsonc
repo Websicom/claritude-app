@@ -1,0 +1,24 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "claritude-app",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "assets": {
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/collect", "/tracker.js", "/health"]
+  },
+  "triggers": { "crons": ["*/5 * * * *", "17 2 * * *"] },
+  "queues": {
+    "producers": [{ "binding": "JOBS", "queue": "claritude-jobs" }],
+    "consumers": [{ "queue": "claritude-jobs", "max_batch_size": 5, "max_batch_timeout": 10, "max_retries": 3, "dead_letter_queue": "claritude-jobs-dlq" }]
+  },
+  "vars": {
+    "SUPABASE_URL": "https://dfaxmxschvzmlozxjaxf.supabase.co",
+    "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_zNc8TQjoFQ-OI2nKbiNOPA_5ukCoCY6",
+    "APP_ORIGIN": "https://app.claritude.io"
+  },
+  "routes": [{ "pattern": "app.claritude.io", "custom_domain": true }],
+  "observability": { "enabled": true, "head_sampling_rate": 1 }
+}
