@@ -1,7 +1,7 @@
--- Remove the dashboard-created helper after it enabled RLS on the private ledger.
+-- Keep Supabase's ensure_rls event trigger intact, but remove API/client access
+-- to its dashboard-created SECURITY DEFINER helper.
 alter table private.app_migrations enable row level security;
 revoke all on function public.rls_auto_enable() from public, anon, authenticated;
-drop function if exists public.rls_auto_enable();
 
 insert into private.app_migrations(version,name,checksum) values
   ('20261001232500','security_advisor_fixes','self')

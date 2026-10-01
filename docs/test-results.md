@@ -9,7 +9,7 @@
 - Worker output: 1.05 MB before platform compression.
 - Cloudflare runtime used locally supports compatibility date 2025-10-08 and warned while falling back from the configured 2026-10-01 date. Provider build should use the deployed platform runtime; pin to the latest supported provider date if Workers Builds reports the same warning.
 - Supabase schema: 24 public tables, 29 RLS policies, 306 seeded registry checks, additive migration ledger present.
-- Supabase Security Advisor: zero errors. The intentional authenticated `complete_onboarding` SECURITY DEFINER warning is documented; the temporary dashboard `rls_auto_enable` helper is removed by the follow-up migration.
+- Supabase Security Advisor: zero errors. The intentional authenticated `complete_onboarding` SECURITY DEFINER warning is documented; API/client execution of Supabase's `rls_auto_enable` helper is revoked while its dependent platform event trigger remains intact.
 
 ## Live verification still required
 
