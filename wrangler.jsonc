@@ -19,6 +19,5 @@
     "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_zNc8TQjoFQ-OI2nKbiNOPA_5ukCoCY6",
     "APP_ORIGIN": "https://app.claritude.io"
   },
-  "routes": [{ "pattern": "app.claritude.io", "custom_domain": true }],
   "observability": { "enabled": true, "head_sampling_rate": 1 }
 }

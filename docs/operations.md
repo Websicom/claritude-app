@@ -7,7 +7,7 @@
 3. Configure Resend SMTP in Supabase Auth and set Site URL plus redirect URLs for the Worker preview and `https://app.claritude.io`.
 4. Deploy from GitHub to a `claritude-app.*.workers.dev` preview. Set secrets only in Cloudflare.
 5. Verify `/health`, deep links, registration, confirmation, reset, onboarding, analytics ingestion, audit queue processing and a controlled uptime incident/recovery.
-6. Attach `app.claritude.io` as a Worker custom domain. Change only the replaced app subdomain record.
+6. After preview acceptance, add the `app.claritude.io` custom-domain route to `wrangler.jsonc`, deploy, and change only the replaced app subdomain record.
 7. Repeat authentication callback, reset and deep-link tests on production.
 
 ## Rollback
