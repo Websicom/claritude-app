@@ -506,6 +506,46 @@ app.post("/api/properties/:id/report-schedules", async (c) => {
   return error ? c.json({ error: error.message }, 400) : c.json(data, 201);
 });
 
+app.get("/api/properties/:id/saved-reports", async (c) => {
+  const { data, error } = await c
+    .get("db")
+    .from("saved_reports")
+    .select("id,name,period_start,period_end,data_snapshot,created_at")
+    .eq("property_id", c.req.param("id"))
+    .order("created_at", { ascending: false });
+  return error ? c.json({ error: error.message }, 400) : c.json(data);
+});
+
+app.post("/api/properties/:id/saved-reports", async (c) => {
+  const body = await c.req.json<{
+    name: string;
+    periodStart?: string;
+    periodEnd?: string;
+    dataSnapshot: Record<string, unknown>;
+  }>();
+  const name = body.name?.trim().slice(0, 120);
+  if (!name || !body.dataSnapshot || typeof body.dataSnapshot !== "object")
+    return c.json({ error: "valid_report_required" }, 400);
+  const periodEnd = body.periodEnd || new Date().toISOString().slice(0, 10);
+  const periodStart =
+    body.periodStart ||
+    new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10);
+  const { data, error } = await c
+    .get("db")
+    .from("saved_reports")
+    .insert({
+      property_id: c.req.param("id"),
+      name,
+      period_start: periodStart,
+      period_end: periodEnd,
+      data_snapshot: body.dataSnapshot,
+      created_by: c.get("userId"),
+    })
+    .select()
+    .single();
+  return error ? c.json({ error: error.message }, 400) : c.json(data, 201);
+});
+
 app.patch("/api/notifications/:id/read", async (c) => {
   const { data, error } = await c
     .get("db")

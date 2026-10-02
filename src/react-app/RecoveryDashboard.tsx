@@ -2062,6 +2062,9 @@ function ReportsView({
   const [tab, setTab] = useState("Quick reports"),
     [preview, setPreview] = useState<any>(),
     [scheduleOpen, setScheduleOpen] = useState(false),
+    [scheduleCadence, setScheduleCadence] = useState("monthly"),
+    [scheduleRecipient, setScheduleRecipient] = useState("client@example.com"),
+    [savedReports, setSavedReports] = useState<any[]>([]),
     [schedules, setSchedules] = useState<any[]>(
       fixture
         ? [
@@ -2074,6 +2077,18 @@ function ReportsView({
           ]
         : [],
     );
+  useEffect(() => {
+    if (!session || !property || fixture) return;
+    Promise.all([
+      api<any[]>(session, `/api/properties/${property.id}/saved-reports`),
+      api<any[]>(session, `/api/properties/${property.id}/report-schedules`),
+    ])
+      .then(([reports, storedSchedules]) => {
+        setSavedReports(reports);
+        setSchedules(storedSchedules);
+      })
+      .catch((error) => notify(error.message));
+  }, [fixture, notify, property, session]);
   async function create(name: string) {
     if (!property) return;
     setPreview(
@@ -2086,6 +2101,27 @@ function ReportsView({
           },
     );
     notify(`${name} preview generated`);
+  }
+  async function saveReport() {
+    if (!preview || !property) return;
+    const report = session
+      ? await api<any>(session, `/api/properties/${property.id}/saved-reports`, {
+          method: "POST",
+          body: JSON.stringify({
+            name: `${property.name} ${preview.period || "website"} report`,
+            dataSnapshot: preview,
+          }),
+        })
+      : {
+          id: crypto.randomUUID(),
+          name: `${property.name} ${preview.period || "website"} report`,
+          period_start: "2026-09-01",
+          period_end: "2026-09-30",
+          data_snapshot: preview,
+          created_at: new Date().toISOString(),
+        };
+    setSavedReports((current) => [report, ...current]);
+    notify("Report saved");
   }
   return (
     <Page
@@ -2140,23 +2176,23 @@ function ReportsView({
         </div>
       ) : tab === "Saved reports" ? (
         <Panel title="Saved reports">
-          {preview ? (
+          {savedReports.length ? (
             <DataTable
               headers={["Report", "Property", "Period", "Generated", ""]}
-              rows={[
-                [
-                  "Websi September overview",
-                  property?.canonical_host,
-                  preview.period,
-                  fmtDate(preview.generatedAt),
-                  <button
-                    className="btn"
-                    onClick={() => notify("Report preview opened")}
-                  >
-                    View
-                  </button>,
-                ],
-              ]}
+              rows={savedReports.map((report) => [
+                report.name,
+                property?.canonical_host,
+                report.period_start && report.period_end
+                  ? `${report.period_start} – ${report.period_end}`
+                  : report.data_snapshot?.period || "Last 30 days",
+                fmtDate(report.created_at),
+                <button
+                  className="btn"
+                  onClick={() => setPreview(report.data_snapshot)}
+                >
+                  View
+                </button>,
+              ])}
             />
           ) : (
             <Empty
@@ -2178,7 +2214,16 @@ function ReportsView({
           {schedules.length ? (
             <DataTable
               headers={["Template", "Frequency", "Recipient", "Status"]}
-              rows={schedules}
+              rows={schedules.map((schedule) =>
+                Array.isArray(schedule)
+                  ? schedule
+                  : [
+                      "Monthly overview",
+                      `${schedule.cadence?.[0]?.toUpperCase() || ""}${schedule.cadence?.slice(1) || ""}`,
+                      schedule.recipients?.join(", "),
+                      schedule.enabled ? "Active" : "Paused",
+                    ],
+              )}
             />
           ) : (
             <Empty
@@ -2225,6 +2270,7 @@ function ReportsView({
           report={preview}
           close={() => setPreview(undefined)}
           fixture={fixture}
+          onSave={saveReport}
         />
       )}{" "}
       {scheduleOpen && (
@@ -2232,11 +2278,27 @@ function ReportsView({
           title="Add schedule"
           close={() => setScheduleOpen(false)}
           action="Add schedule"
-          onSave={() => {
-            setSchedules((v) => [
-              ...v,
-              ["Monthly overview", "Monthly", "client@example.com", "Active"],
-            ]);
+          onSave={async () => {
+            const schedule =
+              session && property
+                ? await api<any>(
+                    session,
+                    `/api/properties/${property.id}/report-schedules`,
+                    {
+                      method: "POST",
+                      body: JSON.stringify({
+                        cadence: scheduleCadence,
+                        recipients: [scheduleRecipient],
+                      }),
+                    },
+                  )
+                : [
+                    "Monthly overview",
+                    `${scheduleCadence[0].toUpperCase()}${scheduleCadence.slice(1)}`,
+                    scheduleRecipient,
+                    "Active",
+                  ];
+            setSchedules((v) => [...v, schedule]);
             setScheduleOpen(false);
             notify("Schedule added");
           }}
@@ -2250,14 +2312,21 @@ function ReportsView({
           </label>
           <label className="field">
             Frequency
-            <select>
-              <option>Monthly</option>
-              <option>Weekly</option>
+            <select
+              value={scheduleCadence}
+              onChange={(event) => setScheduleCadence(event.target.value)}
+            >
+              <option value="monthly">Monthly</option>
+              <option value="weekly">Weekly</option>
             </select>
           </label>
           <label className="field">
             Recipient
-            <input type="email" defaultValue="client@example.com" />
+            <input
+              type="email"
+              value={scheduleRecipient}
+              onChange={(event) => setScheduleRecipient(event.target.value)}
+            />
           </label>
         </SimpleDialog>
       )}
@@ -2963,11 +3032,31 @@ function ReportPreview({
   report,
   close,
   fixture,
+  onSave,
 }: {
   report: any;
   close: () => void;
   fixture: boolean;
+  onSave: () => void | Promise<void>;
 }) {
+  function exportCsv() {
+    const rows = [
+      ["Metric", "Value"],
+      ["Uptime", fixture ? "99.92%" : "Measured"],
+      ["Pageviews", fixture ? "28,460" : "Measured"],
+      ["Key events", fixture ? "358" : "Measured"],
+      ["Audit", fixture ? "87 / 100" : "Measured"],
+    ];
+    const csv = rows
+      .map((row) => row.map((value) => `"${value}"`).join(","))
+      .join("\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${report.property.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-report.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
   return (
     <Modal title={`${report.property.name} · ${report.period}`} close={close}>
       <div className="report-preview">
@@ -2988,8 +3077,15 @@ function ReportPreview({
           <li>Review event trends next month.</li>
         </ol>
         <div className="dialog-actions">
-          <button className="btn">Export CSV</button>
-          <button className="btn">Print / Save as PDF</button>
+          <button className="btn" onClick={onSave}>
+            Save report
+          </button>
+          <button className="btn" onClick={exportCsv}>
+            Export CSV
+          </button>
+          <button className="btn" onClick={() => window.print()}>
+            Print / Save as PDF
+          </button>
         </div>
       </div>
     </Modal>

@@ -50,8 +50,8 @@ Reference baseline: `HTML reference pack.zip` / `html-reference-extracted/index.
 | Audit / History | Status, score, coverage and duration | Verified | Live audit history |
 | Audit / Compare | Latest/previous comparison or required-run state | Verified | Live audit history |
 | Reports / Quick reports | Six templates and report preview | Verified | Live report endpoint |
-| Reports / Saved reports | Saved-report table/empty state | Verified | Preview generated; persistence API pending |
-| Reports / Schedules | Schedule table and add dialog | Verified | Preview-local; API pending |
+| Reports / Saved reports | Saved-report table/empty state, save, reopen and CSV/print export | Verified | Persists through authenticated APIs |
+| Reports / Schedules | Schedule table and add dialog | Verified | Loads and persists through authenticated APIs |
 | Reports / Branding | Agency form and report preview | Verified | Preview-local; API pending |
 
 ## Property and account settings
@@ -74,7 +74,7 @@ Reference baseline: `HTML reference pack.zip` / `html-reference-extracted/index.
 
 - The full 306-check audit catalogue is mapped, but the current source-only runner cannot execute browser, DNS, network-waterfall and lab-performance checks. The UI labels material coverage gaps as partial instead of showing a misleading complete score.
 - Live analytics aggregation currently returns totals and unique page paths. Source, audience, engagement, browser and percentile breakdowns require expanded database RPCs.
-- Saved-report, workspace-user and notification-preference tables exist with RLS, but their complete management APIs are not exposed yet. Report-schedule endpoints exist; the UI still needs a full reload/persistence pass before production promotion.
+- Workspace-user and notification-preference tables exist with RLS, but their complete management APIs are not exposed yet.
 - Stripe is intentionally deferred. Live billing never displays fictional payment or invoice data.
 
 ## Verification record
