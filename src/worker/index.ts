@@ -989,6 +989,7 @@ app.post("/api/audits", async (c) => {
     .from("audit_runs")
     .select("id", { count: "exact", head: true })
     .eq("property_id", property.id)
+    .in("status", ["queued", "running", "completed", "partial"])
     .gte("created_at", dayStart);
   if ((runsToday || 0) >= LIMITS.auditsPerPropertyPerDay)
     return c.json({ error: "audit_daily_limit_reached" }, 429);
