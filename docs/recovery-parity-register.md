@@ -82,4 +82,4 @@ Reference baseline: `HTML reference pack.zip` / `html-reference-extracted/index.
 - `npm run check`: passed.
 - `npm test`: 9/9 passed.
 - `npm run build`: passed.
-- Canonical deterministic browser verification completed for workspace and property overviews; authenticated corrected-branch capture remains required after preview deployment.
+- Canonical deterministic browser verification completed for workspace and property overviews. The isolated corrected-branch preview was also verified through an authenticated session without `fixture=1`: all 44 approved tab states loaded through the canonical application, desktop workspace/property/audit screenshots were captured, no iframe was present and the audited page produced no console warnings or errors.

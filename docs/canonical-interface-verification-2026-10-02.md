@@ -27,6 +27,25 @@ persisted evidence and workflows that could not yet be proven end to end.
 - Legacy iframe implementation, `.reference-fixture` styles and the alternative
   static chart implementation: removed.
 
+## Authenticated branch-preview verification
+
+- Commit `8a20e2b` was built and deployed to the isolated
+  `repair/stage1-reference-parity` Worker preview. Production was not promoted.
+- The normal authenticated application was opened without `fixture=1` and
+  rendered `ClaritudeApplication` with no iframe.
+- Authenticated workspace, property overview and audit screenshots were captured
+  at the reference desktop viewport. The property overview displayed genuine
+  totals, uptime and paths while unavailable Core Web Vitals remained pending.
+  The audit displayed its historical partial-coverage warning and explicit
+  unimplemented browser-lab state.
+- All 44 approved workspace, notification, property, analytics, audit, report,
+  property-settings and account-settings tab states were opened through the
+  authenticated application. Each expected tab became selected and no
+  application/request error was observed.
+- The authenticated audit page emitted no browser console warnings or errors.
+- The same canonical components were also checked in deterministic mode,
+  including responsive mobile navigation and representative menus and dialogs.
+
 ## Persisted production evidence inspected read-only
 
 The Supabase production project was queried on 2 October 2026.
@@ -48,9 +67,6 @@ to produce evidence using that corrected accounting.
 
 ## Remaining blockers / unverified work
 
-- Authenticated screenshots of the corrected branch require either a session on
-  that branch origin or test credentials. A fixture screenshot does not satisfy
-  this requirement.
 - The tenant-isolation harness requires `SUPABASE_SECRET_KEY`; that credential is
   not present in the local environment and no result is claimed.
 - Signup/reset email delivery requires controlled recipient access. Persisted
