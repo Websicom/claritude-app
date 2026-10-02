@@ -35,14 +35,14 @@ describe("worker evidence pipelines", () => {
           source: "Google",
           device: "desktop",
           country_code: "GB",
-          metadata: { browser: "Chrome", screen: "large", session: "tab-1", view_id: "view-1" },
+          metadata: { browser: "Chrome", screen: "large", session: "tab-1", view_id: "view-1", tracker_version: "2.0.0" },
           occurred_at: "2026-10-02T00:00:00Z",
         },
         {
           event_type: "scroll",
           path: "/",
           value: 75,
-          metadata: { view_id: "view-1" },
+          metadata: { view_id: "view-1", tracker_version: "2.0.0" },
           occurred_at: "2026-10-02T00:00:10Z",
         },
         {
@@ -50,7 +50,7 @@ describe("worker evidence pipelines", () => {
           path: "/",
           name: "LCP",
           value: 2100,
-          metadata: { view_id: "view-1" },
+          metadata: { view_id: "view-1", tracker_version: "2.0.0" },
           occurred_at: "2026-10-02T00:00:12Z",
         },
         {
@@ -59,7 +59,7 @@ describe("worker evidence pipelines", () => {
           source: "Direct",
           device: "mobile",
           country_code: "US",
-          metadata: { session: "tab-2", view_id: "view-2" },
+          metadata: { session: "tab-2", view_id: "view-2", tracker_version: "2.0.0" },
           occurred_at: "2026-10-02T00:01:00Z",
         },
         {
@@ -68,7 +68,7 @@ describe("worker evidence pipelines", () => {
           name: "contact-click",
           device: "mobile",
           country_code: "US",
-          metadata: { view_id: "view-2" },
+          metadata: { view_id: "view-2", tracker_version: "2.0.0" },
           occurred_at: "2026-10-02T00:01:05Z",
         },
         {
@@ -77,7 +77,7 @@ describe("worker evidence pipelines", () => {
           name: "example.org",
           device: "mobile",
           country_code: "US",
-          metadata: { view_id: "view-2" },
+          metadata: { view_id: "view-2", tracker_version: "2.0.0" },
           occurred_at: "2026-10-02T00:01:08Z",
         },
       ],
@@ -123,6 +123,28 @@ describe("worker evidence pipelines", () => {
     expect(
       filterAnalyticsEvents(events, { pathMode: "prefix", pathValue: "/wor" }),
     ).toEqual([events[0], events[1]]);
+  });
+
+  it("keeps pageviews separate from key events and preserves fractional average daily visitors", () => {
+    const summary = buildAnalyticsSummary([
+      { event_type: "pageview", path: "/", metadata: { session: "one", view_id: "a", tracker_version: "2.0.0" }, occurred_at: "2026-09-01T09:00:00Z" },
+      { event_type: "scroll", path: "/", value: 50, metadata: { view_id: "a", tracker_version: "2.0.0" }, occurred_at: "2026-09-01T09:00:05Z" },
+      { event_type: "pageview", path: "/", metadata: { session: "two", view_id: "b", tracker_version: "2.0.0" }, occurred_at: "2026-09-02T09:00:00Z" },
+      { event_type: "click", path: "/", name: "cta", metadata: { view_id: "b", tracker_version: "2.0.0" }, occurred_at: "2026-09-02T09:00:05Z" },
+    ], 4, "2026-08-31T23:00:00Z", "2026-09-04T22:59:59.999Z", "Europe/London");
+    expect(summary.pageviews).toBe(2);
+    expect(summary.keyEvents).toBe(1);
+    expect(summary.pages[0]).toMatchObject({ pageviews: 2, events: 1 });
+    expect(summary.averageDailyVisitors).toBe(0.5);
+  });
+
+  it("returns hourly points for a single local calendar day", () => {
+    const summary = buildAnalyticsSummary([
+      { event_type: "pageview", path: "/", metadata: { session: "one" }, occurred_at: "2026-10-02T09:15:00Z" },
+    ], 1, "2026-10-01T23:00:00Z", "2026-10-02T22:59:59.999Z", "Europe/London");
+    expect(summary.series).toHaveLength(24);
+    expect(summary.series.reduce((total, point) => total + point.pageviews, 0)).toBe(1);
+    expect(summary.series.every((point) => point.day.includes("T"))).toBe(true);
   });
 
   it("executes source and header checks with evidence", () => {

@@ -1,4 +1,12 @@
 import type { Session } from "@supabase/supabase-js";
+import chromeLogo from "@browser-logos/chrome/chrome.svg";
+import edgeLogo from "@browser-logos/edge/edge.svg";
+import firefoxLogo from "@browser-logos/firefox/firefox.svg";
+import internetExplorerLogo from "@browser-logos/internet-explorer_9-11/internet-explorer_9-11.svg";
+import operaLogo from "@browser-logos/opera/opera.svg";
+import safariLogo from "@browser-logos/safari/safari.svg";
+import samsungInternetLogo from "@browser-logos/samsung-internet/samsung-internet.svg";
+import "flag-icons/css/flag-icons.min.css";
 import {
   Activity,
   BarChart3,
@@ -1997,8 +2005,19 @@ function AnalyticsView({
   const requestedTab = params.get("analyticsTab");
   const tab = tabs.includes(requestedTab || "") ? requestedTab! : "Overview";
   const filters = analyticsPageFiltersFromParams(params);
-  const filterQuery = analyticsPageFilterQuery(filters);
-  const livePeriod = periodQuery(location.search);
+  const detailPage = params.get("pagePath") || "";
+  const detailSource = params.get("sourceDetail") || "";
+  const listPage = Math.max(1, Number(params.get("listPage") || 1));
+  const listPageSize = [20, 100, 200].includes(Number(params.get("pageSize")))
+    ? Number(params.get("pageSize"))
+    : 20;
+  const effectiveFilters: AnalyticsPageFilters = detailPage
+    ? { ...filters, pathMode: "exact", pathValue: detailPage }
+    : detailSource
+      ? { ...filters, source: detailSource }
+      : filters;
+  const filterQuery = analyticsPageFilterQuery(effectiveFilters);
+  const livePeriod = `${periodQuery(location.search)}&time_zone=${encodeURIComponent(property?.settings?.timezone || "Europe/London")}`;
   const [baseData, setBaseData] = useState<any>(null);
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -2007,19 +2026,34 @@ function AnalyticsView({
   const [chartMetric, setChartMetric] = useState("Pageviews");
   const [chartMenuOpen, setChartMenuOpen] = useState(false);
   const [showPreviousTraffic, setShowPreviousTraffic] = useState(true);
+  const [pageList, setPageList] = useState<{ rows: any[]; page: number; pageSize: number; total: number; pages: number } | null>(null);
+  const [pageListError, setPageListError] = useState("");
+  const [pageListLoading, setPageListLoading] = useState(false);
+  const [rangeOpen, setRangeOpen] = useState(false);
+  const defaultTo = params.get("to") || new Date().toISOString().slice(0, 10);
+  const defaultFrom = params.get("from") || new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10);
+  const [rangeFrom, setRangeFrom] = useState(defaultFrom);
+  const [rangeTo, setRangeTo] = useState(defaultTo);
 
   const changeTab = (nextTab: string) => {
     const next = new URLSearchParams(location.search);
     if (nextTab === "Overview") next.delete("analyticsTab");
     else next.set("analyticsTab", nextTab);
     for (const key of analyticsFilterParamKeys) next.delete(key);
+    ["pagePath", "sourceDetail", "listPage", "pageSize"].forEach((key) => next.delete(key));
     navigate(`${location.pathname}?${next.toString()}`, { replace: true });
   };
   const changeFilters = (nextFilters: AnalyticsPageFilters) => {
     const next = new URLSearchParams(location.search);
     for (const key of analyticsFilterParamKeys) next.delete(key);
     writeAnalyticsFilters(next, nextFilters);
+    next.delete("listPage");
     navigate(`${location.pathname}?${next.toString()}`, { replace: true });
+  };
+  const updateAnalyticsParams = (changes: Record<string, string | null>, replace = false) => {
+    const next = new URLSearchParams(location.search);
+    Object.entries(changes).forEach(([key, value]) => value == null ? next.delete(key) : next.set(key, value));
+    navigate(`${location.pathname}?${next.toString()}`, { replace });
   };
 
   useEffect(() => {
@@ -2052,6 +2086,30 @@ function AnalyticsView({
     }
     return () => { cancelled = true; };
   }, [filterQuery, fixture, livePeriod, property?.id, reloadToken, session, tab]);
+
+  useEffect(() => {
+    if (tab !== "Pages" || detailPage || !property) return;
+    let cancelled = false;
+    setPageListLoading(true);
+    setPageListError("");
+    if (session) {
+      api<any>(session, `/api/properties/${property.id}/analytics/pages?${livePeriod}&page=${listPage}&page_size=${listPageSize}${filterQuery ? `&${filterQuery}` : ""}`)
+        .then((next) => !cancelled && setPageList(next))
+        .catch((reason) => {
+          if (!cancelled) {
+            setPageList(null);
+            setPageListError(reason.message || "Pages could not be loaded");
+          }
+        })
+        .finally(() => !cancelled && setPageListLoading(false));
+    } else if (fixture) {
+      const all = filterAnalyticsFixture(filters).pages || [];
+      const start = (listPage - 1) * listPageSize;
+      setPageList({ rows: all.slice(start, start + listPageSize), page: listPage, pageSize: listPageSize, total: all.length, pages: Math.max(1, Math.ceil(all.length / listPageSize)) });
+      setPageListLoading(false);
+    }
+    return () => { cancelled = true; };
+  }, [detailPage, filterQuery, fixture, listPage, listPageSize, livePeriod, property?.id, reloadToken, session, tab]);
 
   if (!property) return <Empty title="Select a property" detail="Analytics is property-specific." />;
 
@@ -2123,6 +2181,9 @@ function AnalyticsView({
                       <button onClick={() => { setShowPreviousTraffic((value) => !value); setChartMenuOpen(false); }}>
                         {showPreviousTraffic ? "Hide" : "Show"} previous period
                       </button>
+                      <button onClick={() => { setRangeFrom(defaultFrom); setRangeTo(defaultTo); setRangeOpen(true); setChartMenuOpen(false); }}>
+                        <CalendarDays /> Change date range
+                      </button>
                       <button onClick={() => {
                         downloadSeriesCsv(chartPoints, `analytics-${chartMetric.toLowerCase().replaceAll(" ", "-")}.csv`, chartMetric);
                         setChartMenuOpen(false);
@@ -2148,12 +2209,36 @@ function AnalyticsView({
             <Panel title="Countries"><AnalyticsValueTable headers={["Country", "Visitors"]} rows={shareRows(scoped.countries, scoped.pageviews, "country")} /></Panel>
           </div>
         </>
+      ) : tab === "Pages" && detailPage ? (
+        <AnalyticsPageDetail
+          data={scoped}
+          page={detailPage}
+          property={property}
+          onBack={() => updateAnalyticsParams({ pagePath: null }, false)}
+        />
       ) : tab === "Pages" ? (
         <Panel title="Pages">
           {filtersToolbar}
-          {scoped.truncated && <p className="analytics-data-warning" role="status">This result reached the 50,000-event query limit. Narrow the date range or add a filter before treating the totals as complete.</p>}
-          {pages.length ? (
-            <AnalyticsTable pages={pages} property={property} groupedLimit={5} />
+          {pageListLoading ? (
+            <Empty title="Loading pages…" detail="Fetching this page of the complete, filtered result." />
+          ) : pageListError ? (
+            <div className="analytics-state" role="alert"><Empty title="Pages could not be loaded" detail={pageListError} /><button className="btn" onClick={() => setReloadToken((value) => value + 1)}>Retry</button></div>
+          ) : pageList?.rows?.length ? (
+            <>
+              <AnalyticsTable
+                pages={pageList.rows.map((row: any) => ({ page: row.path, views: row.pageviews, events: row.events }))}
+                property={property}
+                onDetail={(page) => updateAnalyticsParams({ pagePath: page })}
+              />
+              <AnalyticsPagination
+                page={pageList.page}
+                pageSize={pageList.pageSize}
+                total={pageList.total}
+                pages={pageList.pages}
+                onPage={(value) => updateAnalyticsParams({ listPage: String(value) })}
+                onPageSize={(value) => updateAnalyticsParams({ pageSize: String(value), listPage: null })}
+              />
+            </>
           ) : (
             <div className="analytics-state">
               <Empty title={hasAnalyticsPageFilters(filters) ? "No matching page results" : "No pageviews in this period"} detail={hasAnalyticsPageFilters(filters) ? "No recorded pageviews or configured events match every active filter." : "A genuinely tracked pageview will appear here after it is received."} />
@@ -2161,10 +2246,12 @@ function AnalyticsView({
             </div>
           )}
         </Panel>
+      ) : tab === "Sources" && detailSource ? (
+        <AnalyticsSourceDetail data={scoped} source={detailSource} property={property} onBack={() => updateAnalyticsParams({ sourceDetail: null })} />
       ) : tab === "Sources" ? (
         <Panel title="Traffic sources">
           {filtersToolbar}
-          <AnalyticsSourceTable sources={scoped.sources || []} />
+          <AnalyticsSourceTable sources={scoped.sources || []} onDetail={(source) => updateAnalyticsParams({ sourceDetail: source })} />
           <p className="subtle">Source categories are mutually exclusive and total {fmt((scoped.sources || []).reduce((sum: number, source: any) => sum + source.pageviews, 0))} pageviews.</p>
         </Panel>
       ) : tab === "Events" ? (
@@ -2195,7 +2282,7 @@ function AnalyticsView({
           <Panel title="Additional aggregate insights">
             <KeyValues rows={[
               ["Engagement rate", engagement.engagementRate == null ? "Unavailable" : `${engagement.engagementRate.toFixed(1)}%`],
-              ["JavaScript errors", fmt(engagement.javascriptErrors || 0)],
+              ["JavaScript errors", engagement.collectionStatus === "available" ? fmt(engagement.javascriptErrors || 0) : "Unavailable"],
               ["Median active time", engagement.medianActiveSeconds == null ? "Unavailable" : durationLabel(engagement.medianActiveSeconds)],
               ["Top visible section", engagement.visibleSections?.[0] ? `${eventLabel(engagement.visibleSections[0].name)} · ${fmt(engagement.visibleSections[0].count)} pageviews` : "Unavailable"],
             ]} />
@@ -2213,10 +2300,24 @@ function AnalyticsView({
           <Panel>
             {filtersToolbar}
             <p className="subtle">Metrics use the 75th percentile. Fewer than {minimumSamples} samples are shown as unavailable rather than estimated.</p>
+            <p className="subtle">A good experience is a versioned pageview with all three field measurements: LCP ≤ 2.5 s, INP ≤ 200 ms and CLS ≤ 0.1. Historical observations from the replaced collector are not mixed into these figures.</p>
             <div className="chart-legend"><span>Current period</span><span className="previous">Previous period</span></div>
             <SeriesChart points={performancePoints} previousPoints={previousPerformancePoints} emptyTitle={`Insufficient ${selectedPerformanceMetric} samples`} unit={selectedPerformanceMetric === "CLS" ? "" : " ms"} label={`${selectedPerformanceMetric} p75 by day`} />
           </Panel>
         </>
+      )}
+      {rangeOpen && (
+        <AnalyticsDateRangeDialog
+          from={rangeFrom}
+          to={rangeTo}
+          setFrom={setRangeFrom}
+          setTo={setRangeTo}
+          close={() => setRangeOpen(false)}
+          apply={(from, to) => {
+            updateAnalyticsParams({ from, to, listPage: null });
+            setRangeOpen(false);
+          }}
+        />
       )}
     </Page>
   );
@@ -2954,7 +3055,8 @@ function PropertySettingsView({
     [viewers, setViewers] = useState<any[]>([]),
     [viewerToRemove, setViewerToRemove] = useState<any | null>(null),
     [deleteOpen, setDeleteOpen] = useState(false),
-    [deleteConfirmation, setDeleteConfirmation] = useState("");
+    [deleteConfirmation, setDeleteConfirmation] = useState(""),
+    [trackingDiagnostics, setTrackingDiagnostics] = useState<any>(null);
   useEffect(() => {
     if (!session || !property) return;
     setName(property.name || "");
@@ -2967,6 +3069,9 @@ function PropertySettingsView({
     api<any[]>(session, `/api/properties/${property.id}/viewers`)
       .then(setViewers)
       .catch(() => setViewers([]));
+    api<any>(session, `/api/properties/${property.id}/tracking-diagnostics`)
+      .then(setTrackingDiagnostics)
+      .catch(() => setTrackingDiagnostics(null));
   }, [property?.id, session]);
   useEffect(() => {
     if (requestedSettingsTab && settingsTabs.includes(requestedSettingsTab)) setTab(requestedSettingsTab);
@@ -3084,8 +3189,18 @@ function PropertySettingsView({
                 ],
                 ["Cookies", "None"],
                 ["Persistent visitor IDs", "None"],
+                ["Tracker served", trackingDiagnostics?.currentTrackerVersion || "Checking…"],
+                ["Tracker last received", trackingDiagnostics?.receivedTrackerVersion || (property.tracking_last_received_at ? "Legacy tracker" : "Not received")],
+                ["Update status", trackingDiagnostics?.updateRequired ? "Update required" : trackingDiagnostics?.receivedTrackerVersion ? "Current" : "Awaiting a versioned event"],
               ]}
             />
+            {trackingDiagnostics && (
+              <div className="tracking-signal-grid">
+                {Object.entries(trackingDiagnostics.signals || {}).map(([signal, count]) => (
+                  <div key={signal}><small>{eventLabel(signal)}</small><b>{fmt(Number(count || 0))}</b><span>{Number(count || 0) ? "Received in latest sample" : "Not observed in latest sample"}</span></div>
+                ))}
+              </div>
+            )}
           </Panel>
         </>
       ) : tab === "Uptime" ? (
@@ -4200,6 +4315,47 @@ function Period() {
   );
 }
 
+function AnalyticsDateRangeDialog({ from, to, setFrom, setTo, close, apply }: {
+  from: string;
+  to: string;
+  setFrom: (value: string) => void;
+  setTo: (value: string) => void;
+  close: () => void;
+  apply: (from: string, to: string) => void;
+}) {
+  const today = new Date();
+  const dateValue = (date: Date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  };
+  const preset = (days: number) => {
+    const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const start = new Date(end);
+    start.setDate(start.getDate() - Math.max(0, days - 1));
+    setFrom(dateValue(start));
+    setTo(dateValue(end));
+  };
+  const valid = /^\d{4}-\d{2}-\d{2}$/.test(from) && /^\d{4}-\d{2}-\d{2}$/.test(to) && from <= to;
+  return (
+    <Modal title="Analytics date range" close={close}>
+      <div className="analytics-range-presets" aria-label="Date range presets">
+        <button className="btn" onClick={() => preset(1)}>Today</button>
+        <button className="btn" onClick={() => preset(7)}>Last 7 days</button>
+        <button className="btn" onClick={() => preset(30)}>Last 30 days</button>
+        <button className="btn" onClick={() => preset(90)}>Last 90 days</button>
+      </div>
+      <div className="form-two">
+        <label className="field">From<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
+        <label className="field">To<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label>
+      </div>
+      <p className="subtle">The end date includes the complete calendar day. A single-day range switches charts to hourly points.</p>
+      <div className="dialog-actions"><button className="btn" onClick={close}>Cancel</button><button className="primary" disabled={!valid} onClick={() => apply(from, to)}>Apply range</button></div>
+    </Modal>
+  );
+}
+
 function periodQuery(search: string) {
   const params = new URLSearchParams(search);
   const from = params.get("from");
@@ -4403,7 +4559,7 @@ function SeriesChart({
       <svg
         className="chart live-chart"
         viewBox={`0 0 ${width} ${height}`}
-        preserveAspectRatio="none"
+        preserveAspectRatio="xMidYMid meet"
         aria-label={label}
       >
         {ticks.map((tick, index) => {
@@ -4794,7 +4950,7 @@ function AnalyticsPageFilterToolbar({
   options,
   onChange,
   title = "Pages",
-  categories = ["Page search", "Exact path / prefix", "Device", "Source", "Country"],
+  categories = ["Exact path / prefix", "Device", "Source", "Country"],
   scope = "this page table",
 }: {
   filters: AnalyticsPageFilters;
@@ -4806,7 +4962,7 @@ function AnalyticsPageFilterToolbar({
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
-  const [category, setCategory] = useState(categories[0] || "Page search");
+  const [category, setCategory] = useState<string | null>(null);
   const [menuSearch, setMenuSearch] = useState("");
   const [pageDraft, setPageDraft] = useState(filters.pageSearch || "");
   const [pathDraft, setPathDraft] = useState(filters.pathValue || "");
@@ -4819,7 +4975,7 @@ function AnalyticsPageFilterToolbar({
     setPathMode(filters.pathMode || "exact");
   }, [filters.pageSearch, filters.pathMode, filters.pathValue]);
   useEffect(() => {
-    if (!categories.includes(category)) setCategory(categories[0] || "Page search");
+    if (category && !categories.includes(category)) setCategory(null);
   }, [categories.join("|"), category]);
   useEffect(() => {
     if (!open) return;
@@ -4837,8 +4993,8 @@ function AnalyticsPageFilterToolbar({
     };
   }, [open]);
 
-  const categoryKey = analyticsFilterKey(category);
-  const categoryOptions = analyticsFilterValues(category, options);
+  const categoryKey = category ? analyticsFilterKey(category) : null;
+  const categoryOptions = category ? analyticsFilterValues(category, options) : [];
   const visibleOptions = categoryOptions.filter((value) =>
     `${value} ${category === "Country" ? countryLabel(value) : ""}`
       .toLocaleLowerCase()
@@ -4898,7 +5054,13 @@ function AnalyticsPageFilterToolbar({
           className="btn"
           aria-expanded={open}
           aria-haspopup="menu"
-          onClick={() => setOpen((value) => !value)}
+          onClick={() => setOpen((value) => {
+            if (!value) {
+              setCategory(null);
+              setMenuSearch("");
+            }
+            return !value;
+          })}
         >
           <Filter /> Add filter
         </button>
@@ -4908,13 +5070,15 @@ function AnalyticsPageFilterToolbar({
             <label className="analytics-menu-search">
               <Search />
               <input
-                aria-label="Search filter values"
-                value={menuSearch}
-                placeholder="Search values…"
-                onChange={(event) => setMenuSearch(event.target.value)}
+                aria-label={title === "Pages" ? "Search pages" : "Search filter values"}
+                value={title === "Pages" ? pageDraft : menuSearch}
+                placeholder={title === "Pages" ? "Search pages…" : "Search values…"}
+                onChange={(event) => title === "Pages" ? setPageDraft(event.target.value) : setMenuSearch(event.target.value)}
+                onKeyDown={(event) => title === "Pages" && event.key === "Enter" && applyText("page")}
               />
             </label>
-            <div className="two-col-menu">
+            {title === "Pages" && pageDraft !== (filters.pageSearch || "") && <button className="filter-search-apply" onClick={() => applyText("page")}>Apply page search</button>}
+            <div className={`two-col-menu ${category ? "has-selection" : ""}`}>
               <div className="menu-col" aria-label="Filter categories">
                 {categories.map((value) => (
                   <button
@@ -4926,20 +5090,11 @@ function AnalyticsPageFilterToolbar({
                   </button>
                 ))}
               </div>
-              <div className="menu-col analytics-filter-choices">
+              {category && <div className="menu-col analytics-filter-choices">
+                <button className="analytics-filter-back" onClick={() => setCategory(null)}><ChevronLeft /> Filter categories</button>
                 <b>{category}</b>
-                {category === "Page search" ? (
-                  <>
-                    <input
-                      aria-label="Page search"
-                      value={pageDraft}
-                      placeholder="Search page paths"
-                      onChange={(event) => setPageDraft(event.target.value)}
-                      onKeyDown={(event) => event.key === "Enter" && applyText("page")}
-                    />
-                    <button className="filter-apply" onClick={() => applyText("page")}>Apply page search</button>
-                  </>
-                ) : category === "Exact path / prefix" ? (
+                {category !== "Exact path / prefix" && <label className="analytics-menu-search analytics-choice-search"><Search /><input aria-label={`Search ${category} values`} value={menuSearch} placeholder="Search values…" onChange={(event) => setMenuSearch(event.target.value)} /></label>}
+                {category === "Exact path / prefix" ? (
                   <>
                     <span className="seg analytics-path-mode">
                       <button className={pathMode === "exact" ? "active" : ""} onClick={() => setPathMode("exact")}>Exact</button>
@@ -4968,7 +5123,7 @@ function AnalyticsPageFilterToolbar({
                 ) : (
                   <small className="subtle analytics-no-values">No collected values for this period.</small>
                 )}
-              </div>
+              </div>}
             </div>
             {hasAnalyticsPageFilters(filters) && (
               <>
@@ -4998,17 +5153,19 @@ function AnalyticsPageFilterToolbar({
 function AnalyticsTable({
   pages,
   property,
-  groupedLimit = 5,
+  groupedLimit,
   eventHeader = "Events",
+  onDetail,
 }: {
   pages: any[];
   property: Property;
   groupedLimit?: number;
   eventHeader?: string;
+  onDetail?: (page: string) => void;
 }) {
   const [groupOpen, setGroupOpen] = useState(false);
-  const groupedPages = pages.slice(groupedLimit);
-  const visiblePages = pages.slice(0, groupedLimit);
+  const groupedPages = groupedLimit == null ? [] : pages.slice(groupedLimit);
+  const visiblePages = groupedLimit == null ? pages : pages.slice(0, groupedLimit);
   const rows = groupedPages.length
     ? [
         ...visiblePages,
@@ -5038,7 +5195,9 @@ function AnalyticsTable({
                     </button>
                   ) : (
                     <span className="page-link-cell">
-                      <b>{page.page}</b>
+                      {onDetail ? (
+                        <button className="table-detail-link" onClick={() => onDetail(page.page)}>{page.page}</button>
+                      ) : <b>{page.page}</b>}
                       <a
                         className="page-open-link"
                         href={new URL(page.page, property.url).href}
@@ -5074,7 +5233,7 @@ function AnalyticsTable({
     </>
   );
 }
-function AnalyticsSourceTable({ sources }: { sources: any[] }) {
+function AnalyticsSourceTable({ sources, onDetail }: { sources: any[]; onDetail?: (source: string) => void }) {
   if (!sources.length)
     return <Empty title="No measured sources" detail="Source categories appear after pageviews are received." />;
   const max = Math.max(1, ...sources.map((source) => Number(source.pageviews || source.count || 0)));
@@ -5088,7 +5247,7 @@ function AnalyticsSourceTable({ sources }: { sources: any[] }) {
             return (
               <tr key={source.name}>
                 <InCellBar value={pageviews} max={max}>
-                  <span className="dimension-label"><DimensionMark kind="source" value={source.name} /><b>{source.name}</b></span>
+                  <span className="dimension-label"><DimensionMark kind="source" value={source.name} />{onDetail ? <button className="table-detail-link" onClick={() => onDetail(source.name)}>{source.name}</button> : <b>{source.name}</b>}</span>
                 </InCellBar>
                 <td>{fmt(pageviews)}</td>
                 <td>{fmt(Number(source.events || 0))}</td>
@@ -5098,6 +5257,74 @@ function AnalyticsSourceTable({ sources }: { sources: any[] }) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+function AnalyticsPagination({ page, pageSize, total, pages, onPage, onPageSize }: {
+  page: number;
+  pageSize: number;
+  total: number;
+  pages: number;
+  onPage: (page: number) => void;
+  onPageSize: (size: number) => void;
+}) {
+  const first = total ? (page - 1) * pageSize + 1 : 0;
+  const last = Math.min(total, page * pageSize);
+  return (
+    <div className="pagination-row analytics-pagination" aria-label="Pages table pagination">
+      <span>{fmt(first)}–{fmt(last)} of {fmt(total)} pages</span>
+      <label>Rows<select value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))}>{[20, 100, 200].map((size) => <option value={size} key={size}>{size}</option>)}</select></label>
+      <button className="btn" disabled={page <= 1} onClick={() => onPage(page - 1)}>Previous</button>
+      <span>Page {page} of {pages}</span>
+      <button className="btn" disabled={page >= pages} onClick={() => onPage(page + 1)}>Next</button>
+    </div>
+  );
+}
+
+function AnalyticsPageDetail({ data, page, property, onBack }: { data: any; page: string; property: Property; onBack: () => void }) {
+  const pageRow = (data.pages || []).find((row: any) => row.path === normalisePagePath(page)) || data.pages?.[0];
+  return (
+    <>
+      <div className="analytics-detail-heading">
+        <button className="btn" onClick={onBack}><ChevronLeft /> All pages</button>
+        <h2>{page}</h2>
+        <a className="btn" href={new URL(page, property.url).href} target="_blank" rel="noopener noreferrer"><ExternalLink /> Open live page</a>
+      </div>
+      <Metrics values={[
+        ["Pageviews", fmt(pageRow?.pageviews || data.pageviews || 0), "Selected page only"],
+        ["Key events", fmt(pageRow?.events || data.keyEvents || 0), "Clicks, outbound clicks and confirmed forms"],
+        ["Engaged pageviews", data.engagement?.engagedPageviews == null ? "Unavailable" : fmt(data.engagement.engagedPageviews), "Correlated pageviews only"],
+        ["Median active time", data.engagement?.medianActiveSeconds == null ? "Unavailable" : durationLabel(data.engagement.medianActiveSeconds), "Visible, active foreground time"],
+      ]} />
+      <Panel title="Page traffic"><SeriesChart points={(data.series || []).map((point: any) => ({ label: point.day, value: point.pageviews || 0 }))} previousPoints={(data.previous?.series || []).map((point: any) => ({ label: point.day, value: point.pageviews || 0 }))} emptyTitle="No pageviews for this page" label={`Pageviews for ${page}`} /></Panel>
+      <div className="grid equal">
+        <Panel title="Sources"><AnalyticsSourceTable sources={data.sources || []} /></Panel>
+        <Panel title="Devices"><AnalyticsValueTable headers={["Device", "Pageviews"]} rows={(data.devices || []).map((row: any) => ({ label: row.name, value: row.count, iconKind: "device", iconValue: row.name }))} /></Panel>
+        <Panel title="Countries"><AnalyticsValueTable headers={["Country", "Pageviews"]} rows={(data.countries || []).map((row: any) => ({ label: countryLabel(row.name), value: row.count, iconKind: "country", iconValue: row.name }))} /></Panel>
+        <Panel title="Key events"><AnalyticsValueTable headers={["Event", "Count"]} rows={(data.eventBreakdown || []).map((row: any) => ({ label: eventLabel(row.name), value: row.count }))} /></Panel>
+      </div>
+    </>
+  );
+}
+
+function AnalyticsSourceDetail({ data, source, property, onBack }: { data: any; source: string; property: Property; onBack: () => void }) {
+  const pages = (data.pages || []).map((row: any) => ({ page: row.path, views: row.pageviews || 0, events: row.events || 0 }));
+  return (
+    <>
+      <div className="analytics-detail-heading"><button className="btn" onClick={onBack}><ChevronLeft /> All sources</button><DimensionMark kind="source" value={source} /><h2>{source}</h2></div>
+      <Metrics values={[
+        ["Pageviews", fmt(data.pageviews || 0), "Selected source only"],
+        ["Key events", fmt(data.keyEvents || 0), "Selected source only"],
+        ["Pages", fmt(pages.length), "Observed landing and visited paths"],
+        ["Property", property.name, property.canonical_host],
+      ]} />
+      <Panel title="Source traffic"><SeriesChart points={(data.series || []).map((point: any) => ({ label: point.day, value: point.pageviews || 0 }))} previousPoints={(data.previous?.series || []).map((point: any) => ({ label: point.day, value: point.pageviews || 0 }))} emptyTitle="No traffic for this source" label={`Pageviews from ${source}`} /></Panel>
+      <div className="grid equal">
+        <Panel title="Landing and visited pages"><AnalyticsTable pages={pages} property={property} /></Panel>
+        <Panel title="Devices"><AnalyticsValueTable headers={["Device", "Pageviews"]} rows={(data.devices || []).map((row: any) => ({ label: row.name, value: row.count, iconKind: "device", iconValue: row.name }))} /></Panel>
+        <Panel title="Countries"><AnalyticsValueTable headers={["Country", "Pageviews"]} rows={(data.countries || []).map((row: any) => ({ label: countryLabel(row.name), value: row.count, iconKind: "country", iconValue: row.name }))} /></Panel>
+      </div>
+    </>
   );
 }
 
@@ -5159,8 +5386,22 @@ function DimensionMark({ kind, value }: { kind: string; value: string }) {
     return <span className="dimension-mark neutral"><Icon /></span>;
   }
   if (kind === "country") {
-    const flag = countryFlag(value);
-    return flag ? <span className="dimension-flag" aria-hidden="true">{flag}</span> : <span className="dimension-mark neutral"><Earth /></span>;
+    const code = clean === "uk" ? "gb" : clean;
+    return /^[a-z]{2}$/.test(code) ? <span className={`dimension-flag fi fi-${code}`} aria-hidden="true" /> : <span className="dimension-mark neutral"><Earth /></span>;
+  }
+  if (kind === "browser") {
+    const logos: Record<string, string> = {
+      chrome: chromeLogo,
+      edge: edgeLogo,
+      firefox: firefoxLogo,
+      opera: operaLogo,
+      safari: safariLogo,
+      "samsung internet": samsungInternetLogo,
+      "internet explorer": internetExplorerLogo,
+    };
+    return logos[clean]
+      ? <span className="dimension-mark browser"><img src={logos[clean]} alt="" /></span>
+      : <span className="dimension-mark neutral"><Globe2 /></span>;
   }
   const short = clean.includes("google") ? "G" : clean.includes("linkedin") ? "in" : clean.includes("instagram") ? "◎" : clean.includes("chrome") ? "●" : clean.includes("safari") ? "●" : clean.includes("edge") ? "e" : clean.includes("firefox") ? "●" : clean.includes("direct") ? "↗" : "↗";
   const brand = clean.includes("google") ? "google" : clean.includes("linkedin") ? "linkedin" : clean.includes("instagram") ? "instagram" : clean.includes("chrome") ? "chrome" : clean.includes("safari") ? "safari" : clean.includes("edge") ? "edge" : clean.includes("firefox") ? "firefox" : "neutral";
@@ -5946,7 +6187,7 @@ const emptyAnalyticsFilterOptions: AnalyticsFilterOptions = {
 
 const analyticsFilterConfigs: Record<string, { title: string; categories: string[]; scope: string }> = {
   Overview: { title: "Analytics overview", categories: ["Device", "Page", "Source", "Country", "Browser", "Event name", "UTM source", "UTM medium", "UTM campaign"], scope: "the whole analytics overview" },
-  Pages: { title: "Pages", categories: ["Page search", "Exact path / prefix", "Device", "Source", "Country"], scope: "this page table" },
+  Pages: { title: "Pages", categories: ["Exact path / prefix", "Device", "Source", "Country"], scope: "this page table" },
   Sources: { title: "Sources", categories: ["Source", "Source type", "UTM source", "UTM medium", "UTM campaign", "Page", "Device"], scope: "this source table" },
   Events: { title: "Events", categories: ["Event name", "Page", "Source", "Device", "Country"], scope: "this event table" },
   Audience: { title: "Audience", categories: ["Device", "Browser", "Country", "Page"], scope: "all audience breakdowns" },
@@ -6086,6 +6327,12 @@ function formatChartTooltip(value: number, unit: string) {
 }
 
 function chartDateLabel(value: string) {
+  if (value.includes("T")) {
+    const instant = new Date(value);
+    return Number.isFinite(instant.valueOf())
+      ? new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", timeZoneName: "short" }).format(instant)
+      : value;
+  }
   const date = new Date(`${value.slice(0, 10)}T12:00:00`);
   return Number.isFinite(date.valueOf()) ? new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" }).format(date) : value;
 }

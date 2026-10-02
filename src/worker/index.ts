@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
+import WEB_VITALS_SOURCE from "../../node_modules/web-vitals/dist/web-vitals.iife.js?raw";
 import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import {
   buildRegistrySnapshot,
@@ -62,6 +63,7 @@ const IMPLEMENTED_AUDIT_IDS = new Set(
 );
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
+const TRACKER_VERSION = "2.0.0";
 app.use("*", secureHeaders());
 app.use(
   "/collect",
@@ -88,10 +90,16 @@ app.get("/api/config", (c) =>
 const serveTracker = (c: any) => {
   c.header("content-type", "application/javascript; charset=utf-8");
   c.header("cache-control", "public, max-age=3600");
+  c.header("x-claritude-tracker-version", TRACKER_VERSION);
   return c.body(TRACKER_SOURCE);
 };
 app.get("/tracker.js", serveTracker);
 app.get("/c.js", serveTracker);
+app.get("/vendor/web-vitals.js", (c) => {
+  c.header("content-type", "application/javascript; charset=utf-8");
+  c.header("cache-control", "public, max-age=31536000, immutable");
+  return c.body(WEB_VITALS_SOURCE);
+});
 
 app.post("/collect", async (c) => {
   const contentLength = Number(c.req.header("content-length") || 0);
@@ -155,8 +163,16 @@ app.post("/collect", async (c) => {
       return configuredEvents.has(`${row.event_type}:${row.name}`);
     });
   if (!rows.length) return c.json({ error: "no_valid_events" }, 400);
-  const { error } = await db.from("analytics_events").insert(rows);
-  if (error) return c.json({ error: "ingestion_failed" }, 503);
+  // A batch can be retried by sendBeacon/fetch or by the browser. Insert each
+  // observation independently so a duplicate event_id never rejects otherwise
+  // valid observations in the same delivery.
+  const insertResults = await Promise.all(
+    rows.map((row: any) => db.from("analytics_events").insert(row)),
+  );
+  const insertionFailure = insertResults.find(
+    (result) => result.error && result.error.code !== "23505",
+  )?.error;
+  if (insertionFailure) return c.json({ error: "ingestion_failed" }, 503);
   await db
     .from("properties")
     .update({ tracking_last_received_at: now })
@@ -1446,12 +1462,14 @@ app.get("/api/properties/:id/analytics", async (c) => {
       window.days,
       window.from,
       window.to,
+      window.timeZone,
     ),
     previous: buildAnalyticsSummary(
       filteredPrevious,
       window.days,
       previousFrom,
       previousTo,
+      window.timeZone,
     ),
     // Filtering can reduce the returned set below the query ceiling. Preserve
     // whether the underlying property/date result hit that ceiling so the UI
@@ -1459,6 +1477,70 @@ app.get("/api/properties/:id/analytics", async (c) => {
     truncated: events.length >= 50000,
     filterOptions: buildAnalyticsFilterOptions(events),
     appliedFilters: filters,
+  });
+});
+
+app.get("/api/properties/:id/analytics/pages", async (c) => {
+  const window = requestedWindow(c);
+  if (!window) return c.json({ error: "invalid_date_range" }, 400);
+  const page = Math.max(1, Math.floor(Number(c.req.query("page") || 1)));
+  const pageSize = [20, 100, 200].includes(Number(c.req.query("page_size")))
+    ? Number(c.req.query("page_size"))
+    : 20;
+  const pathMode = ["exact", "prefix"].includes(c.req.query("path_mode") || "")
+    ? c.req.query("path_mode")
+    : null;
+  const pathValue = cleanAnalyticsFilter(c.req.query("path_value"), 500);
+  const normalizedPath = pathValue ? normalizeAnalyticsPath(pathValue) : null;
+  const { data, error } = await c.get("db").rpc("analytics_pages_page", {
+    p_property_id: c.req.param("id"),
+    p_from: window.from,
+    p_to: window.to,
+    p_offset: (page - 1) * pageSize,
+    p_limit: pageSize,
+    p_page_search: cleanAnalyticsFilter(c.req.query("page_search"), 120) || null,
+    p_path_mode: pathMode,
+    p_path_value: normalizedPath,
+    p_device: cleanAnalyticsFilter(c.req.query("device"), 40) || null,
+    p_source: cleanAnalyticsFilter(c.req.query("source"), 255) || null,
+    p_country: cleanAnalyticsFilter(c.req.query("country"), 20) || null,
+  });
+  if (error) return c.json({ error: error.message }, 400);
+  const rows = (data || []).map((row: any) => ({
+    path: row.path,
+    pageviews: Number(row.pageviews || 0),
+    events: Number(row.events || 0),
+  }));
+  const total = Number((data || [])[0]?.total_rows || 0);
+  return c.json({ rows, page, pageSize, total, pages: Math.max(1, Math.ceil(total / pageSize)) });
+});
+
+app.get("/api/properties/:id/tracking-diagnostics", async (c) => {
+  const { data, error } = await c.get("db")
+    .from("analytics_events")
+    .select("event_type,metadata,received_at")
+    .eq("property_id", c.req.param("id"))
+    .order("received_at", { ascending: false })
+    .limit(1000);
+  if (error) return c.json({ error: error.message }, 400);
+  const rows = data || [];
+  const counts: Record<string, number> = {};
+  rows.forEach((row: any) => { counts[row.event_type] = (counts[row.event_type] || 0) + 1; });
+  const latestVersion = rows.find((row: any) => row.metadata?.tracker_version)?.metadata?.tracker_version || null;
+  return c.json({
+    currentTrackerVersion: TRACKER_VERSION,
+    receivedTrackerVersion: latestVersion,
+    updateRequired: Boolean(latestVersion && latestVersion !== TRACKER_VERSION),
+    lastReceivedAt: rows[0]?.received_at || null,
+    sampleSize: rows.length,
+    signals: {
+      pageviews: counts.pageview || 0,
+      scrollMilestones: counts.scroll || 0,
+      activeTime: counts.active_time || 0,
+      visibleSections: counts.visible_section || 0,
+      javascriptErrors: counts.js_error || 0,
+      webVitals: counts.web_vital || 0,
+    },
   });
 });
 
@@ -1510,6 +1592,7 @@ app.get("/api/properties/:id/report", async (c) => {
       window.days,
       window.from,
       window.to,
+      window.timeZone,
     ),
     limitations: [
       "Visitor totals are aggregate estimates; no persistent visitor identifiers are used.",
@@ -2240,6 +2323,7 @@ export function buildAnalyticsSummary(
   days: number,
   from = new Date(Date.now() - days * 864e5).toISOString(),
   to = new Date().toISOString(),
+  timeZone = "UTC",
 ) {
   const pageMap = new Map<string, { pageviews: number; events: number }>();
   const seriesMap = new Map<string, { pageviews: number; events: number; sessions: Set<string> }>();
@@ -2251,6 +2335,7 @@ export function buildAnalyticsSummary(
   const campaignMap = new Map<string, number>();
   const eventMap = new Map<string, number>();
   const sessions = new Set<string>();
+  const dailySessions = new Map<string, Set<string>>();
   const vitals = new Map<string, number[]>();
   const vitalDays = new Map<string, Map<string, number[]>>();
   const views = new Map<string, {
@@ -2277,8 +2362,11 @@ export function buildAnalyticsSummary(
   for (const event of events) {
     const path = normalizeAnalyticsPath(event.path);
     const page = pageMap.get(path) || { pageviews: 0, events: 0 };
-    const day = String(event.occurred_at).slice(0, 10);
-    const point = seriesMap.get(day) || { pageviews: 0, events: 0, sessions: new Set<string>() };
+    const day = dateKeyInTimeZone(event.occurred_at, timeZone);
+    const bucket = days === 1
+      ? new Date(Math.floor(new Date(event.occurred_at).valueOf() / 3600000) * 3600000).toISOString()
+      : day;
+    const point = seriesMap.get(bucket) || { pageviews: 0, events: 0, sessions: new Set<string>() };
     const viewId = typeof event.metadata?.view_id === "string" ? event.metadata.view_id : "";
     if (event.event_type === "pageview") {
       pageviews += 1;
@@ -2295,8 +2383,11 @@ export function buildAnalyticsSummary(
       if (event.metadata?.session) {
         sessions.add(event.metadata.session);
         point.sessions.add(event.metadata.session);
+        const daySessions = dailySessions.get(day) || new Set<string>();
+        daySessions.add(event.metadata.session);
+        dailySessions.set(day, daySessions);
       }
-      if (viewId && !views.has(viewId)) {
+      if (viewId && event.metadata?.tracker_version === TRACKER_VERSION && !views.has(viewId)) {
         views.set(viewId, {
           path,
           activeSeconds: 0,
@@ -2327,7 +2418,7 @@ export function buildAnalyticsSummary(
     }
     if (event.event_type === "visible_section" && event.name && viewId && views.has(viewId))
       views.get(viewId)!.visibleSections.add(String(event.name));
-    if (event.event_type === "web_vital" && event.name && Number.isFinite(event.value)) {
+    if (event.event_type === "web_vital" && event.name && Number.isFinite(event.value) && event.metadata?.tracker_version === TRACKER_VERSION) {
       const name = String(event.name).toUpperCase();
       const samples = vitals.get(name) || [];
       samples.push(Number(event.value));
@@ -2340,7 +2431,7 @@ export function buildAnalyticsSummary(
       if (viewId && views.has(viewId)) views.get(viewId)!.vitals.set(name, Number(event.value));
     }
     if (event.event_type === "pageview" || keyEvent) pageMap.set(path, page);
-    seriesMap.set(day, point);
+    seriesMap.set(bucket, point);
   }
   const ranked = (map: Map<string, number>) =>
     [...map].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count }));
@@ -2355,13 +2446,22 @@ export function buildAnalyticsSummary(
     samples: values.length,
     percentile: 75,
   }));
-  const fromDay = from.slice(0, 10);
-  const toDay = to.slice(0, 10);
+  const fromDay = dateKeyInTimeZone(from, timeZone);
+  const toDay = dateKeyInTimeZone(to, timeZone);
   const calendarDays: string[] = [];
   for (let cursor = new Date(`${fromDay}T00:00:00.000Z`), index = 0;
     cursor <= new Date(`${toDay}T00:00:00.000Z`) && index < 91;
     cursor = new Date(cursor.valueOf() + 864e5), index += 1)
     calendarDays.push(cursor.toISOString().slice(0, 10));
+  const seriesBuckets = days === 1
+    ? (() => {
+        const buckets: string[] = [];
+        const end = new Date(to).valueOf();
+        for (let cursor = Math.floor(new Date(from).valueOf() / 3600000) * 3600000; cursor <= end && buckets.length < 25; cursor += 3600000)
+          buckets.push(new Date(cursor).toISOString());
+        return buckets;
+      })()
+    : calendarDays;
   const eligibleViews = [...views.values()];
   const engagedViews = eligibleViews.filter(
     (view) => view.activeSeconds >= 10 || view.maxScroll >= 50 || view.keyEvents > 0,
@@ -2405,14 +2505,14 @@ export function buildAnalyticsSummary(
     keyEvents,
     sessions: sessions.size,
     averageDailyVisitors: sessions.size
-      ? Math.round(calendarDays.reduce((total, day) => total + (seriesMap.get(day)?.sessions.size || 0), 0) / Math.max(1, calendarDays.length))
+      ? Math.round(calendarDays.reduce((total, day) => total + (dailySessions.get(day)?.size || 0), 0) / Math.max(1, calendarDays.length) * 10) / 10
       : null,
     dailyVisitorMethod: sessions.size ? "anonymous_sessions" : "unavailable",
     truncated: events.length >= 50000,
     pages: [...pageMap]
       .map(([path, value]) => ({ path, ...value }))
       .sort((a, b) => b.pageviews - a.pageviews),
-    series: calendarDays.map((day) => ({
+    series: seriesBuckets.map((day) => ({
       day,
       pageviews: seriesMap.get(day)?.pageviews || 0,
       events: seriesMap.get(day)?.events || 0,
@@ -2453,6 +2553,8 @@ export function buildAnalyticsSummary(
         : null,
       minimumSamples: 75,
       method: "p75",
+      collectionStatus: vitalRows.length ? "available" : "versioned_web_vitals_unavailable",
+      trackerVersion: TRACKER_VERSION,
     },
   };
 }
@@ -2605,7 +2707,7 @@ function cleanHost(v: unknown) {
 function safeMetadata(v: any) {
   const out: Record<string, string | number | boolean> = {};
   if (v && typeof v === "object")
-    for (const [k, x] of Object.entries(v).slice(0, 12))
+    for (const [k, x] of Object.entries(v).slice(0, 20))
       if (
         /^[a-zA-Z0-9_-]{1,40}$/.test(k) &&
         ["string", "number", "boolean"].includes(typeof x)
@@ -2748,6 +2850,8 @@ function validDateRange(value: string, maximumFutureMs: number) {
 function requestedWindow(c: any, defaultDays = 30, maximumDays = 90) {
   const fromValue = c.req.query("from");
   const toValue = c.req.query("to");
+  const requestedTimeZone = String(c.req.query("time_zone") || "UTC").slice(0, 80);
+  const timeZone = validTimeZone(requestedTimeZone) ? requestedTimeZone : "UTC";
   if (!fromValue && !toValue) {
     const days = Math.min(
       maximumDays,
@@ -2758,25 +2862,73 @@ function requestedWindow(c: any, defaultDays = 30, maximumDays = 90) {
       days,
       from: new Date(Date.now() - days * 864e5).toISOString(),
       to: new Date().toISOString(),
+      timeZone,
     };
   }
   if (!fromValue || !toValue) return null;
-  const fromDate = new Date(`${fromValue}T00:00:00.000Z`);
-  const toDate = new Date(`${toValue}T23:59:59.999Z`);
+  const fromDate = zonedDateBoundary(fromValue, timeZone, false);
+  const toDate = zonedDateBoundary(toValue, timeZone, true);
   const span = toDate.valueOf() - fromDate.valueOf();
+  const calendarDayCount = Math.round(
+    (Date.parse(`${toValue}T00:00:00.000Z`) - Date.parse(`${fromValue}T00:00:00.000Z`)) / 864e5,
+  ) + 1;
   if (
     !/^\d{4}-\d{2}-\d{2}$/.test(fromValue) ||
     !/^\d{4}-\d{2}-\d{2}$/.test(toValue) ||
     !Number.isFinite(span) ||
     span < 0 ||
-    span > maximumDays * 864e5
+    calendarDayCount < 1 ||
+    calendarDayCount > maximumDays
   )
     return null;
   return {
-    days: Math.max(1, Math.ceil((span + 1) / 864e5)),
+    days: calendarDayCount,
     from: fromDate.toISOString(),
     to: toDate.toISOString(),
+    timeZone,
   };
+}
+
+function validTimeZone(value: string) {
+  try {
+    new Intl.DateTimeFormat("en-GB", { timeZone: value }).format(new Date());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function zonedDateBoundary(value: string, timeZone: string, end: boolean) {
+  const [year, month, day] = value.split("-").map(Number);
+  const target = new Date(Date.UTC(year, month - 1, day + (end ? 1 : 0), 0, 0, 0, 0));
+  let instant = target.valueOf();
+  for (let pass = 0; pass < 3; pass += 1) {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(new Date(instant));
+    const part = (type: string) => Number(parts.find((entry) => entry.type === type)?.value || 0);
+    const represented = Date.UTC(part("year"), part("month") - 1, part("day"), part("hour"), part("minute"), part("second"));
+    instant += target.valueOf() - represented;
+  }
+  return new Date(instant - (end ? 1 : 0));
+}
+
+function dateKeyInTimeZone(value: string, timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(value));
+  const part = (type: string) => parts.find((entry) => entry.type === type)?.value || "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
 function sanitizeNotificationPreferences(input: Record<string, boolean>) {
@@ -3035,41 +3187,37 @@ function renderReportEmail(snapshot: any) {
 }
 
 const TRACKER_SOURCE = `(()=>{
-  const s=document.currentScript,p=s&&s.dataset.property,endpoint=s&&new URL('/collect',s.src).href;
+  const s=document.currentScript,p=s&&s.dataset.property,endpoint=s&&new URL('/collect',s.src).href,base=s&&new URL('/',s.src).href;
   if(!p||!endpoint||window.__claritude)return;window.__claritude=1;
-  let q=[],timer,lastUrl=location.href,active=0,reportedActive=0,cls=0,lcp=0,inp=0,view=crypto.randomUUID(),vitalsSent=false,errorCount=0;
-  const marks=new Set,visibleSections=new Set;
-  const params=new URLSearchParams(location.search);
+  let q=[],timer,lastUrl=location.href,view=crypto.randomUUID(),generation=0,active=0,reportedActive=0,lastActivity=Date.now(),errorCount=0,vitalsReady=null;
+  const marks=new Set,visibleSections=new Set,observedSections=new WeakSet;
   const session=sessionStorage.getItem('_claritude_session')||crypto.randomUUID();
   sessionStorage.setItem('_claritude_session',session);
-  const browser=/Edg\//.test(navigator.userAgent)?'Edge':/Firefox\//.test(navigator.userAgent)?'Firefox':/Chrome\//.test(navigator.userAgent)?'Chrome':/Safari\//.test(navigator.userAgent)?'Safari':'Other';
-  const common=()=>({session,view_id:view,browser,screen:innerWidth<768?'small':innerWidth<1280?'medium':'large',language:navigator.language||'',utm_source:params.get('utm_source')||'',utm_medium:params.get('utm_medium')||'',utm_campaign:params.get('utm_campaign')||'',utm_content:params.get('utm_content')||'',utm_term:params.get('utm_term')||''});
+  const browser=/Edg\//.test(navigator.userAgent)?'Edge':/OPR\//.test(navigator.userAgent)?'Opera':/SamsungBrowser\//.test(navigator.userAgent)?'Samsung Internet':/Firefox\//.test(navigator.userAgent)?'Firefox':/Chrome\//.test(navigator.userAgent)?'Chrome':/Safari\//.test(navigator.userAgent)?'Safari':/MSIE|Trident/.test(navigator.userAgent)?'Internet Explorer':'Other';
+  const common=()=>{const params=new URLSearchParams(location.search);return{session,view_id:view,browser,screen:innerWidth<768?'small':innerWidth<1280?'medium':'large',language:navigator.language||'',tracker_version:'${TRACKER_VERSION}',utm_source:params.get('utm_source')||'',utm_medium:params.get('utm_medium')||'',utm_campaign:params.get('utm_campaign')||'',utm_content:params.get('utm_content')||'',utm_term:params.get('utm_term')||''}};
   const send=()=>{if(!q.length)return;const body=JSON.stringify(q.splice(0,20));if(navigator.sendBeacon&&document.visibilityState==='hidden')navigator.sendBeacon(endpoint,new Blob([body],{type:'application/json'}));else fetch(endpoint,{method:'POST',headers:{'content-type':'application/json'},body,keepalive:true}).catch(()=>{})};
-  const emit=(type,data={})=>{q.push({type,property:p,path:location.pathname,referrer:document.referrer,at:new Date().toISOString(),device:innerWidth<768?'mobile':innerWidth<1024?'tablet':'desktop',meta:common(),...data});clearTimeout(timer);timer=setTimeout(send,500)};
-  addEventListener('click',e=>{const a=e.target.closest('[data-claritude-event],a[href]');if(!a)return;const name=a.dataset.claritudeEvent;if(name)emit('click',{name});if(a.href&&new URL(a.href,location.href).host!==location.host)emit('outbound',{name:new URL(a.href).host})},{passive:true});
-  addEventListener('scroll',()=>{const height=Math.max(document.documentElement.scrollHeight,1),n=Math.round((scrollY+innerHeight)/height*100);[25,50,75,90].forEach(x=>{if(n>=x&&!marks.has(x)){marks.add(x);emit('scroll',{value:x})}})},{passive:true});
+  const emit=(type,data={})=>{const supplied=data.meta&&typeof data.meta==='object'?data.meta:{};q.push({...data,type,property:p,path:location.pathname,referrer:document.referrer,at:new Date().toISOString(),device:innerWidth<768?'mobile':innerWidth<1024?'tablet':'desktop',meta:{...common(),...supplied,event_id:crypto.randomUUID()}});clearTimeout(timer);timer=setTimeout(send,500)};
+  addEventListener('click',e=>{lastActivity=Date.now();const a=e.target.closest('[data-claritude-event],a[href]');if(!a)return;const name=a.dataset.claritudeEvent;if(name)emit('click',{name});if(a.href&&new URL(a.href,location.href).host!==location.host)emit('outbound',{name:new URL(a.href).host})},{passive:true});
+  ['keydown','pointerdown','touchstart'].forEach(name=>addEventListener(name,()=>{lastActivity=Date.now()},{passive:true}));
+  const checkScroll=()=>{const root=document.documentElement,height=Math.max(root.scrollHeight,document.body&&document.body.scrollHeight||0,1),n=Math.min(100,Math.round((scrollY+innerHeight)/height*100));[25,50,75,90].forEach(x=>{if(n>=x&&!marks.has(x)){marks.add(x);emit('scroll',{value:x})}})};
+  addEventListener('scroll',checkScroll,{passive:true});addEventListener('resize',checkScroll,{passive:true});
   const reportActive=()=>{const delta=active-reportedActive;if(delta>0){reportedActive=active;emit('active_time',{value:delta})}};
-  const tick=setInterval(()=>{if(document.visibilityState==='visible'&&document.hasFocus())active+=5;if(active-reportedActive>=30)reportActive()},5000);
-  const flushVitals=()=>{if(vitalsSent)return;vitalsSent=true;if(lcp)emit('web_vital',{name:'LCP',value:lcp});if(cls)emit('web_vital',{name:'CLS',value:cls});if(inp)emit('web_vital',{name:'INP',value:inp})};
+  const tick=setInterval(()=>{if(document.visibilityState==='visible'&&document.hasFocus()&&Date.now()-lastActivity<30000)active+=1;if(active-reportedActive>=30)reportActive()},1000);
   const sectionObserver='IntersectionObserver'in window?new IntersectionObserver(entries=>entries.forEach(entry=>{const name=entry.target.dataset.claritudeSection;if(entry.isIntersecting&&name&&!visibleSections.has(name)){visibleSections.add(name);emit('visible_section',{name})}}),{threshold:.5}):null;
-  const observeSections=()=>sectionObserver&&document.querySelectorAll('[data-claritude-section]').forEach(node=>sectionObserver.observe(node));
-  const page=()=>{emit('pageview',{source:params.get('utm_source')||''});observeSections()};page();
-  const navigation=()=>{if(location.href!==lastUrl){reportActive();flushVitals();send();lastUrl=location.href;view=crypto.randomUUID();active=0;reportedActive=0;cls=0;lcp=0;inp=0;vitalsSent=false;errorCount=0;marks.clear();visibleSections.clear();page()}};
-  new MutationObserver(()=>{navigation();observeSections()}).observe(document,{subtree:true,childList:true});
-  ['pushState','replaceState'].forEach(k=>{const original=history[k];history[k]=function(...args){const result=original.apply(this,args);queueMicrotask(navigation);return result}});
-  addEventListener('popstate',navigation);
-  const reportError=(name,source)=>{if(errorCount>=5)return;errorCount+=1;let resource_origin='';try{resource_origin=source?new URL(source,location.href).origin:''}catch{}emit('js_error',{name,meta:{...common(),resource_origin}})};
+  const observeSections=()=>{if(!sectionObserver)return;document.querySelectorAll('[data-claritude-section]').forEach(node=>{if(!observedSections.has(node)){observedSections.add(node);sectionObserver.observe(node)}})};
+  const initVitals=()=>{if(!window.webVitals)return;const own=generation,record=metric=>{if(own===generation&&metric&&Number.isFinite(metric.value))emit('web_vital',{name:metric.name,value:metric.value,meta:{metric_id:metric.id,navigation_type:metric.navigationType}})};try{webVitals.onLCP(record)}catch{}try{webVitals.onINP(record)}catch{}try{webVitals.onCLS(record)}catch{}};
+  const loadVitals=()=>vitalsReady||(vitalsReady=new Promise(resolve=>{if(window.webVitals){resolve();return}const script=document.createElement('script');script.src=new URL('/vendor/web-vitals.js',base).href;script.async=true;script.crossOrigin='anonymous';script.onload=resolve;script.onerror=resolve;document.head.appendChild(script)}));
+  const page=()=>{const params=new URLSearchParams(location.search);emit('pageview',{source:params.get('utm_source')||''});observeSections();requestAnimationFrame(checkScroll);loadVitals().then(initVitals)};page();
+  const navigation=(forcedPath)=>{if(!forcedPath&&location.href===lastUrl)return;reportActive();send();lastUrl=location.href;view=crypto.randomUUID();generation+=1;active=0;reportedActive=0;lastActivity=Date.now();errorCount=0;marks.clear();visibleSections.clear();page()};
+  new MutationObserver(()=>{navigation();observeSections();checkScroll()}).observe(document,{subtree:true,childList:true});
+  ['pushState','replaceState'].forEach(k=>{const original=history[k];history[k]=function(...args){const result=original.apply(this,args);queueMicrotask(()=>navigation());return result}});
+  addEventListener('popstate',()=>navigation());
+  const reportError=(name,source)=>{if(errorCount>=5)return;errorCount+=1;let resource_origin='';try{resource_origin=source?new URL(source,location.href).origin:''}catch{}emit('js_error',{name,meta:{resource_origin}})};
   addEventListener('error',event=>reportError('script-error',event.filename||''),true);
   addEventListener('unhandledrejection',()=>reportError('promise-rejection',''));
-  addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){flushVitals();send()}});
-  addEventListener('pagehide',()=>{clearInterval(tick);reportActive();flushVitals();send()});
-  window.claritude={event:(name,meta)=>emit('click',{name,meta:{...common(),...meta}}),formSuccess:(name,meta)=>emit('form_success',{name,meta:{...common(),...meta}}),flush:send};
-  if('PerformanceObserver'in window){
-    try{new PerformanceObserver(list=>list.getEntries().forEach(e=>{lcp=e.startTime||e.duration||0})).observe({type:'largest-contentful-paint',buffered:true})}catch{}
-    try{new PerformanceObserver(list=>list.getEntries().forEach(e=>{if(!e.hadRecentInput)cls+=e.value||0})).observe({type:'layout-shift',buffered:true})}catch{}
-    try{new PerformanceObserver(list=>list.getEntries().forEach(e=>{inp=Math.max(inp,e.duration||0)})).observe({type:'event',buffered:true,durationThreshold:40})}catch{}
-    try{new PerformanceObserver(list=>list.getEntries().forEach(e=>{if(e.name==='first-contentful-paint')emit('web_vital',{name:'FCP',value:e.startTime})})).observe({type:'paint',buffered:true})}catch{}
-  }
+  addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){reportActive();send()}else lastActivity=Date.now()});
+  addEventListener('pagehide',()=>{clearInterval(tick);reportActive();send()});
+  window.claritude={version:'${TRACKER_VERSION}',event:(name,meta)=>emit('click',{name,meta}),formSuccess:(name,meta)=>emit('form_success',{name,meta}),pageview:details=>navigation(details&&details.path),flush:send};
 })();`;
 
 export default {

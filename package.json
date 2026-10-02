@@ -12,12 +12,21 @@
     "audit:registry": "node scripts/generate-audit-registry.mjs"
   },
   "dependencies": {
+    "@browser-logos/chrome": "^2.0.0",
+    "@browser-logos/edge": "^2.0.7",
+    "@browser-logos/firefox": "^3.0.10",
+    "@browser-logos/internet-explorer_9-11": "^1.1.17",
+    "@browser-logos/opera": "^1.1.11",
+    "@browser-logos/safari": "^2.1.0",
+    "@browser-logos/samsung-internet": "^4.0.6",
     "@supabase/supabase-js": "2.57.4",
+    "flag-icons": "^7.5.0",
     "hono": "4.9.8",
     "lucide-react": "0.544.0",
     "react": "19.1.1",
     "react-dom": "19.1.1",
-    "react-router-dom": "7.9.1"
+    "react-router-dom": "7.9.1",
+    "web-vitals": "^5.1.0"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.13.13",
