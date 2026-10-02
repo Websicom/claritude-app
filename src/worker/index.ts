@@ -41,6 +41,16 @@ const LIMITS = {
   analyticsEventsPerPropertyPerDay: 50_000,
 } as const;
 
+const ACTIVE_AUDIT_CHECKS = AUDIT_REGISTRY.filter(
+  (check) => check.lifecycle === "active",
+);
+const IMPLEMENTED_AUDIT_CHECKS = ACTIVE_AUDIT_CHECKS.filter(
+  (check) => check.implementationStatus === "implemented",
+);
+const IMPLEMENTED_AUDIT_IDS = new Set(
+  IMPLEMENTED_AUDIT_CHECKS.map((check) => check.id),
+);
+
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 app.use("*", secureHeaders());
 app.use(
@@ -638,7 +648,7 @@ app.post("/api/audits", async (c) => {
     return c.json({ error: "audit_registry_unavailable" }, 503);
   const snapshot = buildRegistrySnapshot(
     registryRows || [],
-    new Set(AUDIT_REGISTRY.map((check) => check.id)),
+    IMPLEMENTED_AUDIT_IDS,
   );
   if (!snapshot.length) return c.json({ error: "audit_registry_empty" }, 503);
   const { data: run, error } = await db
@@ -713,9 +723,8 @@ app.get("/api/properties/:id/audits", async (c) => {
   if (error) return c.json({ error: error.message }, 400);
   const definitions = new Map(AUDIT_REGISTRY.map((check) => [check.id, check]));
   return c.json(
-    (data || []).map((run: any) => ({
-      ...run,
-      audit_results: (run.audit_results || []).map((result: any) => {
+    (data || []).map((run: any) => {
+      const auditResults = (run.audit_results || []).map((result: any) => {
         const definition = definitions.get(result.check_id);
         return {
           ...result,
@@ -727,8 +736,26 @@ app.get("/api/properties/:id/audits", async (c) => {
           severity: definition?.severity || "informational",
           recommendation: definition?.recommendation || "Review the evidence.",
         };
-      }),
-    })),
+      });
+      return {
+        ...run,
+        audit_results: auditResults,
+        catalogue_summary: {
+          catalogueSize: ACTIVE_AUDIT_CHECKS.length,
+          implementedChecks: IMPLEMENTED_AUDIT_CHECKS.length,
+          snapshotChecks: Array.isArray(run.registry_snapshot)
+            ? run.registry_snapshot.length
+            : 0,
+          attemptedChecks: auditResults.length,
+          successfullyExecutedChecks: auditResults.filter(
+            (result: any) => result.outcome !== "unable_to_test",
+          ).length,
+          passedChecks: auditResults.filter(
+            (result: any) => result.outcome === "pass",
+          ).length,
+        },
+      };
+    }),
   );
 });
 

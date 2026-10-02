@@ -1,15 +1,8 @@
 import { createClient, type Session } from "@supabase/supabase-js";
 import { Check } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
-import {
-  Link,
-  Navigate,
-  Route,
-  Routes,
-  useLocation,
-  useNavigate,
-} from "react-router-dom";
-import { RecoveryDashboard } from "./RecoveryDashboard";
+import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { ClaritudeApplication } from "./RecoveryDashboard";
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL ||
@@ -49,39 +42,18 @@ const fixtureData: Bootstrap = {
     },
   ],
   properties: [
-    {
-      id: "fixture-property",
-      workspace_id: "fixture-workspace",
-      name: "Websi",
-      url: "https://websi.com",
-      canonical_host: "websi.com",
-      verification_status: "verified",
-      tracking_id: "cl_fixture_websi_7K4M2",
-      tracking_last_received_at: new Date(Date.now() - 42000).toISOString(),
-      uptime_monitors: [
-        {
-          id: "fixture-monitor",
-          enabled: true,
-          interval_minutes: 5,
-          timeout_ms: 10000,
-          failure_threshold: 2,
-          expected_status_min: 200,
-          expected_status_max: 399,
-          last_status: "online",
-          last_response_ms: 218,
-          last_checked_at: new Date(Date.now() - 45000).toISOString(),
-        },
-      ],
-      audit_runs: [
-        {
-          id: "fixture-audit",
-          status: "completed",
-          score: 87,
-          coverage: 100,
-          created_at: new Date(Date.now() - 86400000).toISOString(),
-        },
-      ],
-    },
+    fixtureProperty("fixture-property", "Websi", "websi.com", "online", 28460, 358, 87, 96),
+    fixtureProperty("north", "North Commerce", "northcommerce.example", "offline", 12480, 168, 72, 89),
+    fixtureProperty("atlas", "Atlas Studio", "atlas.example", "online", 8410, 121, 91, 97),
+    fixtureProperty("cedar", "Cedar Finance", "cedar.example", "online", 7190, 104, 89, 94),
+    fixtureProperty("river", "River Health", "river.example", "online", 6630, 93, 94, 98),
+    fixtureProperty("lumen", "Lumen Labs", "lumen.example", "online", 5910, 81, 85, 92),
+    fixtureProperty("oak", "Oak & Co", "oak.example", "online", 4890, 70, 90, 95),
+    fixtureProperty("harbour", "Harbour Homes", "harbour.example", "online", 4030, 62, 86, 91),
+    fixtureProperty("willow", "Willow Legal", "willow.example", "online", 3570, 48, 79, 88),
+    fixtureProperty("field", "Field Notes", "field.example", "online", 2980, 41, 93, 96),
+    fixtureProperty("studio", "Studio North", "studio.example", "online", 2670, 32, 84, 90),
+    fixtureProperty("new", "New project", "uninstalled.example", "paused", 0, 0, 0, 0),
   ],
   incidents: [],
   notifications: [
@@ -91,6 +63,65 @@ const fixtureData: Bootstrap = {
     },
   ],
 };
+
+function fixtureProperty(
+  id: string,
+  name: string,
+  host: string,
+  status: string,
+  pageviews: number,
+  events: number,
+  audit: number,
+  performance: number,
+) {
+  return {
+    id,
+    workspace_id: "fixture-workspace",
+    name,
+    url: `https://${host}`,
+    canonical_host: host,
+    verification_status: "verified",
+    tracking_id: `fixture_${id}`,
+    tracking_last_received_at: pageviews
+      ? new Date(Date.now() - 42000).toISOString()
+      : undefined,
+    demo: {
+      pageviews,
+      events,
+      audit,
+      performance,
+      visitors: Math.round(pageviews / 60),
+      uptime:
+        status === "offline" ? "99.61%" : status === "paused" ? "—" : "99.92%",
+      status,
+    },
+    uptime_monitors: [
+      {
+        id: `fixture-monitor-${id}`,
+        enabled: status !== "paused",
+        interval_minutes: 5,
+        timeout_ms: 10000,
+        failure_threshold: 2,
+        expected_status_min: 200,
+        expected_status_max: 399,
+        last_status: status,
+        last_response_ms: 218,
+        last_checked_at: new Date(Date.now() - 45000).toISOString(),
+      },
+    ],
+    audit_runs: audit
+      ? [
+          {
+            id: `fixture-audit-${id}`,
+            status: "completed",
+            score: audit,
+            coverage: 100,
+            created_at: new Date(Date.now() - 86400000).toISOString(),
+          },
+        ]
+      : [],
+  };
+}
 
 export function App() {
   const [fixture] = useState(
@@ -113,7 +144,15 @@ export function App() {
   }, [fixture]);
   if (!ready) return <Splash />;
   if (fixture)
-    return <ReferenceFixture />;
+    return (
+      <ClaritudeApplication
+        session={null}
+        data={fixtureData}
+        reload={() => undefined}
+        fixture
+        onSignOut={() => undefined}
+      />
+    );
   return (
     <Routes>
       <Route
@@ -131,41 +170,6 @@ export function App() {
         }
       />
     </Routes>
-  );
-}
-
-/**
- * The supplied reference pack is the design contract for the deterministic
- * demo. Keep it isolated from authenticated/live data so the connected app
- * remains available while fixture reviews render the exact approved product
- * surface, routes and interactions.
- */
-function ReferenceFixture() {
-  const { pathname } = useLocation();
-  const destination =
-    pathname === "/notifications"
-      ? "/notifications"
-      : pathname === "/overview"
-        ? "/websi/overview"
-        : pathname === "/uptime"
-          ? "/websi/uptime"
-          : pathname === "/analytics"
-            ? "/websi/analytics"
-            : pathname === "/audit"
-              ? "/websi/audit"
-              : pathname === "/reports"
-                ? "/websi/reports"
-                : pathname === "/settings"
-                  ? "/websi/settings/general"
-                  : pathname === "/account"
-                    ? "/account/profile"
-                    : "/all/properties";
-  return (
-    <iframe
-      className="reference-fixture"
-      src={`/reference.html#${destination}`}
-      title="Claritude interactive reference demo"
-    />
   );
 }
 
@@ -191,7 +195,7 @@ function Workspace({ session }: { session: Session }) {
   if (!data.accounts?.length && !data.properties?.length)
     return <Onboarding session={session} done={load} />;
   return (
-    <RecoveryDashboard
+    <ClaritudeApplication
       session={session}
       data={data}
       reload={load}

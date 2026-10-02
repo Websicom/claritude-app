@@ -68,6 +68,19 @@ type AuditRun = {
   completed_at?: string;
   duration_ms?: number;
   audit_results?: any[];
+  category_scores?: Record<string, number>;
+  performance_metrics?: {
+    desktop?: (string | number)[][];
+    mobile?: (string | number)[][];
+  };
+  catalogue_summary?: {
+    catalogueSize: number;
+    implementedChecks: number;
+    snapshotChecks: number;
+    attemptedChecks: number;
+    successfullyExecutedChecks: number;
+    passedChecks: number;
+  };
 };
 type Property = {
   id: string;
@@ -122,142 +135,12 @@ async function api<T>(
   return body as T;
 }
 
-const fixtureProjects: Property[] = [
-  project(
-    "fixture-property",
-    "Websi",
-    "websi.com",
-    "online",
-    28460,
-    358,
-    87,
-    96,
-  ),
-  project(
-    "north",
-    "North Commerce",
-    "northcommerce.example",
-    "offline",
-    12480,
-    168,
-    72,
-    89,
-  ),
-  project(
-    "atlas",
-    "Atlas Studio",
-    "atlas.example",
-    "online",
-    8410,
-    121,
-    91,
-    97,
-  ),
-  project(
-    "cedar",
-    "Cedar Finance",
-    "cedar.example",
-    "online",
-    7190,
-    104,
-    89,
-    94,
-  ),
-  project("river", "River Health", "river.example", "online", 6630, 93, 94, 98),
-  project("lumen", "Lumen Labs", "lumen.example", "online", 5910, 81, 85, 92),
-  project("oak", "Oak & Co", "oak.example", "online", 4890, 70, 90, 95),
-  project(
-    "harbour",
-    "Harbour Homes",
-    "harbour.example",
-    "online",
-    4030,
-    62,
-    86,
-    91,
-  ),
-  project(
-    "willow",
-    "Willow Legal",
-    "willow.example",
-    "online",
-    3570,
-    48,
-    79,
-    88,
-  ),
-  project("field", "Field Notes", "field.example", "online", 2980, 41, 93, 96),
-  project(
-    "studio",
-    "Studio North",
-    "studio.example",
-    "online",
-    2670,
-    32,
-    84,
-    90,
-  ),
-  project("new", "New project", "uninstalled.example", "paused", 0, 0, 0, 0),
-];
-function project(
-  id: string,
-  name: string,
-  host: string,
-  status: string,
-  pageviews: number,
-  events: number,
-  audit: number,
-  performance: number,
-): Property {
-  return {
-    id,
-    name,
-    url: `https://${host}`,
-    canonical_host: host,
-    verification_status: "verified",
-    tracking_id: `fixture_${id}`,
-    tracking_last_received_at: pageviews
-      ? new Date(Date.now() - 42000).toISOString()
-      : undefined,
-    demo: {
-      pageviews,
-      events,
-      audit,
-      performance,
-      uptime:
-        status === "offline" ? "99.61%" : status === "paused" ? "—" : "99.92%",
-      visitors: Math.round(pageviews / 60),
-      status,
-    },
-    uptime_monitors: [
-      {
-        id: `m-${id}`,
-        enabled: status !== "paused",
-        interval_minutes: 5,
-        timeout_ms: 10000,
-        failure_threshold: 2,
-        expected_status_min: 200,
-        expected_status_max: 399,
-        last_status: status,
-        last_response_ms: 218,
-        last_checked_at: new Date(Date.now() - 45000).toISOString(),
-      },
-    ],
-    audit_runs: audit
-      ? [
-          {
-            id: `a-${id}`,
-            status: "completed",
-            score: audit,
-            coverage: 100,
-            created_at: new Date(Date.now() - 86400000).toISOString(),
-          },
-        ]
-      : [],
-  };
-}
-
-export function RecoveryDashboard({
+/**
+ * Canonical Claritude product surface. Live and deterministic visual-test
+ * modes render this same component tree; fixture mode only substitutes an
+ * isolated data/action adapter and never reaches production mutation APIs.
+ */
+export function ClaritudeApplication({
   session,
   data,
   reload,
@@ -281,7 +164,7 @@ export function RecoveryDashboard({
     [workspaceOpen, setWorkspaceOpen] = useState(false),
     [workspaceName, setWorkspaceName] = useState(""),
     [helpOpen, setHelpOpen] = useState(false);
-  const allProperties = fixture ? fixtureProjects : data.properties;
+  const allProperties = data.properties;
   const requestedWorkspace = new URLSearchParams(loc.search).get("workspace");
   const requested = new URLSearchParams(loc.search).get("property");
   const property =
@@ -380,7 +263,16 @@ export function RecoveryDashboard({
       <header className="top">
         <button
           className="workspace top-selector"
-          onClick={() => setWorkspaceMenu((v) => !v)}
+          aria-label={mobile ? "Close navigation" : "Open navigation or select workspace"}
+          aria-expanded={mobile || workspaceMenu}
+          onClick={() => {
+            if (window.matchMedia("(max-width: 760px)").matches) {
+              setWorkspaceMenu(false);
+              setMobile((value) => !value);
+            } else {
+              setWorkspaceMenu((value) => !value);
+            }
+          }}
         >
           <Menu className="mobile-toggle" />
           <span className="avatar">
@@ -899,15 +791,40 @@ function WorkspaceOverview({
     [page, setPage] = useState(1),
     [filterOpen, setFilterOpen] = useState(false),
     [rowMenu, setRowMenu] = useState<string | null>(null),
-    [measured, setMeasured] = useState<Record<string, any>>({});
+    [measured, setMeasured] = useState<Record<string, any>>(() =>
+      fixture
+        ? Object.fromEntries(
+            properties.map((property) => [
+              property.id,
+              {
+                ...fixtureAnalytics(property),
+                availability: Number.parseFloat(property.demo?.uptime || ""),
+              },
+            ]),
+          )
+        : {},
+    );
   useEffect(() => {
     if (fixture || !session || !properties.length) return;
     let cancelled = false;
     Promise.all(
       properties.map(async (property) => {
         try {
-          const summary = await api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}`);
-          return [property.id, summary] as const;
+          const monitor = property.uptime_monitors?.[0];
+          const [summary, checks] = await Promise.all([
+            api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}`),
+            monitor
+              ? api<any>(session, `/api/monitors/${monitor.id}/checks?${livePeriod}`)
+              : Promise.resolve(null),
+          ]);
+          return [
+            property.id,
+            {
+              ...summary,
+              availability: checks?.summary?.availability ?? null,
+              performanceScore: webVitalsScore(summary.vitals),
+            },
+          ] as const;
         } catch {
           return [property.id, null] as const;
         }
@@ -925,14 +842,12 @@ function WorkspaceOverview({
   const shown = filtered.slice((page - 1) * 7, page * 7);
   const totals = properties.reduce(
     (a, p) => ({
-      views: a.views + (fixture ? p.demo?.pageviews || 0 : measured[p.id]?.pageviews || 0),
-      events: a.events + (fixture ? p.demo?.events || 0 : measured[p.id]?.keyEvents || 0),
+      views: a.views + (measured[p.id]?.pageviews || 0),
+      events: a.events + (measured[p.id]?.keyEvents || measured[p.id]?.events || 0),
     }),
     { views: 0, events: 0 },
   );
-  const workspaceSeries = fixture
-    ? []
-    : Array.from(
+  const workspaceSeries = Array.from(
         Object.values(measured).reduce((days: Map<string, number>, summary: any) => {
           for (const point of summary?.series || [])
             days.set(point.day, (days.get(point.day) || 0) + Number(point.pageviews || 0));
@@ -1060,13 +975,21 @@ function WorkspaceOverview({
                 <Status
                   value={p.uptime_monitors?.[0]?.last_status || "pending"}
                 />,
-                p.demo?.uptime || "—",
-                fixture ? fmt(p.demo?.pageviews || 0) : measured[p.id] ? fmt(measured[p.id].pageviews || 0) : "—",
-                fixture ? fmt(p.demo?.events || 0) : measured[p.id] ? fmt(measured[p.id].keyEvents || 0) : "—",
+                measured[p.id]?.availability != null
+                  ? `${Number(measured[p.id].availability).toFixed(2)}%`
+                  : "Pending",
+                measured[p.id] ? fmt(measured[p.id].pageviews || 0) : "Pending",
+                measured[p.id]
+                  ? fmt(measured[p.id].keyEvents || measured[p.id].events || 0)
+                  : "Pending",
                 p.audit_runs?.[0]?.score
                   ? `${p.audit_runs[0].score} / 100`
                   : "—",
-                p.demo?.performance || "—",
+                scoreState(
+                  measured[p.id]?.performanceScore ??
+                    webVitalsScore(measured[p.id]?.vitals),
+                  "Awaiting field data",
+                ),
                 p.tracking_last_received_at
                   ? "Receiving data"
                   : "Not installed",
@@ -1126,7 +1049,7 @@ function WorkspaceOverview({
             title="Workspace traffic"
             actions={<ChartSwitch notify={notify} />}
           >
-            {fixture ? <Chart /> : <SeriesChart points={workspaceSeries} emptyTitle="No measured workspace traffic yet" />}
+            <SeriesChart points={workspaceSeries} emptyTitle="No measured workspace traffic yet" />
           </Panel>
         </>
       ) : tab === "Traffic" ? (
@@ -1154,7 +1077,7 @@ function WorkspaceOverview({
               ["Period", "30 days", `${shortDate(new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10))}–${shortDate(new Date().toISOString().slice(0, 10))}`],
             ]}
           />
-          {fixture ? <Chart /> : <SeriesChart points={workspaceSeries} emptyTitle="No measured workspace traffic yet" />}
+          <SeriesChart points={workspaceSeries} emptyTitle="No measured workspace traffic yet" />
         </Panel>
       ) : tab === "Incidents" ? (
         <IncidentTable
@@ -1346,23 +1269,45 @@ function PropertyOverview({
   const overviewLocation = useLocation();
   const livePeriod = periodQuery(overviewLocation.search);
   const [tab, setTab] = useState("Overview"),
-    [analytics, setAnalytics] = useState<any>(null);
+    [analytics, setAnalytics] = useState<any>(null),
+    [mobileAnalytics, setMobileAnalytics] = useState<any>(null),
+    [desktopAnalytics, setDesktopAnalytics] = useState<any>(null),
+    [audits, setAudits] = useState<AuditRun[]>([]);
   useEffect(() => {
-    if (session && property)
-      api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}`)
-        .then(setAnalytics)
-        .catch(() => setAnalytics(null));
-    else if (property && fixture)
-      setAnalytics({
-        pageviews: property.demo?.pageviews || 28460,
-        events: property.demo?.events || 358,
-        pages: [
-          { path: "/", pageviews: 10840, events: 96 },
-          { path: "/services/", pageviews: 6320, events: 72 },
-          { path: "/work/", pageviews: 4610, events: 41 },
-          { path: "/contact/", pageviews: 2140, events: 124 },
-        ],
+    if (session && property) {
+      Promise.all([
+        api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}`),
+        api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}&device=mobile`),
+        api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}&device=desktop`),
+        api<AuditRun[]>(session, `/api/properties/${property.id}/audits?${livePeriod}`),
+      ])
+        .then(([all, mobile, desktop, storedAudits]) => {
+          setAnalytics(all);
+          setMobileAnalytics(mobile);
+          setDesktopAnalytics(desktop);
+          setAudits(storedAudits);
+        })
+        .catch(() => {
+          setAnalytics(null);
+          setMobileAnalytics(null);
+          setDesktopAnalytics(null);
+          setAudits([]);
+        });
+    } else if (property && fixture) {
+      const fixtureSummary = fixtureAnalytics(property);
+      setAnalytics(fixtureSummary);
+      setMobileAnalytics({
+        ...fixtureSummary,
+        vitals: fixtureSummary.mobileVitals,
+        performanceScore: fixtureSummary.mobilePerformanceScore,
       });
+      setDesktopAnalytics({
+        ...fixtureSummary,
+        vitals: fixtureSummary.desktopVitals,
+        performanceScore: fixtureSummary.desktopPerformanceScore,
+      });
+      setAudits([fixtureAudit(property)]);
+    }
   }, [property?.id, session, fixture, livePeriod]);
   if (!property)
     return (
@@ -1372,8 +1317,22 @@ function PropertyOverview({
       />
     );
   const monitor = property.uptime_monitors?.[0],
-    audit = property.audit_runs?.[0],
-    views = analytics?.pageviews || 0;
+    audit = audits[0] || property.audit_runs?.[0],
+    views = analytics?.pageviews || 0,
+    mobileScore =
+      mobileAnalytics?.performanceScore ??
+      webVitalsScore(mobileAnalytics?.vitals),
+    desktopScore =
+      desktopAnalytics?.performanceScore ??
+      webVitalsScore(desktopAnalytics?.vitals),
+    seoScore =
+      audit?.category_scores?.SEO ??
+      auditCategoryScore(audit?.audit_results, ["SEO"]),
+    vitalRows = (analytics?.vitals || []).map((vital: any) => [
+      vital.name,
+      formatVital(vital.name, vital.value),
+      fmt(vital.samples || 0),
+    ]);
   return (
     <Page
       title="Property overview"
@@ -1443,11 +1402,13 @@ function PropertyOverview({
                 title="Traffic (last 30 days)"
                 actions={<ChartSwitch notify={notify} events />}
               >
-                <div className="chart-legend">
-                  <span>Current period</span>
-                  <span className="previous">Previous period</span>
-                </div>
-                <Chart empty={!views} />
+                <SeriesChart
+                  points={(analytics?.series || []).map((point: any) => ({
+                    label: point.day,
+                    value: point.pageviews || 0,
+                  }))}
+                  emptyTitle="No measured property traffic yet"
+                />
               </Panel>
               <Panel title="Website health">
                 <div className="health-metrics">
@@ -1455,9 +1416,9 @@ function PropertyOverview({
                     label="Overall"
                     value={audit?.score ? `${audit.score} / 100` : "—"}
                   />
-                  <Metric label="Mobile" value={fixture ? "82" : "—"} />
-                  <Metric label="Desktop" value={fixture ? "96" : "—"} />
-                  <Metric label="SEO" value={fixture ? "94" : "—"} />
+                  <Metric label="Mobile" value={scoreState(mobileScore, "Awaiting field data")} />
+                  <Metric label="Desktop" value={scoreState(desktopScore, "Awaiting field data")} />
+                  <Metric label="SEO" value={scoreState(seoScore, audit ? "Not implemented by this audit run" : "Awaiting audit")} />
                 </div>
                 <div className="settings-actions">
                   <Link className="btn" to={`/audit?property=${property.id}`}>
@@ -1474,20 +1435,15 @@ function PropertyOverview({
             </div>
             <div>
               <Panel title="Real-user performance">
-                {fixture ? (
+                {vitalRows.length ? (
                   <DataTable
-                    headers={["Metric", "Result"]}
-                    rows={[
-                      ["LCP", "2.3 s"],
-                      ["INP", "168 ms"],
-                      ["CLS", "0.04"],
-                      ["Samples", "1,248"],
-                    ]}
+                    headers={["Metric", "Result", "Samples"]}
+                    rows={vitalRows}
                   />
                 ) : (
                   <EmptyCompact
                     title="No Core Web Vitals samples"
-                    detail="Performance appears after compatible browsers send measurements."
+                    detail="This is pending field data, not an estimated score."
                   />
                 )}
               </Panel>
@@ -1497,14 +1453,7 @@ function PropertyOverview({
                     headers={["Page", "Views"]}
                     rows={analytics.pages
                       .slice(0, 5)
-                      .map((p: any, i: number) => [
-                        typeof p === "string" ? p : p.path,
-                        typeof p === "string"
-                          ? fixture
-                            ? fmt([10840, 6320, 4610, 2140][i] || 0)
-                            : "Observed"
-                          : fmt(p.pageviews || 0),
-                      ])}
+                      .map((p: any) => [p.path, fmt(p.pageviews || 0)])}
                   />
                 ) : (
                   <EmptyCompact
@@ -2176,7 +2125,7 @@ function AuditView({
         })
         .catch(() => setAuditPages([{ name: "Homepage", path: "/" }]));
     } else if (fixture) {
-      setRuns([fixtureAudit()]);
+      setRuns([fixtureAudit(property)]);
       setAuditPages([{ name: "Homepage", path: "/" }]);
     }
   }, [property?.id, session, fixture, livePeriod]);
@@ -2315,7 +2264,7 @@ function AuditView({
       )}
       {tab === "Overview" ? (
         <>
-          <AuditScore run={latest} fixture={fixture} />
+          <AuditScore run={latest} />
           <div className="grid">
             <Panel title={`Fix these first · ${selectedPage.name}`}>
               <div className="audit-summary">
@@ -2333,10 +2282,10 @@ function AuditView({
             </Panel>
             <div>
               <Panel title="Desktop performance">
-                <PerformanceTable mobile={false} fixture={fixture} />
+                <PerformanceTable mobile={false} run={latest} />
               </Panel>
               <Panel title="Mobile performance">
-                <PerformanceTable mobile fixture={fixture} />
+                <PerformanceTable mobile run={latest} />
               </Panel>
             </div>
           </div>
@@ -2370,16 +2319,41 @@ function AuditView({
       ) : tab === "Checks" ? (
         <Panel title="Catalogue checks">
           <DataTable
-            headers={["Category", "Checks", "Executed", "Passed", "Coverage"]}
-            rows={auditCategories.map((x, i) => [
-              x,
-              fixture ? [52, 48, 61, 44, 38, 35][i] : "Registry",
-              results.filter((r: any) => (r.category || "") === x).length,
-              results.filter(
-                (r: any) => (r.category || "") === x && r.outcome === "pass",
-              ).length,
-              latest?.coverage != null ? `${latest.coverage}%` : "—",
-            ])}
+            headers={["Measure", "Count", "Meaning"]}
+            rows={[
+              [
+                "Catalogue entries",
+                latest?.catalogue_summary?.catalogueSize ?? "Pending",
+                "Mapped checks in the active catalogue",
+              ],
+              [
+                "Implemented checks",
+                latest?.catalogue_summary?.implementedChecks ?? "Pending",
+                "Checks with executable logic",
+              ],
+              [
+                "Snapshot checks",
+                latest?.catalogue_summary?.snapshotChecks ?? "Pending",
+                "Versioned checks selected for this run",
+              ],
+              [
+                "Attempted checks",
+                latest?.catalogue_summary?.attemptedChecks ?? results.length,
+                "Checks for which the runner recorded a result",
+              ],
+              [
+                "Successfully executed",
+                latest?.catalogue_summary?.successfullyExecutedChecks ??
+                  results.filter((result: any) => result.outcome !== "unable_to_test").length,
+                "Results backed by evidence rather than unavailable status",
+              ],
+              [
+                "Passed",
+                latest?.catalogue_summary?.passedChecks ??
+                  results.filter((result: any) => result.outcome === "pass").length,
+                "Successfully executed checks that passed",
+              ],
+            ]}
           />
         </Panel>
       ) : tab === "History" ? (
@@ -2506,7 +2480,17 @@ function ReportsView({
         : {
             property,
             period: "1–30 Sep 2026",
+            periodStart: "2026-09-01",
+            periodEnd: "2026-09-30",
             generatedAt: new Date().toISOString(),
+            incidents: [],
+            audits: [fixtureAudit(property)],
+            analytics: fixtureAnalytics(property),
+            recommendations: [
+              "Resolve critical accessibility findings.",
+              "Prioritise the hero image for mobile LCP.",
+              "Review event trends next month.",
+            ],
           },
     );
     notify(`${name} preview generated`);
@@ -2707,7 +2691,6 @@ function ReportsView({
         <ReportPreview
           report={preview}
           close={() => setPreview(undefined)}
-          fixture={fixture}
           onSave={saveReport}
         />
       )}{" "}
@@ -3650,22 +3633,21 @@ function SimpleDialog({
 function ReportPreview({
   report,
   close,
-  fixture,
   onSave,
 }: {
   report: any;
   close: () => void;
-  fixture: boolean;
   onSave: () => void | Promise<void>;
 }) {
-  const reportMetrics = fixture
-    ? { incidents: "0", pageviews: "28,460", keyEvents: "358", audit: "87 / 100" }
-    : {
-        incidents: String(report.incidents?.length || 0),
-        pageviews: fmt(report.analytics?.pageviews || 0),
-        keyEvents: fmt(report.analytics?.keyEvents || 0),
-        audit: report.audits?.[0]?.score != null ? `${report.audits[0].score} / 100` : "—",
-      };
+  const reportMetrics = {
+    incidents: String(report.incidents?.length || 0),
+    pageviews: fmt(report.analytics?.pageviews || 0),
+    keyEvents: fmt(report.analytics?.keyEvents || 0),
+    audit:
+      report.audits?.[0]?.score != null
+        ? `${report.audits[0].score} / 100`
+        : "Awaiting audit",
+  };
   function exportCsv() {
     const rows = [
       ["Metric", "Value"],
@@ -3696,23 +3678,19 @@ function ReportPreview({
           ]}
         />
         <h2>Traffic</h2>
-        {fixture ? (
-          <Chart />
-        ) : (
-          <SeriesChart
-            points={(report.analytics?.series || []).map((point: any) => ({
-              label: point.day,
-              value: point.pageviews,
-            }))}
-            emptyTitle="No measured traffic in this report period"
-          />
-        )}
+        <SeriesChart
+          points={(report.analytics?.series || []).map((point: any) => ({
+            label: point.day,
+            value: point.pageviews,
+          }))}
+          emptyTitle="No measured traffic in this report period"
+        />
         <h2>Recommendations</h2>
-        {fixture ? (
+        {report.recommendations?.length ? (
           <ol>
-            <li>Resolve critical accessibility findings.</li>
-            <li>Prioritise the hero image for mobile LCP.</li>
-            <li>Review event trends next month.</li>
+            {report.recommendations.map((recommendation: string) => (
+              <li key={recommendation}>{recommendation}</li>
+            ))}
           </ol>
         ) : (
           <p className="subtle">
@@ -4009,41 +3987,6 @@ function ChartSwitch({
     </span>
   );
 }
-function Chart({ empty = false }: { empty?: boolean }) {
-  if (empty)
-    return (
-      <Empty
-        title="No measured traffic yet"
-        detail="The chart populates after pageviews are received."
-      />
-    );
-  const points =
-    "0,160 55,132 110,141 165,103 220,115 275,78 330,91 385,54 440,69 495,37 550,47 605,22 660,35 715,14 770,26 825,8";
-  return (
-    <svg
-      className="chart"
-      viewBox="0 0 825 190"
-      preserveAspectRatio="none"
-      aria-label="Traffic chart"
-    >
-      <defs>
-        <linearGradient id="recoveryFade" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#00c989" stopOpacity=".25" />
-          <stop offset="1" stopColor="#00c989" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      {[30, 70, 110, 150].map((y) => (
-        <line className="chart-grid" x1="0" x2="825" y1={y} y2={y} key={y} />
-      ))}
-      <polyline
-        className="compare"
-        points="0,170 55,155 110,137 165,126 220,117 275,108 330,97 385,87 440,77 495,67 550,57 605,49 660,41 715,33 770,25 825,19"
-      />
-      <polygon fill="url(#recoveryFade)" points={`0,190 ${points} 825,190`} />
-      <polyline className="series" points={points} />
-    </svg>
-  );
-}
 function SeriesChart({
   points,
   emptyTitle,
@@ -4146,11 +4089,20 @@ function Modal({
       className="overlay"
       onMouseDown={(e) => e.target === e.currentTarget && close()}
     >
-      <section className="dialog" role="dialog" aria-modal="true">
+      <section
+        className="dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+      >
         <div className="panel-head">
           <h2>{title}</h2>
           <span className="spacer" />
-          <button className="iconbtn" onClick={close}>
+          <button
+            className="iconbtn"
+            onClick={close}
+            aria-label="Close dialog"
+          >
             <X />
           </button>
         </div>
@@ -4572,9 +4524,16 @@ function EventsPanel({
     </>
   );
 }
-function AuditScore({ run, fixture }: { run?: AuditRun; fixture: boolean }) {
+function AuditScore({ run }: { run?: AuditRun }) {
   const score = run?.score;
-  const vals = fixture ? [94, 82, 91, 88, 92, 84] : Array(6).fill("—");
+  const categoryPrefixes: Record<string, string[]> = {
+    SEO: ["SEO"],
+    Performance: ["Performance", "Mobile"],
+    Accessibility: ["Accessibility"],
+    Security: ["Security"],
+    Infrastructure: ["Server", "DNS", "Structured Data", "Social Sharing"],
+    "AI Readiness": ["AI Readiness"],
+  };
   return (
     <div className="audit-score-row">
       <div
@@ -4584,15 +4543,24 @@ function AuditScore({ run, fixture }: { run?: AuditRun; fixture: boolean }) {
         <span>{score ?? "—"}</span>
       </div>
       <div className="audit-six-stats">
-        {auditCategories.map((x, i) => (
+        {auditCategories.map((x) => {
+          const categoryScore =
+            run?.category_scores?.[x] ??
+            auditCategoryScore(run?.audit_results, categoryPrefixes[x]);
+          return (
           <div className="audit-six-stat" key={x}>
             <small>{x}</small>
-            <b>{vals[i]}</b>
-            <span className="trend-up">
-              {fixture ? `↗ +${[4, 8, 5, 3, 6, 7][i]}` : "No category score"}
+            <b>{categoryScore ?? "Pending"}</b>
+            <span className={categoryScore == null ? "subtle" : "trend-up"}>
+              {categoryScore == null
+                ? run
+                  ? "Not implemented in this run"
+                  : "Awaiting audit"
+                : "Evidence-backed checks"}
             </span>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -4638,32 +4606,23 @@ function AuditResults({ results }: { results: any[] }) {
 }
 function PerformanceTable({
   mobile,
-  fixture,
+  run,
 }: {
   mobile: boolean;
-  fixture: boolean;
+  run?: AuditRun;
 }) {
+  const rows = mobile
+    ? run?.performance_metrics?.mobile
+    : run?.performance_metrics?.desktop;
   return (
-    <DataTable
-      headers={["Metric", "Value", "Target"]}
-      rows={
-        fixture
-          ? mobile
-            ? [
-                ["LCP", "3.4 s", "≤ 2.5 s ●"],
-                ["TBT", "196 ms", "≤ 200 ms ●"],
-                ["CLS", "0.03", "≤ 0.1 ●"],
-                ["FCP", "1.9 s", "≤ 1.8 s ●"],
-              ]
-            : [
-                ["LCP", "2.1 s", "≤ 2.5 s ●"],
-                ["TBT", "142 ms", "≤ 200 ms ●"],
-                ["CLS", "0.02", "≤ 0.1 ●"],
-                ["FCP", "1.4 s", "≤ 1.8 s ●"],
-              ]
-          : []
-      }
-    />
+    rows?.length ? (
+      <DataTable headers={["Metric", "Value", "Target"]} rows={rows} />
+    ) : (
+      <EmptyCompact
+        title="Browser lab metrics not implemented"
+        detail="The current source audit did not execute a rendered-browser performance pass."
+      />
+    )
   );
 }
 function ActivityList({ property }: { property: Property }) {
@@ -4807,15 +4766,45 @@ const auditCategories = [
   "Infrastructure",
   "AI Readiness",
 ];
-function fixtureAudit(): AuditRun {
+function fixtureAudit(property?: Property): AuditRun {
   return {
     id: "fixture-audit",
     status: "completed",
-    score: 87,
+    score: property?.demo?.audit ?? 87,
     coverage: 100,
     page_url: "https://websi.com/",
     created_at: new Date(Date.now() - 86400000).toISOString(),
     duration_ms: 2840,
+    category_scores: {
+      SEO: 94,
+      Performance: 82,
+      Accessibility: 91,
+      Security: 88,
+      Infrastructure: 92,
+      "AI Readiness": 84,
+    },
+    performance_metrics: {
+      desktop: [
+        ["LCP", "2.1 s", "≤ 2.5 s ●"],
+        ["TBT", "142 ms", "≤ 200 ms ●"],
+        ["CLS", "0.02", "≤ 0.1 ●"],
+        ["FCP", "1.4 s", "≤ 1.8 s ●"],
+      ],
+      mobile: [
+        ["LCP", "3.4 s", "≤ 2.5 s ●"],
+        ["TBT", "196 ms", "≤ 200 ms ●"],
+        ["CLS", "0.03", "≤ 0.1 ●"],
+        ["FCP", "1.9 s", "≤ 1.8 s ●"],
+      ],
+    },
+    catalogue_summary: {
+      catalogueSize: 306,
+      implementedChecks: 16,
+      snapshotChecks: 16,
+      attemptedChecks: 16,
+      successfullyExecutedChecks: 16,
+      passedChecks: 9,
+    },
     audit_results: [
       {
         id: "1",
@@ -4883,6 +4872,96 @@ function severity(value: string) {
       ? "warning"
       : "critical";
 }
+
+function fixtureAnalytics(property: Property) {
+  const pageviews = property.demo?.pageviews || 0;
+  const events = property.demo?.events || 0;
+  const series = Array.from({ length: 30 }, (_, index) => ({
+    day: `2026-09-${String(index + 1).padStart(2, "0")}`,
+    pageviews: Math.max(0, Math.round((pageviews / 30) * (0.72 + ((index * 17) % 41) / 100))),
+    events: Math.max(0, Math.round((events / 30) * (0.7 + ((index * 11) % 45) / 100))),
+  }));
+  const desktopVitals = [
+    { name: "LCP", value: 2300, samples: 742 },
+    { name: "INP", value: 168, samples: 742 },
+    { name: "CLS", value: 0.04, samples: 742 },
+  ];
+  const mobileVitals = [
+    { name: "LCP", value: 2800, samples: 506 },
+    { name: "INP", value: 186, samples: 506 },
+    { name: "CLS", value: 0.05, samples: 506 },
+  ];
+  return {
+    pageviews,
+    events,
+    keyEvents: events,
+    performanceScore: property.demo?.performance ?? null,
+    mobilePerformanceScore: property.demo?.performance ?? null,
+    desktopPerformanceScore:
+      property.demo?.performance != null
+        ? Math.min(100, property.demo.performance + 14)
+        : null,
+    pages: [
+      { path: "/", pageviews: Math.round(pageviews * 0.38), events: Math.round(events * 0.27) },
+      { path: "/services/", pageviews: Math.round(pageviews * 0.22), events: Math.round(events * 0.2) },
+      { path: "/work/", pageviews: Math.round(pageviews * 0.16), events: Math.round(events * 0.11) },
+      { path: "/contact/", pageviews: Math.round(pageviews * 0.08), events: Math.round(events * 0.35) },
+    ],
+    series,
+    vitals: desktopVitals,
+    mobileVitals,
+    desktopVitals,
+  };
+}
+
+function auditCategoryScore(
+  results: any[] | undefined,
+  categoryPrefixes: string[],
+) {
+  const executed = (results || []).filter(
+    (result) =>
+      categoryPrefixes.some((prefix) =>
+        String(result.category || "").startsWith(prefix),
+      ) && result.outcome !== "unable_to_test",
+  );
+  if (!executed.length) return null;
+  const points = executed.reduce(
+    (total, result) =>
+      total + (result.outcome === "pass" ? 1 : result.outcome === "warning" ? 0.5 : 0),
+    0,
+  );
+  return Math.round((points / executed.length) * 100);
+}
+
+function webVitalsScore(vitals: any[] | undefined) {
+  if (!vitals?.length) return null;
+  const known = new Map(vitals.map((vital) => [String(vital.name).toUpperCase(), Number(vital.value)]));
+  const thresholds: Record<string, [number, number]> = {
+    LCP: [2500, 4000],
+    INP: [200, 500],
+    CLS: [0.1, 0.25],
+  };
+  const scores = Object.entries(thresholds).flatMap(([name, [good, needsImprovement]]) => {
+    const value = known.get(name);
+    return Number.isFinite(value)
+      ? [value! <= good ? 100 : value! <= needsImprovement ? 50 : 0]
+      : [];
+  });
+  return scores.length
+    ? Math.round(scores.reduce((total, score) => total + score, 0) / scores.length)
+    : null;
+}
+
+function scoreState(score: number | null, unavailable: string) {
+  return score == null ? unavailable : `${score} / 100`;
+}
+
+function formatVital(name: string, value: number) {
+  if (name.toUpperCase() === "CLS") return Number(value).toFixed(2);
+  if (name.toUpperCase() === "LCP") return `${(Number(value) / 1000).toFixed(1)} s`;
+  return `${Math.round(Number(value))} ms`;
+}
+
 function fmt(x: number) {
   return new Intl.NumberFormat("en-GB").format(x || 0);
 }

@@ -24,4 +24,4 @@ Status values describe the committed Stage 1 implementation before live-provider
 | Empty/loading/error/permission states | Honest application states | UI | Implemented core states | Per-panel partial states can be expanded |
 | Responsive navigation and dialogs | Keyboard/mobile accessible shell | React/CSS | Implemented | Full assistive-technology pass pending |
 
-No fictional prototype measurements are included in production code. The supplied reference remains outside the application repository for visual comparison only.
+No fictional prototype measurements are included in production data paths. The supplied reference remains a comparison-only static resource and is never mounted by the application. Deterministic visual tests use the same React components as authenticated users.

@@ -1,6 +1,6 @@
 # Claritude V2 recovery parity register
 
-Reference baseline: `HTML reference pack.zip` / `html-reference-extracted/index.html` and the hosted interactive reference. Fixture data is isolated behind `?fixture=1` on development and `workers.dev` previews only. Production accounts never receive fictional metrics.
+Reference baseline: `HTML reference pack.zip` / `html-reference-extracted/index.html` and the hosted interactive reference. Fixture data is isolated behind `?fixture=1` on development and `workers.dev` previews only. It uses the same page components as the authenticated application; only its deterministic data and safe action adapters differ. Production accounts never receive fictional metrics.
 
 ## Shell and context
 
@@ -67,7 +67,7 @@ Reference baseline: `HTML reference pack.zip` / `html-reference-extracted/index.
 
 - Uptime: cron `*/5 * * * *` selects due monitors, queue executes HTTP checks, stores response time, opens/recover incidents and deduplicates Resend delivery with `claim_notification`.
 - Analytics: deployed script records pageviews, SPA URL changes, configured clicks, outbound links, scroll thresholds, active time, form success and LCP. `/collect` validates property/origin and stores accepted events.
-- Audits: authorised queue flow stores registry snapshot, evidence, score, coverage, duration and status. The supplied 306-entry checklist is mapped to stable IDs. Only checks with implemented execution capability contribute evidence; unsupported entries remain `unable_to_test` and reduce coverage.
+- Audits: authorised queue flow stores registry snapshot, evidence, score, coverage, duration and status. The supplied 306-entry checklist is mapped to stable IDs. The current runner implements 16 checks, and corrected new runs snapshot only those checks. Historical 306-row runs are retained and report their 290 `unable_to_test` rows as non-execution.
 - Tenant isolation: all tenant tables have RLS enabled; property access is mediated by `private.can_access_property`; destructive service operations use the Worker secret only.
 
 ## Remaining verified limitations
@@ -80,7 +80,6 @@ Reference baseline: `HTML reference pack.zip` / `html-reference-extracted/index.
 ## Verification record
 
 - `npm run check`: passed.
-- `npm test`: 5/5 passed.
+- `npm test`: 9/9 passed.
 - `npm run build`: passed.
-- Clean-browser console: no errors or warnings.
-- Browser verification completed for workspace overview, property picker, property overview, all main routes, Analytics Pages, Audit Overview and Account Billing & plan.
+- Canonical deterministic browser verification completed for workspace and property overviews; authenticated corrected-branch capture remains required after preview deployment.
