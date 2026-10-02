@@ -1215,8 +1215,7 @@ app.get("/api/account/export", async (c) => {
 app.get("/api/properties/:id/analytics", async (c) => {
   const window = requestedWindow(c);
   if (!window) return c.json({ error: "invalid_date_range" }, 400);
-  const device = c.req.query("device")?.toLowerCase();
-  let query = c
+  const query = c
     .get("db")
     .from("analytics_events")
     .select(
@@ -1227,11 +1226,33 @@ app.get("/api/properties/:id/analytics", async (c) => {
     .lte("occurred_at", window.to)
     .order("occurred_at", { ascending: true })
     .limit(50000);
-  if (device && ["mobile", "desktop", "tablet"].includes(device))
-    query = query.eq("device", device);
   const { data, error } = await query;
   if (error) return c.json({ error: error.message }, 400);
-  return c.json(buildAnalyticsSummary(data || [], window.days, window.from, window.to));
+  const events = data || [];
+  const filters: AnalyticsFilters = {
+    pageSearch: cleanAnalyticsFilter(c.req.query("page_search"), 120),
+    pathMode: ["exact", "prefix"].includes(c.req.query("path_mode") || "")
+      ? (c.req.query("path_mode") as "exact" | "prefix")
+      : undefined,
+    pathValue: cleanAnalyticsFilter(c.req.query("path_value"), 500),
+    device: cleanAnalyticsFilter(c.req.query("device"), 40),
+    source: cleanAnalyticsFilter(c.req.query("source"), 255),
+    country: cleanAnalyticsFilter(c.req.query("country"), 20),
+  };
+  return c.json({
+    ...buildAnalyticsSummary(
+      filterAnalyticsEvents(events, filters),
+      window.days,
+      window.from,
+      window.to,
+    ),
+    // Filtering can reduce the returned set below the query ceiling. Preserve
+    // whether the underlying property/date result hit that ceiling so the UI
+    // never presents a partial result as complete.
+    truncated: events.length >= 50000,
+    filterOptions: buildAnalyticsFilterOptions(events),
+    appliedFilters: filters,
+  });
 });
 
 app.get("/api/properties/:id/report", async (c) => {
@@ -2025,12 +2046,10 @@ export function buildAnalyticsSummary(
     map.set(clean, (map.get(clean) || 0) + amount);
   };
   for (const event of events) {
-    const path = event.path || "/";
+    const path = normalizeAnalyticsPath(event.path);
     const page = pageMap.get(path) || { pageviews: 0, events: 0 };
     const day = String(event.occurred_at).slice(0, 10);
     const point = seriesMap.get(day) || { pageviews: 0, events: 0 };
-    page.events += 1;
-    point.events += 1;
     if (event.event_type === "pageview") {
       pageviews += 1;
       page.pageviews += 1;
@@ -2044,8 +2063,13 @@ export function buildAnalyticsSummary(
         bump(campaignMap, event.metadata.utm_campaign);
       if (event.metadata?.session) sessions.add(event.metadata.session);
     }
-    if (["click", "outbound", "form_success"].includes(event.event_type))
+    const keyEvent = ["click", "outbound", "form_success"].includes(event.event_type);
+    if (keyEvent) {
       keyEvents += 1;
+      page.events += 1;
+      point.events += 1;
+      bump(eventMap, event.name || event.event_type);
+    }
     if (event.event_type === "active_time" && Number.isFinite(event.value)) {
       activeSeconds += Number(event.value);
       activeSamples += 1;
@@ -2056,8 +2080,7 @@ export function buildAnalyticsSummary(
       samples.push(Number(event.value));
       vitals.set(event.name, samples);
     }
-    bump(eventMap, event.name || event.event_type);
-    pageMap.set(path, page);
+    if (event.event_type === "pageview" || keyEvent) pageMap.set(path, page);
     seriesMap.set(day, point);
   }
   const ranked = (map: Map<string, number>) =>
@@ -2097,10 +2120,76 @@ export function buildAnalyticsSummary(
     vitals: vitalRows,
   };
 }
+
+export type AnalyticsFilters = {
+  pageSearch?: string;
+  pathMode?: "exact" | "prefix";
+  pathValue?: string;
+  device?: string;
+  source?: string;
+  country?: string;
+};
+
+export function filterAnalyticsEvents(events: any[], filters: AnalyticsFilters) {
+  const search = filters.pageSearch?.trim().toLocaleLowerCase();
+  const pathValue = filters.pathValue
+    ? normalizeAnalyticsPath(filters.pathValue).toLocaleLowerCase()
+    : "";
+  const device = filters.device?.trim().toLocaleLowerCase();
+  const source = filters.source?.trim().toLocaleLowerCase();
+  const country = filters.country?.trim().toLocaleLowerCase();
+  return events.filter((event) => {
+    const path = normalizeAnalyticsPath(event.path).toLocaleLowerCase();
+    if (search && !path.includes(search)) return false;
+    if (pathValue && filters.pathMode === "exact" && path !== pathValue) return false;
+    if (pathValue && filters.pathMode === "prefix" && !path.startsWith(pathValue)) return false;
+    if (device && String(event.device || "Unknown").toLocaleLowerCase() !== device) return false;
+    if (source && analyticsSource(event).toLocaleLowerCase() !== source) return false;
+    if (country && String(event.country_code || "Unknown").toLocaleLowerCase() !== country)
+      return false;
+    return true;
+  });
+}
+
+function buildAnalyticsFilterOptions(events: any[]) {
+  const unique = (values: string[]) =>
+    [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  return {
+    paths: unique(
+      events
+        .filter((event) => event.event_type === "pageview")
+        .map((event) => normalizeAnalyticsPath(event.path)),
+    ),
+    devices: unique(events.map((event) => String(event.device || "Unknown"))),
+    sources: unique(events.map(analyticsSource)),
+    countries: unique(events.map((event) => String(event.country_code || "Unknown"))),
+  };
+}
+
+function analyticsSource(event: any) {
+  return String(event.source || event.referrer_host || "Direct").trim() || "Direct";
+}
+
+function cleanAnalyticsFilter(value: string | undefined, maximumLength: number) {
+  const clean = value?.trim();
+  return clean ? clean.slice(0, maximumLength) : undefined;
+}
+
+export function normalizeAnalyticsPath(value: unknown) {
+  const raw = String(value || "/").trim() || "/";
+  try {
+    const pathname = new URL(raw, "https://invalid.local").pathname || "/";
+    const collapsed = `/${pathname.split("/").filter(Boolean).join("/")}`;
+    return collapsed === "/" ? "/" : `${collapsed}/`;
+  } catch {
+    return "/";
+  }
+}
+
 function cleanPath(v: unknown) {
   try {
     const u = new URL(String(v), "https://invalid.local");
-    return (u.pathname || "/").slice(0, 500);
+    return normalizeAnalyticsPath(u.pathname).slice(0, 500);
   } catch {
     return null;
   }

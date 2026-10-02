@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   buildAnalyticsSummary,
   evaluateSourceChecks,
+  filterAnalyticsEvents,
   isPrivateHost,
+  normalizeAnalyticsPath,
   normalizePropertyRelations,
   validPublicUrl,
 } from "./index";
@@ -47,15 +49,71 @@ describe("worker evidence pipelines", () => {
           metadata: {},
           occurred_at: "2026-10-02T00:00:12Z",
         },
+        {
+          event_type: "pageview",
+          path: "/services",
+          source: "Direct",
+          device: "mobile",
+          country_code: "US",
+          metadata: { session: "tab-2" },
+          occurred_at: "2026-10-02T00:01:00Z",
+        },
+        {
+          event_type: "click",
+          path: "/services/",
+          name: "contact-click",
+          device: "mobile",
+          country_code: "US",
+          metadata: {},
+          occurred_at: "2026-10-02T00:01:05Z",
+        },
+        {
+          event_type: "outbound",
+          path: "https://example.com/services",
+          name: "example.org",
+          device: "mobile",
+          country_code: "US",
+          metadata: {},
+          occurred_at: "2026-10-02T00:01:08Z",
+        },
       ],
       30,
     );
-    expect(summary.pageviews).toBe(1);
-    expect(summary.pages[0]).toMatchObject({ path: "/", pageviews: 1, events: 3 });
+    expect(summary.pageviews).toBe(2);
+    expect(summary.keyEvents).toBe(2);
+    expect(summary.pages.find((page) => page.path === "/")).toMatchObject({
+      pageviews: 1,
+      events: 0,
+    });
+    expect(summary.pages.find((page) => page.path === "/services/")).toMatchObject({
+      pageviews: 1,
+      events: 2,
+    });
     expect(summary.sources[0]).toEqual({ name: "Google", count: 1 });
-    expect(summary.countries[0]).toEqual({ name: "GB", count: 1 });
-    expect(summary.engagement.scroll75Rate).toBe(100);
+    expect(summary.countries).toContainEqual({ name: "GB", count: 1 });
+    expect(summary.engagement.scroll75Rate).toBe(50);
     expect(summary.vitals[0]).toMatchObject({ name: "LCP", value: 2100, samples: 1 });
+  });
+
+  it("normalizes paths and combines analytics page filters", () => {
+    const events = [
+      { event_type: "pageview", path: "/work", device: "desktop", source: "Google", country_code: "GB" },
+      { event_type: "pageview", path: "/work/case-study/", device: "mobile", source: "Google", country_code: "GB" },
+      { event_type: "pageview", path: "/services/", device: "desktop", source: "Direct", country_code: "US" },
+    ];
+    expect(normalizeAnalyticsPath("https://example.com/work")).toBe("/work/");
+    expect(
+      filterAnalyticsEvents(events, {
+        pathMode: "prefix",
+        pathValue: "/work",
+        device: "mobile",
+        source: "Google",
+        country: "GB",
+      }),
+    ).toEqual([events[1]]);
+    expect(
+      filterAnalyticsEvents(events, { pathMode: "exact", pathValue: "/work/" }),
+    ).toEqual([events[0]]);
   });
 
   it("executes source and header checks with evidence", () => {

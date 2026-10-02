@@ -36,6 +36,7 @@ import {
   type ReactNode,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -116,6 +117,20 @@ type DemoMetrics = {
   status?: string;
 };
 type Notify = (message: string) => void;
+type AnalyticsPageFilters = {
+  pageSearch?: string;
+  pathMode?: "exact" | "prefix";
+  pathValue?: string;
+  device?: string;
+  source?: string;
+  country?: string;
+};
+type AnalyticsFilterOptions = {
+  paths: string[];
+  devices: string[];
+  sources: string[];
+  countries: string[];
+};
 
 async function api<T>(
   session: Session,
@@ -1871,49 +1886,99 @@ function AnalyticsView({
   notify: Notify;
 }) {
   const analyticsLocation = useLocation();
-  const [tab, setTab] = useState("Overview"),
-    [data, setData] = useState<any>(null),
-    [filter, setFilter] = useState(""),
-    [dimension, setDimension] = useState("All");
-  const analyticsParams = new URLSearchParams(analyticsLocation.search);
-  const selectedFrom = analyticsParams.get("from");
-  const selectedTo = analyticsParams.get("to");
-  const rangeDays = selectedFrom && selectedTo
-    ? Math.min(90, Math.max(1, Math.ceil((new Date(selectedTo).valueOf() - new Date(selectedFrom).valueOf()) / 864e5) + 1))
-    : 30;
+  const analyticsNavigate = useNavigate();
+  const analyticsParams = useMemo(
+    () => new URLSearchParams(analyticsLocation.search),
+    [analyticsLocation.search],
+  );
+  const analyticsTabs = [
+    "Overview",
+    "Pages",
+    "Sources",
+    "Events",
+    "Audience",
+    "Engagement",
+    "Performance",
+  ];
+  const requestedTab = analyticsParams.get("analyticsTab");
+  const tab = analyticsTabs.includes(requestedTab || "") ? requestedTab! : "Overview";
+  const pageFilters = analyticsPageFiltersFromParams(analyticsParams);
+  const livePeriod = periodQuery(analyticsLocation.search);
+  const pageFilterQuery = analyticsPageFilterQuery(pageFilters);
+  const [data, setData] = useState<any>(null);
+  const [pagesData, setPagesData] = useState<any>(null);
+  const [pagesLoading, setPagesLoading] = useState(false);
+  const [pagesError, setPagesError] = useState("");
+  const [pagesReload, setPagesReload] = useState(0);
+
+  const setTab = (nextTab: string) => {
+    const next = new URLSearchParams(analyticsLocation.search);
+    if (nextTab === "Overview") next.delete("analyticsTab");
+    else next.set("analyticsTab", nextTab);
+    analyticsNavigate(`${analyticsLocation.pathname}?${next.toString()}`, { replace: true });
+  };
+  const setPageFilters = (nextFilters: AnalyticsPageFilters) => {
+    const next = new URLSearchParams(analyticsLocation.search);
+    for (const key of ["pageSearch", "pathMode", "pathValue", "device", "source", "country"])
+      next.delete(key);
+    if (nextFilters.pageSearch) next.set("pageSearch", nextFilters.pageSearch);
+    if (nextFilters.pathMode && nextFilters.pathValue) {
+      next.set("pathMode", nextFilters.pathMode);
+      next.set("pathValue", nextFilters.pathValue);
+    }
+    if (nextFilters.device) next.set("device", nextFilters.device);
+    if (nextFilters.source) next.set("source", nextFilters.source);
+    if (nextFilters.country) next.set("country", nextFilters.country);
+    next.set("analyticsTab", "Pages");
+    analyticsNavigate(`${analyticsLocation.pathname}?${next.toString()}`, { replace: true });
+  };
+
   useEffect(() => {
-    if (session && property)
+    let cancelled = false;
+    if (session && property) {
       api<any>(
         session,
-        `/api/properties/${property.id}/analytics?days=${rangeDays}${dimension === "All" ? "" : `&device=${dimension.toLowerCase()}`}`,
+        `/api/properties/${property.id}/analytics?${livePeriod}`,
       )
-        .then(setData)
-        .catch(() => setData(null));
-    else if (fixture)
-      setData({
-        pageviews: 28460,
-        events: 358,
-        keyEvents: 358,
-        pages: [
-          { path: "/", pageviews: 10840, events: 96 },
-          { path: "/services/", pageviews: 6320, events: 72 },
-          { path: "/work/", pageviews: 4610, events: 41 },
-          { path: "/contact/", pageviews: 2140, events: 124 },
-          { path: "/insights/", pageviews: 1880, events: 25 },
-        ],
-        series: Array.from({ length: 30 }, (_, i) => ({
-          day: `2026-09-${String(i + 1).padStart(2, "0")}`,
-          pageviews: 620 + ((i * 97) % 610),
-          events: 6 + ((i * 7) % 19),
-        })),
-        sources: [{ name: "Google", count: 12480 }, { name: "Direct", count: 8410 }],
-        countries: [{ name: "United Kingdom", count: 18440 }],
-        devices: [{ name: "Desktop", count: 15780 }, { name: "Mobile", count: 11740 }],
-        browsers: [{ name: "Chrome", count: 17480 }, { name: "Safari", count: 7830 }],
-        engagement: { engagedSessions: 18420, averageActiveSeconds: 138, scroll75Rate: 42, keyEventRate: 1.3 },
-        vitals: [{ name: "LCP", value: 2300, samples: 1248 }, { name: "INP", value: 168, samples: 1109 }, { name: "CLS", value: 0.04, samples: 1248 }],
-      });
-  }, [property?.id, session, fixture, dimension, rangeDays]);
+        .then((next) => !cancelled && setData(next))
+        .catch(() => !cancelled && setData(null));
+    } else if (fixture) setData(analyticsFixtureSummary());
+    return () => {
+      cancelled = true;
+    };
+  }, [property?.id, session, fixture, livePeriod]);
+
+  useEffect(() => {
+    if (tab !== "Pages" || !property) return;
+    let cancelled = false;
+    setPagesLoading(true);
+    setPagesError("");
+    setPagesData(null);
+    if (session) {
+      api<any>(
+        session,
+        `/api/properties/${property.id}/analytics?${livePeriod}${pageFilterQuery ? `&${pageFilterQuery}` : ""}`,
+      )
+        .then((next) => {
+          if (!cancelled) setPagesData(next);
+        })
+        .catch((error) => {
+          if (!cancelled) setPagesError(error.message || "Page analytics could not be loaded");
+        })
+        .finally(() => {
+          if (!cancelled) setPagesLoading(false);
+        });
+    } else if (fixture) {
+      setPagesData(filterAnalyticsFixture(pageFilters));
+      setPagesLoading(false);
+    } else {
+      setPagesError("Authentication is required to load page analytics.");
+      setPagesLoading(false);
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [fixture, livePeriod, pageFilterQuery, pagesReload, property?.id, session, tab]);
   if (!property)
     return (
       <Empty
@@ -1921,38 +1986,22 @@ function AnalyticsView({
         detail="Analytics is property-specific."
       />
     );
-  const pages = (data?.pages || [])
-    .map((p: any, i: number) => ({
+  const toPageRows = (source: any[] = []) =>
+    source.map((p: any) => ({
       page: typeof p === "string" ? p : p.path,
-      views:
-        typeof p === "string"
-          ? fixture
-            ? [10840, 6320, 4610, 2140, 1880][i] || 0
-            : 0
-          : p.pageviews || 0,
-      events:
-        typeof p === "string"
-          ? fixture
-            ? [96, 72, 41, 124, 25][i] || 0
-            : 0
-          : p.events || 0,
-    }))
-    .filter((p: any) => p.page.includes(filter));
-  const dimensionOptions = ["All", "Mobile", "Desktop", "Tablet"];
+      views: typeof p === "string" ? 0 : p.pageviews || 0,
+      events: typeof p === "string" ? 0 : p.events || 0,
+    }));
+  const pages = toPageRows(pagesData?.pages);
+  const overviewPages = toPageRows(data?.pages);
+  const filterOptions: AnalyticsFilterOptions = pagesData?.filterOptions ||
+    data?.filterOptions || { paths: [], devices: [], sources: [], countries: [] };
   const rows = (values: any[] = []) =>
     values.map((x) => [x.name, x.count] as (string | number)[]);
   return (
     <Page title="Analytics" status={<Period />}>
       <Tabs
-        labels={[
-          "Overview",
-          "Pages",
-          "Sources",
-          "Events",
-          "Audience",
-          "Engagement",
-          "Performance",
-        ]}
+        labels={analyticsTabs}
         value={tab}
         onChange={setTab}
       />
@@ -1975,7 +2024,7 @@ function AnalyticsView({
                 fmt(data?.keyEvents || 0),
                 "Clicks, outbound links and confirmed forms",
               ],
-              ["Observed pages", pages.length, "Unique paths"],
+              ["Observed pages", overviewPages.length, "Unique paths"],
               [
                 "Tracking",
                 property.tracking_last_received_at
@@ -2005,7 +2054,7 @@ function AnalyticsView({
           </Panel>
           <div className="grid equal">
             <Panel title="Top pages">
-              <AnalyticsTable pages={pages} />
+              <AnalyticsTable pages={overviewPages} property={property} groupedLimit={5} />
             </Panel>
             <Panel title="Top sources">
               <BarRows rows={fixture ? [["Google",12480],["Direct",8410],["LinkedIn",4360],["Email",3210]] : rows(data?.sources)} />
@@ -2014,33 +2063,38 @@ function AnalyticsView({
         </>
       ) : tab === "Pages" ? (
         <Panel title="Pages">
-          <div className="analytics-filter-row">
-            <button
-              className="btn"
-              onClick={() =>
-                setDimension(
-                  dimensionOptions[
-                    (dimensionOptions.indexOf(dimension) + 1) %
-                      dimensionOptions.length
-                  ],
-                )
-              }
-            >
-              <Filter />
-              {dimension === "All" ? "Add filter" : `Device: ${dimension}`}
-            </button>
-            <div className="search">
-              <Search />
-              <input
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                placeholder="Filter pages"
-              />
+          <AnalyticsPageFilterToolbar
+            filters={pageFilters}
+            options={filterOptions}
+            onChange={setPageFilters}
+          />
+          {pagesData?.truncated && (
+            <p className="analytics-data-warning" role="status">
+              This result reached the 50,000-event query limit. Narrow the date range or add a filter before treating the totals as complete.
+            </p>
+          )}
+          {pagesLoading ? (
+            <Empty title="Loading page analytics…" detail="Applying the selected property, dates and filters." />
+          ) : pagesError ? (
+            <div className="analytics-state" role="alert">
+              <Empty title="Page analytics could not be loaded" detail={pagesError} />
+              <button className="btn" onClick={() => setPagesReload((value) => value + 1)}>Retry</button>
             </div>
-            <span className="spacer" />
-            <small className="subtle">Filters affect this page table.</small>
-          </div>
-          <AnalyticsTable pages={pages} />
+          ) : pages.length ? (
+            <AnalyticsTable pages={pages} property={property} groupedLimit={5} />
+          ) : (
+            <div className="analytics-state">
+              <Empty
+                title={hasAnalyticsPageFilters(pageFilters) ? "No matching page results" : "No pageviews in this period"}
+                detail={hasAnalyticsPageFilters(pageFilters)
+                  ? "No recorded pageviews or configured events match every active filter."
+                  : "A genuinely tracked pageview will appear here after it is received."}
+              />
+              {hasAnalyticsPageFilters(pageFilters) && (
+                <button className="btn" onClick={() => setPageFilters({})}>Clear all filters</button>
+              )}
+            </div>
+          )}
         </Panel>
       ) : tab === "Sources" ? (
         <Panel title="Traffic sources">
@@ -3730,6 +3784,8 @@ function Page({
   const pageParams = new URLSearchParams(pageLocation.search);
   const defaultTo = new Date().toISOString().slice(0, 10);
   const defaultFrom = new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10);
+  const periodFromRef = useRef<HTMLInputElement>(null);
+  const periodToRef = useRef<HTMLInputElement>(null);
   const [menu, setMenu] = useState(false),
     [periodOpen, setPeriodOpen] = useState(false),
     [compact, setCompact] = useState(false),
@@ -3796,8 +3852,8 @@ function Page({
       {periodOpen && (
         <Modal title="Date range" close={() => setPeriodOpen(false)}>
           <div className="form-two">
-            <label className="field">From<input type="date" value={periodFrom} onChange={(event) => setPeriodFrom(event.target.value)} /></label>
-            <label className="field">To<input type="date" value={periodTo} onChange={(event) => setPeriodTo(event.target.value)} /></label>
+            <label className="field">From<input ref={periodFromRef} type="date" value={periodFrom} onChange={(event) => setPeriodFrom(event.target.value)} /></label>
+            <label className="field">To<input ref={periodToRef} type="date" value={periodTo} onChange={(event) => setPeriodTo(event.target.value)} /></label>
           </div>
           <div className="dialog-actions">
             <button className="btn" onClick={() => setPeriodOpen(false)}>Cancel</button>
@@ -3806,8 +3862,8 @@ function Page({
               disabled={!periodFrom || !periodTo || new Date(periodFrom) > new Date(periodTo)}
               onClick={() => {
                 const next = new URLSearchParams(pageLocation.search);
-                next.set("from", periodFrom);
-                next.set("to", periodTo);
+                next.set("from", periodFromRef.current?.value || periodFrom);
+                next.set("to", periodToRef.current?.value || periodTo);
                 pageNavigate(`${pageLocation.pathname}?${next.toString()}`);
                 setPeriodOpen(false);
               }}
@@ -3826,7 +3882,7 @@ function Period() {
   return (
     <span className="period-chip">
       <CalendarDays />
-      {shortDate(from)}–{shortDate(to)}
+      {periodLabel(from, to)}
     </span>
   );
 }
@@ -4349,22 +4405,284 @@ function MonitorPanel({
     </Panel>
   );
 }
-function AnalyticsTable({ pages }: { pages: any[] }) {
+function AnalyticsPageFilterToolbar({
+  filters,
+  options,
+  onChange,
+}: {
+  filters: AnalyticsPageFilters;
+  options: AnalyticsFilterOptions;
+  onChange: (filters: AnalyticsPageFilters) => void;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [category, setCategory] = useState("Page search");
+  const [menuSearch, setMenuSearch] = useState("");
+  const [pageDraft, setPageDraft] = useState(filters.pageSearch || "");
+  const [pathDraft, setPathDraft] = useState(filters.pathValue || "");
+  const [pathMode, setPathMode] = useState<"exact" | "prefix">(
+    filters.pathMode || "exact",
+  );
+  useEffect(() => {
+    setPageDraft(filters.pageSearch || "");
+    setPathDraft(filters.pathValue || "");
+    setPathMode(filters.pathMode || "exact");
+  }, [filters.pageSearch, filters.pathMode, filters.pathValue]);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [open]);
+
+  const categories = ["Page search", "Exact path / prefix", "Device", "Source", "Country"];
+  const categoryOptions = category === "Device"
+    ? options.devices
+    : category === "Source"
+      ? options.sources
+      : category === "Country"
+        ? options.countries
+        : [];
+  const visibleOptions = categoryOptions.filter((value) =>
+    `${value} ${category === "Country" ? countryLabel(value) : ""}`
+      .toLocaleLowerCase()
+      .includes(menuSearch.toLocaleLowerCase()),
+  );
+  const applyText = (kind: "page" | "path") => {
+    if (kind === "page") {
+      const value = pageDraft.trim();
+      onChange({ ...filters, pageSearch: value || undefined });
+    } else {
+      const value = normalisePagePath(pathDraft);
+      onChange({
+        ...filters,
+        pathMode: value ? pathMode : undefined,
+        pathValue: value || undefined,
+      });
+    }
+    setOpen(false);
+  };
+  const chips: { key: keyof AnalyticsPageFilters; label: string }[] = [];
+  if (filters.pageSearch) chips.push({ key: "pageSearch", label: `Page contains: ${filters.pageSearch}` });
+  if (filters.pathValue)
+    chips.push({
+      key: "pathValue",
+      label: `${filters.pathMode === "prefix" ? "Path prefix" : "Exact path"}: ${filters.pathValue}`,
+    });
+  if (filters.device) chips.push({ key: "device", label: `Device: ${cap(filters.device)}` });
+  if (filters.source) chips.push({ key: "source", label: `Source: ${filters.source}` });
+  if (filters.country)
+    chips.push({ key: "country", label: `Country: ${countryLabel(filters.country)}` });
+  const remove = (key: keyof AnalyticsPageFilters) => {
+    const next = { ...filters };
+    delete next[key];
+    if (key === "pathValue") delete next.pathMode;
+    onChange(next);
+  };
+  const selectedValue = category === "Device"
+    ? filters.device
+    : category === "Source"
+      ? filters.source
+      : filters.country;
+  const setDimensionValue = (value: string) => {
+    const key = category === "Device" ? "device" : category === "Source" ? "source" : "country";
+    onChange({ ...filters, [key]: selectedValue === value ? undefined : value });
+    setOpen(false);
+  };
+
   return (
-    <DataTable
-      headers={["Page", "Pageviews", "Events", ""]}
-      rows={pages.map((p) => [
-        <span className="page-link-cell">
-          <b>{p.page}</b>
-          <ExternalLink />
-        </span>,
-        p.views ? fmt(p.views) : "Observed",
-        p.events || "—",
-        <button className="iconbtn">
-          <MoreHorizontal />
-        </button>,
-      ])}
-    />
+    <div className="toolbar section-filters analytics-filter-row">
+      <div className="analytics-filter-wrap" ref={menuRef}>
+        <button
+          className="btn"
+          aria-expanded={open}
+          aria-haspopup="menu"
+          onClick={() => setOpen((value) => !value)}
+        >
+          <Filter /> Add filter
+        </button>
+        {open && (
+          <div className="action-menu analytics-filter-menu" role="menu">
+            <b className="analytics-filter-title">Filter Pages</b>
+            <label className="analytics-menu-search">
+              <Search />
+              <input
+                aria-label="Search filter values"
+                value={menuSearch}
+                placeholder="Search values…"
+                onChange={(event) => setMenuSearch(event.target.value)}
+              />
+            </label>
+            <div className="two-col-menu">
+              <div className="menu-col" aria-label="Filter categories">
+                {categories.map((value) => (
+                  <button
+                    className={category === value ? "selected" : ""}
+                    onClick={() => setCategory(value)}
+                    key={value}
+                  >
+                    {value}<span className="spacer" /><ChevronRight />
+                  </button>
+                ))}
+              </div>
+              <div className="menu-col analytics-filter-choices">
+                <b>{category}</b>
+                {category === "Page search" ? (
+                  <>
+                    <input
+                      aria-label="Page search"
+                      value={pageDraft}
+                      placeholder="Search page paths"
+                      onChange={(event) => setPageDraft(event.target.value)}
+                      onKeyDown={(event) => event.key === "Enter" && applyText("page")}
+                    />
+                    <button className="filter-apply" onClick={() => applyText("page")}>Apply page search</button>
+                  </>
+                ) : category === "Exact path / prefix" ? (
+                  <>
+                    <span className="seg analytics-path-mode">
+                      <button className={pathMode === "exact" ? "active" : ""} onClick={() => setPathMode("exact")}>Exact</button>
+                      <button className={pathMode === "prefix" ? "active" : ""} onClick={() => setPathMode("prefix")}>Prefix</button>
+                    </span>
+                    <input
+                      aria-label="Path value"
+                      value={pathDraft}
+                      placeholder="/services/"
+                      list="analytics-path-options"
+                      onChange={(event) => setPathDraft(event.target.value)}
+                      onKeyDown={(event) => event.key === "Enter" && applyText("path")}
+                    />
+                    <datalist id="analytics-path-options">
+                      {options.paths.map((path) => <option value={path} key={path} />)}
+                    </datalist>
+                    <button className="filter-apply" onClick={() => applyText("path")}>Apply path filter</button>
+                  </>
+                ) : visibleOptions.length ? (
+                  visibleOptions.map((value) => (
+                    <button onClick={() => setDimensionValue(value)} key={value}>
+                      {category === "Country" ? countryLabel(value) : cap(value)}
+                      {selectedValue === value && <><span className="spacer" /><Check /></>}
+                    </button>
+                  ))
+                ) : (
+                  <small className="subtle analytics-no-values">No collected values for this period.</small>
+                )}
+              </div>
+            </div>
+            {hasAnalyticsPageFilters(filters) && (
+              <>
+                <div className="menu-divider" />
+                <button onClick={() => { onChange({}); setOpen(false); }}>Clear all filters</button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+      {chips.map((chip) => (
+        <span className="filter-chip" key={chip.key}>
+          {chip.label}
+          <button aria-label={`Remove ${chip.label} filter`} onClick={() => remove(chip.key)}>
+            <X />
+          </button>
+        </span>
+      ))}
+      {chips.length > 0 && (
+        <button className="text-link" onClick={() => onChange({})}>Clear all</button>
+      )}
+      <small className="subtle">Filters affect this page table.</small>
+    </div>
+  );
+}
+
+function AnalyticsTable({
+  pages,
+  property,
+  groupedLimit = 5,
+}: {
+  pages: any[];
+  property: Property;
+  groupedLimit?: number;
+}) {
+  const [groupOpen, setGroupOpen] = useState(false);
+  const groupedPages = pages.slice(groupedLimit);
+  const visiblePages = pages.slice(0, groupedLimit);
+  const rows = groupedPages.length
+    ? [
+        ...visiblePages,
+        {
+          page: "Other grouped pages",
+          views: groupedPages.reduce((sum, page) => sum + page.views, 0),
+          events: groupedPages.reduce((sum, page) => sum + page.events, 0),
+          grouped: true,
+        },
+      ]
+    : visiblePages;
+  const max = Math.max(1, ...rows.map((page) => page.views));
+  return (
+    <>
+      <div className="table-wrap">
+        <table className="bar-table analytics-pages-table">
+          <thead>
+            <tr><th>Page</th><th>Pageviews</th><th>Events</th></tr>
+          </thead>
+          <tbody>
+            {rows.map((page) => (
+              <tr key={page.page}>
+                <td className="bar-cell">
+                  <span
+                    className="bar-bg"
+                    aria-hidden="true"
+                    style={{ width: `${Math.max(4, (page.views / max) * 92)}%` }}
+                  />
+                  {page.grouped ? (
+                    <button className="table-detail-link" onClick={() => setGroupOpen(true)}>
+                      Other grouped pages
+                    </button>
+                  ) : (
+                    <span className="page-link-cell">
+                      <b>{page.page}</b>
+                      <a
+                        className="page-open-link"
+                        href={new URL(page.page, property.url).href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        aria-label={`Open ${page.page} on ${property.canonical_host}`}
+                        title="Open live page"
+                      >
+                        <ExternalLink />
+                      </a>
+                    </span>
+                  )}
+                </td>
+                <td>{fmt(page.views)}</td>
+                <td>{fmt(page.events)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {groupOpen && (
+        <Modal title="Other grouped pages" close={() => setGroupOpen(false)}>
+          <p>Lower-volume pages are grouped here instead of being replaced with a fictional row.</p>
+          <DataTable
+            headers={["Page", "Pageviews", "Events"]}
+            rows={groupedPages.map((page) => [page.page, fmt(page.views), fmt(page.events)])}
+          />
+          <div className="dialog-actions">
+            <button className="btn" onClick={() => setGroupOpen(false)}>Close</button>
+          </div>
+        </Modal>
+      )}
+    </>
   );
 }
 function BarRows({ rows }: { rows: (string | number)[][] }) {
@@ -4962,6 +5280,138 @@ function formatVital(name: string, value: number) {
   return `${Math.round(Number(value))} ms`;
 }
 
+const ANALYTICS_FIXTURE_PAGES = [
+  { path: "/", pageviews: 10840, events: 96, device: "desktop", source: "Google", country: "GB" },
+  { path: "/services/", pageviews: 6320, events: 72, device: "desktop", source: "Google", country: "GB" },
+  { path: "/work/", pageviews: 4610, events: 41, device: "desktop", source: "Direct", country: "GB" },
+  { path: "/contact/", pageviews: 2140, events: 124, device: "mobile", source: "Google", country: "US" },
+  { path: "/insights/", pageviews: 1880, events: 25, device: "mobile", source: "LinkedIn", country: "GB" },
+  { path: "/privacy/", pageviews: 980, events: 0, device: "desktop", source: "Direct", country: "GB" },
+  { path: "/terms/", pageviews: 720, events: 0, device: "mobile", source: "Direct", country: "US" },
+  { path: "/about/", pageviews: 610, events: 0, device: "tablet", source: "Google", country: "DE" },
+  { path: "/video/", pageviews: 360, events: 0, device: "mobile", source: "LinkedIn", country: "DE" },
+];
+
+function analyticsFixtureSummary() {
+  return {
+    pageviews: 28460,
+    events: 358,
+    keyEvents: 358,
+    pages: ANALYTICS_FIXTURE_PAGES.map(({ path, pageviews, events }) => ({
+      path,
+      pageviews,
+      events,
+    })),
+    series: Array.from({ length: 30 }, (_, index) => ({
+      day: `2026-09-${String(index + 1).padStart(2, "0")}`,
+      pageviews: 620 + ((index * 97) % 610),
+      events: 6 + ((index * 7) % 19),
+    })),
+    sources: [{ name: "Google", count: 12480 }, { name: "Direct", count: 8410 }],
+    countries: [{ name: "GB", count: 18440 }],
+    devices: [{ name: "Desktop", count: 15780 }, { name: "Mobile", count: 11740 }],
+    browsers: [{ name: "Chrome", count: 17480 }, { name: "Safari", count: 7830 }],
+    engagement: {
+      engagedSessions: 18420,
+      averageActiveSeconds: 138,
+      scroll75Rate: 42,
+      keyEventRate: 1.3,
+    },
+    vitals: [
+      { name: "LCP", value: 2300, samples: 1248 },
+      { name: "INP", value: 168, samples: 1109 },
+      { name: "CLS", value: 0.04, samples: 1248 },
+    ],
+    filterOptions: {
+      paths: ANALYTICS_FIXTURE_PAGES.map((page) => page.path),
+      devices: ["desktop", "mobile", "tablet"],
+      sources: ["Direct", "Google", "LinkedIn"],
+      countries: ["DE", "GB", "US"],
+    },
+  };
+}
+
+function filterAnalyticsFixture(filters: AnalyticsPageFilters) {
+  const pageSearch = filters.pageSearch?.trim().toLocaleLowerCase();
+  const pathValue = filters.pathValue
+    ? normalisePagePath(filters.pathValue).toLocaleLowerCase()
+    : "";
+  const rows = ANALYTICS_FIXTURE_PAGES.filter((page) => {
+    const path = page.path.toLocaleLowerCase();
+    if (pageSearch && !path.includes(pageSearch)) return false;
+    if (pathValue && filters.pathMode === "exact" && path !== pathValue) return false;
+    if (pathValue && filters.pathMode === "prefix" && !path.startsWith(pathValue)) return false;
+    if (filters.device && page.device !== filters.device.toLocaleLowerCase()) return false;
+    if (filters.source && page.source !== filters.source) return false;
+    if (filters.country && page.country !== filters.country) return false;
+    return true;
+  });
+  return {
+    ...analyticsFixtureSummary(),
+    pageviews: rows.reduce((sum, page) => sum + page.pageviews, 0),
+    events: rows.reduce((sum, page) => sum + page.events, 0),
+    keyEvents: rows.reduce((sum, page) => sum + page.events, 0),
+    pages: rows.map(({ path, pageviews, events }) => ({ path, pageviews, events })),
+  };
+}
+
+function analyticsPageFiltersFromParams(params: URLSearchParams): AnalyticsPageFilters {
+  const pathMode = params.get("pathMode");
+  return {
+    pageSearch: params.get("pageSearch") || undefined,
+    pathMode: pathMode === "exact" || pathMode === "prefix" ? pathMode : undefined,
+    pathValue: params.get("pathValue") || undefined,
+    device: params.get("device") || undefined,
+    source: params.get("source") || undefined,
+    country: params.get("country") || undefined,
+  };
+}
+
+function analyticsPageFilterQuery(filters: AnalyticsPageFilters) {
+  const params = new URLSearchParams();
+  if (filters.pageSearch) params.set("page_search", filters.pageSearch);
+  if (filters.pathMode && filters.pathValue) {
+    params.set("path_mode", filters.pathMode);
+    params.set("path_value", filters.pathValue);
+  }
+  if (filters.device) params.set("device", filters.device);
+  if (filters.source) params.set("source", filters.source);
+  if (filters.country) params.set("country", filters.country);
+  return params.toString();
+}
+
+function hasAnalyticsPageFilters(filters: AnalyticsPageFilters) {
+  return Boolean(
+    filters.pageSearch ||
+      filters.pathValue ||
+      filters.device ||
+      filters.source ||
+      filters.country,
+  );
+}
+
+function normalisePagePath(value: string) {
+  const clean = value.trim();
+  if (!clean) return "";
+  try {
+    const pathname = new URL(clean, "https://invalid.local").pathname || "/";
+    const collapsed = `/${pathname.split("/").filter(Boolean).join("/")}`;
+    return collapsed === "/" ? "/" : `${collapsed}/`;
+  } catch {
+    return "";
+  }
+}
+
+function countryLabel(value: string) {
+  const labels: Record<string, string> = {
+    DE: "Germany",
+    GB: "United Kingdom",
+    US: "United States",
+    UNKNOWN: "Unknown",
+  };
+  return labels[value.toUpperCase()] || value;
+}
+
 function fmt(x: number) {
   return new Intl.NumberFormat("en-GB").format(x || 0);
 }
@@ -4977,6 +5427,19 @@ function shortDate(x: string) {
     month: "short",
     year: new Date(x).getFullYear() === new Date().getFullYear() ? undefined : "numeric",
   }).format(new Date(`${x}T12:00:00`));
+}
+function periodLabel(from: string, to: string) {
+  const start = new Date(`${from}T12:00:00`);
+  const end = new Date(`${to}T12:00:00`);
+  const day = (value: Date) => value.getDate();
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const month = (value: Date) => months[value.getMonth()];
+  if (start.getFullYear() === end.getFullYear()) {
+    if (start.getMonth() === end.getMonth())
+      return `${day(start)}–${day(end)} ${month(end)} ${end.getFullYear()}`;
+    return `${day(start)} ${month(start)}–${day(end)} ${month(end)} ${end.getFullYear()}`;
+  }
+  return `${day(start)} ${month(start)} ${start.getFullYear()}–${day(end)} ${month(end)} ${end.getFullYear()}`;
 }
 function formatDuration(milliseconds: number) {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return "—";
