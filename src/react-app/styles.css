@@ -69,6 +69,15 @@ a {
 .app {
   min-height: 100vh;
 }
+.reference-fixture {
+  position: fixed;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fafafa;
+}
 .top {
   height: 50px;
   background: #fff;

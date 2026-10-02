@@ -113,22 +113,7 @@ export function App() {
   }, [fixture]);
   if (!ready) return <Splash />;
   if (fixture)
-    return (
-      <Routes>
-        <Route
-          path="*"
-          element={
-            <RecoveryDashboard
-              session={null}
-              data={fixtureData}
-              reload={() => {}}
-              fixture
-              onSignOut={() => {}}
-            />
-          }
-        />
-      </Routes>
-    );
+    return <ReferenceFixture />;
   return (
     <Routes>
       <Route
@@ -146,6 +131,41 @@ export function App() {
         }
       />
     </Routes>
+  );
+}
+
+/**
+ * The supplied reference pack is the design contract for the deterministic
+ * demo. Keep it isolated from authenticated/live data so the connected app
+ * remains available while fixture reviews render the exact approved product
+ * surface, routes and interactions.
+ */
+function ReferenceFixture() {
+  const { pathname } = useLocation();
+  const destination =
+    pathname === "/notifications"
+      ? "/notifications"
+      : pathname === "/overview"
+        ? "/websi/overview"
+        : pathname === "/uptime"
+          ? "/websi/uptime"
+          : pathname === "/analytics"
+            ? "/websi/analytics"
+            : pathname === "/audit"
+              ? "/websi/audit"
+              : pathname === "/reports"
+                ? "/websi/reports"
+                : pathname === "/settings"
+                  ? "/websi/settings/general"
+                  : pathname === "/account"
+                    ? "/account/profile"
+                    : "/all/properties";
+  return (
+    <iframe
+      className="reference-fixture"
+      src={`/reference.html#${destination}`}
+      title="Claritude interactive reference demo"
+    />
   );
 }
 
