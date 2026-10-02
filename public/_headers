@@ -12,5 +12,7 @@
 # It is self-contained and intentionally uses the approved reference pack's
 # inline script and styles; keep this exception scoped away from live routes.
 /reference*
+  ! X-Frame-Options
+  ! Content-Security-Policy
   X-Frame-Options: SAMEORIGIN
   Content-Security-Policy: default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'
