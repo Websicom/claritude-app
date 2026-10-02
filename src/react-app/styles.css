@@ -144,11 +144,32 @@ a {
   padding: 2px 6px;
   color: #3f3f46;
 }
-.chevs {
+.workspace-identity,
+.workspace-row-icon {
+  width: 20px;
+  height: 20px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  color: #52525b;
+}
+.workspace-identity {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: #ececee;
+}
+.workspace-identity img,
+.workspace-row-icon img {
+  width: 16px;
+  height: 16px;
+}
+.selector-chevrons {
+  width: 14px;
+  height: 14px;
   margin-left: auto;
-  line-height: 8px;
-  color: #555;
-  font-size: 9px;
+  flex: 0 0 auto;
+  opacity: 0.72;
 }
 .selector {
   gap: 8px;
@@ -1601,7 +1622,9 @@ input[type="checkbox"]:checked:after {
   top: 55px;
   width: 325px;
   max-height: calc(100vh - 70px);
-  overflow: auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   background: #fff;
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
@@ -1622,6 +1645,12 @@ input[type="checkbox"]:checked:after {
   padding: 0 10px;
   margin-bottom: 7px;
 }
+.selector-list,
+.property-options {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 .selector-menu button {
   width: 100%;
   min-height: 44px;
@@ -1636,6 +1665,10 @@ input[type="checkbox"]:checked:after {
 }
 .selector-menu button:hover {
   background: var(--soft);
+}
+.selector-menu button:focus-visible {
+  outline: 2px solid #18181b;
+  outline-offset: -2px;
 }
 .selector-menu button > svg {
   width: 17px;
@@ -1661,7 +1694,6 @@ input[type="checkbox"]:checked:after {
 }
 .property-options {
   max-height: 480px;
-  overflow: auto;
 }
 .project-icon {
   border-radius: 50%;
@@ -2079,6 +2111,25 @@ input[type="checkbox"]:checked:after {
   height: 1px;
   background: var(--line);
   margin: 5px 2px;
+}
+.selector-action {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 20px;
+  padding: 8px 9px !important;
+}
+.selector-action > svg {
+  width: 17px;
+  height: 17px;
+}
+.selector-empty {
+  margin: 0;
+  padding: 16px 10px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
 }
 .analytics-state {
   display: grid;

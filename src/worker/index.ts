@@ -330,14 +330,18 @@ app.post("/api/onboarding", async (c) => {
 
 app.post("/api/properties", async (c) => {
   const b = await c.req.json<{
+    accountId: string;
     workspaceId: string;
     name: string;
     url: string;
   }>();
+  const name = b.name?.trim().slice(0, 100);
+  if (!name) return c.json({ error: "property_name_required" }, 400);
   const target = validPublicUrl(b.url);
   if (!target) return c.json({ error: "public_http_url_required" }, 400);
+  const canonicalHost = canonicalPropertyHost(target.hostname);
   const db = c.get("db");
-  const { data: membership } = await db
+  const { data: membership, error: membershipError } = await db
     .from("workspace_memberships")
     .select("role,workspaces(account_id)")
     .eq("workspace_id", b.workspaceId)
@@ -345,32 +349,77 @@ app.post("/api/properties", async (c) => {
     .in("role", ["owner", "member"])
     .maybeSingle();
   const accountId = (membership?.workspaces as any)?.account_id;
-  if (!accountId) return c.json({ error: "workspace_access_denied" }, 403);
+  if (
+    membershipError ||
+    !accountId ||
+    !b.accountId ||
+    accountId !== b.accountId
+  ) {
+    if (membershipError)
+      console.error("property_create_membership_lookup_failed", membershipError);
+    return c.json({ error: "workspace_access_denied" }, 403);
+  }
   const service = admin(c.env);
-  const { data: accountWorkspaces } = await service
+  const { data: accountWorkspaces, error: accountWorkspacesError } = await service
     .from("workspaces")
     .select("id")
     .eq("account_id", accountId);
-  const { count: propertyCount } = await service
+  if (accountWorkspacesError) {
+    console.error("property_create_account_scope_failed", accountWorkspacesError);
+    return c.json({ error: "property_create_failed" }, 500);
+  }
+  const workspaceIds = (accountWorkspaces || []).map((workspace) => workspace.id);
+  const { data: accountProperties, error: accountPropertiesError } = await service
     .from("properties")
-    .select("id", { count: "exact", head: true })
-    .in("workspace_id", (accountWorkspaces || []).map((workspace) => workspace.id));
-  if ((propertyCount || 0) >= LIMITS.propertiesPerAccount)
+    .select("id,workspace_id,canonical_host")
+    .in("workspace_id", workspaceIds);
+  if (accountPropertiesError) {
+    console.error("property_create_limit_lookup_failed", accountPropertiesError);
+    return c.json({ error: "property_create_failed" }, 500);
+  }
+  if ((accountProperties || []).length >= LIMITS.propertiesPerAccount)
     return c.json({ error: "property_limit_reached" }, 409);
+  const duplicate = (accountProperties || []).find(
+    (property) =>
+      property.workspace_id === b.workspaceId &&
+      canonicalPropertyHost(property.canonical_host) === canonicalHost,
+  );
+  if (duplicate) return c.json({ error: "property_already_exists" }, 409);
   const trackingId = `cl_${crypto.randomUUID().replaceAll("-", "")}`;
-  const { data, error } = await db
+  // INSERT ... RETURNING also evaluates the SELECT policy before the new row is
+  // visible to its relationship-based predicate. Keep both operations under RLS,
+  // but commit the insert before reading the new property back.
+  const { error } = await db
     .from("properties")
     .insert({
       workspace_id: b.workspaceId,
-      name: b.name?.trim().slice(0, 100),
+      name,
       url: target.href,
-      canonical_host: target.hostname,
+      canonical_host: canonicalHost,
       tracking_id: trackingId,
-    })
-    .select()
+    });
+  if (error) {
+    console.error("property_create_insert_failed", {
+      code: error.code,
+      workspaceId: b.workspaceId,
+      userId: c.get("userId"),
+    });
+    return c.json({ error: "property_create_failed" }, 400);
+  }
+  const { data, error: readError } = await db
+    .from("properties")
+    .select("*")
+    .eq("tracking_id", trackingId)
     .single();
-  if (error) return c.json({ error: error.message }, 400);
-  const { error: monitorError } = await admin(c.env)
+  if (readError || !data) {
+    console.error("property_create_read_failed", {
+      code: readError?.code,
+      workspaceId: b.workspaceId,
+      userId: c.get("userId"),
+    });
+    return c.json({ error: "property_created_but_reload_required" }, 500);
+  }
+  const { error: monitorError } = await service
     .from("uptime_monitors")
     .upsert(
       { property_id: data.id },
@@ -378,7 +427,7 @@ app.post("/api/properties", async (c) => {
     );
   if (monitorError)
     return c.json({ error: `property_created_monitor_failed: ${monitorError.message}` }, 500);
-  const { error: auditPageError } = await admin(c.env)
+  const { error: auditPageError } = await service
     .from("property_audit_pages")
     .insert({
       property_id: data.id,
@@ -2981,6 +3030,9 @@ export function validPublicUrl(value: string) {
   } catch {
     return null;
   }
+}
+export function canonicalPropertyHost(hostname: string) {
+  return hostname.toLowerCase().replace(/\.$/, "").replace(/^www\./, "");
 }
 export function isPrivateHost(h: string) {
   const x = h.toLowerCase().replace(/\.$/, "");

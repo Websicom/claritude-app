@@ -138,6 +138,12 @@ type Bootstrap = {
   activity?: any[];
   propertyMemberships?: any[];
 };
+type WorkspaceOption = {
+  id: string;
+  name: string;
+  account_id?: string;
+  role: string;
+};
 type DemoMetrics = {
   pageviews: number;
   events: number;
@@ -200,7 +206,7 @@ export function ClaritudeApplication({
 }: {
   session: Session | null;
   data: Bootstrap;
-  reload: () => void;
+  reload: () => void | Promise<void>;
   fixture?: boolean;
   onSignOut: () => void;
 }) {
@@ -224,25 +230,47 @@ export function ClaritudeApplication({
     (loc.pathname !== "/" && loc.pathname !== "/notifications"
       ? allProperties[0]
       : undefined);
-  const workspaceMemberships = data.workspaces || [];
-  const workspace: any =
-    workspaceMemberships.find((entry: any) => entry.workspaces?.id === requestedWorkspace)
-      ?.workspaces ||
-    workspaceMemberships.find((entry: any) => entry.workspaces?.id === property?.workspace_id)
-      ?.workspaces ||
-    workspaceMemberships[0]?.workspaces || {
+  const allWorkspaceMemberships = data.workspaces || [];
+  const selectedWorkspaceMembership =
+    allWorkspaceMemberships.find(
+      (entry: any) => entry.workspaces?.id === requestedWorkspace,
+    ) ||
+    allWorkspaceMemberships.find(
+      (entry: any) => entry.workspaces?.id === property?.workspace_id,
+    ) ||
+    allWorkspaceMemberships[0];
+  const activeAccountId =
+    selectedWorkspaceMembership?.workspaces?.account_id ||
+    data.accounts?.[0]?.accounts?.id;
+  const workspaceMemberships = allWorkspaceMemberships.filter(
+    (entry: any) =>
+      !activeAccountId ||
+      !entry.workspaces?.account_id ||
+      entry.workspaces.account_id === activeAccountId,
+  );
+  const workspace: any = selectedWorkspaceMembership?.workspaces || {
     name: "Websi workspace",
   };
   const currentWorkspaceMembership = workspaceMemberships.find(
     (entry: any) => entry.workspaces?.id === workspace?.id,
   );
   const canManageWorkspace = fixture || ["owner", "member"].includes(currentWorkspaceMembership?.role);
-  const canManageAccount = fixture || ["owner", "member"].includes(data.accounts?.[0]?.role);
-  const properties = property
-    ? allProperties
-    : workspace?.id
-      ? allProperties.filter((item) => item.workspace_id === workspace.id)
-      : allProperties;
+  const activeAccountMembership = data.accounts?.find(
+    (entry: any) => entry.accounts?.id === activeAccountId,
+  );
+  const canManageAccount =
+    fixture || ["owner", "member"].includes(activeAccountMembership?.role);
+  const eligiblePropertyWorkspaces: WorkspaceOption[] = workspaceMemberships
+    .filter((entry: any) => ["owner", "member"].includes(entry.role))
+    .map((entry: any) => ({
+      id: entry.workspaces.id,
+      name: entry.workspaces.name,
+      account_id: entry.workspaces.account_id,
+      role: entry.role,
+    }));
+  const properties = workspace?.id
+    ? allProperties.filter((item) => item.workspace_id === workspace.id)
+    : allProperties;
   const workspaceContext =
     loc.pathname === "/" || loc.pathname === "/notifications";
   const section = loc.pathname.split("/")[1] || "workspace";
@@ -301,8 +329,24 @@ export function ClaritudeApplication({
           : null;
   function selectProperty(id?: string) {
     setPropertyMenu(false);
-    navigate(id ? href("overview", id) : "/");
+    navigate(
+      id
+        ? href("overview", id)
+        : workspace?.id
+          ? `/?workspace=${workspace.id}`
+          : "/",
+    );
   }
+  useEffect(() => {
+    if (!workspaceMenu && !propertyMenu) return;
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setWorkspaceMenu(false);
+      setPropertyMenu(false);
+    };
+    window.addEventListener("keydown", dismiss);
+    return () => window.removeEventListener("keydown", dismiss);
+  }, [workspaceMenu, propertyMenu]);
   async function snoozeAlerts() {
     if (!session) return;
     try {
@@ -332,23 +376,26 @@ export function ClaritudeApplication({
               setWorkspaceMenu(false);
               setMobile((value) => !value);
             } else {
+              setPropertyMenu(false);
               setWorkspaceMenu((value) => !value);
             }
           }}
         >
           <Menu className="mobile-toggle" />
-          <span className="avatar">
-            <img src="/assets/websi-mark.svg" alt="" />
+          <span className="workspace-identity">
+            <img src="/assets/building-complex.svg" alt="" />
           </span>
           <b>{fixture ? "Websi workspace" : workspace.name || "Shared properties"}</b>
           <span className="badge">{fixture ? "Scale" : "Pro"}</span>
-          <span className="chevs">
-            ⌃<br />⌄
-          </span>
+          <img className="selector-chevrons" src="/assets/chevrons-up-down.svg" alt="" />
         </button>
         <button
           className="selector selector-button"
-          onClick={() => setPropertyMenu((v) => !v)}
+          aria-expanded={propertyMenu}
+          onClick={() => {
+            setWorkspaceMenu(false);
+            setPropertyMenu((v) => !v);
+          }}
         >
           <span className="favicon">
             {property ? (
@@ -359,7 +406,7 @@ export function ClaritudeApplication({
           </span>
           <b>{property ? property.canonical_host : "Your properties"}</b>
           <span className="spacer" />
-          <ChevronDown />
+          <img className="selector-chevrons" src="/assets/chevrons-up-down.svg" alt="" />
         </button>
         <div className="page-title">{title}</div>
         <div className="brand">
@@ -367,60 +414,27 @@ export function ClaritudeApplication({
         </div>
       </header>
       {workspaceMenu && (
-        <SelectorMenu
-          className="workspace-menu"
-          search="Find workspace"
+        <WorkspaceMenu
+          memberships={workspaceMemberships}
+          properties={allProperties}
+          active={workspace?.id}
           close={() => setWorkspaceMenu(false)}
-        >
-          {(fixture
-            ? [{ workspaces: { id: "fixture", name: "Websi workspace" } }]
-            : workspaceMemberships
-          ).map((entry: any) => {
-            const candidate = entry.workspaces;
-            const count = allProperties.filter((item) => item.workspace_id === candidate.id).length;
-            return (
-              <button
-                className="selector-option"
-                key={candidate.id}
-                onClick={() => {
-                  setWorkspaceMenu(false);
-                  navigate(fixture ? "/" : `/?workspace=${candidate.id}`);
-                }}
-              >
-                <span className="avatar">
-                  <img src="/assets/websi-mark.svg" alt="" />
-                </span>
-                <span>
-                  <b>{candidate.name}</b>
-                  <small>{count} properties</small>
-                </span>
-                {candidate.id === workspace.id && <Check />}
-              </button>
-            );
-          })}
-          {canManageAccount && (
-            <button
-              className="selector-option"
-              onClick={() => {
-                setWorkspaceMenu(false);
-                setWorkspaceOpen(true);
-              }}
-            >
-              <Plus />
-              <span>
-                <b>Add new workspace</b>
-                <small>Create another workspace</small>
-              </span>
-            </button>
-          )}
-        </SelectorMenu>
+          select={(id) => {
+            setWorkspaceMenu(false);
+            navigate(fixture ? "/" : `/?workspace=${id}`);
+          }}
+          add={canManageAccount ? () => {
+            setWorkspaceMenu(false);
+            setWorkspaceOpen(true);
+          } : undefined}
+        />
       )}
       {propertyMenu && (
         <PropertyMenu
           properties={properties}
           active={property?.id}
           select={selectProperty}
-          add={canManageWorkspace ? () => {
+          add={eligiblePropertyWorkspaces.length ? () => {
             setPropertyMenu(false);
             setAddOpen(true);
           } : undefined}
@@ -685,15 +699,21 @@ export function ClaritudeApplication({
           </Routes>
         </main>
       </div>
-      {addOpen && canManageWorkspace && (
+      {addOpen && eligiblePropertyWorkspaces.length > 0 && (
         <AddPropertyDialog
           session={session}
-          workspaceId={workspace?.id}
-          workspaceName={workspace?.name || "Workspace"}
+          accountId={activeAccountId}
+          workspaceId={
+            eligiblePropertyWorkspaces.some((item) => item.id === workspace?.id)
+              ? workspace.id
+              : eligiblePropertyWorkspaces[0].id
+          }
+          workspaces={eligiblePropertyWorkspaces}
           close={() => setAddOpen(false)}
-          done={() => {
+          done={async (created) => {
             setAddOpen(false);
-            reload();
+            await reload();
+            navigate(`/overview?property=${created.id}&workspace=${created.workspace_id}`);
             notify("Property added");
           }}
         />
@@ -705,7 +725,7 @@ export function ClaritudeApplication({
           action="Create workspace"
           onSave={async () => {
             if (!session || !workspaceName.trim()) return;
-            const accountId = data.accounts?.[0]?.accounts?.id;
+            const accountId = activeAccountId;
             if (!accountId) throw new Error("Account not available");
             const created = await api<{ workspaceId: string }>(session, "/api/workspaces", {
               method: "POST",
@@ -713,7 +733,7 @@ export function ClaritudeApplication({
             });
             setWorkspaceOpen(false);
             setWorkspaceName("");
-            reload();
+            await reload();
             navigate(`/?workspace=${created.workspaceId}`);
             notify("Workspace created");
           }}
@@ -732,23 +752,94 @@ export function ClaritudeApplication({
   );
 }
 
-function SelectorMenu({
-  className = "",
-  search,
+export function filterWorkspaceMemberships(memberships: any[], query: string) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return memberships;
+  return memberships.filter((entry) =>
+    String(entry.workspaces?.name || "").toLowerCase().includes(normalized),
+  );
+}
+
+export function filterProperties(properties: Property[], query: string) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return properties;
+  return properties.filter((property) =>
+    `${property.name} ${property.canonical_host}`
+      .toLowerCase()
+      .includes(normalized),
+  );
+}
+
+function SelectorAction({ children, onClick }: { children: ReactNode; onClick: () => void }) {
+  return (
+    <button className="selector-action" onClick={onClick}>
+      <Plus />
+      <span>{children}</span>
+    </button>
+  );
+}
+
+function WorkspaceMenu({
+  memberships,
+  properties,
+  active,
   close,
-  children,
+  select,
+  add,
 }: {
-  className?: string;
-  search: string;
+  memberships: any[];
+  properties: Property[];
+  active?: string;
   close: () => void;
-  children: ReactNode;
+  select: (id: string) => void;
+  add?: () => void;
 }) {
+  const [query, setQuery] = useState("");
+  const rows = filterWorkspaceMemberships(memberships, query);
   return (
     <>
       <button className="menu-scrim" aria-label="Close menu" onClick={close} />
-      <div className={`menu selector-menu ${className}`}>
-        <input aria-label={search} placeholder={search} />
-        {children}
+      <div className="menu selector-menu workspace-menu" role="menu">
+        <input
+          autoFocus
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          aria-label="Find Workspace"
+          placeholder="Find Workspace"
+        />
+        <div className="selector-list">
+          {rows.map((entry: any) => {
+            const candidate = entry.workspaces;
+            const count = properties.filter(
+              (property) => property.workspace_id === candidate.id,
+            ).length;
+            return (
+              <button
+                className="selector-option"
+                key={candidate.id}
+                onClick={() => select(candidate.id)}
+              >
+                <span className="workspace-row-icon">
+                  <img src="/assets/building-complex.svg" alt="" />
+                </span>
+                <span>
+                  <b>{candidate.name}</b>
+                  <small>{count} {count === 1 ? "property" : "properties"}</small>
+                </span>
+                {candidate.id === active && <Check aria-label="Selected" />}
+              </button>
+            );
+          })}
+          {!rows.length && (
+            <p className="selector-empty">No workspaces match your search.</p>
+          )}
+        </div>
+        {add && (
+          <>
+            <div className="menu-divider" />
+            <SelectorAction onClick={add}>Add workspace</SelectorAction>
+          </>
+        )}
       </div>
     </>
   );
@@ -765,9 +856,7 @@ function PropertyMenu({
   add?: () => void;
 }) {
   const [q, setQ] = useState("");
-  const rows = properties.filter((p) =>
-    (p.name + p.canonical_host).toLowerCase().includes(q.toLowerCase()),
-  );
+  const rows = filterProperties(properties, q);
   return (
     <>
       <button
@@ -775,12 +864,13 @@ function PropertyMenu({
         aria-label="Close menu"
         onClick={() => select(active)}
       />
-      <div className="menu selector-menu property-menu">
+      <div className="menu selector-menu property-menu" role="menu">
         <input
+          autoFocus
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Find property"
-          aria-label="Find property"
+          placeholder="Search Properties"
+          aria-label="Search Properties"
         />
         <button className="selector-option" onClick={() => select()}>
           <LayoutGrid />
@@ -815,14 +905,14 @@ function PropertyMenu({
               ) : null}
             </button>
           ))}
+          {!rows.length && (
+            <p className="selector-empty">No properties match your search.</p>
+          )}
         </div>
         {add && (
           <>
             <div className="menu-divider" />
-            <button onClick={add}>
-              <Plus />
-              Add property
-            </button>
+            <SelectorAction onClick={add}>Add property</SelectorAction>
           </>
         )}
       </div>
@@ -4027,33 +4117,58 @@ function Billing({ fixture, notify }: { fixture: boolean; notify: Notify }) {
 
 function AddPropertyDialog({
   session,
+  accountId,
   workspaceId,
-  workspaceName,
+  workspaces,
   close,
   done,
 }: {
   session: Session | null;
+  accountId?: string;
   workspaceId: string;
-  workspaceName: string;
+  workspaces: WorkspaceOption[];
   close: () => void;
-  done: () => void;
+  done: (property: Property) => void | Promise<void>;
 }) {
   const [name, setName] = useState(""),
     [url, setUrl] = useState("https://"),
+    [selectedWorkspaceId, setSelectedWorkspaceId] = useState(workspaceId),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
   async function submit(e: FormEvent) {
     e.preventDefault();
+    if (busy) return;
+    setError("");
+    if (!accountId || !workspaces.some((workspace) => workspace.id === selectedWorkspaceId)) {
+      setError("Choose a workspace where you can add properties.");
+      return;
+    }
     setBusy(true);
     try {
-      if (session)
-        await api(session, "/api/properties", {
+      if (!session) throw new Error("authentication_required");
+      const created = await api<Property>(session, "/api/properties", {
           method: "POST",
-          body: JSON.stringify({ workspaceId, name, url }),
+          body: JSON.stringify({
+            accountId,
+            workspaceId: selectedWorkspaceId,
+            name,
+            url,
+          }),
         });
-      done();
-    } catch (e: any) {
-      setError(e.message);
+      await done(created);
+    } catch (reason: any) {
+      const messages: Record<string, string> = {
+        authentication_required: "Your session has expired. Sign in again and retry.",
+        workspace_access_denied: "You do not have permission to add properties to that workspace.",
+        property_limit_reached: "This account has reached its property limit.",
+        property_name_required: "Enter a property name.",
+        public_http_url_required: "Enter a valid public http or https domain.",
+        property_already_exists: "A property for this domain already exists in that workspace.",
+      };
+      setError(
+        messages[reason?.message] ||
+          "We couldn't add the property. Your details have been kept so you can try again.",
+      );
     } finally {
       setBusy(false);
     }
@@ -4081,8 +4196,15 @@ function AddPropertyDialog({
         </label>
         <label className="field">
           Workspace
-          <select value={workspaceId} disabled>
-            <option value={workspaceId}>{workspaceName}</option>
+          <select
+            value={selectedWorkspaceId}
+            onChange={(event) => setSelectedWorkspaceId(event.target.value)}
+          >
+            {workspaces.map((workspace) => (
+              <option value={workspace.id} key={workspace.id}>
+                {workspace.name}
+              </option>
+            ))}
           </select>
         </label>
         {error && <div className="notice danger">{error}</div>}
@@ -4091,7 +4213,7 @@ function AddPropertyDialog({
             Cancel
           </button>
           <button className="primary" disabled={busy}>
-            Add property
+            {busy ? "Adding property…" : "Add property"}
           </button>
         </div>
       </form>

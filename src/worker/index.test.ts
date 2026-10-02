@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildAnalyticsSummary,
   auditCheckHasExecutableLogic,
+  canonicalPropertyHost,
   cleanPath,
   editableWorkspaceRole,
   evaluateSourceChecks,
@@ -16,6 +17,10 @@ import {
 import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 
 describe("worker evidence pipelines", () => {
+  it("normalizes property hosts consistently for duplicate protection", () => {
+    expect(canonicalPropertyHost("WWW.EdgeTier.COM.")).toBe("edgetier.com");
+    expect(canonicalPropertyHost("edgetier.com")).toBe("edgetier.com");
+  });
   it("normalizes Supabase one-to-one monitor embeds for the dashboard", () => {
     expect(
       normalizePropertyRelations([
