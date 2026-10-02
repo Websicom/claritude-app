@@ -2232,8 +2232,8 @@ function AnalyticsView({
   const config = analyticsFilterConfigs[tab];
   const keyEventRate = scoped.pageviews ? (scoped.keyEvents / scoped.pageviews) * 100 : null;
   const engagement = scoped.engagement || {};
-  const performance = scoped.performance || { vitals: scoped.vitals || [], series: {}, minimumSamples: 75 };
-  const minimumSamples = performance.minimumSamples || 75;
+  const performance = scoped.performance || { vitals: scoped.vitals || [], series: {}, minimumSamples: 1 };
+  const minimumSamples = performance.minimumSamples || 1;
   const vital = (name: string) => (performance.vitals || []).find((entry: any) => entry.name === name);
   const selectedPerformanceMetric = filters.metric || "LCP";
   const seriesKey = chartMetric === "Daily visitors" ? "dailyVisitors" : chartMetric === "Events" ? "events" : "pageviews";
@@ -2408,7 +2408,7 @@ function AnalyticsView({
           ]} />
           <Panel>
             {filtersToolbar}
-            <p className="subtle">Metrics use the 75th percentile. Fewer than {minimumSamples} samples are shown as unavailable rather than estimated.</p>
+            <p className="subtle">Metrics use the 75th percentile of every valid observation received in this period. Sample counts are shown because early, low-volume results are directional.</p>
             <p className="subtle">A good experience is a versioned pageview with all three field measurements: LCP ≤ 2.5 s, INP ≤ 200 ms and CLS ≤ 0.1. Historical observations from the replaced collector are not mixed into these figures.</p>
             <div className="chart-legend"><span>Current period</span><span className="previous">Previous period</span></div>
             <SeriesChart points={performancePoints} previousPoints={previousPerformancePoints} emptyTitle={`Insufficient ${selectedPerformanceMetric} samples`} unit={selectedPerformanceMetric === "CLS" ? "" : " ms"} label={`${selectedPerformanceMetric} p75 by day`} timeZone={analyticsTimeZone} />
@@ -3349,6 +3349,28 @@ function PropertySettingsView({
                 ["Update status", trackingDiagnostics?.updateRequired ? "Update required" : trackingDiagnostics?.receivedTrackerVersion ? "Current" : "Awaiting a versioned event"],
               ]}
             />
+            <div className="settings-actions">
+              <button
+                className="btn"
+                disabled={busy}
+                onClick={async () => {
+                  if (!session) return;
+                  setBusy(true);
+                  try {
+                    const result = await api<any>(session, `/api/properties/${property.id}/verify`, { method: "POST" });
+                    notify(result.verified ? "Tracking installation verified" : "Tracking identifier was not found on the public page");
+                    reload();
+                  } catch (error: any) {
+                    notify(error.message);
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                <RefreshCw />
+                Verify installation
+              </button>
+            </div>
             {trackingDiagnostics && (
               <div className="tracking-signal-grid">
                 {Object.entries(trackingDiagnostics.signals || {}).map(([signal, count]) => (
@@ -5834,6 +5856,7 @@ function AuditProgress({ run, onRetry }: { run: AuditRun; onRetry: () => void })
     queued: "Waiting for an audit worker",
     fetching_page: "Collecting the selected page",
     evaluating_checks: "Evaluating available checks",
+    collecting_network_evidence: "Checking DNS, robots, sitemaps and optional resources",
     persisting_results: "Saving evidence and scores",
     failed: "Audit failed",
   };
@@ -6296,8 +6319,8 @@ function RealUserPerformanceTable({ data, device }: { data: any; device: "deskto
       {source?.from && source?.to && (
         <p className="subtle">Reporting range: {fmtDate(source.from)} to {fmtDate(source.to)} · page-specific p75 field observations.</p>
       )}
-      {vitals.some((vital: any) => vital.samples < (performance.minimumSamples || 75)) && (
-        <p className="subtle">Metrics below {performance.minimumSamples || 75} samples are insufficient, not estimated.</p>
+      {vitals.some((vital: any) => vital.samples < (performance.minimumSamples || 1)) && (
+        <p className="subtle">No valid observation has been received for one or more metrics. INP requires an eligible user interaction.</p>
       )}
     </>
   );

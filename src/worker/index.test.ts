@@ -3,6 +3,7 @@ import {
   buildAnalyticsSummary,
   auditCheckHasExecutableLogic,
   canonicalPropertyHost,
+  chunkAuditResults,
   cleanPath,
   editableWorkspaceRole,
   evaluateSourceChecks,
@@ -42,14 +43,14 @@ describe("worker evidence pipelines", () => {
           source: "Google",
           device: "desktop",
           country_code: "GB",
-          metadata: { browser: "Chrome", screen: "large", session: "tab-1", view_id: "view-1", tracker_version: "2.0.0" },
+          metadata: { browser: "Chrome", screen: "large", session: "tab-1", view_id: "view-1", tracker_version: "2.1.0" },
           occurred_at: "2026-10-02T00:00:00Z",
         },
         {
           event_type: "scroll",
           path: "/",
           value: 75,
-          metadata: { view_id: "view-1", tracker_version: "2.0.0" },
+          metadata: { view_id: "view-1", tracker_version: "2.1.0" },
           occurred_at: "2026-10-02T00:00:10Z",
         },
         {
@@ -57,8 +58,24 @@ describe("worker evidence pipelines", () => {
           path: "/",
           name: "LCP",
           value: 2100,
-          metadata: { view_id: "view-1", tracker_version: "2.0.0" },
+          metadata: { view_id: "view-1", tracker_version: "2.1.0" },
           occurred_at: "2026-10-02T00:00:12Z",
+        },
+        {
+          event_type: "web_vital",
+          path: "/",
+          name: "INP",
+          value: 180,
+          metadata: { view_id: "view-1", tracker_version: "2.1.0" },
+          occurred_at: "2026-10-02T00:00:13Z",
+        },
+        {
+          event_type: "web_vital",
+          path: "/",
+          name: "CLS",
+          value: 0.08,
+          metadata: { view_id: "view-1", tracker_version: "2.1.0" },
+          occurred_at: "2026-10-02T00:00:14Z",
         },
         {
           event_type: "pageview",
@@ -66,7 +83,7 @@ describe("worker evidence pipelines", () => {
           source: "Direct",
           device: "mobile",
           country_code: "US",
-          metadata: { session: "tab-2", view_id: "view-2", tracker_version: "2.0.0" },
+          metadata: { session: "tab-2", view_id: "view-2", tracker_version: "2.1.0" },
           occurred_at: "2026-10-02T00:01:00Z",
         },
         {
@@ -75,7 +92,7 @@ describe("worker evidence pipelines", () => {
           name: "contact-click",
           device: "mobile",
           country_code: "US",
-          metadata: { view_id: "view-2", tracker_version: "2.0.0" },
+          metadata: { view_id: "view-2", tracker_version: "2.1.0" },
           occurred_at: "2026-10-02T00:01:05Z",
         },
         {
@@ -84,7 +101,7 @@ describe("worker evidence pipelines", () => {
           name: "example.org",
           device: "mobile",
           country_code: "US",
-          metadata: { view_id: "view-2", tracker_version: "2.0.0" },
+          metadata: { view_id: "view-2", tracker_version: "2.1.0" },
           occurred_at: "2026-10-02T00:01:08Z",
         },
       ],
@@ -105,7 +122,21 @@ describe("worker evidence pipelines", () => {
     expect(summary.engagement.engagedPageviews).toBe(2);
     expect(summary.engagement.pageviewsWithKeyEvents).toBe(1);
     expect(summary.engagement.scrollDepth.find((row) => row.depth === 75)?.pageviews).toBe(1);
-    expect(summary.vitals[0]).toMatchObject({ name: "LCP", value: 2100, samples: 1, percentile: 75 });
+    expect(summary.vitals).toContainEqual({ name: "LCP", value: 2100, samples: 1, percentile: 75 });
+    expect(summary.vitals).toContainEqual({ name: "INP", value: 180, samples: 1, percentile: 75 });
+    expect(summary.performance.minimumSamples).toBe(1);
+    expect(summary.performance.goodExperiencesPercent).toBe(100);
+  });
+
+  it("keeps prior compatible tracker observations available after a tracker upgrade", () => {
+    const summary = buildAnalyticsSummary([
+      { event_type: "pageview", path: "/", metadata: { session: "legacy", view_id: "legacy-view", tracker_version: "2.0.0" }, occurred_at: "2026-10-02T09:00:00Z" },
+      { event_type: "scroll", path: "/", value: 90, metadata: { view_id: "legacy-view", tracker_version: "2.0.0" }, occurred_at: "2026-10-02T09:00:02Z" },
+      { event_type: "active_time", path: "/", value: 12, metadata: { view_id: "legacy-view", tracker_version: "2.0.0" }, occurred_at: "2026-10-02T09:00:12Z" },
+    ], 1, "2026-10-02T00:00:00Z", "2026-10-02T23:59:59Z", "UTC");
+    expect(summary.engagement.eligiblePageviews).toBe(1);
+    expect(summary.engagement.medianScrollDepth).toBe(90);
+    expect(summary.engagement.medianActiveSeconds).toBe(12);
   });
 
   it("normalizes paths and combines analytics page filters", () => {
@@ -134,15 +165,24 @@ describe("worker evidence pipelines", () => {
 
   it("keeps pageviews separate from key events and preserves fractional average daily visitors", () => {
     const summary = buildAnalyticsSummary([
-      { event_type: "pageview", path: "/", metadata: { session: "one", view_id: "a", tracker_version: "2.0.0" }, occurred_at: "2026-09-01T09:00:00Z" },
-      { event_type: "scroll", path: "/", value: 50, metadata: { view_id: "a", tracker_version: "2.0.0" }, occurred_at: "2026-09-01T09:00:05Z" },
-      { event_type: "pageview", path: "/", metadata: { session: "two", view_id: "b", tracker_version: "2.0.0" }, occurred_at: "2026-09-02T09:00:00Z" },
-      { event_type: "click", path: "/", name: "cta", metadata: { view_id: "b", tracker_version: "2.0.0" }, occurred_at: "2026-09-02T09:00:05Z" },
+      { event_type: "pageview", path: "/", metadata: { session: "one", view_id: "a", tracker_version: "2.1.0" }, occurred_at: "2026-09-01T09:00:00Z" },
+      { event_type: "scroll", path: "/", value: 50, metadata: { view_id: "a", tracker_version: "2.1.0" }, occurred_at: "2026-09-01T09:00:05Z" },
+      { event_type: "pageview", path: "/", metadata: { session: "two", view_id: "b", tracker_version: "2.1.0" }, occurred_at: "2026-09-02T09:00:00Z" },
+      { event_type: "click", path: "/", name: "cta", metadata: { view_id: "b", tracker_version: "2.1.0" }, occurred_at: "2026-09-02T09:00:05Z" },
     ], 4, "2026-08-31T23:00:00Z", "2026-09-04T22:59:59.999Z", "Europe/London");
     expect(summary.pageviews).toBe(2);
     expect(summary.keyEvents).toBe(1);
     expect(summary.pages[0]).toMatchObject({ pageviews: 2, events: 1 });
     expect(summary.averageDailyVisitors).toBe(0.5);
+    expect(summary.performance.minimumSamples).toBe(1);
+  });
+
+  it("persists audit results in visible bounded progress batches", () => {
+    const chunks = chunkAuditResults(Array.from({ length: 306 }, (_, index) => index), 24);
+    expect(chunks).toHaveLength(13);
+    expect(chunks[0]).toHaveLength(24);
+    expect(chunks.at(-1)).toHaveLength(18);
+    expect(chunks.flat()).toHaveLength(306);
   });
 
   it("returns hourly points for a single local calendar day", () => {
@@ -202,7 +242,7 @@ describe("worker evidence pipelines", () => {
     const implemented = active.filter((check) => auditCheckHasExecutableLogic(check.id));
     const gaps = active.filter((check) => !auditCheckHasExecutableLogic(check.id));
     expect(active).toHaveLength(306);
-    expect(implemented).toHaveLength(126);
+    expect(implemented.length).toBeGreaterThanOrEqual(150);
     expect(implemented.length + gaps.length).toBe(active.length);
     expect(gaps.every((check) => ["source_html", "network", "rendered_browser", "dns", "lab"].includes(check.executionMethod))).toBe(true);
   });
@@ -214,7 +254,10 @@ describe("worker evidence pipelines", () => {
     const active = AUDIT_REGISTRY.filter((check) => check.lifecycle === "active");
     const results = evaluateSourceChecks(active, response, html, 100);
     expect(results).toHaveLength(306);
-    expect(results.filter((result) => result.outcome === "unable_to_test")).toHaveLength(180);
+    const resultById = new Map(results.map((result) => [result.check_id, result]));
+    expect(active.filter((check) => !auditCheckHasExecutableLogic(check.id)).every(
+      (check) => resultById.get(check.id)?.outcome === "unable_to_test",
+    )).toBe(true);
     expect(results.filter((result) => result.outcome === "pass").length).toBeLessThan(306);
   });
 

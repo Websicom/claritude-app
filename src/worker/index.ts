@@ -35,6 +35,25 @@ type AuditResult = {
   evidence: Record<string, unknown>;
   duration_ms: number;
 };
+type AuditResourceEvidence = {
+  url: string;
+  status: number | null;
+  finalUrl: string | null;
+  body: string;
+  contentType: string | null;
+  error: string | null;
+};
+type AuditNetworkEvidence = {
+  redirects: { url: string; status: number; location: string }[];
+  canonical: AuditResourceEvidence | null;
+  robots: AuditResourceEvidence;
+  sitemaps: AuditResourceEvidence[];
+  llms: AuditResourceEvidence;
+  llmsFull: AuditResourceEvidence;
+  dnsRecords: { query: string; type: string; ttl: number; data: string }[];
+  dnsErrors: string[];
+  dnsAuthenticated: boolean | null;
+};
 
 const LIMITS = {
   propertiesPerAccount: 25,
@@ -74,12 +93,66 @@ const EXPLICIT_SOURCE_CHECK_IDS = new Set([
   "infrastructure.http.content_type",
   "ai.content.source_extractable",
 ]);
+const CONTEXT_AUDIT_CHECK_IDS = new Set([
+  "seo.page.metadata.canonical.target.reachable",
+  "seo.page.metadata.canonical.target.redirects",
+  "seo.crawling.and.indexing.redirect.chain.detected",
+  "seo.crawling.and.indexing.redirect.loop.detected",
+  "seo.crawling.and.indexing.robots.txt.file.reachable",
+  "seo.crawling.and.indexing.robots.txt.contains.readable.text",
+  "seo.crawling.and.indexing.robots.txt.parsing.errors.detected",
+  "seo.crawling.and.indexing.selected.page.allowed.by.googlebot.robots.rules",
+  "seo.crawling.and.indexing.selected.page.allowed.by.bingbot.robots.rules",
+  "seo.crawling.and.indexing.sitemap.url.declared.in.robots.txt",
+  "seo.crawling.and.indexing.conventional.sitemap.locations.checked",
+  "seo.crawling.and.indexing.referenced.xml.sitemap.reachable",
+  "seo.crawling.and.indexing.referenced.sitemap.xml.valid",
+  "seo.crawling.and.indexing.selected.page.found.in.checked.sitemap.files",
+  "seo.crawling.and.indexing.sitemap.lastmod.date.formats.valid",
+  "infrastructure.dns.and.domain.configuration.returned.dns.record.ttls.recorded",
+  "infrastructure.dns.and.domain.configuration.domain.nameservers.recorded",
+  "infrastructure.dns.and.domain.configuration.domain.soa.record.recorded",
+  "infrastructure.dns.and.domain.configuration.dns.resolver.errors.detected",
+  "infrastructure.dns.and.domain.configuration.dnssec.validation.status.reported.by.the.resolver",
+  "infrastructure.dns.and.domain.configuration.spf.record.detected",
+  "infrastructure.dns.and.domain.configuration.multiple.spf.records.detected",
+  "infrastructure.dns.and.domain.configuration.dmarc.record.detected",
+  "infrastructure.dns.and.domain.configuration.dmarc.policy.recorded",
+  "infrastructure.dns.and.domain.configuration.caa.certificate.authority.restrictions.detected",
+  "infrastructure.dns.and.domain.configuration.selected.hostname.resolves.successfully",
+  "infrastructure.dns.and.domain.configuration.ipv4.addresses.recorded",
+  "infrastructure.dns.and.domain.configuration.ipv6.addresses.recorded",
+  "infrastructure.dns.and.domain.configuration.returned.cname.records.recorded",
+  "infrastructure.dns.and.domain.configuration.non.existent.hostname.response.detected",
+  "infrastructure.dns.and.domain.configuration.apex.domain.resolution.checked",
+  "infrastructure.dns.and.domain.configuration.www.hostname.resolution.checked",
+  "infrastructure.dns.and.domain.configuration.mail.exchange.records.detected",
+  "ai_readiness.crawler.permissions.selected.page.allowed.by.oai.searchbot.robots.rules",
+  "ai_readiness.crawler.permissions.selected.page.allowed.by.gptbot.robots.rules",
+  "ai_readiness.crawler.permissions.selected.page.allowed.by.claude.searchbot.robots.rules",
+  "ai_readiness.crawler.permissions.selected.page.allowed.by.claudebot.robots.rules",
+  "ai_readiness.crawler.permissions.explicit.chatgpt.user.robots.rules.detected",
+  "ai_readiness.crawler.permissions.explicit.claude.user.robots.rules.detected",
+  "ai_readiness.crawler.permissions.googlebot.robots.access.for.the.selected.page.checked",
+  "ai_readiness.crawler.permissions.ai.search.and.training.crawler.permissions.differ",
+  "ai_readiness.crawler.permissions.ai.crawler.rules.inherited.from.wildcard.directives.identified",
+  "ai_readiness.optional.resources.llms.txt.file.reachable",
+  "ai_readiness.optional.resources.llms.txt.returned.as.readable.text",
+  "ai_readiness.optional.resources.llms.txt.title.detected",
+  "ai_readiness.optional.resources.llms.txt.summary.detected",
+  "ai_readiness.optional.resources.llms.txt.markdown.links.parse.correctly",
+  "ai_readiness.optional.resources.llms.txt.links.checked.within.the.request.limit",
+  "ai_readiness.optional.resources.selected.page.referenced.in.checked.llms.txt.links",
+  "ai_readiness.optional.resources.llms.full.txt.file.reachable",
+  "ai_readiness.optional.resources.llms.full.txt.returned.as.readable.text",
+]);
 const IMPLEMENTED_AUDIT_CHECKS = ACTIVE_AUDIT_CHECKS.filter(
   (check) => auditCheckHasExecutableLogic(check.id),
 );
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
-const TRACKER_VERSION = "2.0.0";
+const TRACKER_VERSION = "2.1.0";
+const SUPPORTED_TRACKER_VERSIONS = new Set(["2.0.0", TRACKER_VERSION]);
 app.use("*", secureHeaders());
 app.use(
   "/collect",
@@ -191,7 +264,11 @@ app.post("/collect", async (c) => {
   if (insertionFailure) return c.json({ error: "ingestion_failed" }, 503);
   await db
     .from("properties")
-    .update({ tracking_last_received_at: now })
+    .update({
+      tracking_last_received_at: now,
+      verification_status: "verified",
+      verified_at: now,
+    })
     .eq("id", property.id);
   return c.body(null, 202);
 });
@@ -1857,9 +1934,10 @@ async function runAudit(env: Env, id: string) {
   if (!run) return;
   try {
     const fetchStarted = Date.now();
-    const res = await safeFetch(run.page_url, {
+    const trace = await safeFetchTrace(run.page_url, {
       headers: { "user-agent": "Claritude-Audit/1.0 (+https://claritude.io)" },
     });
+    const res = trace.response;
     const responseMs = Date.now() - fetchStarted;
     const snapshot = run.registry_snapshot as AuditRegistrySnapshot[];
     const html = await limitedText(res, 2_000_000);
@@ -1870,18 +1948,24 @@ async function runAudit(env: Env, id: string) {
         heartbeat_at: new Date().toISOString(),
       })
       .eq("id", id);
-    const results = evaluateSourceChecks(snapshot, res, html, responseMs);
+    const networkEvidencePromise = collectAuditNetworkEvidence(
+      run.page_url,
+      res,
+      html,
+      trace.redirects,
+    );
+    const staticResults = evaluateSourceChecks(snapshot, res, html, responseMs)
+      .filter((result) => !CONTEXT_AUDIT_CHECK_IDS.has(result.check_id));
     const snapshotById = new Map(snapshot.map((check) => [check.id, check]));
     await db
       .from("audit_runs")
       .update({
         execution_stage: "persisting_results",
-        progress_completed: results.length,
+        progress_completed: 0,
         heartbeat_at: new Date().toISOString(),
       })
       .eq("id", id);
-    const { error: resultError } = await db.from("audit_results").upsert(
-      results.map((r) => {
+    const decorate = (r: AuditResult) => {
         const check = snapshotById.get(r.check_id);
         return {
           ...r,
@@ -1890,10 +1974,50 @@ async function runAudit(env: Env, id: string) {
           configuration_version: check?.configurationVersion || 1,
           title_snapshot: check?.title || r.check_id,
         };
-      }),
-      { onConflict: "audit_run_id,check_id" },
-    );
-    if (resultError) throw resultError;
+      };
+    let persisted = 0;
+    const persist = async (results: AuditResult[]) => {
+      for (const batch of chunkAuditResults(results.map(decorate), 24)) {
+      const { error: resultError } = await db.from("audit_results").upsert(
+        batch,
+        { onConflict: "audit_run_id,check_id" },
+      );
+      if (resultError) throw resultError;
+      persisted += batch.length;
+      await db
+        .from("audit_runs")
+        .update({
+          progress_completed: persisted,
+          heartbeat_at: new Date().toISOString(),
+        })
+        .eq("id", id);
+      }
+    };
+    await persist(staticResults);
+    await db
+      .from("audit_runs")
+      .update({
+        execution_stage: "collecting_network_evidence",
+        heartbeat_at: new Date().toISOString(),
+      })
+      .eq("id", id);
+    const networkEvidence = await networkEvidencePromise;
+    const contextResults = evaluateSourceChecks(
+      snapshot,
+      res,
+      html,
+      responseMs,
+      networkEvidence,
+    ).filter((result) => CONTEXT_AUDIT_CHECK_IDS.has(result.check_id));
+    await db
+      .from("audit_runs")
+      .update({
+        execution_stage: "persisting_results",
+        heartbeat_at: new Date().toISOString(),
+      })
+      .eq("id", id);
+    await persist(contextResults);
+    const results = [...staticResults, ...contextResults];
     const { score, coverage } = scoreAuditResults(snapshot, results);
     await db
       .from("audit_runs")
@@ -1939,11 +2063,20 @@ async function runAudit(env: Env, id: string) {
   }
 }
 
+export function chunkAuditResults<T>(values: T[], size = 24) {
+  const safeSize = Math.max(1, Math.floor(size));
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += safeSize)
+    chunks.push(values.slice(index, index + safeSize));
+  return chunks;
+}
+
 export function evaluateSourceChecks(
   snapshot: any[],
   res: Response,
   html: string,
   responseMs = 0,
+  networkEvidence?: AuditNetworkEvidence,
 ): AuditResult[] {
   const title = html
     .match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]
@@ -2032,11 +2165,16 @@ export function evaluateSourceChecks(
   return snapshot.map((s) => {
     const t = performance.now();
     const fn = checks[s.id];
-    const generic = fn
+    const contextResult = networkEvidence
+      ? evaluateNetworkEvidenceCheck(s.id, res, html, analysis, networkEvidence)
+      : null;
+    const generic = fn || contextResult
       ? null
       : evaluateStaticCheck(s.id, res, html, analysis, responseMs);
     const [outcome, evidence] = fn
       ? fn()
+      : contextResult
+        ? contextResult
       : generic || [
           "unable_to_test" as CheckOutcome,
           { reason: methodReason(registry(s.id)?.executionMethod) },
@@ -2087,8 +2225,236 @@ function analyseHtml(html: string, baseUrl: string) {
   };
 }
 
+async function collectAuditNetworkEvidence(
+  pageUrl: string,
+  response: Response,
+  html: string,
+  redirects: { url: string; status: number; location: string }[],
+): Promise<AuditNetworkEvidence> {
+  const finalUrl = new URL(response.url || pageUrl);
+  const origin = finalUrl.origin;
+  const canonicalHref =
+    html.match(/<link[^>]+rel=["'][^"']*canonical[^"']*["'][^>]+href=["']([^"']+)/i)?.[1] ||
+    html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*canonical/i)?.[1] ||
+    null;
+  const resource = async (value: string, max = 512_000): Promise<AuditResourceEvidence> => {
+    try {
+      const result = await safeFetchTrace(value, {
+        headers: { "user-agent": "Claritude-Audit/1.0 (+https://claritude.io)" },
+      });
+      return {
+        url: value,
+        status: result.response.status,
+        finalUrl: result.response.url,
+        body: await limitedText(result.response, max),
+        contentType: result.response.headers.get("content-type"),
+        error: null,
+      };
+    } catch (error) {
+      return {
+        url: value,
+        status: null,
+        finalUrl: null,
+        body: "",
+        contentType: null,
+        error: errorMessage(error),
+      };
+    }
+  };
+  const [robots, llms, llmsFull, canonical] = await Promise.all([
+    resource(`${origin}/robots.txt`),
+    resource(`${origin}/llms.txt`),
+    resource(`${origin}/llms-full.txt`),
+    canonicalHref ? resource(new URL(canonicalHref, finalUrl).href) : Promise.resolve(null),
+  ]);
+  const declaredSitemaps = [...robots.body.matchAll(/^\s*sitemap\s*:\s*(\S+)\s*$/gim)]
+    .map((match) => match[1]);
+  const sitemapUrls = [...new Set([
+    ...declaredSitemaps,
+    `${origin}/sitemap.xml`,
+  ])].slice(0, 4);
+  const sitemaps = await Promise.all(sitemapUrls.map((url) => resource(url, 1_000_000)));
+  const dnsRecords: AuditNetworkEvidence["dnsRecords"] = [];
+  const dnsErrors: string[] = [];
+  let dnsAuthenticated: boolean | null = null;
+  const apex = canonicalPropertyHost(finalUrl.hostname);
+  for (const [query, type] of [
+    [apex, "A"], [apex, "AAAA"], [apex, "CNAME"], [apex, "MX"],
+    [apex, "TXT"], [apex, "CAA"], [apex, "NS"], [apex, "SOA"],
+    [`www.${apex}`, "A"], [`www.${apex}`, "AAAA"],
+    [`claritude-nxdomain-probe.${apex}`, "A"],
+    [`_dmarc.${apex}`, "TXT"],
+  ] as const) {
+    try {
+      const dns = await queryDns(query, type);
+      dnsRecords.push(...dns.records);
+      if (query === apex && type === "A") dnsAuthenticated = dns.authenticated;
+    } catch (error) {
+      dnsErrors.push(`${query} ${type}: ${errorMessage(error)}`);
+    }
+  }
+  return {
+    redirects,
+    canonical,
+    robots,
+    sitemaps,
+    llms,
+    llmsFull,
+    dnsRecords,
+    dnsErrors,
+    dnsAuthenticated,
+  };
+}
+
+async function queryDns(query: string, type: string) {
+  const response = await fetch(
+    `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(query)}&type=${type}`,
+    {
+      headers: { accept: "application/dns-json" },
+      signal: AbortSignal.timeout(5000),
+    },
+  );
+  if (!response.ok) throw new Error(`resolver returned HTTP ${response.status}`);
+  const body = await response.json() as {
+    Status?: number;
+    AD?: boolean;
+    Answer?: { TTL?: number; data?: string }[];
+  };
+  if (body.Status && body.Status !== 3) throw new Error(`resolver status ${body.Status}`);
+  return {
+    authenticated: Boolean(body.AD),
+    records: (body.Answer || []).map((answer) => ({
+      query,
+      type,
+      ttl: Number(answer.TTL || 0),
+      data: String(answer.data || ""),
+    })),
+  };
+}
+
+function robotsDecision(text: string, userAgent: string, pathname: string) {
+  const groups: { agents: string[]; rules: { directive: "allow" | "disallow"; path: string }[] }[] = [];
+  let group = { agents: [] as string[], rules: [] as { directive: "allow" | "disallow"; path: string }[] };
+  const flush = () => {
+    if (group.agents.length) groups.push(group);
+    group = { agents: [], rules: [] };
+  };
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.replace(/#.*$/, "").trim();
+    if (!line) continue;
+    const match = line.match(/^([a-z-]+)\s*:\s*(.*)$/i);
+    if (!match) continue;
+    const key = match[1].toLowerCase();
+    const value = match[2].trim();
+    if (key === "user-agent") {
+      if (group.rules.length) flush();
+      group.agents.push(value.toLowerCase());
+    } else if ((key === "allow" || key === "disallow") && group.agents.length) {
+      group.rules.push({ directive: key, path: value });
+    }
+  }
+  flush();
+  const agent = userAgent.toLowerCase();
+  const exact = groups.filter((candidate) => candidate.agents.some((value) => value !== "*" && agent.includes(value)));
+  const wildcard = groups.filter((candidate) => candidate.agents.includes("*"));
+  const selected = exact.length ? exact : wildcard;
+  const matching = selected.flatMap((candidate) => candidate.rules).filter((rule) =>
+    rule.path && pathname.startsWith(rule.path.replace(/\$$/, "")),
+  ).sort((left, right) => right.path.length - left.path.length || (left.directive === "allow" ? -1 : 1));
+  return {
+    allowed: matching[0]?.directive !== "disallow",
+    matchedRule: matching[0] || null,
+    inheritedFromWildcard: !exact.length && wildcard.length > 0,
+    explicitGroup: exact.length > 0,
+  };
+}
+
+function evaluateNetworkEvidenceCheck(
+  id: string,
+  response: Response,
+  html: string,
+  analysis: ReturnType<typeof analyseHtml>,
+  evidence: AuditNetworkEvidence,
+): [CheckOutcome, Record<string, unknown>] | null {
+  if (!CONTEXT_AUDIT_CHECK_IDS.has(id)) return null;
+  const ok = (resource: AuditResourceEvidence | null) =>
+    Boolean(resource?.status && resource.status >= 200 && resource.status < 400 && !resource.error);
+  const urlsInSitemaps = evidence.sitemaps.flatMap((resource) =>
+    [...resource.body.matchAll(/<loc[^>]*>([\s\S]*?)<\/loc>/gi)].map((match) => match[1].trim()),
+  );
+  const selected = normalizeComparableUrl(response.url || analysis.url.href);
+  const sitemapLastmods = evidence.sitemaps.flatMap((resource) =>
+    [...resource.body.matchAll(/<lastmod[^>]*>([\s\S]*?)<\/lastmod>/gi)].map((match) => match[1].trim()),
+  );
+  const markdownLinks = [...evidence.llms.body.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)].map((match) => match[1].trim());
+  const records = (type: string, query?: string) => evidence.dnsRecords.filter((record) =>
+    record.type === type && (!query || record.query === query),
+  );
+  const apex = canonicalPropertyHost(analysis.url.hostname);
+  if (id.endsWith("canonical.target.reachable")) return [!evidence.canonical ? "not_applicable" : ok(evidence.canonical) ? "pass" : "fail", { target: evidence.canonical?.url || null, status: evidence.canonical?.status || null, error: evidence.canonical?.error || null }];
+  if (id.endsWith("canonical.target.redirects")) return [!evidence.canonical ? "not_applicable" : evidence.canonical.finalUrl && normalizeComparableUrl(evidence.canonical.finalUrl) !== normalizeComparableUrl(evidence.canonical.url) ? "warning" : "pass", { target: evidence.canonical?.url || null, finalUrl: evidence.canonical?.finalUrl || null }];
+  if (id.endsWith("redirect.chain.detected")) return [evidence.redirects.length > 1 ? "warning" : "pass", { redirects: evidence.redirects }];
+  if (id.endsWith("redirect.loop.detected")) { const visited = evidence.redirects.map((item) => normalizeComparableUrl(item.url)); return [new Set(visited).size === visited.length ? "pass" : "fail", { redirects: evidence.redirects }]; }
+  if (id.endsWith("robots.txt.file.reachable")) return [ok(evidence.robots) ? "pass" : "warning", { status: evidence.robots.status, error: evidence.robots.error }];
+  if (id.endsWith("robots.txt.contains.readable.text")) return [!ok(evidence.robots) ? "not_applicable" : evidence.robots.body.trim() ? "pass" : "warning", { characters: evidence.robots.body.trim().length }];
+  if (id.endsWith("robots.txt.parsing.errors.detected")) { const malformed = evidence.robots.body.split(/\r?\n/).filter((line) => line.trim() && !line.trim().startsWith("#") && !/^[a-z-]+\s*:/i.test(line)); return [!ok(evidence.robots) ? "not_applicable" : malformed.length ? "warning" : "pass", { malformedLines: malformed.slice(0, 10) }]; }
+  const robotsAgent = id.includes("bingbot") ? "Bingbot" : id.includes("oai.searchbot") ? "OAI-SearchBot" : id.includes("gptbot") ? "GPTBot" : id.includes("claude.searchbot") ? "Claude-SearchBot" : id.includes("claudebot") ? "ClaudeBot" : id.includes("googlebot") ? "Googlebot" : null;
+  if (robotsAgent && id.includes("allowed.by") || robotsAgent && id.includes("robots.access")) { const decision = robotsDecision(evidence.robots.body, robotsAgent!, analysis.url.pathname); return [!ok(evidence.robots) ? "not_applicable" : decision.allowed ? "pass" : "warning", { userAgent: robotsAgent, path: analysis.url.pathname, ...decision }]; }
+  if (id.includes("explicit.chatgpt.user.robots.rules")) { const detected = /^\s*user-agent\s*:\s*chatgpt-user\s*$/im.test(evidence.robots.body); return [!ok(evidence.robots) ? "not_applicable" : "informational", { detected }]; }
+  if (id.includes("explicit.claude.user.robots.rules")) { const detected = /^\s*user-agent\s*:\s*claude-user\s*$/im.test(evidence.robots.body); return [!ok(evidence.robots) ? "not_applicable" : "informational", { detected }]; }
+  if (id.includes("ai.search.and.training.crawler.permissions.differ")) { const search = robotsDecision(evidence.robots.body, "OAI-SearchBot", analysis.url.pathname); const training = robotsDecision(evidence.robots.body, "GPTBot", analysis.url.pathname); return [!ok(evidence.robots) ? "not_applicable" : "informational", { differ: search.allowed !== training.allowed, searchAllowed: search.allowed, trainingAllowed: training.allowed }]; }
+  if (id.includes("ai.crawler.rules.inherited.from.wildcard")) { const agents = ["OAI-SearchBot", "GPTBot", "Claude-SearchBot", "ClaudeBot"]; return [!ok(evidence.robots) ? "not_applicable" : "informational", { inherited: agents.filter((agent) => robotsDecision(evidence.robots.body, agent, analysis.url.pathname).inheritedFromWildcard) }]; }
+  if (id.endsWith("sitemap.url.declared.in.robots.txt")) { const declared = [...evidence.robots.body.matchAll(/^\s*sitemap\s*:\s*(\S+)/gim)].map((match) => match[1]); return [!ok(evidence.robots) ? "not_applicable" : declared.length ? "pass" : "warning", { declared }]; }
+  if (id.endsWith("conventional.sitemap.locations.checked")) return ["informational", { checked: evidence.sitemaps.map((item) => ({ url: item.url, status: item.status, error: item.error })) }];
+  if (id.endsWith("referenced.xml.sitemap.reachable")) return [evidence.sitemaps.length ? evidence.sitemaps.some(ok) ? "pass" : "warning" : "not_applicable", { checked: evidence.sitemaps.map((item) => ({ url: item.url, status: item.status })) }];
+  if (id.endsWith("referenced.sitemap.xml.valid")) { const reachable = evidence.sitemaps.filter(ok); return [!reachable.length ? "not_applicable" : reachable.every((item) => /<(?:urlset|sitemapindex)\b/i.test(item.body)) ? "pass" : "warning", { checked: reachable.map((item) => item.url) }]; }
+  if (id.endsWith("selected.page.found.in.checked.sitemap.files")) return [!evidence.sitemaps.some(ok) ? "not_applicable" : urlsInSitemaps.some((url) => normalizeComparableUrl(url) === selected) ? "pass" : "warning", { selected: response.url, sitemapUrlsChecked: urlsInSitemaps.length }];
+  if (id.endsWith("sitemap.lastmod.date.formats.valid")) return [!sitemapLastmods.length ? "not_applicable" : sitemapLastmods.every((value) => Number.isFinite(Date.parse(value))) ? "pass" : "warning", { values: sitemapLastmods.slice(0, 20) }];
+  if (id.endsWith("returned.dns.record.ttls.recorded")) return [evidence.dnsRecords.length ? "informational" : "unable_to_test", { records: evidence.dnsRecords.map(({ type, ttl }) => ({ type, ttl })), errors: evidence.dnsErrors }];
+  if (id.endsWith("selected.hostname.resolves.successfully")) return [records("A").length || records("AAAA").length ? "pass" : "fail", { a: records("A"), aaaa: records("AAAA") }];
+  if (id.endsWith("ipv4.addresses.recorded")) return ["informational", { records: records("A", apex) }];
+  if (id.endsWith("ipv6.addresses.recorded")) return ["informational", { records: records("AAAA", apex) }];
+  if (id.endsWith("returned.cname.records.recorded")) return ["informational", { records: records("CNAME", apex) }];
+  if (id.endsWith("non.existent.hostname.response.detected")) { const probe = records("A", `claritude-nxdomain-probe.${apex}`); return [probe.length ? "warning" : "pass", { records: probe }]; }
+  if (id.endsWith("apex.domain.resolution.checked")) return [records("A", apex).length || records("AAAA", apex).length ? "pass" : "fail", { a: records("A", apex), aaaa: records("AAAA", apex) }];
+  if (id.endsWith("www.hostname.resolution.checked")) return [records("A", `www.${apex}`).length || records("AAAA", `www.${apex}`).length ? "pass" : "warning", { a: records("A", `www.${apex}`), aaaa: records("AAAA", `www.${apex}`) }];
+  if (id.endsWith("mail.exchange.records.detected")) return [records("MX", apex).length ? "informational" : "not_applicable", { records: records("MX", apex) }];
+  if (id.endsWith("domain.nameservers.recorded")) return [records("NS", apex).length ? "informational" : "warning", { records: records("NS", apex) }];
+  if (id.endsWith("domain.soa.record.recorded")) return [records("SOA", apex).length ? "informational" : "warning", { records: records("SOA", apex) }];
+  if (id.endsWith("dns.resolver.errors.detected")) return [evidence.dnsErrors.length ? "warning" : "pass", { errors: evidence.dnsErrors }];
+  if (id.endsWith("dnssec.validation.status.reported.by.the.resolver")) return ["informational", { authenticatedData: evidence.dnsAuthenticated }];
+  const spf = records("TXT", apex).filter((record) => /v=spf1/i.test(record.data));
+  if (id.endsWith("spf.record.detected")) return [spf.length ? "pass" : "warning", { records: spf }];
+  if (id.endsWith("multiple.spf.records.detected")) return [spf.length <= 1 ? "pass" : "warning", { count: spf.length }];
+  const dmarc = records("TXT", `_dmarc.${apex}`).filter((record) => /v=dmarc1/i.test(record.data));
+  if (id.endsWith("dmarc.record.detected")) return [dmarc.length ? "pass" : "warning", { records: dmarc }];
+  if (id.endsWith("dmarc.policy.recorded")) return [!dmarc.length ? "not_applicable" : dmarc.some((record) => /\bp\s*=\s*(none|quarantine|reject)/i.test(record.data)) ? "pass" : "warning", { records: dmarc }];
+  if (id.endsWith("caa.certificate.authority.restrictions.detected")) return ["informational", { records: records("CAA", apex) }];
+  if (id.endsWith("llms.txt.file.reachable")) return [ok(evidence.llms) ? "pass" : "not_applicable", { status: evidence.llms.status, error: evidence.llms.error }];
+  if (id.endsWith("llms.txt.returned.as.readable.text")) return [!ok(evidence.llms) ? "not_applicable" : evidence.llms.body.trim() ? "pass" : "warning", { characters: evidence.llms.body.trim().length, contentType: evidence.llms.contentType }];
+  if (id.endsWith("llms.txt.title.detected")) return [!ok(evidence.llms) ? "not_applicable" : /^#\s+\S+/m.test(evidence.llms.body) ? "pass" : "warning", { title: evidence.llms.body.match(/^#\s+(.+)$/m)?.[1] || null }];
+  if (id.endsWith("llms.txt.summary.detected")) return [!ok(evidence.llms) ? "not_applicable" : evidence.llms.body.split(/\r?\n/).some((line) => line.trim() && !line.trim().startsWith("#") && !/^[-*]\s|^\[/.test(line.trim())) ? "pass" : "warning", {}];
+  if (id.endsWith("llms.txt.markdown.links.parse.correctly")) { const invalid = markdownLinks.filter((link) => { try { new URL(link, analysis.url); return false; } catch { return true; } }); return [!ok(evidence.llms) ? "not_applicable" : invalid.length ? "warning" : "pass", { links: markdownLinks.length, invalid }]; }
+  if (id.endsWith("llms.txt.links.checked.within.the.request.limit")) return [!ok(evidence.llms) ? "not_applicable" : "informational", { discovered: markdownLinks.length, requestLimit: 20 }];
+  if (id.endsWith("selected.page.referenced.in.checked.llms.txt.links")) return [!ok(evidence.llms) ? "not_applicable" : markdownLinks.some((link) => normalizeComparableUrl(new URL(link, analysis.url).href) === selected) ? "pass" : "informational", { selected: response.url, links: markdownLinks.length }];
+  if (id.endsWith("llms.full.txt.file.reachable")) return [ok(evidence.llmsFull) ? "pass" : "not_applicable", { status: evidence.llmsFull.status, error: evidence.llmsFull.error }];
+  if (id.endsWith("llms.full.txt.returned.as.readable.text")) return [!ok(evidence.llmsFull) ? "not_applicable" : evidence.llmsFull.body.trim() ? "pass" : "warning", { characters: evidence.llmsFull.body.trim().length, contentType: evidence.llmsFull.contentType }];
+  return null;
+}
+
+function normalizeComparableUrl(value: string) {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    url.search = "";
+    return `${canonicalPropertyHost(url.hostname)}${url.pathname.replace(/\/+$/, "") || "/"}`.toLowerCase();
+  } catch {
+    return value.toLowerCase();
+  }
+}
+
 export function auditCheckHasExecutableLogic(id: string) {
-  if (EXPLICIT_SOURCE_CHECK_IDS.has(id)) return true;
+  if (EXPLICIT_SOURCE_CHECK_IDS.has(id) || CONTEXT_AUDIT_CHECK_IDS.has(id)) return true;
   const definition = registry(id);
   if (!definition || !["source_html", "network"].includes(definition.executionMethod)) return false;
   const html = "<!doctype html><html lang=\"en\"><head><title>Probe</title></head><body><main>Probe content for evaluator capability detection.</main></body></html>";
@@ -2152,8 +2518,11 @@ function evaluateStaticCheck(
   if (id.includes("x.robots.tag")) return ["informational", { value: res.headers.get("x-robots-tag") }];
   if (id.includes("noindex.directive")) return result(!/\bnoindex\b/i.test(`${meta("robots") || ""} ${res.headers.get("x-robots-tag") || ""}`), {}, "warning");
   if (id.includes("nofollow.directive")) return result(!/\bnofollow\b/i.test(`${meta("robots") || ""} ${res.headers.get("x-robots-tag") || ""}`), {}, "warning");
+  if (id.includes("conflicting.indexing.directives")) { const directives = `${meta("robots") || ""} ${res.headers.get("x-robots-tag") || ""}`; const conflicting = (/\bindex\b/i.test(directives) && /\bnoindex\b/i.test(directives)) || (/\bfollow\b/i.test(directives) && /\bnofollow\b/i.test(directives)); return result(!conflicting, { directives }, "warning"); }
   if (id.includes("empty.h1")) return result(!/<h1\b[^>]*>\s*<\/h1>/i.test(html), {}, "warning");
   if (id.includes("empty.h2.to.h6")) return result(!/<h[2-6]\b[^>]*>\s*<\/h[2-6]>/i.test(html), {}, "warning");
+  if (id.includes("skipped.heading.levels")) { const levels = [...html.matchAll(/<h([1-6])\b/gi)].map((match) => Number(match[1])); const skipped = levels.some((level, index) => index > 0 && level > levels[index - 1] + 1); return result(!skipped, { levels }, "warning"); }
+  if (id.includes("repeated.heading.text")) { const headings = [...html.matchAll(/<h[1-6]\b[^>]*>([\s\S]*?)<\/h[1-6]>/gi)].map((match) => stripText(match[1]).toLowerCase()).filter(Boolean); const repeated = [...new Set(headings.filter((value, index) => headings.indexOf(value) !== index))]; return result(!repeated.length, { repeated }, "warning"); }
   if (id.includes("main.content.landmark.present")) return result(present(/<main\b|role=["']main["']/i), {});
   if (id.includes("multiple.main.content")) return result(count(/<main\b|role=["']main["']/gi) <= 1, { count: count(/<main\b|role=["']main["']/gi) }, "warning");
   if (id.includes("main.content.contains.extractable.text") || id.includes("machine.readable.text")) return result(a.text.length >= 100, { textLength: a.text.length }, "warning");
@@ -2176,12 +2545,16 @@ function evaluateStaticCheck(
   if (id.includes("sponsored.link")) return ["informational", { count: a.links.filter((x) => /rel=["'][^"']*sponsored/i.test(x.tag)).length }];
   if (id.includes("user.generated.content")) return ["informational", { count: a.links.filter((x) => /rel=["'][^"']*ugc/i.test(x.tag)).length }];
   if (id.includes("checked.and.unchecked.link.totals")) return ["informational", { total: a.links.length, checked: 0, unchecked: a.links.length }];
+  if (id.includes("navigation.landmarks.have.distinguishable.accessible.names")) { const landmarks = [...html.matchAll(/<(?:nav|[^>]+role=["']navigation["'])\b[^>]*>/gi)].map((match) => match[0]); const names = landmarks.map((tag) => a.attr(tag, "aria-label") || a.attr(tag, "aria-labelledby") || "").filter(Boolean); return [landmarks.length < 2 ? "not_applicable" : names.length === landmarks.length && new Set(names).size === names.length ? "pass" : "warning", { landmarks: landmarks.length, names }]; }
 
   if (id.includes("images.contain.alt")) return result(a.images.every((x) => x.alt !== null), { total: a.images.length, missing: a.images.filter((x) => x.alt === null).length });
   if (id.includes("empty.alt.attributes")) return ["informational", { count: a.images.filter((x) => x.alt === "").length }];
   if (id.includes("alt.text.repeats.image.filenames")) { const found = a.images.filter((x) => x.alt && x.src && x.src.split('/').pop()?.split('.')[0].toLowerCase() === x.alt.toLowerCase()); return result(!found.length, { count: found.length }, "warning"); }
   if (id.includes("image.width.and.height.attributes")) return result(a.images.every((x) => x.width && x.height), { total: a.images.length, complete: a.images.filter((x) => x.width && x.height).length }, "warning");
+  if (id.includes("images.marked.decorative.remain.focusable")) { const found = count(/<(?:a|button)\b[^>]*>[\s\S]{0,500}?<img\b[^>]*alt=["']{2}[^>]*>/gi); return result(!found, { count: found }, "warning"); }
+  if (id.includes("image.intrinsic.dimensions.recorded")) return ["informational", { images: a.images.map((image) => ({ src: image.src, width: image.width, height: image.height })).slice(0, 50) }];
   if (id.includes("responsive.srcset.declarations")) return ["informational", { count: a.images.filter((x) => x.srcset).length }];
+  if (id.includes("invalid.srcset.descriptors")) { const invalid = a.images.filter((image) => image.srcset && image.srcset.split(",").some((candidate) => { const descriptor = candidate.trim().split(/\s+/)[1]; return descriptor && !/^\d+(?:\.\d+)?[wx]$/.test(descriptor); })); return result(!invalid.length, { count: invalid.length }, "warning"); }
   if (id.includes("image.formats.recorded")) return ["informational", { formats: [...new Set(a.images.map((x) => x.src?.split('.').pop()?.split('?')[0]).filter(Boolean))] }];
   if (id.includes("videos.contain.caption")) { const videos = count(/<video\b/gi), captions = count(/<track[^>]+kind=["']captions/i); return [!videos ? "not_applicable" : captions >= videos ? "pass" : "warning", { videos, captions }]; }
   if (id.includes("autoplaying.media")) { const found = count(/<(?:video|audio)[^>]+autoplay/gi); return result(!found, { count: found }, "warning"); }
@@ -2189,6 +2562,13 @@ function evaluateStaticCheck(
 
   if (id.includes("buttons.have.accessible.names")) { const buttons = [...html.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/gi)]; const bad = buttons.filter((x) => !stripText(x[2]) && !/aria-label=["'][^"']+/i.test(x[1])); return result(!bad.length, { total: buttons.length, unnamed: bad.length }); }
   if (id.includes("form.inputs.have.accessible.labels") || id.includes("select.controls.have.accessible.labels") || id.includes("textareas.have.accessible.labels")) { const tag = id.includes('select') ? 'select' : id.includes('textarea') ? 'textarea' : 'input'; const controls = a.tags(tag).filter((x) => !/type=["'](?:hidden|submit|button)["']/i.test(x)); const bad = controls.filter((x) => { const ident = a.attr(x,'id'); return !a.attr(x,'aria-label') && !a.attr(x,'aria-labelledby') && !(ident && new RegExp(`<label[^>]+for=["']${ident}["']`,'i').test(html)); }); return result(!bad.length, { total: controls.length, unlabeled: bad.length }); }
+  if (id.includes("form.labels.reference.existing.controls")) { const references = [...html.matchAll(/<label[^>]+for=["']([^"']+)["']/gi)].map((match) => match[1]); const missing = references.filter((value) => !a.ids.includes(value)); return result(!missing.length, { references: references.length, missing }, "warning"); }
+  if (id.includes("multiple.labels.for.the.same.control")) { const references = [...html.matchAll(/<label[^>]+for=["']([^"']+)["']/gi)].map((match) => match[1]); const repeated = [...new Set(references.filter((value, index) => references.indexOf(value) !== index))]; return result(!repeated.length, { repeated }, "warning"); }
+  if (id.includes("aria.references.point.to.existing.elements")) { const references = [...html.matchAll(/\baria-(?:labelledby|describedby|controls|owns|activedescendant)=["']([^"']+)["']/gi)].flatMap((match) => match[1].trim().split(/\s+/)); const missing = references.filter((value) => !a.ids.includes(value)); return result(!missing.length, { references: references.length, missing: [...new Set(missing)] }, "warning"); }
+  if (id.includes("nested.interactive.controls")) { const nested = count(/<(?:a|button)\b[^>]*>[\s\S]{0,2000}?<(?:a|button|input|select|textarea)\b/gi); return result(!nested, { count: nested }, "warning"); }
+  if (id.includes("definition.lists.have.valid.structure")) { const lists = [...html.matchAll(/<dl\b[^>]*>([\s\S]*?)<\/dl>/gi)]; const invalid = lists.filter((match) => /<(?!\/?(?:dt|dd)\b)[a-z][^>]*>/i.test(match[1].replace(/<(?:dt|dd)\b[^>]*>[\s\S]*?<\/(?:dt|dd)>/gi, ""))); return result(!invalid.length, { lists: lists.length, invalid: invalid.length }, "warning"); }
+  if (id.includes("lists.contain.valid.list.items")) { const lists = [...html.matchAll(/<(?:ul|ol)\b[^>]*>([\s\S]*?)<\/(?:ul|ol)>/gi)]; const invalid = lists.filter((match) => /<(?!\/?li\b)[a-z][^>]*>/i.test(match[1].replace(/<li\b[^>]*>[\s\S]*?<\/li>/gi, ""))); return result(!invalid.length, { lists: lists.length, invalid: invalid.length }, "warning"); }
+  if (id.includes("svg.elements.requiring.accessible.names.have.names")) { const svgs = [...html.matchAll(/<svg\b([^>]*)>([\s\S]*?)<\/svg>/gi)]; const unnamed = svgs.filter((match) => !/aria-label=["'][^"']+|aria-labelledby=["'][^"']+/i.test(match[1]) && !/<title\b[^>]*>\s*[^<]+/i.test(match[2])); return result(!unnamed.length, { total: svgs.length, unnamed: unnamed.length }, "warning"); }
   if (id.includes("duplicate.ids.used")) return result(!a.duplicateIds.length, { duplicateIds: a.duplicateIds }, "warning");
   if (id.includes("positive.tabindex")) { const found = count(/tabindex=["'][1-9]\d*["']/gi); return result(!found, { count: found }, "warning"); }
   if (id.includes("meta.refresh")) { const found = present(/<meta[^>]+http-equiv=["']refresh["']/i); return result(!found, { detected: found }, "warning"); }
@@ -2201,6 +2581,7 @@ function evaluateStaticCheck(
   if (id.includes("static.resource.cache.directives")) return ["informational", { cacheControl: res.headers.get('cache-control') }];
   if (id.includes("resource.preload.declarations")) return ["informational", { count: count(/<link[^>]+rel=["'][^"']*preload/gi) }];
   if (id.includes("font.display.declarations")) return ["informational", { declarations: count(/font-display\s*:/gi) }];
+  if (id.includes("total.resource.request.count.measured")) return ["informational", { resources: count(/<(?:script|img|iframe|source)\b[^>]+(?:src|srcset)=|<link\b[^>]+href=/gi) }];
 
   if (id.includes("strict.transport.security.directives")) return result(/^max-age=\d+/i.test(res.headers.get('strict-transport-security') || ''), { value: res.headers.get('strict-transport-security') }, "warning");
   if (id.includes("content.security.policy.is.report.only")) return ["informational", { reportOnly: res.headers.has('content-security-policy-report-only') }];
@@ -2210,8 +2591,11 @@ function evaluateStaticCheck(
   if (id.includes("x.content.type.options.header.present")) return result(res.headers.has('x-content-type-options'), {});
   if (id.includes("x.content.type.options.set.to.nosniff")) return result((res.headers.get('x-content-type-options') || '').toLowerCase() === 'nosniff', { value: res.headers.get('x-content-type-options') });
   if (id.includes("referrer.policy.declared")) return result(res.headers.has('referrer-policy') || !!meta('referrer'), {});
+  if (id.includes("referrer.policy.value.recognised")) { const value = (res.headers.get('referrer-policy') || meta('referrer') || '').trim().toLowerCase(); const valid = new Set(['no-referrer','no-referrer-when-downgrade','origin','origin-when-cross-origin','same-origin','strict-origin','strict-origin-when-cross-origin','unsafe-url']); return [!value ? "not_applicable" : valid.has(value) ? "pass" : "warning", { value }]; }
   if (id.includes("permissions.policy.header.present")) return result(res.headers.has('permissions-policy'), {}, "warning");
   if (id.includes("insecure.form.submission")) { const found = count(/<form[^>]+action=["']http:\/\//gi); return result(!found, { count: found }); }
+  if (id.includes("active.mixed.content.requests")) { const found = count(/<(?:script|link|iframe|img|audio|video|source)\b[^>]+(?:src|href)=["']http:\/\//gi); return result(!found, { count: found }, "warning"); }
+  if (id.includes("password.fields.appear.on.an.http.page")) { const fields = count(/<input\b[^>]+type=["']password["']/gi); return [!fields ? "not_applicable" : a.url.protocol === "https:" ? "pass" : "fail", { fields, protocol: a.url.protocol }]; }
 
   if (id.includes("server.software.header")) return ["informational", { value: res.headers.get('server') }];
   if (id.includes("technology.disclosure.headers")) return ["informational", { poweredBy: res.headers.get('x-powered-by'), generator: meta('generator') }];
@@ -2226,6 +2610,14 @@ function evaluateStaticCheck(
 
   if (id.includes("json.ld.blocks.detected")) return ["informational", { count: a.jsonLd.length }];
   if (id.includes("json.ld.syntax.valid")) { const invalid = a.jsonLd.filter((x) => { try { JSON.parse(x); return false; } catch { return true; } }); return result(!invalid.length, { total: a.jsonLd.length, invalid: invalid.length }); }
+  if (id.includes("structured.data.url.identifiers.use.valid.formats") || id.includes("structured.data.url.properties.use.valid.formats")) { const values = [...a.jsonLd.join('\n').matchAll(/["'](?:@id|url)["']\s*:\s*["']([^"']+)/gi)].map((match) => match[1]); const invalid = values.filter((value) => { try { new URL(value, a.url); return false; } catch { return true; } }); return result(!invalid.length, { values: values.length, invalid }, "warning"); }
+  if (id.includes("structured.data.dates.use.valid.formats")) { const values = [...a.jsonLd.join('\n').matchAll(/["'](?:datePublished|dateModified|startDate|endDate)["']\s*:\s*["']([^"']+)/gi)].map((match) => match[1]); const invalid = values.filter((value) => !Number.isFinite(Date.parse(value))); return result(!invalid.length, { values, invalid }, "warning"); }
+  if (id.includes("structured.data.page.url.matches.the.selected.url")) { const values = [...a.jsonLd.join('\n').matchAll(/["']url["']\s*:\s*["']([^"']+)/gi)].map((match) => match[1]); return [!values.length ? "not_applicable" : values.some((value) => normalizeComparableUrl(new URL(value, a.url).href) === normalizeComparableUrl(a.url.href)) ? "pass" : "warning", { selected: a.url.href, values }]; }
+  if (id.includes("organisation.website.declared")) return [!/Organization["']/i.test(a.jsonLd.join('\n')) ? "not_applicable" : /["']url["']\s*:/i.test(a.jsonLd.join('\n')) ? "pass" : "warning", {}];
+  if (id.includes("breadcrumb.items.have.names.and.positions")) { const data = a.jsonLd.join('\n'); return [!/BreadcrumbList["']/i.test(data) ? "not_applicable" : /["']name["']\s*:/i.test(data) && /["']position["']\s*:/i.test(data) ? "pass" : "warning", {}]; }
+  if (id.includes("breadcrumb.positions.form.a.consistent.sequence")) { const positions = [...a.jsonLd.join('\n').matchAll(/["']position["']\s*:\s*(\d+)/gi)].map((match) => Number(match[1])); return [!positions.length ? "not_applicable" : positions.every((value, index) => value === index + 1) ? "pass" : "warning", { positions }]; }
+  if (id.includes("declared.product.price.formats.valid")) { const values = [...a.jsonLd.join('\n').matchAll(/["']price["']\s*:\s*["']?([^,"'}\s]+)/gi)].map((match) => match[1]); return [!values.length ? "not_applicable" : values.every((value) => /^\d+(?:\.\d+)?$/.test(value)) ? "pass" : "warning", { values }]; }
+  if (id.includes("declared.product.currency.codes.valid")) { const values = [...a.jsonLd.join('\n').matchAll(/["']priceCurrency["']\s*:\s*["']([^"']+)/gi)].map((match) => match[1]); return [!values.length ? "not_applicable" : values.every((value) => /^[A-Z]{3}$/.test(value)) ? "pass" : "warning", { values }]; }
   if (id.includes("schema.org.types.identified")) { const types = [...html.matchAll(/["']@type["']\s*:\s*["']([^"']+)/gi)].map((x) => x[1]); return ["informational", { types }]; }
   if (id.includes("structured.data.context.declared")) return result(!a.jsonLd.length || a.jsonLd.every((x) => /["']@context["']\s*:/i.test(x)), { blocks: a.jsonLd.length }, "warning");
   if (id.includes("organisation.name.declared")) return [!a.jsonLd.length ? "not_applicable" : /["']@type["']\s*:\s*["']Organization["'][\s\S]*?["']name["']\s*:/i.test(a.jsonLd.join('\n')) ? "pass" : "warning", {}];
@@ -2246,12 +2638,21 @@ function evaluateStaticCheck(
   if (id.includes("favicon.declared")) return result(!!linkRel('icon'), { value: linkRel('icon') }, "warning");
   if (id.includes("apple.touch.icon.declared")) return result(!!linkRel('apple-touch-icon'), { value: linkRel('apple-touch-icon') }, "warning");
   if (id.includes("web.app.manifest.linked")) return result(!!linkRel('manifest'), { value: linkRel('manifest') }, "warning");
+  if (id.includes("open.graph.url.agrees.with.the.canonical.url")) { const og = meta('og:url'), canonical = linkRel('canonical'); return [!og || !canonical ? "not_applicable" : normalizeComparableUrl(new URL(og, a.url).href) === normalizeComparableUrl(new URL(canonical, a.url).href) ? "pass" : "warning", { openGraphUrl: og, canonical }]; }
+  if (id.includes("conflicting.duplicate.social.metadata")) { const values = [...html.matchAll(/<meta[^>]+(?:property|name)=["'](og:[^"']+|twitter:[^"']+)["'][^>]+content=["']([^"']*)/gi)].map((match) => `${match[1].toLowerCase()}=${match[2]}`); const keys = values.map((value) => value.split('=')[0]); const conflicts = [...new Set(keys.filter((key, index) => keys.indexOf(key) !== index))]; return result(!conflicts.length, { conflicts }, "warning"); }
 
   if (id.includes("main.content.organised.under.semantic.headings")) return result(count(/<h[1-6]\b/gi) > 0, { headings: count(/<h[1-6]\b/gi) }, "warning");
   if (id.includes("tables.available.in.machine")) return ["informational", { tables: count(/<table\b/gi) }];
   if (id.includes("external.source.links.present")) { const external = a.links.filter((x) => { try { return new URL(x.href || '', a.url).hostname !== a.url.hostname; } catch { return false; } }); return ["informational", { count: external.length }]; }
   if (id.includes("machine.readable.organisation.identity")) return result(/Organization["']/i.test(a.jsonLd.join('\n')), {}, "warning");
   if (id.includes("machine.readable.author.identity")) return result(/["']author["']\s*:/i.test(a.jsonLd.join('\n')), {}, "warning");
+  if (id.includes("publisher.attribution")) return [!a.jsonLd.length ? "not_applicable" : /["']publisher["']\s*:/i.test(a.jsonLd.join('\n')) ? "pass" : "warning", {}];
+  if (id.includes("entity.sameas.references.use.valid.url.formats")) { const values = [...a.jsonLd.join('\n').matchAll(/["']sameAs["']\s*:\s*(?:\[([^\]]*)\]|["']([^"']+))/gi)].flatMap((match) => [...`${match[1] || match[2] || ''}`.matchAll(/["']([^"']+)["']/g)].map((item) => item[1])); const invalid = values.filter((value) => { try { new URL(value); return false; } catch { return true; } }); return result(!invalid.length, { values: values.length, invalid }, "warning"); }
+  if (id.includes("nosnippet.restrictions")) return result(!/\bnosnippet\b/i.test(`${meta('robots') || ''} ${res.headers.get('x-robots-tag') || ''}`), {}, "warning");
+  if (id.includes("max.snippet.restrictions")) return ["informational", { value: `${meta('robots') || ''} ${res.headers.get('x-robots-tag') || ''}`.match(/max-snippet\s*:\s*-?\d+/i)?.[0] || null }];
+  if (id.includes("data.nosnippet.sections")) return ["informational", { count: count(/\bdata-nosnippet\b/gi) }];
+  if (id.includes("login.requirement.encountered")) { const detected = res.status === 401 || res.status === 403 || /<input\b[^>]+type=["']password["']/i.test(html); return result(!detected, { status: res.status, passwordField: /<input\b[^>]+type=["']password["']/i.test(html) }, "warning"); }
+  if (id.includes("bot.challenge.encountered")) { const detected = /captcha|cf-chl-|challenge-platform|verify you are human/i.test(html); return result(!detected, { detected }, "warning"); }
   return null;
 }
 
@@ -2680,7 +3081,7 @@ export function buildAnalyticsSummary(
         daySessions.add(event.metadata.session);
         dailySessions.set(day, daySessions);
       }
-      if (viewId && event.metadata?.tracker_version === TRACKER_VERSION && !views.has(viewId)) {
+      if (viewId && SUPPORTED_TRACKER_VERSIONS.has(event.metadata?.tracker_version) && !views.has(viewId)) {
         views.set(viewId, {
           path,
           activeSeconds: 0,
@@ -2711,7 +3112,7 @@ export function buildAnalyticsSummary(
     }
     if (event.event_type === "visible_section" && event.name && viewId && views.has(viewId))
       views.get(viewId)!.visibleSections.add(String(event.name));
-    if (event.event_type === "web_vital" && event.name && Number.isFinite(event.value) && event.metadata?.tracker_version === TRACKER_VERSION) {
+    if (event.event_type === "web_vital" && event.name && Number.isFinite(event.value) && SUPPORTED_TRACKER_VERSIONS.has(event.metadata?.tracker_version)) {
       const name = String(event.name).toUpperCase();
       const samples = vitals.get(name) || [];
       samples.push(Number(event.value));
@@ -2845,7 +3246,7 @@ export function buildAnalyticsSummary(
       goodExperiencesPercent: goodVitalViews.length
         ? (goodExperiences / goodVitalViews.length) * 100
         : null,
-      minimumSamples: 75,
+      minimumSamples: 1,
       method: "p75",
       collectionStatus: vitalRows.length ? "available" : "versioned_web_vitals_unavailable",
       trackerVersion: TRACKER_VERSION,
@@ -3078,8 +3479,12 @@ async function assertPublicResolution(hostname: string) {
   if (addresses.some(isPrivateHost)) throw new Error("Target resolved to a private address");
 }
 async function safeFetch(value: string, init: RequestInit = {}) {
+  return (await safeFetchTrace(value, init)).response;
+}
+async function safeFetchTrace(value: string, init: RequestInit = {}) {
   let url = validPublicUrl(value);
   if (!url) throw new Error("Target must be a public HTTP or HTTPS URL");
+  const redirects: { url: string; status: number; location: string }[] = [];
   for (let i = 0; i < 5; i++) {
     await assertPublicResolution(url.hostname);
     const response = await fetch(url, {
@@ -3087,9 +3492,12 @@ async function safeFetch(value: string, init: RequestInit = {}) {
       redirect: "manual",
       signal: init.signal || AbortSignal.timeout(15000),
     });
-    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    if (![301, 302, 303, 307, 308].includes(response.status))
+      return { response, redirects };
+    const location = response.headers.get("location") || "";
+    redirects.push({ url: url.href, status: response.status, location });
     const next = validPublicUrl(
-      new URL(response.headers.get("location") || "", url).href,
+      new URL(location, url).href,
     );
     if (!next) throw new Error("Redirect target is not permitted");
     url = next;
@@ -3499,26 +3907,28 @@ function renderReportEmail(snapshot: any) {
 const TRACKER_SOURCE = `(()=>{
   const s=document.currentScript,p=s&&s.dataset.property,endpoint=s&&new URL('/collect',s.src).href,base=s&&new URL('/',s.src).href;
   if(!p||!endpoint||window.__claritude)return;window.__claritude=1;
-  let q=[],timer,lastUrl=location.href,view=crypto.randomUUID(),generation=0,active=0,reportedActive=0,lastActivity=Date.now(),errorCount=0,vitalsReady=null;
+  const uuid=()=>{try{return crypto.randomUUID()}catch{const b=new Uint8Array(16);try{crypto.getRandomValues(b)}catch{for(let i=0;i<b.length;i++)b[i]=Math.floor(Math.random()*256)}b[6]=b[6]&15|64;b[8]=b[8]&63|128;return[...b].map((x,i)=>(i===4||i===6||i===8||i===10?'-':'')+x.toString(16).padStart(2,'0')).join('')}};
+  let q=[],timer,retryTimer,retryDelay=1000,sending=false,lastUrl=location.href,view=uuid(),generation=0,active=0,reportedActive=0,lastActivity=Date.now(),errorCount=0,vitalsReady=null;
   const marks=new Set,visibleSections=new Set,observedSections=new WeakSet;
-  const session=sessionStorage.getItem('_claritude_session')||crypto.randomUUID();
+  const session=sessionStorage.getItem('_claritude_session')||uuid();
   sessionStorage.setItem('_claritude_session',session);
   const browser=/Edg\//.test(navigator.userAgent)?'Edge':/OPR\//.test(navigator.userAgent)?'Opera':/SamsungBrowser\//.test(navigator.userAgent)?'Samsung Internet':/Firefox\//.test(navigator.userAgent)?'Firefox':/Chrome\//.test(navigator.userAgent)?'Chrome':/Safari\//.test(navigator.userAgent)?'Safari':/MSIE|Trident/.test(navigator.userAgent)?'Internet Explorer':'Other';
   const common=()=>{const params=new URLSearchParams(location.search);return{session,view_id:view,browser,screen:innerWidth<768?'small':innerWidth<1280?'medium':'large',language:navigator.language||'',tracker_version:'${TRACKER_VERSION}',utm_source:params.get('utm_source')||'',utm_medium:params.get('utm_medium')||'',utm_campaign:params.get('utm_campaign')||'',utm_content:params.get('utm_content')||'',utm_term:params.get('utm_term')||''}};
-  const send=()=>{if(!q.length)return;const body=JSON.stringify(q.splice(0,20));if(navigator.sendBeacon&&document.visibilityState==='hidden')navigator.sendBeacon(endpoint,new Blob([body],{type:'application/json'}));else fetch(endpoint,{method:'POST',headers:{'content-type':'application/json'},body,keepalive:true}).catch(()=>{})};
-  const emit=(type,data={})=>{const supplied=data.meta&&typeof data.meta==='object'?data.meta:{};q.push({...data,type,property:p,path:location.pathname,referrer:document.referrer,at:new Date().toISOString(),device:innerWidth<768?'mobile':innerWidth<1024?'tablet':'desktop',meta:{...common(),...supplied,event_id:crypto.randomUUID()}});clearTimeout(timer);timer=setTimeout(send,500)};
+  const retry=()=>{if(retryTimer)return;retryTimer=setTimeout(()=>{retryTimer=0;send()},retryDelay);retryDelay=Math.min(retryDelay*2,30000)};
+  const send=async()=>{if(sending||!q.length)return;sending=true;const batch=q.splice(0,20),body=JSON.stringify(batch);try{if(navigator.sendBeacon&&document.visibilityState==='hidden'){if(!navigator.sendBeacon(endpoint,new Blob([body],{type:'application/json'})))throw new Error('beacon-rejected')}else{const response=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/json'},body,keepalive:true});if(!response.ok)throw new Error('collect-'+response.status)}retryDelay=1000}catch{q=batch.concat(q).slice(0,200);retry()}finally{sending=false;if(q.length&&!retryTimer){clearTimeout(timer);timer=setTimeout(send,500)}}};
+  const emit=(type,data={})=>{const supplied=data.meta&&typeof data.meta==='object'?data.meta:{};q.push({...data,type,property:p,path:location.pathname,referrer:document.referrer,at:new Date().toISOString(),device:innerWidth<768?'mobile':innerWidth<1024?'tablet':'desktop',meta:{...common(),...supplied,event_id:uuid()}});if(q.length>200)q=q.slice(-200);clearTimeout(timer);timer=setTimeout(send,500)};
   addEventListener('click',e=>{lastActivity=Date.now();const a=e.target.closest('[data-claritude-event],a[href]');if(!a)return;const name=a.dataset.claritudeEvent;if(name)emit('click',{name});if(a.href&&new URL(a.href,location.href).host!==location.host)emit('outbound',{name:new URL(a.href).host})},{passive:true});
   ['keydown','pointerdown','touchstart'].forEach(name=>addEventListener(name,()=>{lastActivity=Date.now()},{passive:true}));
   const checkScroll=()=>{const root=document.documentElement,height=Math.max(root.scrollHeight,document.body&&document.body.scrollHeight||0,1),n=Math.min(100,Math.round((scrollY+innerHeight)/height*100));[25,50,75,90].forEach(x=>{if(n>=x&&!marks.has(x)){marks.add(x);emit('scroll',{value:x})}})};
   addEventListener('scroll',checkScroll,{passive:true});addEventListener('resize',checkScroll,{passive:true});
   const reportActive=()=>{const delta=active-reportedActive;if(delta>0){reportedActive=active;emit('active_time',{value:delta})}};
-  const tick=setInterval(()=>{if(document.visibilityState==='visible'&&document.hasFocus()&&Date.now()-lastActivity<30000)active+=1;if(active-reportedActive>=30)reportActive()},1000);
+  const tick=setInterval(()=>{if(document.visibilityState==='visible'&&document.hasFocus()&&Date.now()-lastActivity<30000)active+=1;if(active-reportedActive>=5)reportActive()},1000);
   const sectionObserver='IntersectionObserver'in window?new IntersectionObserver(entries=>entries.forEach(entry=>{const name=entry.target.dataset.claritudeSection;if(entry.isIntersecting&&name&&!visibleSections.has(name)){visibleSections.add(name);emit('visible_section',{name})}}),{threshold:.5}):null;
   const observeSections=()=>{if(!sectionObserver)return;document.querySelectorAll('[data-claritude-section]').forEach(node=>{if(!observedSections.has(node)){observedSections.add(node);sectionObserver.observe(node)}})};
   const initVitals=()=>{if(!window.webVitals)return;const own=generation,record=metric=>{if(own===generation&&metric&&Number.isFinite(metric.value))emit('web_vital',{name:metric.name,value:metric.value,meta:{metric_id:metric.id,navigation_type:metric.navigationType}})};try{webVitals.onLCP(record)}catch{}try{webVitals.onINP(record)}catch{}try{webVitals.onCLS(record)}catch{}};
   const loadVitals=()=>vitalsReady||(vitalsReady=new Promise(resolve=>{if(window.webVitals){resolve();return}const script=document.createElement('script');script.src=new URL('/vendor/web-vitals.js',base).href;script.async=true;script.crossOrigin='anonymous';script.onload=resolve;script.onerror=resolve;document.head.appendChild(script)}));
   const page=()=>{const params=new URLSearchParams(location.search);emit('pageview',{source:params.get('utm_source')||''});observeSections();requestAnimationFrame(checkScroll);loadVitals().then(initVitals)};page();
-  const navigation=(forcedPath)=>{if(!forcedPath&&location.href===lastUrl)return;reportActive();send();lastUrl=location.href;view=crypto.randomUUID();generation+=1;active=0;reportedActive=0;lastActivity=Date.now();errorCount=0;marks.clear();visibleSections.clear();page()};
+  const navigation=(forcedPath)=>{if(!forcedPath&&location.href===lastUrl)return;reportActive();send();lastUrl=location.href;view=uuid();generation+=1;active=0;reportedActive=0;lastActivity=Date.now();errorCount=0;marks.clear();visibleSections.clear();page()};
   new MutationObserver(()=>{navigation();observeSections();checkScroll()}).observe(document,{subtree:true,childList:true});
   ['pushState','replaceState'].forEach(k=>{const original=history[k];history[k]=function(...args){const result=original.apply(this,args);queueMicrotask(()=>navigation());return result}});
   addEventListener('popstate',()=>navigation());

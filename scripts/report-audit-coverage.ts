@@ -36,7 +36,10 @@ const summary = {
   }])),
 };
 
-if (process.argv.includes("--csv")) {
+if (process.argv.includes("--gaps")) {
+  for (const row of rows.filter((row) => !row.executable))
+    console.log(`${row.collectionMethod}\t${row.id}`);
+} else if (process.argv.includes("--csv")) {
   const keys = Object.keys(rows[0]) as (keyof typeof rows[number])[];
   console.log(keys.join(","));
   for (const row of rows)
