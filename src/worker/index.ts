@@ -2278,19 +2278,29 @@ async function collectAuditNetworkEvidence(
   const dnsErrors: string[] = [];
   let dnsAuthenticated: boolean | null = null;
   const apex = canonicalPropertyHost(finalUrl.hostname);
-  for (const [query, type] of [
+  const dnsQueries = [
     [apex, "A"], [apex, "AAAA"], [apex, "CNAME"], [apex, "MX"],
     [apex, "TXT"], [apex, "CAA"], [apex, "NS"], [apex, "SOA"],
     [`www.${apex}`, "A"], [`www.${apex}`, "AAAA"],
     [`claritude-nxdomain-probe.${apex}`, "A"],
     [`_dmarc.${apex}`, "TXT"],
-  ] as const) {
+  ] as const;
+  const dnsAnswers = await Promise.all(dnsQueries.map(async ([query, type]) => {
     try {
       const dns = await queryDns(query, type);
-      dnsRecords.push(...dns.records);
-      if (query === apex && type === "A") dnsAuthenticated = dns.authenticated;
+      return { query, type, dns, error: null };
     } catch (error) {
-      dnsErrors.push(`${query} ${type}: ${errorMessage(error)}`);
+      return { query, type, dns: null, error: errorMessage(error) };
+    }
+  }));
+  for (const answer of dnsAnswers) {
+    if (answer.error) {
+      dnsErrors.push(`${answer.query} ${answer.type}: ${answer.error}`);
+      continue;
+    }
+    dnsRecords.push(...(answer.dns?.records || []));
+    if (answer.query === apex && answer.type === "A") {
+      dnsAuthenticated = answer.dns?.authenticated ?? null;
     }
   }
   return {
