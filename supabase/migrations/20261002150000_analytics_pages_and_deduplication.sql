@@ -80,3 +80,7 @@ grant execute on function public.analytics_pages_page(uuid,timestamptz,timestamp
 
 comment on function public.analytics_pages_page(uuid,timestamptz,timestamptz,integer,integer,text,text,text,text,text,text)
   is 'RLS-scoped, stably sorted server-side page analytics pagination.';
+
+insert into private.app_migrations(version, name, checksum)
+values ('20261002150000', 'analytics_pages_and_deduplication', 'self')
+on conflict (version) do nothing;
