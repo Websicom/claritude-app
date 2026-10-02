@@ -15,6 +15,17 @@ Current implementation coverage by declared collection method:
 | Lab | 3 | 0 | 3 |
 | **Total** | **306** | **126** | **180** |
 
+Current implementation coverage by score category:
+
+| Score category | Catalogue | Executable now |
+| --- | ---: | ---: |
+| SEO | 122 | 67 |
+| Accessibility | 62 | 19 |
+| Performance | 28 | 5 |
+| Security | 23 | 13 |
+| Infrastructure | 31 | 11 |
+| AI Readiness | 40 | 11 |
+
 The two checks declared as rendered-browser checks that execute today use reliable source evidence and do not claim browser-rendered evidence.
 
 ## Outcomes and denominators
@@ -28,6 +39,6 @@ The two checks declared as rendered-browser checks that execute today use reliab
 
 ## Check-by-check register
 
-Run `npm run audit:coverage` for the JSON register or `npm run audit:coverage -- --csv` for CSV. The authenticated endpoint `/api/properties/:propertyId/audit-coverage?runId=:runId` adds the actual persisted outcome, execution duration, and inability reason for a selected run.
+Run `npm run audit:coverage` for the JSON register, `npm run audit:coverage -- --csv` for CSV, or `npm run audit:coverage -- --summary` for compact totals. The authenticated endpoint `/api/properties/:propertyId/audit-coverage?runId=:runId` adds the actual persisted outcome, execution duration, and inability reason for a selected run.
 
 The register includes each stable identifier, title, detailed category, score-category mapping, scope, collection method, enabled state, implementation status, versions, and capability-gap reason.

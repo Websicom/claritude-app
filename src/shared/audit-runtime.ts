@@ -4,6 +4,12 @@ export type AuditRegistrySnapshot = {
   weight: number;
   logicVersion: string;
   configurationVersion: number;
+  primaryCategory?: string;
+  subcategory?: string;
+  severity?: string;
+  description?: string;
+  recommendation?: string;
+  sourceReference?: string;
 };
 
 export type AuditRegistryRow = {
@@ -12,6 +18,12 @@ export type AuditRegistryRow = {
   weight: number | string;
   logic_version: string;
   configuration_version: number;
+  primary_category?: string;
+  subcategory?: string;
+  severity?: string;
+  description?: string;
+  recommendation?: string;
+  source_reference?: string;
 };
 
 export type ScoredAuditResult = {
@@ -28,6 +40,12 @@ export function buildRegistrySnapshot(rows: AuditRegistryRow[], executableIds: R
       weight: Number(row.weight),
       logicVersion: row.logic_version,
       configurationVersion: row.configuration_version,
+      primaryCategory: row.primary_category,
+      subcategory: row.subcategory,
+      severity: row.severity,
+      description: row.description,
+      recommendation: row.recommendation,
+      sourceReference: row.source_reference,
     }));
 }
 

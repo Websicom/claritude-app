@@ -1485,6 +1485,18 @@ input[type="checkbox"]:checked:after {
     min-width: 0;
     flex: 1;
   }
+  .audit-run-meta { margin-left: 0; }
+  .audit-compare-selectors {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .audit-compare-selectors label {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .audit-compare-selectors select { width: 100%; }
+  .audit-compare-summary { grid-template-columns: 1fr 1fr; }
+  .audit-compare-summary > div:nth-child(even) { border-right: 0; }
   .onboarding-list,
   .onboarding-list.large {
     grid-template-columns: 1fr;
@@ -2118,6 +2130,8 @@ input[type="checkbox"]:checked:after {
 }
 .audit-summary-item {
   height: 34px;
+  margin: 0;
+  padding: 0 10px;
   border: 1px solid transparent;
   background: transparent;
   border-radius: 8px;
@@ -2384,6 +2398,50 @@ input[type="checkbox"]:checked:after {
 .audit-category-bar.unknown:before { display: none; }
 .audit-category-bar:hover { text-decoration: underline; text-underline-offset: 3px; }
 .audit-checks-note { margin: 9px 0 0; }
+.audit-run-meta {
+  margin: -8px 0 12px 100px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.audit-compare-selectors {
+  min-height: 60px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.audit-compare-selectors label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+.audit-compare-selectors select {
+  min-width: 190px;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: #fff;
+  padding: 0 30px 0 9px;
+}
+.audit-compare-selectors > span { color: var(--muted); }
+.audit-compare-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 2px 0 14px;
+}
+.audit-compare-summary > div {
+  min-height: 78px;
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  padding: 8px 14px;
+  border-right: 1px solid var(--line);
+}
+.audit-compare-summary > div:last-child { border-right: 0; }
+.audit-compare-summary small { color: var(--muted); }
+.audit-compare-summary b { font-size: 22px; }
+.audit-compare-summary span { color: var(--green); }
+.audit-comparison-table .table-wrap { margin-bottom: 10px; }
 .instruction-code {
   display: block;
   padding: 14px;

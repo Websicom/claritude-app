@@ -835,14 +835,29 @@ app.post("/api/audits", async (c) => {
     return c.json({ error: "page_must_belong_to_property" }, 400);
   const { data: activeRun } = await db
     .from("audit_runs")
-    .select("id,status")
+    .select("id,status,heartbeat_at,created_at")
     .eq("property_id", property.id)
     .eq("audit_page_id", auditPage.id)
     .in("status", ["queued", "running"])
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
-  if (activeRun) return c.json({ error: "audit_already_active", run: activeRun }, 409);
+  if (activeRun) {
+    const lastHeartbeat = Date.parse(activeRun.heartbeat_at || activeRun.created_at);
+    const isStalled = Number.isFinite(lastHeartbeat) && Date.now() - lastHeartbeat > 10 * 60_000;
+    if (!isStalled)
+      return c.json({ error: "audit_already_active", run: activeRun }, 409);
+    await db
+      .from("audit_runs")
+      .update({
+        status: "failed",
+        execution_stage: "failed",
+        error: "Audit worker stopped reporting progress. A replacement run may now be queued.",
+        completed_at: new Date().toISOString(),
+      })
+      .eq("id", activeRun.id)
+      .in("status", ["queued", "running"]);
+  }
   const dayStart = `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`;
   const { count: runsToday } = await db
     .from("audit_runs")
@@ -853,7 +868,7 @@ app.post("/api/audits", async (c) => {
     return c.json({ error: "audit_daily_limit_reached" }, 429);
   const { data: registryRows, error: registryError } = await db
     .from("audit_check_definitions")
-    .select("id,title,weight,logic_version,configuration_version")
+    .select("id,title,weight,logic_version,configuration_version,primary_category,subcategory,severity,description,recommendation,source_reference")
     .eq("lifecycle", "active")
     .order("id");
   if (registryError)
@@ -977,19 +992,23 @@ app.get("/api/properties/:id/audits", async (c) => {
   const definitions = new Map(AUDIT_REGISTRY.map((check) => [check.id, check]));
   return c.json(
     (data || []).map((run: any) => {
+      const snapshotDefinitions = new Map((Array.isArray(run.registry_snapshot) ? run.registry_snapshot : []).map((check: any) => [check.id, check]));
       const auditResults = (run.audit_results || []).map((result: any) => {
         const definition = definitions.get(result.check_id);
+        const snapshotDefinition: any = snapshotDefinitions.get(result.check_id);
+        const primaryCategory = snapshotDefinition?.primaryCategory || definition?.primaryCategory;
         return {
           ...result,
-          title: definition?.title || result.title_snapshot,
-          category: definition
-            ? categoryLabel(definition.primaryCategory)
+          title: snapshotDefinition?.title || definition?.title || result.title_snapshot,
+          category: primaryCategory
+            ? categoryLabel(primaryCategory)
             : "General",
-          subcategory: definition?.subcategory || "General",
-          severity: definition?.severity || "informational",
-          description: definition?.description || result.title_snapshot || "Recorded audit result.",
-          recommendation: definition?.recommendation || "Review the evidence.",
-          source_reference: definition?.sourceReference || null,
+          subcategory: snapshotDefinition?.subcategory || definition?.subcategory || "General",
+          severity: snapshotDefinition?.severity || definition?.severity || "informational",
+          description: snapshotDefinition?.description || definition?.description || result.title_snapshot || "Recorded audit result.",
+          recommendation: snapshotDefinition?.recommendation || definition?.recommendation || "Review the evidence.",
+          source_reference: snapshotDefinition?.sourceReference || definition?.sourceReference || null,
+          weight: Number(snapshotDefinition?.weight ?? definition?.weight ?? 1),
         };
       });
       return {
@@ -1783,8 +1802,9 @@ async function runAudit(env: Env, id: string) {
       heartbeat_at: new Date().toISOString(),
     })
     .eq("id", id)
+    .in("status", ["queued", "running"])
     .select()
-    .single();
+    .maybeSingle();
   if (!run) return;
   try {
     const fetchStarted = Date.now();
@@ -1811,7 +1831,7 @@ async function runAudit(env: Env, id: string) {
         heartbeat_at: new Date().toISOString(),
       })
       .eq("id", id);
-    await db.from("audit_results").insert(
+    const { error: resultError } = await db.from("audit_results").upsert(
       results.map((r) => {
         const check = snapshotById.get(r.check_id);
         return {
@@ -1822,7 +1842,9 @@ async function runAudit(env: Env, id: string) {
           title_snapshot: check?.title || r.check_id,
         };
       }),
+      { onConflict: "audit_run_id,check_id" },
     );
+    if (resultError) throw resultError;
     const { score, coverage } = scoreAuditResults(snapshot, results);
     await db
       .from("audit_runs")
@@ -2021,10 +2043,16 @@ export function auditCheckHasExecutableLogic(id: string) {
   const definition = registry(id);
   if (!definition || !["source_html", "network"].includes(definition.executionMethod)) return false;
   const html = "<!doctype html><html lang=\"en\"><head><title>Probe</title></head><body><main>Probe content for evaluator capability detection.</main></body></html>";
-  const response = new Response(html, {
+  const values = new Map<string, string>([["content-type", "text/html; charset=utf-8"]]);
+  const response = {
     status: 200,
-    headers: { "content-type": "text/html; charset=utf-8" },
-  });
+    ok: true,
+    url: "https://audit-capability.invalid/",
+    headers: {
+      get: (name: string) => values.get(name.toLowerCase()) || null,
+      has: (name: string) => values.has(name.toLowerCase()),
+    },
+  } as unknown as Response;
   return evaluateStaticCheck(
     id,
     response,
@@ -3035,6 +3063,15 @@ function registry(id: string) {
   return AUDIT_REGISTRY.find((x) => x.id === id);
 }
 function categoryLabel(value: string) {
+  const headlineLabels: Record<string, string> = {
+    seo: "SEO",
+    performance: "Performance",
+    accessibility: "Accessibility",
+    security: "Security",
+    infrastructure: "Infrastructure",
+    ai_readiness: "AI Readiness",
+  };
+  if (headlineLabels[value]) return headlineLabels[value];
   return value
     .split("_")
     .map((part) => part[0].toUpperCase() + part.slice(1))

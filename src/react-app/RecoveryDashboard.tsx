@@ -92,6 +92,7 @@ type AuditRun = {
   progress_completed?: number;
   progress_total?: number | null;
   heartbeat_at?: string;
+  registry_snapshot?: Array<{ id: string }>;
   audit_results?: any[];
   category_scores?: Record<string, number>;
   performance_metrics?: {
@@ -2377,10 +2378,12 @@ function AuditView({
     [pagePath, setPagePath] = useState("/"),
     [pageSaveState, setPageSaveState] = useState<"idle" | "saving" | "success">("idle"),
     [pageError, setPageError] = useState(""),
-    [openCategories, setOpenCategories] = useState<Set<string>>(new Set());
+    [openCategories, setOpenCategories] = useState<Set<string>>(new Set()),
+    [earlierRunId, setEarlierRunId] = useState(auditParams.get("auditEarlier") || ""),
+    [laterRunId, setLaterRunId] = useState(auditParams.get("auditLater") || "");
   const requestSequence = useRef(0);
   function updateAuditLocation(changes: Record<string, string | null>) {
-    const next = new URLSearchParams(auditLocation.search);
+    const next = new URLSearchParams(window.location.search);
     Object.entries(changes).forEach(([key, value]) => value ? next.set(key, value) : next.delete(key));
     auditNavigate(`${auditLocation.pathname}?${next.toString()}`, { replace: true });
   }
@@ -2396,17 +2399,29 @@ function AuditView({
         })
         .catch(() => { setAuditPages([]); setSelectedPage(null); });
     } else if (fixture) {
-      setRuns([fixtureAudit(property)]);
-      const page = { id: "fixture-homepage", name: "Homepage", path: "/" };
-      setAuditPages([page]);
+      const pages = [
+        { id: "fixture-homepage", name: "Homepage", path: "/" },
+        { id: "fixture-about", name: "About", path: "/about/" },
+        { id: "fixture-contact", name: "Contact", path: "/contact/" },
+      ];
+      const page = pages.find((candidate) => candidate.id === requestedPageId) || pages[0];
+      setAuditPages(pages);
       setSelectedPage(page);
+      if (page.id !== requestedPageId) updateAuditLocation({ auditPage: page.id });
       const analytics = fixtureAnalytics(property!);
       setRealUserPerformance({
-        desktop: { performance: { vitals: analytics.desktopVitals, minimumSamples: 75, method: "p75" } },
-        mobile: { performance: { vitals: analytics.mobileVitals, minimumSamples: 75, method: "p75" } },
+        desktop: { from: "2026-09-01T00:00:00Z", to: "2026-09-30T23:59:59Z", performance: { vitals: analytics.desktopVitals, minimumSamples: 75, method: "p75" } },
+        mobile: { from: "2026-09-01T00:00:00Z", to: "2026-09-30T23:59:59Z", performance: { vitals: analytics.mobileVitals, minimumSamples: 75, method: "p75" } },
       });
     }
   }, [property?.id, session, fixture]);
+  useEffect(() => {
+    if (!fixture || !property || !selectedPage) return;
+    setRuns([
+      fixtureAudit(property, selectedPage, false),
+      fixtureAudit(property, selectedPage, true),
+    ]);
+  }, [fixture, property?.id, selectedPage?.id]);
   useEffect(() => {
     if (!session || !property || !selectedPage) return;
     const sequence = ++requestSequence.current;
@@ -2452,6 +2467,23 @@ function AuditView({
     setOpenCategories(new Set());
     setFilter("All");
   }, [selectedPage?.id, latestRunId]);
+  useEffect(() => {
+    const comparable = runs.filter((run) => ["completed", "partial"].includes(run.status));
+    if (comparable.length < 2) {
+      setEarlierRunId("");
+      setLaterRunId("");
+      return;
+    }
+    const validEarlier = comparable.some((run) => run.id === earlierRunId);
+    const validLater = comparable.some((run) => run.id === laterRunId);
+    const same = earlierRunId && earlierRunId === laterRunId;
+    const nextLater = validLater && !same ? laterRunId : comparable[0].id;
+    const nextEarlier = validEarlier && earlierRunId !== nextLater ? earlierRunId : comparable.find((run) => run.id !== nextLater)!.id;
+    if (nextEarlier !== earlierRunId) setEarlierRunId(nextEarlier);
+    if (nextLater !== laterRunId) setLaterRunId(nextLater);
+    if (nextEarlier !== earlierRunId || nextLater !== laterRunId)
+      updateAuditLocation({ auditEarlier: nextEarlier, auditLater: nextLater });
+  }, [selectedPage?.id, runs.map((run) => run.id).join("|")]);
   if (!property)
     return (
       <Empty
@@ -2610,6 +2642,12 @@ function AuditView({
       {tab === "Overview" ? (
         <>
           <AuditScore run={latest} />
+          <p className="audit-run-meta">
+            {latest
+              ? `Latest completed result for ${selectedPage?.name}: ${fmtDate(latest.completed_at || latest.created_at)} · run ${latest.id.slice(0, 8)}`
+              : `${selectedPage?.name || "This page"} has not been audited yet.`}
+            {activeRun && latest ? " · Previous completed result remains visible while the new run is active." : ""}
+          </p>
           <div className="grid">
             <Panel title={`Fix these first · ${selectedPage?.name || "Selected page"}`}>
               <div className="audit-summary" aria-label="Finding severity filters">
@@ -2690,32 +2728,14 @@ function AuditView({
           />
         </Panel>
       ) : (
-        <Panel title="Compare audit runs">
-          {runs.length > 1 ? (
-            <DataTable
-              headers={["Metric", "Latest", "Previous", "Change"]}
-              rows={[
-                [
-                  "Overall",
-                  runs[0].score,
-                  runs[1].score,
-                  (runs[0].score || 0) - (runs[1].score || 0),
-                ],
-                [
-                  "Coverage",
-                  `${runs[0].coverage}%`,
-                  `${runs[1].coverage}%`,
-                  "—",
-                ],
-              ]}
-            />
-          ) : (
-            <Empty
-              title="A second completed audit is required"
-              detail="Run another audit to compare results."
-            />
-          )}
-        </Panel>
+        <AuditComparePanel
+          pageName={selectedPage?.name || "Selected page"}
+          runs={runs}
+          earlierRunId={earlierRunId}
+          laterRunId={laterRunId}
+          onEarlierChange={(id) => { setEarlierRunId(id); updateAuditLocation({ auditEarlier: id }); }}
+          onLaterChange={(id) => { setLaterRunId(id); updateAuditLocation({ auditLater: id }); }}
+        />
       )}
       {addPage && (
         <Modal title="Add page to audit" close={() => setAddPage(false)}>
@@ -5686,6 +5706,8 @@ function AuditProgress({ run, onRetry }: { run: AuditRun; onRetry: () => void })
   const total = run.progress_total || 0;
   const complete = Math.min(run.progress_completed || 0, total || Number.MAX_SAFE_INTEGER);
   const percent = total ? Math.round((complete / total) * 100) : null;
+  const heartbeat = Date.parse(run.heartbeat_at || run.created_at);
+  const stalled = ["queued", "running"].includes(run.status) && Number.isFinite(heartbeat) && Date.now() - heartbeat > 10 * 60_000;
   const stageLabels: Record<string, string> = {
     queued: "Waiting for an audit worker",
     fetching_page: "Collecting the selected page",
@@ -5694,14 +5716,15 @@ function AuditProgress({ run, onRetry }: { run: AuditRun; onRetry: () => void })
     failed: "Audit failed",
   };
   return (
-    <section className={`audit-progress ${run.status === "failed" ? "failed" : ""}`} aria-live="polite">
+    <section className={`audit-progress ${run.status === "failed" || stalled ? "failed" : ""}`} aria-live="polite">
       <div className="audit-progress-copy">
-        <b>{run.status === "queued" ? "Queued" : run.status === "failed" ? "Audit failed" : "Audit in progress"}</b>
-        <span>{stageLabels[run.execution_stage || run.status] || cap((run.execution_stage || run.status).replaceAll("_", " "))}</span>
+        <b>{stalled ? "Audit stalled" : run.status === "queued" ? "Queued" : run.status === "failed" ? "Audit failed" : "Audit in progress"}</b>
+        <span>{stalled ? "The audit worker stopped reporting progress." : stageLabels[run.execution_stage || run.status] || cap((run.execution_stage || run.status).replaceAll("_", " "))}</span>
         <small>
           {total ? `${complete} of ${total} checks` : "Preparing work total"}
           {run.created_at ? ` · ${relative(run.created_at)}` : ""}
         </small>
+        {run.error && <small className="error-note">{run.error}</small>}
       </div>
       <div
         className={`audit-progress-track ${percent == null ? "indeterminate" : ""}`}
@@ -5712,7 +5735,7 @@ function AuditProgress({ run, onRetry }: { run: AuditRun; onRetry: () => void })
       >
         <span style={percent == null ? undefined : { width: `${percent}%` }} />
       </div>
-      {run.status === "failed" && <button className="btn" onClick={onRetry}><RefreshCw /> Retry audit</button>}
+      {(run.status === "failed" || stalled) && <button className="btn" onClick={onRetry}><RefreshCw /> Retry audit</button>}
     </section>
   );
 }
@@ -5944,6 +5967,80 @@ function AuditChecksPanel({ pageName, run, results, onOpenCategory }: { pageName
   );
 }
 
+function auditFindingIdentity(result: any) {
+  const evidence = result.evidence && typeof result.evidence === "object" ? result.evidence : {};
+  const resource = evidence.resource || evidence.url || evidence.path || evidence.src || evidence.selector || evidence.element || "page";
+  return `${result.check_id || result.id}:${String(resource).slice(0, 500)}`;
+}
+
+function AuditComparePanel({
+  pageName,
+  runs,
+  earlierRunId,
+  laterRunId,
+  onEarlierChange,
+  onLaterChange,
+}: {
+  pageName: string;
+  runs: AuditRun[];
+  earlierRunId: string;
+  laterRunId: string;
+  onEarlierChange: (id: string) => void;
+  onLaterChange: (id: string) => void;
+}) {
+  const eligible = runs.filter((run) => ["completed", "partial"].includes(run.status));
+  if (eligible.length < 2)
+    return <Panel><Empty title="A second completed audit is required" detail={`Run another audit for ${pageName} to compare stored results.`} /></Panel>;
+  const earlier = eligible.find((run) => run.id === earlierRunId);
+  const later = eligible.find((run) => run.id === laterRunId);
+  if (!earlier || !later || earlier.id === later.id)
+    return <Panel><Empty title="Select two different scans" detail="Earlier and later scans must belong to this page and cannot be the same run." /></Panel>;
+  const earlierResults = earlier.audit_results || [];
+  const laterResults = later.audit_results || [];
+  const previousByCheck = new Map(earlierResults.map((result: any) => [result.check_id, result]));
+  const currentByCheck = new Map(laterResults.map((result: any) => [result.check_id, result]));
+  const previousFindings = earlierResults.filter((result: any) => ["fail", "warning"].includes(result.outcome));
+  const currentFindings = laterResults.filter((result: any) => ["fail", "warning"].includes(result.outcome));
+  const previousFindingIds = new Set(previousFindings.map(auditFindingIdentity));
+  const currentFindingIds = new Set(currentFindings.map(auditFindingIdentity));
+  const resolved = previousFindings.filter((result: any) => {
+    const current: any = currentByCheck.get(result.check_id);
+    return current && current.outcome !== "unable_to_test" && !["fail", "warning"].includes(current.outcome) && !currentFindingIds.has(auditFindingIdentity(result));
+  }).length;
+  const added = currentFindings.filter((result: any) => {
+    const previous: any = previousByCheck.get(result.check_id);
+    return previous && previous.outcome !== "unable_to_test" && !["fail", "warning"].includes(previous.outcome) && !previousFindingIds.has(auditFindingIdentity(result));
+  }).length;
+  const unchanged = currentFindings.filter((result: any) => previousFindingIds.has(auditFindingIdentity(result))).length;
+  const earlierPerformance = earlier.category_scores?.Performance ?? auditCategoryScore(earlierResults, auditCategoryPrefixes.Performance);
+  const laterPerformance = later.category_scores?.Performance ?? auditCategoryScore(laterResults, auditCategoryPrefixes.Performance);
+  const latestLabel = later.id === eligible[0].id ? "Latest scan" : "Later scan";
+  const registryChanged = JSON.stringify((earlier as any).registry_snapshot?.map((check: any) => check.id) || []) !== JSON.stringify((later as any).registry_snapshot?.map((check: any) => check.id) || []);
+  const scoreChange = (later.score ?? 0) - (earlier.score ?? 0);
+  const performanceChange = laterPerformance != null && earlierPerformance != null ? laterPerformance - earlierPerformance : null;
+  return (
+    <>
+      <section className="panel audit-compare-selectors">
+        <label>Earlier scan<select value={earlier.id} onChange={(event) => onEarlierChange(event.target.value)}>{eligible.filter((run) => run.id !== later.id).map((run) => <option value={run.id} key={run.id}>{fmtDate(run.completed_at || run.created_at)} · {run.status}</option>)}</select></label>
+        <span>compared with</span>
+        <label>{latestLabel}<select value={later.id} onChange={(event) => onLaterChange(event.target.value)}>{eligible.filter((run) => run.id !== earlier.id).map((run) => <option value={run.id} key={run.id}>{fmtDate(run.completed_at || run.created_at)} · {run.status}</option>)}</select></label>
+      </section>
+      <div className="audit-compare-summary">
+        <div><small>Overall</small><b>{earlier.score ?? "—"} → {later.score ?? "—"}</b><span>{scoreChange >= 0 ? "+" : ""}{scoreChange}</span></div>
+        <div><small>Performance</small><b>{earlierPerformance ?? "—"} → {laterPerformance ?? "—"}</b><span>{performanceChange == null ? "—" : `${performanceChange >= 0 ? "+" : ""}${performanceChange}`}</span></div>
+        <div><small>Resolved</small><b>{resolved}</b></div>
+        <div><small>New</small><b>{added}</b></div>
+      </div>
+      <section className="panel audit-comparison-table">
+        <h2>{pageName} finding comparison</h2>
+        <DataTable headers={["Status", "Count"]} rows={[["Resolved", resolved], ["New", added], ["Unchanged", unchanged], ["Current findings", currentFindings.length]]} />
+        <p className="subtle">Previous findings: {previousFindings.length}. Current findings: {currentFindings.length}. Resolved items are not included in the current total.</p>
+        {(registryChanged || earlier.coverage !== later.coverage) && <p className="analytics-data-warning">Registry or coverage differs between these scans. Missing and unable-to-test checks are not classified as resolved or new.</p>}
+      </section>
+    </>
+  );
+}
+
 function AuditResults({ results, onRetest, onReview }: { results: any[]; onRetest?: (checkId: string) => void; onReview?: (resultId: string | number, status: string) => void }) {
   return (
     <div className="audit-result-list">
@@ -6053,7 +6150,8 @@ function PerformanceTable({
   );
 }
 function RealUserPerformanceTable({ data, device }: { data: any; device: "desktop" | "mobile" }) {
-  const performance = data?.[device]?.performance;
+  const source = data?.[device];
+  const performance = source?.performance;
   const vitals = performance?.vitals || [];
   if (!vitals.length)
     return (
@@ -6073,6 +6171,9 @@ function RealUserPerformanceTable({ data, device }: { data: any; device: "deskto
           fmt(vital.samples || 0),
         ])}
       />
+      {source?.from && source?.to && (
+        <p className="subtle">Reporting range: {fmtDate(source.from)} to {fmtDate(source.to)} · page-specific p75 field observations.</p>
+      )}
       {vitals.some((vital: any) => vital.samples < (performance.minimumSamples || 75)) && (
         <p className="subtle">Metrics below {performance.minimumSamples || 75} samples are insufficient, not estimated.</p>
       )}
@@ -6225,7 +6326,7 @@ const auditCategoryPrefixes: Record<string, string[]> = {
   Performance: ["Performance", "Mobile"],
   Accessibility: ["Accessibility"],
   Security: ["Security"],
-  Infrastructure: ["Server", "DNS", "Structured Data", "Social Sharing"],
+  Infrastructure: ["Infrastructure", "Server", "DNS", "Structured Data", "Social Sharing"],
   "AI Readiness": ["AI Readiness"],
 };
 
@@ -6246,23 +6347,107 @@ function isAuditRunComplete(run?: AuditRun) {
   );
 }
 
-function fixtureAudit(property?: Property): AuditRun {
+function fixtureAudit(
+  property: Property | undefined,
+  page: AuditPage = { id: "fixture-homepage", name: "Homepage", path: "/" },
+  previous = false,
+): AuditRun {
+  const categoryPlan = [
+    ["page.metadata", "SEO: Page Metadata", "SEO", 17, 2, 0],
+    ["crawling.and.indexing", "SEO: Crawling and Indexing", "SEO", 20, 2, 1],
+    ["content.structure.and.headings", "Content Structure and Headings", "SEO", 15, 1, 0],
+    ["links.and.navigation", "Links and Navigation", "SEO", 29, 3, 1],
+    ["images.and.media", "Images and Media", "SEO", 20, 2, 0],
+    ["accessibility", "Accessibility", "Accessibility", 30, 3, 1],
+    ["mobile.and.responsive.layout", "Mobile and Responsive Layout", "Performance", 12, 1, 0],
+    ["performance", "Performance", "Performance", 28, 3, 1],
+    ["security.and.browser.protections", "Security and Browser Protections", "Security", 23, 4, 1],
+    ["server.and.http.information", "Server and HTTP Information", "Infrastructure", 12, 1, 2],
+    ["dns.and.domain.configuration", "DNS and Domain Configuration", "Infrastructure", 19, 2, 2],
+    ["structured.data", "Structured Data", "Infrastructure", 21, 2, 1],
+    ["social.sharing.and.site.identity", "Social Sharing and Site Identity", "Infrastructure", 20, 2, 1],
+    ["crawler.permissions", "AI Readiness: Crawler Permissions", "AI Readiness", 12, 1, 1],
+    ["content.and.attribution", "AI Readiness: Content and Attribution", "AI Readiness", 16, 1, 1],
+    ["optional.resources", "AI Readiness: Optional Resources", "AI Readiness", 12, 1, 2],
+  ] as const;
+  const featuredTitles: Record<string, string[]> = {
+    "page.metadata": ["Meta description duplicated"],
+    "crawling.and.indexing": ["Canonical target contains a noindex directive"],
+    "links.and.navigation": ["Keyboard focus is hidden"],
+    accessibility: ["Contact form label missing"],
+    performance: ["Hero image discovered too late", "Unused JavaScript (71 KB)", "Cache lifetime too short"],
+    "security.and.browser.protections": ["Content Security Policy missing"],
+  };
+  let criticals = 0;
+  let resultId = 0;
+  const generatedResults = categoryPlan.flatMap(([subcategory, label, category, checks, findings, info]) =>
+    Array.from({ length: checks }, (_, index) => {
+      resultId += 1;
+      const isFinding = index < findings;
+      const isInfo = index >= findings && index < findings + info;
+      const securityCritical = category === "Security" && isFinding;
+      const ordinaryCritical = isFinding && !securityCritical && criticals < 12;
+      if (ordinaryCritical) criticals += 1;
+      const outcome = isFinding ? (securityCritical || ordinaryCritical ? "fail" : "warning") : isInfo ? "informational" : "pass";
+      const checkId = `fixture.${subcategory}.${index + 1}`;
+      return {
+        id: String(resultId),
+        check_id: checkId,
+        title: featuredTitles[subcategory]?.[index] || `${label} check ${index + 1}`,
+        category,
+        subcategory,
+        outcome,
+        severity: securityCritical || ordinaryCritical ? "critical" : isFinding ? "warning" : "informational",
+        review_status: "not_reviewed",
+        description: `This deterministic visual-test result exercises the production ${label} component.`,
+        evidence: index === 0 && subcategory === "performance"
+          ? { element: '<img src="/assets/hero-home.webp" loading="lazy">' }
+          : { summary: `${label} evidence ${index + 1}` },
+        recommendation: isFinding ? `Review and correct the affected ${label.toLowerCase()} implementation.` : "No corrective action is required.",
+        source_reference: "https://developer.mozilla.org/",
+      };
+    }),
+  );
+  if (previous) {
+    const resolvedIndex = generatedResults.findIndex((result) => result.outcome === "pass");
+    generatedResults[0] = { ...generatedResults[0], outcome: "pass", severity: "informational" };
+    generatedResults[resolvedIndex] = { ...generatedResults[resolvedIndex], outcome: "warning", severity: "warning" };
+  }
+  const featuredOrder = [
+    "Hero image discovered too late",
+    "Contact form label missing",
+    "Content Security Policy missing",
+    "Unused JavaScript (71 KB)",
+    "Cache lifetime too short",
+    "Meta description duplicated",
+    "Keyboard focus is hidden",
+  ];
+  const auditResults = generatedResults.sort((left, right) => {
+    const leftIndex = featuredOrder.indexOf(left.title);
+    const rightIndex = featuredOrder.indexOf(right.title);
+    return (leftIndex < 0 ? 999 : leftIndex) - (rightIndex < 0 ? 999 : rightIndex);
+  });
+  const pageOffset = page.name === "Contact" ? -37 : page.name === "About" ? -8 : 0;
+  const comparisonOffset = previous ? -7 : 0;
+  const categoryScores = {
+    SEO: 94 + pageOffset + comparisonOffset,
+    Performance: 82 + pageOffset + comparisonOffset,
+    Accessibility: 91 + pageOffset + comparisonOffset,
+    Security: 88 + pageOffset + comparisonOffset,
+    Infrastructure: 92 + pageOffset + comparisonOffset,
+    "AI Readiness": 84 + pageOffset + comparisonOffset,
+  };
   return {
-    id: "fixture-audit",
+    id: `${page.id}-${previous ? "earlier" : "latest"}`,
     status: "completed",
-    score: property?.demo?.audit ?? 87,
+    score: Math.max(0, (property?.demo?.audit ?? 87) + pageOffset + comparisonOffset),
     coverage: 100,
-    page_url: "https://websi.com/",
-    created_at: new Date(Date.now() - 86400000).toISOString(),
+    audit_page_id: page.id,
+    page_url: new URL(page.path, property?.url || "https://websi.com").href,
+    created_at: new Date(previous ? "2026-09-01T09:00:00Z" : "2026-09-29T14:20:00Z").toISOString(),
+    completed_at: new Date(previous ? "2026-09-01T09:00:03Z" : "2026-09-29T14:20:03Z").toISOString(),
     duration_ms: 2840,
-    category_scores: {
-      SEO: 94,
-      Performance: 82,
-      Accessibility: 91,
-      Security: 88,
-      Infrastructure: 92,
-      "AI Readiness": 84,
-    },
+    category_scores: categoryScores,
     performance_metrics: {
       desktop: [
         ["LCP", "2.1 s", "≤ 2.5 s ●"],
@@ -6279,74 +6464,14 @@ function fixtureAudit(property?: Property): AuditRun {
     },
     catalogue_summary: {
       catalogueSize: 306,
-      implementedChecks: 16,
-      snapshotChecks: 16,
-      attemptedChecks: 16,
-      successfullyExecutedChecks: 16,
-      passedChecks: 9,
+      implementedChecks: 306,
+      snapshotChecks: 306,
+      attemptedChecks: 306,
+      successfullyExecutedChecks: 306,
+      passedChecks: auditResults.filter((result) => result.outcome === "pass").length,
     },
-    audit_results: [
-      {
-        id: "1",
-        check_id: "performance.lcp.discovery",
-        title: "Hero image discovered too late",
-        category: "Performance",
-        subcategory: "Mobile · LCP 3.4s",
-        outcome: "fail",
-        severity: "critical",
-        description: "The largest image is only discovered after the stylesheet and script queue.",
-        evidence: { element: "<img src=\"/assets/hero-home.webp\" loading=\"lazy\">" },
-        recommendation: "Remove lazy loading from the hero image and add fetchpriority=\"high\" with explicit dimensions.",
-      },
-      {
-        id: "2",
-        title: "Contact form label missing",
-        category: "Accessibility",
-        outcome: "fail",
-        severity: "critical",
-        evidence: "One input on /contact has no associated label.",
-      },
-      {
-        id: "3",
-        title: "Content Security Policy missing",
-        category: "Security",
-        outcome: "warning",
-        severity: "warning",
-        evidence: "No Content-Security-Policy header was returned.",
-      },
-      {
-        id: "4",
-        title: "Unused JavaScript (71 KB)",
-        category: "Performance",
-        outcome: "warning",
-        severity: "warning",
-        evidence: "Estimated unused transfer on mobile.",
-      },
-      {
-        id: "5",
-        title: "Cache lifetime too short",
-        category: "Performance",
-        outcome: "warning",
-        severity: "warning",
-        evidence: "Three static resources have short cache lifetimes.",
-      },
-      {
-        id: "6",
-        title: "Meta description duplicated",
-        category: "SEO",
-        outcome: "warning",
-        severity: "warning",
-        evidence: "Homepage and /services share the same description.",
-      },
-      {
-        id: "7",
-        title: "Keyboard focus is hidden",
-        category: "Accessibility",
-        outcome: "warning",
-        severity: "warning",
-        evidence: "Header controls suppress their visible focus indicator.",
-      },
-    ],
+    registry_snapshot: auditResults.map((result) => ({ id: result.check_id })),
+    audit_results: auditResults,
   };
 }
 function severity(value: string) {
@@ -6406,15 +6531,20 @@ function auditCategoryScore(
     (result) =>
       categoryPrefixes.some((prefix) =>
         String(result.category || "").startsWith(prefix),
-      ) && result.outcome !== "unable_to_test",
+      ) && ["pass", "warning", "fail"].includes(result.outcome),
   );
   if (!executed.length) return null;
-  const points = executed.reduce(
-    (total, result) =>
-      total + (result.outcome === "pass" ? 1 : result.outcome === "warning" ? 0.5 : 0),
+  const weighted = executed.map((result) => ({
+    value: result.outcome === "pass" ? 1 : result.outcome === "warning" ? 0.5 : 0,
+    weight: Math.max(0, Number(result.weight ?? 1)),
+  }));
+  const totalWeight = weighted.reduce((total, item) => total + item.weight, 0);
+  if (!totalWeight) return null;
+  const points = weighted.reduce(
+    (total, item) => total + item.value * item.weight,
     0,
   );
-  return Math.round((points / executed.length) * 100);
+  return Math.round((points / totalWeight) * 100);
 }
 
 function webVitalsScore(vitals: any[] | undefined) {
