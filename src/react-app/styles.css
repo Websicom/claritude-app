@@ -2592,6 +2592,14 @@ input[type="checkbox"]:checked:after {
   }
   .analytics-pagination {
     justify-content: flex-start;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .analytics-pagination > span:first-child {
+    flex-basis: 100%;
+  }
+  .analytics-pagination label {
+    margin-right: auto;
   }
   .tracking-signal-grid {
     grid-template-columns: 1fr 1fr;

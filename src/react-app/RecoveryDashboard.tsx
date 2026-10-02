@@ -6618,6 +6618,7 @@ function periodLabel(from: string, to: string) {
   const day = (value: Date) => value.getDate();
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const month = (value: Date) => months[value.getMonth()];
+  if (from === to) return `${day(start)} ${month(start)} ${start.getFullYear()}`;
   if (start.getFullYear() === end.getFullYear()) {
     if (start.getMonth() === end.getMonth())
       return `${day(start)}–${day(end)} ${month(end)} ${end.getFullYear()}`;
