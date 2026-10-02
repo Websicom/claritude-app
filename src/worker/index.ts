@@ -970,7 +970,7 @@ app.post("/api/audits", async (c) => {
     .maybeSingle();
   if (activeRun) {
     const lastHeartbeat = Date.parse(activeRun.heartbeat_at || activeRun.created_at);
-    const isStalled = Number.isFinite(lastHeartbeat) && Date.now() - lastHeartbeat > 10 * 60_000;
+    const isStalled = Number.isFinite(lastHeartbeat) && Date.now() - lastHeartbeat > 2 * 60_000;
     if (!isStalled)
       return c.json({ error: "audit_already_active", run: activeRun }, 409);
     await db
