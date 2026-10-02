@@ -1,7 +1,8 @@
 import { createClient, type Session } from "@supabase/supabase-js";
 import { Check } from "lucide-react";
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { apiRequest as api } from "./api";
 import { ClaritudeApplication } from "./RecoveryDashboard";
 
 const supabase = createClient(
@@ -18,20 +19,6 @@ type Bootstrap = {
   incidents: any[];
   notifications: any[];
 };
-async function api<T>(session: Session, path: string, init?: RequestInit) {
-  const response = await fetch(path, {
-    ...init,
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${session.access_token}`,
-      ...init?.headers,
-    },
-  });
-  const body: any = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || "Request failed");
-  return body as T;
-}
-
 const fixtureData: Bootstrap = {
   profile: { full_name: "Adam Jordan", timezone: "Europe/London" },
   accounts: [{ role: "owner", accounts: { name: "Websi" } }],
@@ -176,17 +163,26 @@ export function App() {
 function Workspace({ session }: { session: Session }) {
   const [data, setData] = useState<Bootstrap | null>(null),
     [error, setError] = useState("");
-  const load = () =>
-    api<Bootstrap>(session, "/api/bootstrap")
-      .then(setData)
-      .catch((reason) => setError(reason.message));
-  useEffect(() => void load(), []);
+  const load = useCallback(async (signal?: AbortSignal) => {
+    setError("");
+    try {
+      setData(await api<Bootstrap>(session, "/api/bootstrap", { signal }));
+    } catch (reason) {
+      if (reason instanceof DOMException && reason.name === "AbortError") return;
+      setError(reason instanceof Error ? reason.message : "Workspace could not be loaded");
+    }
+  }, [session]);
+  useEffect(() => {
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
+  }, [load]);
   if (error)
     return (
       <main className="state">
         <h1>We could not load your workspace</h1>
         <p>{error}</p>
-        <button className="btn" onClick={load}>
+        <button className="btn" onClick={() => void load()}>
           Try again
         </button>
       </main>

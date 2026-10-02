@@ -39,6 +39,7 @@ import {
   type FormEvent,
   type ReactNode,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -50,6 +51,7 @@ import {
   useLocation,
   useNavigate,
 } from "react-router-dom";
+import { apiRequest as api } from "./api";
 
 type Monitor = {
   id: string;
@@ -149,24 +151,15 @@ type AnalyticsFilterOptions = {
   utmMediums: string[];
   utmCampaigns: string[];
 };
-
-async function api<T>(
-  session: Session,
-  path: string,
-  init?: RequestInit,
-): Promise<T> {
-  const res = await fetch(path, {
-    ...init,
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${session.access_token}`,
-      ...init?.headers,
-    },
-  });
-  const body: any = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error || "Request failed");
-  return body as T;
-}
+type EventDefinition = {
+  id?: string;
+  name: string;
+  event_type: "click" | "pageview" | "form_success";
+  description?: string | null;
+  match_settings?: { mode: "exact" | "prefix"; path: string } | null;
+  enabled: boolean;
+  received?: number;
+};
 
 /**
  * Canonical Claritude product surface. Live and deterministic visual-test
@@ -197,6 +190,7 @@ export function ClaritudeApplication({
     [workspaceOpen, setWorkspaceOpen] = useState(false),
     [workspaceName, setWorkspaceName] = useState(""),
     [helpOpen, setHelpOpen] = useState(false);
+  const toastTimer = useRef<number | null>(null);
   const allProperties = data.properties;
   const requestedWorkspace = new URLSearchParams(loc.search).get("workspace");
   const requested = new URLSearchParams(loc.search).get("property");
@@ -228,9 +222,19 @@ export function ClaritudeApplication({
     loc.pathname === "/" || loc.pathname === "/notifications";
   const section = loc.pathname.split("/")[1] || "workspace";
   const notify: Notify = (message) => {
+    if (toastTimer.current != null) window.clearTimeout(toastTimer.current);
     setToast(message);
-    window.setTimeout(() => setToast(""), 2500);
+    toastTimer.current = window.setTimeout(() => {
+      setToast("");
+      toastTimer.current = null;
+    }, 2500);
   };
+  useEffect(
+    () => () => {
+      if (toastTimer.current != null) window.clearTimeout(toastTimer.current);
+    },
+    [],
+  );
   const href = (path: string, id = property?.id) =>
     `/${path}${id ? `?property=${id}` : ""}`;
   const title = workspaceContext
@@ -4272,19 +4276,66 @@ function Modal({
   close: () => void;
   children: ReactNode;
 }) {
+  const dialogRef = useRef<HTMLElement>(null);
+  const closeRef = useRef(close);
+  const titleId = useId();
+  closeRef.current = close;
+  useEffect(() => {
+    const previousFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const dialog = dialogRef.current;
+    const focusableSelector =
+      'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    const animationFrame = window.requestAnimationFrame(() => {
+      const preferred = dialog?.querySelector<HTMLElement>("[autofocus]");
+      const first = preferred || dialog?.querySelector<HTMLElement>(focusableSelector);
+      first?.focus();
+    });
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeRef.current();
+        return;
+      }
+      if (event.key !== "Tab" || !dialog) return;
+      const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(focusableSelector))
+        .filter((element) => !element.hasAttribute("disabled"));
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      } else if (!dialog.contains(document.activeElement)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      document.removeEventListener("keydown", handleKeyDown);
+      previousFocus?.focus();
+    };
+  }, []);
   return (
     <div
       className="overlay"
       onMouseDown={(e) => e.target === e.currentTarget && close()}
     >
       <section
+        ref={dialogRef}
         className="dialog"
         role="dialog"
         aria-modal="true"
-        aria-label={title}
+        aria-labelledby={titleId}
       >
         <div className="panel-head">
-          <h2>{title}</h2>
+          <h2 id={titleId}>{title}</h2>
           <span className="spacer" />
           <button
             className="iconbtn"
@@ -4935,36 +4986,62 @@ function EventsPanel({
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("download-brochure");
-  const [eventType, setEventType] = useState("click");
+  const [eventType, setEventType] = useState<EventDefinition["event_type"]>("click");
   const [description, setDescription] = useState("");
   const [pathMode, setPathMode] = useState<"exact" | "prefix">("exact");
   const [pathValue, setPathValue] = useState("/");
   const [eventError, setEventError] = useState("");
   const [instruction, setInstruction] = useState("");
-  const [events, setEvents] = useState<any[]>(
-    fixture
-      ? [
-          {
-            name: "successful-form-submission",
-            event_type: "form_success",
-            received: 124,
-            enabled: true,
-          },
-          {
-            name: "download-brochure",
-            event_type: "click",
-            received: 72,
-            enabled: true,
-          },
-        ]
-      : [],
-  );
+  const [events, setEvents] = useState<EventDefinition[]>([]);
+  const [eventsState, setEventsState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [eventsLoadError, setEventsLoadError] = useState("");
+  const [eventsReloadToken, setEventsReloadToken] = useState(0);
   useEffect(() => {
-    if (session)
-      api<any[]>(session, `/api/properties/${property.id}/events`)
-        .then(setEvents)
-        .catch(() => setEvents([]));
-  }, [session, property.id]);
+    if (data) return;
+    if (fixture) {
+      setEvents([
+        {
+          name: "successful-form-submission",
+          event_type: "form_success",
+          received: 124,
+          enabled: true,
+        },
+        {
+          name: "download-brochure",
+          event_type: "click",
+          received: 72,
+          enabled: true,
+        },
+      ]);
+      setEventsLoadError("");
+      setEventsState("ready");
+      return;
+    }
+    if (!session) {
+      setEvents([]);
+      setEventsLoadError("Authentication is required to load configured events.");
+      setEventsState("error");
+      return;
+    }
+    let cancelled = false;
+    setEvents([]);
+    setEventsLoadError("");
+    setEventsState("loading");
+    api<EventDefinition[]>(session, `/api/properties/${property.id}/events`)
+      .then((next) => {
+        if (cancelled) return;
+        setEvents(next);
+        setEventsState("ready");
+      })
+      .catch((reason) => {
+        if (cancelled) return;
+        setEventsLoadError(reason instanceof Error ? reason.message : "Configured events could not be loaded");
+        setEventsState("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [data, eventsReloadToken, fixture, property.id, session]);
   async function saveEvent() {
     try {
       const normalizedName = name.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
@@ -4972,13 +5049,14 @@ function EventsPanel({
       if (eventType === "pageview" && !normalisePagePath(pathValue))
         throw new Error("Enter a valid page path");
       const matchSettings = eventType === "pageview" ? { mode: pathMode, path: normalisePagePath(pathValue) } : undefined;
-      const created = session
-        ? await api<any>(session, `/api/properties/${property.id}/events`, {
+      const created: EventDefinition = session
+        ? await api<EventDefinition>(session, `/api/properties/${property.id}/events`, {
             method: "POST",
             body: JSON.stringify({ name: normalizedName, eventType, description, matchSettings }),
           })
         : { name: normalizedName, event_type: eventType, description, match_settings: matchSettings, enabled: true };
       setEvents((current) => [...current, created]);
+      setEventsState("ready");
       setOpen(false);
       setEventError("");
       setInstruction(
@@ -4993,10 +5071,10 @@ function EventsPanel({
       setEventError(error.message);
     }
   }
-  async function toggleEvent(event: any) {
+  async function toggleEvent(event: EventDefinition) {
     try {
       if (!session || !event.id) throw new Error("This event cannot be changed here");
-      const updated = await api<any>(session, `/api/properties/${property.id}/events/${event.id}`, {
+      const updated = await api<EventDefinition>(session, `/api/properties/${property.id}/events/${event.id}`, {
         method: "PATCH",
         body: JSON.stringify({ enabled: !event.enabled }),
       });
@@ -5035,17 +5113,28 @@ function EventsPanel({
           </>
         ) : (
           <>
-            <DataTable
-              headers={["Event", "Trigger", "Key event", "Received", "Status", ""]}
-              rows={events.map((event) => [
-                event.name,
-                event.event_type === "form_success" ? "Confirmed success" : event.event_type === "pageview" ? "Page view" : "Element click",
-                "Yes",
-                event.received ?? "—",
-                event.enabled === false ? "Paused" : "Active",
-                <button className="btn" onClick={() => void toggleEvent(event)}>{event.enabled ? "Disable" : "Enable"}</button>,
-              ])}
-            />
+            {eventsState === "loading" ? (
+              <Empty title="Loading configured events…" detail="Checking the selected property." />
+            ) : eventsState === "error" ? (
+              <div className="analytics-state" role="alert">
+                <Empty title="Configured events could not be loaded" detail={eventsLoadError} />
+                <button className="btn" onClick={() => setEventsReloadToken((value) => value + 1)}>Retry</button>
+              </div>
+            ) : events.length ? (
+              <DataTable
+                headers={["Event", "Trigger", "Key event", "Received", "Status", ""]}
+                rows={events.map((event) => [
+                  event.name,
+                  event.event_type === "form_success" ? "Confirmed success" : event.event_type === "pageview" ? "Page view" : "Element click",
+                  "Yes",
+                  event.received ?? "—",
+                  event.enabled === false ? "Paused" : "Active",
+                  <button className="btn" onClick={() => void toggleEvent(event)}>{event.enabled ? "Disable" : "Enable"}</button>,
+                ])}
+              />
+            ) : (
+              <Empty title="No configured events" detail="Create an event to define a tracked interaction for this property." />
+            )}
             <p className="subtle">No form values or unrestricted button text are collected.</p>
           </>
         )}
@@ -5072,7 +5161,7 @@ function EventsPanel({
             Trigger type
             <select
               value={eventType}
-              onChange={(event) => setEventType(event.target.value)}
+              onChange={(event) => setEventType(event.target.value as EventDefinition["event_type"])}
             >
               <option value="click">Element click</option>
               <option value="pageview">Page view</option>
