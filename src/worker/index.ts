@@ -151,8 +151,8 @@ const IMPLEMENTED_AUDIT_CHECKS = ACTIVE_AUDIT_CHECKS.filter(
 );
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
-const TRACKER_VERSION = "2.1.0";
-const SUPPORTED_TRACKER_VERSIONS = new Set(["2.0.0", TRACKER_VERSION]);
+const TRACKER_VERSION = "2.1.1";
+const SUPPORTED_TRACKER_VERSIONS = new Set(["2.0.0", "2.1.0", TRACKER_VERSION]);
 app.use("*", secureHeaders({ crossOriginResourcePolicy: false }));
 app.use("*", async (c, next) => {
   await next();
@@ -183,7 +183,7 @@ app.get("/api/config", (c) =>
 
 const serveTracker = (c: any) => {
   c.header("content-type", "application/javascript; charset=utf-8");
-  c.header("cache-control", "public, max-age=3600");
+  c.header("cache-control", "public, max-age=60, must-revalidate");
   c.header("cross-origin-resource-policy", "cross-origin");
   c.header("access-control-allow-origin", "*");
   c.header("x-claritude-tracker-version", TRACKER_VERSION);
@@ -3928,7 +3928,7 @@ function renderReportEmail(snapshot: any) {
 const TRACKER_SOURCE = `(()=>{
   const s=document.currentScript,p=s&&s.dataset.property,endpoint=s&&new URL('/collect',s.src).href,base=s&&new URL('/',s.src).href;
   if(!p||!endpoint||window.__claritude)return;window.__claritude=1;
-  const uuid=()=>{try{return crypto.randomUUID()}catch{const b=new Uint8Array(16);try{crypto.getRandomValues(b)}catch{for(let i=0;i<b.length;i++)b[i]=Math.floor(Math.random()*256)}b[6]=b[6]&15|64;b[8]=b[8]&63|128;return[...b].map((x,i)=>(i===4||i===6||i===8||i===10?'-':'')+x.toString(16).padStart(2,'0')).join('')}};
+  const uuid=()=>{try{return crypto.randomUUID()}catch{const b=new Uint8Array(16);try{crypto.getRandomValues(b)}catch{for(let i=0;i<b.length;i++)b[i]=Math.floor(Math.random()*256)}b[6]=b[6]&15|64;b[8]=b[8]&63|128;return Array.prototype.map.call(b,(x,i)=>(i===4||i===6||i===8||i===10?'-':'')+x.toString(16).padStart(2,'0')).join('')}};
   let q=[],timer,retryTimer,retryDelay=1000,sending=false,lastUrl=location.href,view=uuid(),generation=0,active=0,reportedActive=0,lastActivity=Date.now(),errorCount=0,vitalsReady=null;
   const marks=new Set,visibleSections=new Set,observedSections=new WeakSet;
   const session=sessionStorage.getItem('_claritude_session')||uuid();
@@ -3937,7 +3937,7 @@ const TRACKER_SOURCE = `(()=>{
   const common=()=>{const params=new URLSearchParams(location.search);return{session,view_id:view,browser,screen:innerWidth<768?'small':innerWidth<1280?'medium':'large',language:navigator.language||'',tracker_version:'${TRACKER_VERSION}',utm_source:params.get('utm_source')||'',utm_medium:params.get('utm_medium')||'',utm_campaign:params.get('utm_campaign')||'',utm_content:params.get('utm_content')||'',utm_term:params.get('utm_term')||''}};
   const retry=()=>{if(retryTimer)return;retryTimer=setTimeout(()=>{retryTimer=0;send()},retryDelay);retryDelay=Math.min(retryDelay*2,30000)};
   const send=async()=>{if(sending||!q.length)return;sending=true;const batch=q.splice(0,20),body=JSON.stringify(batch);try{if(navigator.sendBeacon&&document.visibilityState==='hidden'){if(!navigator.sendBeacon(endpoint,new Blob([body],{type:'application/json'})))throw new Error('beacon-rejected')}else{const response=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/json'},body,keepalive:true});if(!response.ok)throw new Error('collect-'+response.status)}retryDelay=1000}catch{q=batch.concat(q).slice(0,200);retry()}finally{sending=false;if(q.length&&!retryTimer){clearTimeout(timer);timer=setTimeout(send,500)}}};
-  const emit=(type,data={})=>{const supplied=data.meta&&typeof data.meta==='object'?data.meta:{};q.push({...data,type,property:p,path:location.pathname,referrer:document.referrer,at:new Date().toISOString(),device:innerWidth<768?'mobile':innerWidth<1024?'tablet':'desktop',meta:{...common(),...supplied,event_id:uuid()}});if(q.length>200)q=q.slice(-200);clearTimeout(timer);timer=setTimeout(send,500)};
+  const emit=(type,data={})=>{const supplied=data.meta&&typeof data.meta==='object'?data.meta:{};q.push(Object.assign({},data,{type,property:p,path:location.pathname,referrer:document.referrer,at:new Date().toISOString(),device:innerWidth<768?'mobile':innerWidth<1024?'tablet':'desktop',meta:Object.assign({},common(),supplied,{event_id:uuid()})}));if(q.length>200)q=q.slice(-200);clearTimeout(timer);timer=setTimeout(send,500)};
   addEventListener('click',e=>{lastActivity=Date.now();const a=e.target.closest('[data-claritude-event],a[href]');if(!a)return;const name=a.dataset.claritudeEvent;if(name)emit('click',{name});if(a.href&&new URL(a.href,location.href).host!==location.host)emit('outbound',{name:new URL(a.href).host})},{passive:true});
   ['keydown','pointerdown','touchstart'].forEach(name=>addEventListener(name,()=>{lastActivity=Date.now()},{passive:true}));
   const checkScroll=()=>{const root=document.documentElement,height=Math.max(root.scrollHeight,document.body&&document.body.scrollHeight||0,1),n=Math.min(100,Math.round((scrollY+innerHeight)/height*100));[25,50,75,90].forEach(x=>{if(n>=x&&!marks.has(x)){marks.add(x);emit('scroll',{value:x})}})};
@@ -3951,7 +3951,7 @@ const TRACKER_SOURCE = `(()=>{
   const page=()=>{const params=new URLSearchParams(location.search);emit('pageview',{source:params.get('utm_source')||''});observeSections();requestAnimationFrame(checkScroll);loadVitals().then(initVitals)};page();
   const navigation=(forcedPath)=>{if(!forcedPath&&location.href===lastUrl)return;reportActive();send();lastUrl=location.href;view=uuid();generation+=1;active=0;reportedActive=0;lastActivity=Date.now();errorCount=0;marks.clear();visibleSections.clear();page()};
   new MutationObserver(()=>{navigation();observeSections();checkScroll()}).observe(document,{subtree:true,childList:true});
-  ['pushState','replaceState'].forEach(k=>{const original=history[k];history[k]=function(...args){const result=original.apply(this,args);queueMicrotask(()=>navigation());return result}});
+  ['pushState','replaceState'].forEach(k=>{const original=history[k];history[k]=function(){const result=original.apply(this,arguments);Promise.resolve().then(()=>navigation());return result}});
   addEventListener('popstate',()=>navigation());
   const reportError=(name,source)=>{if(errorCount>=5)return;errorCount+=1;let resource_origin='';try{resource_origin=source?new URL(source,location.href).origin:''}catch{}emit('js_error',{name,meta:{resource_origin}})};
   addEventListener('error',event=>reportError('script-error',event.filename||''),true);
