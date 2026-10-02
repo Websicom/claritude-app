@@ -9,7 +9,7 @@
   "routes": [{ "pattern": "app.claritude.io/*", "zone_name": "claritude.io" }],
   "assets": {
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/collect", "/tracker.js", "/health"]
+    "run_worker_first": ["/api/*", "/collect", "/tracker.js", "/c.js", "/health"]
   },
   "triggers": { "crons": ["*/5 * * * *", "17 2 * * *"] },
   "queues": {

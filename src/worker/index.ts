@@ -59,11 +59,13 @@ app.get("/api/config", (c) =>
   }),
 );
 
-app.get("/tracker.js", (c) => {
+const serveTracker = (c: any) => {
   c.header("content-type", "application/javascript; charset=utf-8");
   c.header("cache-control", "public, max-age=3600");
   return c.body(TRACKER_SOURCE);
-});
+};
+app.get("/tracker.js", serveTracker);
+app.get("/c.js", serveTracker);
 
 app.post("/collect", async (c) => {
   const contentLength = Number(c.req.header("content-length") || 0);
@@ -126,6 +128,15 @@ app.use("/api/*", async (c, next) => {
 
 app.get("/api/bootstrap", async (c) => {
   const db = c.get("db");
+  const { data: accessibleProperties } = await db.from("properties").select("id");
+  if (accessibleProperties?.length) {
+    await admin(c.env)
+      .from("uptime_monitors")
+      .upsert(
+        accessibleProperties.map((property) => ({ property_id: property.id })),
+        { onConflict: "property_id", ignoreDuplicates: true },
+      );
+  }
   const [profile, accounts, workspaces, properties, incidents, notifications] =
     await Promise.all([
       db.from("profiles").select("*").maybeSingle(),
@@ -207,10 +218,12 @@ app.post("/api/properties", async (c) => {
     .select()
     .single();
   if (error) return c.json({ error: error.message }, 400);
-  const { error: monitorError } = await c
-    .get("db")
+  const { error: monitorError } = await admin(c.env)
     .from("uptime_monitors")
-    .insert({ property_id: data.id });
+    .upsert(
+      { property_id: data.id },
+      { onConflict: "property_id", ignoreDuplicates: true },
+    );
   if (monitorError)
     return c.json({ error: `property_created_monitor_failed: ${monitorError.message}` }, 500);
   return c.json(data, 201);
@@ -662,6 +675,7 @@ app.get("/api/properties/:id/analytics", async (c) => {
 app.get("/api/properties/:id/report", async (c) => {
   const db = c.get("db");
   const id = c.req.param("id");
+  const from = new Date(Date.now() - 30 * 864e5).toISOString();
   const [property, incidents, audits, analytics] = await Promise.all([
     db.from("properties").select("*").eq("id", id).single(),
     db
@@ -676,11 +690,15 @@ app.get("/api/properties/:id/report", async (c) => {
       .eq("property_id", id)
       .order("created_at", { ascending: false })
       .limit(5),
-    db.rpc("analytics_summary", {
-      p_property_id: id,
-      p_from: new Date(Date.now() - 30 * 864e5).toISOString(),
-      p_to: new Date().toISOString(),
-    }),
+    db
+      .from("analytics_events")
+      .select(
+        "event_type,path,referrer_host,source,device,country_code,name,value,metadata,occurred_at",
+      )
+      .eq("property_id", id)
+      .gte("occurred_at", from)
+      .order("occurred_at", { ascending: true })
+      .limit(50000),
   ]);
   if (property.error) return c.json({ error: "property_not_found" }, 404);
   return c.json({
@@ -689,7 +707,7 @@ app.get("/api/properties/:id/report", async (c) => {
     property: property.data,
     incidents: incidents.data,
     audits: audits.data,
-    analytics: analytics.data,
+    analytics: buildAnalyticsSummary(analytics.data || [], 30),
     limitations: [
       "Visitor totals are aggregate estimates; no persistent visitor identifiers are used.",
     ],
@@ -756,7 +774,7 @@ async function runAudit(env: Env, id: string) {
   }
 }
 
-function evaluateSourceChecks(
+export function evaluateSourceChecks(
   snapshot: any[],
   res: Response,
   html: string,
@@ -1243,7 +1261,7 @@ function browserFromUserAgent(value: string) {
   return value ? "Other" : "Unknown";
 }
 
-function buildAnalyticsSummary(events: any[], days: number) {
+export function buildAnalyticsSummary(events: any[], days: number) {
   const pageMap = new Map<string, { pageviews: number; events: number }>();
   const seriesMap = new Map<string, { pageviews: number; events: number }>();
   const sourceMap = new Map<string, number>();

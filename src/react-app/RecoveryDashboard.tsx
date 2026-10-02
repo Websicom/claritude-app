@@ -2512,7 +2512,7 @@ function PropertySettingsView({
       setBusy(false);
     }
   }
-  const snippet = `<script defer src="${location.origin}/tracker.js" data-property="${property.tracking_id}"></script>`;
+  const snippet = `<script defer src="${location.origin}/c.js" data-property="${property.tracking_id}"></script>`;
   return (
     <Page
       title="Property settings"

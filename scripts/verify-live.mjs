@@ -110,7 +110,7 @@ try {
     body: JSON.stringify({ type: 'pageview', property: primary.tracking_id, path: '/stage-1-acceptance', source: 'acceptance', device: 'desktop', at: new Date().toISOString() }),
   }, [202]);
   const analytics = await poll(() => worker(`/api/properties/${a.propertyId}/analytics?days=1`, userA.token), (value) => value.pageviews >= 1, 'analytics ingestion');
-  checks.analyticsIngestion = analytics.pageviews >= 1 && analytics.pages.includes('/stage-1-acceptance');
+  checks.analyticsIngestion = analytics.pageviews >= 1 && analytics.pages.some((page) => page.path === '/stage-1-acceptance');
 
   const verificationProperty = await worker('/api/properties', userA.token, {
     method: 'POST', body: JSON.stringify({ workspaceId: a.workspaceId, name: 'Verification property', url: 'https://httpbingo.org/response-headers' }),
@@ -144,18 +144,18 @@ try {
   await rest('alert_recipients', userC.token, {
     method: 'POST', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ property_id: c.propertyId, email: DELIVERY_ADDRESS }),
   });
-  await worker(`/api/monitors/${monitorId}/check`, userC.token, { method: 'POST', body: '{}' }, [202]);
+  await worker(`/api/monitors/${monitorId}/check`, userC.token, { method: 'POST', body: '{}' }, [200]);
   await poll(
     () => adminRest(`uptime_monitors?id=eq.${monitorId}&select=consecutive_failures`).then((result) => result.body[0]),
     (monitor) => monitor?.consecutive_failures >= 1,
     'first uptime failure',
   );
-  await worker(`/api/monitors/${monitorId}/check`, userC.token, { method: 'POST', body: '{}' }, [202]);
+  await worker(`/api/monitors/${monitorId}/check`, userC.token, { method: 'POST', body: '{}' }, [200]);
   const downState = await poll(() => worker('/api/bootstrap', userC.token), (data) => data.incidents.some((incident) => incident.property_id === c.propertyId && !incident.resolved_at), 'incident opening');
   await rest(`properties?id=eq.${c.propertyId}`, userC.token, {
     method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ url: 'https://httpbin.org/status/200' }),
   });
-  await worker(`/api/monitors/${monitorId}/check`, userC.token, { method: 'POST', body: '{}' }, [202]);
+  await worker(`/api/monitors/${monitorId}/check`, userC.token, { method: 'POST', body: '{}' }, [200]);
   const recoveredState = await poll(() => worker('/api/bootstrap', userC.token), (data) => data.incidents.some((incident) => incident.property_id === c.propertyId && incident.resolved_at), 'incident recovery');
   const incident = recoveredState.incidents.find((item) => item.property_id === c.propertyId);
   const { body: deliveries } = await adminRest(`notification_deliveries?dedupe_key=like.${incident.id}%25&select=kind,status,provider_id,error`);
