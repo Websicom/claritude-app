@@ -664,6 +664,7 @@ export function ClaritudeApplication({
         <AddPropertyDialog
           session={session}
           workspaceId={workspace?.id}
+          workspaceName={workspace?.name || "Workspace"}
           close={() => setAddOpen(false)}
           done={() => {
             setAddOpen(false);
@@ -681,13 +682,14 @@ export function ClaritudeApplication({
             if (!session || !workspaceName.trim()) return;
             const accountId = data.accounts?.[0]?.accounts?.id;
             if (!accountId) throw new Error("Account not available");
-            await api(session, "/api/workspaces", {
+            const created = await api<{ workspaceId: string }>(session, "/api/workspaces", {
               method: "POST",
               body: JSON.stringify({ accountId, name: workspaceName }),
             });
             setWorkspaceOpen(false);
             setWorkspaceName("");
             reload();
+            navigate(`/?workspace=${created.workspaceId}`);
             notify("Workspace created");
           }}
         >
@@ -2933,6 +2935,7 @@ function PropertySettingsView({
   notify: Notify;
 }) {
   const settingsLocation = useLocation();
+  const settingsNavigate = useNavigate();
   const requestedSettingsTab = new URLSearchParams(settingsLocation.search).get("settingsTab");
   const settingsTabs = ["General", "Tracking", "Uptime", "Events", "Sharing", "Advanced"];
   const [tab, setTab] = useState(settingsTabs.includes(requestedSettingsTab || "") ? requestedSettingsTab! : "General"),
@@ -2948,7 +2951,10 @@ function PropertySettingsView({
     [busy, setBusy] = useState(false),
     [viewerOpen, setViewerOpen] = useState(false),
     [viewerEmail, setViewerEmail] = useState(""),
-    [viewers, setViewers] = useState<any[]>([]);
+    [viewers, setViewers] = useState<any[]>([]),
+    [viewerToRemove, setViewerToRemove] = useState<any | null>(null),
+    [deleteOpen, setDeleteOpen] = useState(false),
+    [deleteConfirmation, setDeleteConfirmation] = useState("");
   useEffect(() => {
     if (!session || !property) return;
     setName(property.name || "");
@@ -3106,9 +3112,10 @@ function PropertySettingsView({
               "Audit",
               "Uptime",
               "Settings",
+              "",
             ]}
             rows={[
-              ["Account holder", "Owner", "Allowed", "Allowed", "Allowed", "Allowed"],
+              ["Account holder", "Owner", "Allowed", "Allowed", "Allowed", "Allowed", ""],
               ...viewers.map((viewer) => [
                 viewer.name || viewer.email,
                 cap(viewer.role),
@@ -3116,6 +3123,7 @@ function PropertySettingsView({
                 "View only",
                 "View only",
                 "Not allowed",
+                <button className="btn" onClick={() => setViewerToRemove(viewer)}>Remove access</button>,
               ]),
             ]}
           />
@@ -3190,7 +3198,7 @@ function PropertySettingsView({
             title="Delete property"
             detail="Permanently removes this property and future monitoring."
             action={
-              <button className="danger-solid" disabled>
+              <button className="danger-solid" onClick={() => setDeleteOpen(true)}>
                 Delete property
               </button>
             }
@@ -3226,6 +3234,60 @@ function PropertySettingsView({
           <p className="subtle">Viewers receive read-only access to Analytics, Audit and Uptime for this property.</p>
         </SimpleDialog>
       )}
+      {viewerToRemove && (
+        <SimpleDialog
+          title="Remove property viewer"
+          close={() => setViewerToRemove(null)}
+          action="Remove access"
+          danger
+          onSave={async () => {
+            if (!session) return;
+            try {
+              await api(session, `/api/properties/${property.id}/viewers/${viewerToRemove.user_id}`, {
+                method: "DELETE",
+              });
+              setViewers((current) => current.filter((item) => item.user_id !== viewerToRemove.user_id));
+              setViewerToRemove(null);
+              notify("Property viewer access removed");
+            } catch (error: any) {
+              notify(error.message);
+            }
+          }}
+        >
+          <p>Remove read-only access for <b>{viewerToRemove.name || viewerToRemove.email}</b>?</p>
+        </SimpleDialog>
+      )}
+      {deleteOpen && (
+        <SimpleDialog
+          title="Delete property"
+          close={() => { setDeleteOpen(false); setDeleteConfirmation(""); }}
+          action="Delete property"
+          danger
+          disabled={deleteConfirmation !== property.name || busy}
+          onSave={async () => {
+            if (!session || deleteConfirmation !== property.name) return;
+            setBusy(true);
+            try {
+              await api(session, `/api/properties/${property.id}`, { method: "DELETE" });
+              setDeleteOpen(false);
+              setDeleteConfirmation("");
+              settingsNavigate("/");
+              reload();
+              notify("Property deleted");
+            } catch (error: any) {
+              notify(error.message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          <p>This permanently removes the property and its monitoring, analytics, audits and reports.</p>
+          <label className="field">
+            Type <b>{property.name}</b> to confirm
+            <input autoFocus value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} />
+          </label>
+        </SimpleDialog>
+      )}
     </Page>
   );
 }
@@ -3248,13 +3310,20 @@ function AccountView({
     [timezone, setTimezone] = useState(
       data.profile?.timezone || "Europe/London",
     ),
-    [workspaceName, setWorkspaceName] = useState(
-      data.workspaces?.[0]?.workspaces?.name || "",
+    [workspaceDrafts, setWorkspaceDrafts] = useState<Record<string, string>>(() =>
+      Object.fromEntries(data.workspaces.map((entry: any) => [entry.workspaces?.id, entry.workspaces?.name || ""])),
     ),
     [usersData, setUsersData] = useState<any>(null),
+    [usersError, setUsersError] = useState(""),
     [inviteOpen, setInviteOpen] = useState(false),
     [inviteEmail, setInviteEmail] = useState(""),
-    [inviteRole, setInviteRole] = useState("member");
+    [inviteRole, setInviteRole] = useState<"member" | "viewer">("member"),
+    [inviteWorkspaceId, setInviteWorkspaceId] = useState<string>(data.workspaces?.[0]?.workspaces?.id || ""),
+    [memberToEdit, setMemberToEdit] = useState<any | null>(null),
+    [memberRole, setMemberRole] = useState<"member" | "viewer">("member"),
+    [memberToRemove, setMemberToRemove] = useState<any | null>(null),
+    [workspaceToDelete, setWorkspaceToDelete] = useState<any | null>(null),
+    [workspaceDeleteConfirmation, setWorkspaceDeleteConfirmation] = useState("");
   const role = data.accounts?.[0]?.role || data.workspaces?.[0]?.role || "viewer";
   const tabs = role === "viewer"
     ? ["Profile", "Notification preferences", "Security"]
@@ -3270,8 +3339,24 @@ function AccountView({
       ];
   useEffect(() => {
     if (!session || role === "viewer") return;
-    api(session, "/api/users").then(setUsersData).catch(() => setUsersData(null));
+    setUsersError("");
+    api(session, "/api/users")
+      .then(setUsersData)
+      .catch((error) => {
+        setUsersData(null);
+        setUsersError(error instanceof Error ? error.message : "Workspace users could not be loaded");
+      });
   }, [session, data.workspaces.length, role]);
+  useEffect(() => {
+    setWorkspaceDrafts(
+      Object.fromEntries(data.workspaces.map((entry: any) => [entry.workspaces?.id, entry.workspaces?.name || ""])),
+    );
+    setInviteWorkspaceId((current) =>
+      data.workspaces.some((entry: any) => entry.workspaces?.id === current)
+        ? current
+        : data.workspaces?.[0]?.workspaces?.id || "",
+    );
+  }, [data.workspaces]);
   async function save() {
     try {
       if (session)
@@ -3285,9 +3370,18 @@ function AccountView({
       notify(e.message);
     }
   }
-  async function saveWorkspace() {
-    const workspaceId = data.workspaces?.[0]?.workspaces?.id;
-    if (!session || !workspaceId || !workspaceName.trim()) return;
+  async function refreshUsers() {
+    if (!session) return;
+    setUsersError("");
+    try {
+      setUsersData(await api(session, "/api/users"));
+    } catch (error) {
+      setUsersError(error instanceof Error ? error.message : "Workspace users could not be loaded");
+    }
+  }
+  async function saveWorkspace(workspaceId: string) {
+    const workspaceName = workspaceDrafts[workspaceId]?.trim();
+    if (!session || !workspaceId || !workspaceName) return;
     try {
       await api(session, `/api/workspaces/${workspaceId}`, {
         method: "PATCH",
@@ -3341,27 +3435,38 @@ function AccountView({
         </Panel>
       ) : tab === "Workspace" ? (
         <Panel title="Workspace">
-          <label className="field">
-            Workspace name
-            <input
-              value={workspaceName}
-              onChange={(event) => setWorkspaceName(event.target.value)}
-            />
-          </label>
           <DataTable
-            headers={["Workspace", "Properties", "Access"]}
-            rows={data.workspaces.map((entry: any) => [
-              entry.workspaces?.name || "Workspace",
-              data.properties.filter((property) => property.workspace_id === entry.workspaces?.id).length,
-              cap(entry.role),
-            ])}
+            headers={["Workspace", "Properties", "Access", ""]}
+            rows={data.workspaces.map((entry: any) => {
+              const workspace = entry.workspaces;
+              const propertyCount = data.properties.filter((property) => property.workspace_id === workspace?.id).length;
+              const canEditWorkspace = entry.role === "owner" || entry.role === "member";
+              return [
+                <input
+                  aria-label={`Workspace name for ${workspace?.name || "Workspace"}`}
+                  value={workspaceDrafts[workspace?.id] || ""}
+                  readOnly={!canEditWorkspace}
+                  onChange={(event) => setWorkspaceDrafts((current) => ({ ...current, [workspace?.id]: event.target.value }))}
+                />,
+                propertyCount,
+                cap(entry.role),
+                <div className="row-actions">
+                  {canEditWorkspace && <button className="btn" disabled={!workspaceDrafts[workspace?.id]?.trim()} onClick={() => void saveWorkspace(workspace?.id)}>Save</button>}
+                  {entry.role === "owner" && (
+                    <button
+                      className="danger-solid"
+                      disabled={propertyCount > 0 || data.workspaces.length <= 1}
+                      title={propertyCount > 0 ? "Delete the workspace’s properties first" : data.workspaces.length <= 1 ? "An account must retain one workspace" : "Delete workspace"}
+                      onClick={() => setWorkspaceToDelete(workspace)}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </div>,
+              ];
+            })}
           />
-          <button
-            className="primary"
-            onClick={saveWorkspace}
-          >
-            Save workspace
-          </button>
+          <p className="subtle">A workspace must be empty before it can be deleted, and every account must retain at least one workspace.</p>
         </Panel>
       ) : tab === "Billing & plan" ? (
         <Billing fixture={fixture} notify={notify} />
@@ -3378,28 +3483,46 @@ function AccountView({
             </button>
           }
         >
-          <DataTable
-            headers={[
-              "User",
-              "Seat",
-              "Access level",
-              "Property access",
-              "Status",
-              "",
-            ]}
-            rows={(usersData?.workspaceMemberships || []).map((membership: any) => {
-              const user = usersData.users?.find((item: any) => item.id === membership.user_id);
-              const workspace = usersData.workspaces?.find((item: any) => item.id === membership.workspace_id);
-              return [
-                user?.name || user?.email || membership.user_id,
-                membership.role === "viewer" ? "Free viewer" : "Editing user",
-                cap(membership.role),
-                workspace?.name || "Workspace",
-                user?.confirmedAt ? "Active" : "Invited",
+          {usersError ? (
+            <div className="analytics-state" role="alert">
+              <Empty title="Workspace users could not be loaded" detail={usersError} />
+              <button className="btn" onClick={() => void refreshUsers()}>Retry</button>
+            </div>
+          ) : usersData ? (
+            <DataTable
+              headers={[
+                "User",
+                "Seat",
+                "Access level",
+                "Workspace",
+                "Status",
                 "",
-              ];
-            })}
-          />
+              ]}
+              rows={(usersData.workspaceMemberships || []).map((membership: any) => {
+                const user = usersData.users?.find((item: any) => item.id === membership.user_id);
+                const workspace = usersData.workspaces?.find((item: any) => item.id === membership.workspace_id);
+                const protectedOwner = membership.role === "owner";
+                const context = { membership, user, workspace };
+                return [
+                  user?.name || user?.email || membership.user_id,
+                  membership.role === "viewer" ? "Free viewer" : "Editing user",
+                  cap(membership.role),
+                  workspace?.name || "Workspace",
+                  user?.confirmedAt ? "Active" : "Invited",
+                  protectedOwner ? (
+                    <span className="subtle">Owner protected</span>
+                  ) : (
+                    <div className="row-actions">
+                      <button className="btn" onClick={() => { setMemberToEdit(context); setMemberRole(membership.role === "viewer" ? "viewer" : "member"); }}>Edit</button>
+                      <button className="danger-solid" onClick={() => setMemberToRemove(context)}>Remove</button>
+                    </div>
+                  ),
+                ];
+              })}
+            />
+          ) : (
+            <Empty title="Loading workspace users…" detail="Checking workspace access." />
+          )}
         </Panel>
       ) : tab === "Notification preferences" ? (
         <Preferences session={session} profile={data.profile} reload={reload} notify={notify} />
@@ -3486,16 +3609,15 @@ function AccountView({
           close={() => setInviteOpen(false)}
           action="Send invitation"
           onSave={async () => {
-            const workspaceId = data.workspaces?.[0]?.workspaces?.id;
-            if (!session || !workspaceId || !inviteEmail) return;
+            if (!session || !inviteWorkspaceId || !inviteEmail) return;
             try {
-              const invited = await api<any>(session, `/api/workspaces/${workspaceId}/members`, {
+              const invited = await api<any>(session, `/api/workspaces/${inviteWorkspaceId}/members`, {
                 method: "POST",
                 body: JSON.stringify({ email: inviteEmail, role: inviteRole }),
               });
               setInviteOpen(false);
               setInviteEmail("");
-              setUsersData(await api(session, "/api/users"));
+              await refreshUsers();
               notify(invited.invitationSent ? "Invitation sent" : "Existing user granted access");
             } catch (error: any) {
               notify(error.message);
@@ -3503,7 +3625,81 @@ function AccountView({
           }}
         >
           <label className="field">Email<input type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} /></label>
-          <label className="field">Role<select value={inviteRole} onChange={(event) => setInviteRole(event.target.value)}><option value="member">Member</option><option value="viewer">Viewer</option></select></label>
+          <label className="field">Workspace<select value={inviteWorkspaceId} onChange={(event) => setInviteWorkspaceId(event.target.value)}>{data.workspaces.map((entry: any) => <option key={entry.workspaces?.id} value={entry.workspaces?.id}>{entry.workspaces?.name || "Workspace"}</option>)}</select></label>
+          <label className="field">Role<select value={inviteRole} onChange={(event) => setInviteRole(event.target.value as "member" | "viewer")}><option value="member">Member</option><option value="viewer">Viewer</option></select></label>
+        </SimpleDialog>
+      )}
+      {memberToEdit && (
+        <SimpleDialog
+          title="Edit workspace user"
+          close={() => setMemberToEdit(null)}
+          action="Save access"
+          onSave={async () => {
+            if (!session) return;
+            try {
+              await api(session, `/api/workspaces/${memberToEdit.membership.workspace_id}/members/${memberToEdit.membership.user_id}`, {
+                method: "PATCH",
+                body: JSON.stringify({ role: memberRole }),
+              });
+              setMemberToEdit(null);
+              await refreshUsers();
+              notify("Workspace user access updated");
+            } catch (error: any) {
+              notify(error.message);
+            }
+          }}
+        >
+          <p><b>{memberToEdit.user?.name || memberToEdit.user?.email || "Workspace user"}</b> · {memberToEdit.workspace?.name || "Workspace"}</p>
+          <label className="field">Role<select value={memberRole} onChange={(event) => setMemberRole(event.target.value as "member" | "viewer")}><option value="member">Member</option><option value="viewer">Viewer</option></select></label>
+          <p className="subtle">This changes workspace access only. The user controls their own name and email.</p>
+        </SimpleDialog>
+      )}
+      {memberToRemove && (
+        <SimpleDialog
+          title="Remove workspace user"
+          close={() => setMemberToRemove(null)}
+          action="Remove access"
+          danger
+          onSave={async () => {
+            if (!session) return;
+            try {
+              await api(session, `/api/workspaces/${memberToRemove.membership.workspace_id}/members/${memberToRemove.membership.user_id}`, {
+                method: "DELETE",
+              });
+              setMemberToRemove(null);
+              await refreshUsers();
+              notify("Workspace access removed");
+            } catch (error: any) {
+              notify(error.message);
+            }
+          }}
+        >
+          <p>Remove <b>{memberToRemove.user?.name || memberToRemove.user?.email || "this user"}</b> from <b>{memberToRemove.workspace?.name || "this workspace"}</b>?</p>
+          <p className="subtle">This revokes workspace access but does not delete the person’s authentication account.</p>
+        </SimpleDialog>
+      )}
+      {workspaceToDelete && (
+        <SimpleDialog
+          title="Delete workspace"
+          close={() => { setWorkspaceToDelete(null); setWorkspaceDeleteConfirmation(""); }}
+          action="Delete workspace"
+          danger
+          disabled={workspaceDeleteConfirmation !== workspaceToDelete.name}
+          onSave={async () => {
+            if (!session || workspaceDeleteConfirmation !== workspaceToDelete.name) return;
+            try {
+              await api(session, `/api/workspaces/${workspaceToDelete.id}`, { method: "DELETE" });
+              setWorkspaceToDelete(null);
+              setWorkspaceDeleteConfirmation("");
+              reload();
+              notify("Workspace deleted");
+            } catch (error: any) {
+              notify(error.message);
+            }
+          }}
+        >
+          <p>The workspace must be empty. This operation cannot be undone.</p>
+          <label className="field">Type <b>{workspaceToDelete.name}</b> to confirm<input autoFocus value={workspaceDeleteConfirmation} onChange={(event) => setWorkspaceDeleteConfirmation(event.target.value)} /></label>
         </SimpleDialog>
       )}
     </Page>
@@ -3652,11 +3848,13 @@ function Billing({ fixture, notify }: { fixture: boolean; notify: Notify }) {
 function AddPropertyDialog({
   session,
   workspaceId,
+  workspaceName,
   close,
   done,
 }: {
   session: Session | null;
   workspaceId: string;
+  workspaceName: string;
   close: () => void;
   done: () => void;
 }) {
@@ -3703,8 +3901,8 @@ function AddPropertyDialog({
         </label>
         <label className="field">
           Workspace
-          <select>
-            <option>Websi workspace</option>
+          <select value={workspaceId} disabled>
+            <option value={workspaceId}>{workspaceName}</option>
           </select>
         </label>
         {error && <div className="notice danger">{error}</div>}
@@ -3774,12 +3972,16 @@ function SimpleDialog({
   action,
   onSave,
   children,
+  danger = false,
+  disabled = false,
 }: {
   title: string;
   close: () => void;
   action: string;
   onSave: () => void | Promise<void>;
   children: ReactNode;
+  danger?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <Modal title={title} close={close}>
@@ -3788,7 +3990,7 @@ function SimpleDialog({
         <button className="btn" onClick={close}>
           Cancel
         </button>
-        <button className="primary" onClick={onSave}>
+        <button className={danger ? "danger-solid" : "primary"} onClick={onSave} disabled={disabled}>
           {action}
         </button>
       </div>

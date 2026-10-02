@@ -2399,6 +2399,15 @@ input[type="checkbox"]:checked:after {
 .danger-solid:disabled {
   opacity: 0.55;
 }
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.table-wrap td > input {
+  width: min(100%, 360px);
+}
 .pref-row > span {
   display: grid;
 }

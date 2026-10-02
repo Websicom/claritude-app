@@ -41,6 +41,16 @@ const LIMITS = {
   analyticsEventsPerPropertyPerDay: 50_000,
 } as const;
 
+export function editableWorkspaceRole(value: unknown): "member" | "viewer" | null {
+  return value === "member" || value === "viewer" ? value : null;
+}
+
+export function workspaceDeletionError(workspaceCount: number, propertyCount: number) {
+  if (workspaceCount <= 1) return "account_requires_one_workspace";
+  if (propertyCount > 0) return "workspace_must_be_empty_before_deletion";
+  return null;
+}
+
 const ACTIVE_AUDIT_CHECKS = AUDIT_REGISTRY.filter(
   (check) => check.lifecycle === "active",
 );
@@ -486,6 +496,14 @@ app.post("/api/workspaces/:id/members", async (c) => {
     return c.json({ error: "valid_email_required" }, 400);
   const service = admin(c.env);
   const invited = await findOrInviteUser(service, email, c.env.APP_ORIGIN);
+  const { data: existingMembership } = await service
+    .from("workspace_memberships")
+    .select("role")
+    .eq("workspace_id", workspaceId)
+    .eq("user_id", invited.id)
+    .maybeSingle();
+  if (existingMembership?.role === "owner")
+    return c.json({ error: "workspace_owner_role_is_protected" }, 409);
   const { data, error } = await service
     .from("workspace_memberships")
     .upsert(
@@ -504,6 +522,68 @@ app.post("/api/workspaces/:id/members", async (c) => {
     invitedUserId: invited.id,
   });
   return c.json({ ...data, email, invitationSent: invited.invitationSent }, 201);
+});
+
+app.patch("/api/workspaces/:id/members/:userId", async (c) => {
+  const db = c.get("db");
+  const workspaceId = c.req.param("id");
+  if (!(await isWorkspaceOwner(db, c.get("userId"), workspaceId)))
+    return c.json({ error: "workspace_owner_access_required" }, 403);
+  const body = await c.req.json<{ role?: "member" | "viewer" }>();
+  const role = editableWorkspaceRole(body.role);
+  if (!role) return c.json({ error: "valid_workspace_role_required" }, 400);
+  const service = admin(c.env);
+  const { data: existing } = await service
+    .from("workspace_memberships")
+    .select("role")
+    .eq("workspace_id", workspaceId)
+    .eq("user_id", c.req.param("userId"))
+    .maybeSingle();
+  if (!existing) return c.json({ error: "workspace_member_not_found" }, 404);
+  if (existing.role === "owner")
+    return c.json({ error: "workspace_owner_role_is_protected" }, 409);
+  const { data, error } = await service
+    .from("workspace_memberships")
+    .update({ role })
+    .eq("workspace_id", workspaceId)
+    .eq("user_id", c.req.param("userId"))
+    .select()
+    .single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordActivity(c.env, c.get("userId"), "workspace.member_updated", undefined, {
+    workspaceId,
+    targetUserId: c.req.param("userId"),
+    role,
+  });
+  return c.json(data);
+});
+
+app.delete("/api/workspaces/:id/members/:userId", async (c) => {
+  const db = c.get("db");
+  const workspaceId = c.req.param("id");
+  if (!(await isWorkspaceOwner(db, c.get("userId"), workspaceId)))
+    return c.json({ error: "workspace_owner_access_required" }, 403);
+  const service = admin(c.env);
+  const { data: existing } = await service
+    .from("workspace_memberships")
+    .select("role")
+    .eq("workspace_id", workspaceId)
+    .eq("user_id", c.req.param("userId"))
+    .maybeSingle();
+  if (!existing) return c.json({ error: "workspace_member_not_found" }, 404);
+  if (existing.role === "owner")
+    return c.json({ error: "workspace_owner_role_is_protected" }, 409);
+  const { error } = await service
+    .from("workspace_memberships")
+    .delete()
+    .eq("workspace_id", workspaceId)
+    .eq("user_id", c.req.param("userId"));
+  if (error) return c.json({ error: error.message }, 400);
+  await recordActivity(c.env, c.get("userId"), "workspace.member_removed", undefined, {
+    workspaceId,
+    targetUserId: c.req.param("userId"),
+  });
+  return c.json({ deleted: true });
 });
 
 app.get("/api/properties/:id/viewers", async (c) => {
@@ -561,6 +641,30 @@ app.post("/api/properties/:id/viewers", async (c) => {
   return c.json({ ...data, email, invitationSent: invited.invitationSent }, 201);
 });
 
+app.delete("/api/properties/:id/viewers/:userId", async (c) => {
+  const db = c.get("db");
+  const propertyId = c.req.param("id");
+  const { data: property } = await db
+    .from("properties")
+    .select("id,workspace_id")
+    .eq("id", propertyId)
+    .single();
+  if (!property) return c.json({ error: "property_not_found" }, 404);
+  if (!(await canManageWorkspace(db, c.get("userId"), property.workspace_id)))
+    return c.json({ error: "property_manage_access_required" }, 403);
+  const { error, count } = await admin(c.env)
+    .from("property_memberships")
+    .delete({ count: "exact" })
+    .eq("property_id", propertyId)
+    .eq("user_id", c.req.param("userId"));
+  if (error) return c.json({ error: error.message }, 400);
+  if (!count) return c.json({ error: "property_viewer_not_found" }, 404);
+  await recordActivity(c.env, c.get("userId"), "property.viewer_removed", propertyId, {
+    targetUserId: c.req.param("userId"),
+  });
+  return c.json({ deleted: true });
+});
+
 app.patch("/api/workspaces/:id", async (c) => {
   const body = await c.req.json<{ name: string }>();
   const name = body.name?.trim().slice(0, 100);
@@ -577,6 +681,51 @@ app.patch("/api/workspaces/:id", async (c) => {
     workspaceId: data.id,
   });
   return c.json(data);
+});
+
+app.delete("/api/workspaces/:id", async (c) => {
+  const db = c.get("db");
+  const workspaceId = c.req.param("id");
+  const context = await workspaceOwnerContext(db, c.get("userId"), workspaceId);
+  if (!context) return c.json({ error: "workspace_owner_access_required" }, 403);
+  const service = admin(c.env);
+  const [{ count: workspaceCount }, { count: propertyCount }] = await Promise.all([
+    service
+      .from("workspaces")
+      .select("id", { count: "exact", head: true })
+      .eq("account_id", context.accountId),
+    service
+      .from("properties")
+      .select("id", { count: "exact", head: true })
+      .eq("workspace_id", workspaceId),
+  ]);
+  const deletionError = workspaceDeletionError(workspaceCount || 0, propertyCount || 0);
+  if (deletionError) return c.json({ error: deletionError }, 409);
+  await recordActivity(c.env, c.get("userId"), "workspace.deleted", undefined, {
+    workspaceId,
+    workspaceName: context.name,
+  });
+  const { error } = await service.from("workspaces").delete().eq("id", workspaceId);
+  return error ? c.json({ error: error.message }, 400) : c.json({ deleted: true });
+});
+
+app.delete("/api/properties/:id", async (c) => {
+  const db = c.get("db");
+  const propertyId = c.req.param("id");
+  const { data: property } = await db
+    .from("properties")
+    .select("id,name,workspace_id")
+    .eq("id", propertyId)
+    .single();
+  if (!property) return c.json({ error: "property_not_found" }, 404);
+  if (!(await isWorkspaceOwner(db, c.get("userId"), property.workspace_id)))
+    return c.json({ error: "workspace_owner_access_required" }, 403);
+  await recordActivity(c.env, c.get("userId"), "property.deleted", property.id, {
+    workspaceId: property.workspace_id,
+    propertyName: property.name,
+  });
+  const { error } = await admin(c.env).from("properties").delete().eq("id", propertyId);
+  return error ? c.json({ error: error.message }, 400) : c.json({ deleted: true });
 });
 
 app.post("/api/properties/:id/verify", async (c) => {
@@ -2438,7 +2587,7 @@ export function normalizeAnalyticsPath(value: unknown) {
   }
 }
 
-function cleanPath(v: unknown) {
+export function cleanPath(v: unknown) {
   try {
     const u = new URL(String(v), "https://invalid.local");
     return normalizeAnalyticsPath(u.pathname).slice(0, 500);
@@ -2696,6 +2845,35 @@ async function canManageWorkspace(
     .in("role", ["owner", "member"])
     .maybeSingle();
   return Boolean(data);
+}
+
+async function workspaceOwnerContext(
+  db: SupabaseClient,
+  userId: string,
+  workspaceId?: string,
+) {
+  if (!workspaceId) return null;
+  const { data } = await db
+    .from("workspace_memberships")
+    .select("role,workspaces(id,name,account_id)")
+    .eq("workspace_id", workspaceId)
+    .eq("user_id", userId)
+    .eq("role", "owner")
+    .maybeSingle();
+  const workspace = data?.workspaces as unknown as
+    | { id: string; name: string; account_id: string }
+    | null;
+  return workspace
+    ? { id: workspace.id, name: workspace.name, accountId: workspace.account_id }
+    : null;
+}
+
+async function isWorkspaceOwner(
+  db: SupabaseClient,
+  userId: string,
+  workspaceId?: string,
+) {
+  return Boolean(await workspaceOwnerContext(db, userId, workspaceId));
 }
 
 async function authUsersById(service: SupabaseClient, userIds: string[]) {

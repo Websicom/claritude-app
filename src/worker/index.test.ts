@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   buildAnalyticsSummary,
+  cleanPath,
+  editableWorkspaceRole,
   evaluateSourceChecks,
   filterAnalyticsEvents,
   isPrivateHost,
@@ -8,6 +10,7 @@ import {
   normalizePropertyRelations,
   uptimeDueHorizon,
   validPublicUrl,
+  workspaceDeletionError,
 } from "./index";
 
 describe("worker evidence pipelines", () => {
@@ -168,5 +171,20 @@ describe("worker evidence pipelines", () => {
     expect(uptimeDueHorizon(Date.parse("2026-10-02T12:25:00.000Z"))).toBe(
       "2026-10-02T12:26:00.000Z",
     );
+  });
+
+  it("normalizes saved audit pages to property-relative paths", () => {
+    expect(cleanPath("about/team")).toBe("/about/team/");
+    expect(cleanPath("https://example.com/contact?source=test")).toBe("/contact/");
+    expect(cleanPath("/")).toBe("/");
+  });
+
+  it("protects owner roles and destructive workspace invariants", () => {
+    expect(editableWorkspaceRole("member")).toBe("member");
+    expect(editableWorkspaceRole("viewer")).toBe("viewer");
+    expect(editableWorkspaceRole("owner")).toBeNull();
+    expect(workspaceDeletionError(1, 0)).toBe("account_requires_one_workspace");
+    expect(workspaceDeletionError(2, 1)).toBe("workspace_must_be_empty_before_deletion");
+    expect(workspaceDeletionError(2, 0)).toBeNull();
   });
 });
