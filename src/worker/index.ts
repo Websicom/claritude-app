@@ -179,6 +179,8 @@ app.get("/api/config", (c) =>
 const serveTracker = (c: any) => {
   c.header("content-type", "application/javascript; charset=utf-8");
   c.header("cache-control", "public, max-age=3600");
+  c.header("cross-origin-resource-policy", "cross-origin");
+  c.header("access-control-allow-origin", "*");
   c.header("x-claritude-tracker-version", TRACKER_VERSION);
   return c.body(TRACKER_SOURCE);
 };
@@ -187,6 +189,8 @@ app.get("/c.js", serveTracker);
 app.get("/vendor/web-vitals.js", (c) => {
   c.header("content-type", "application/javascript; charset=utf-8");
   c.header("cache-control", "public, max-age=31536000, immutable");
+  c.header("cross-origin-resource-policy", "cross-origin");
+  c.header("access-control-allow-origin", "*");
   return c.body(WEB_VITALS_SOURCE);
 });
 
