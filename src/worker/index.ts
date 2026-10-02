@@ -860,6 +860,10 @@ app.post("/api/audits", async (c) => {
       status: "queued",
       registry_snapshot: snapshot,
       scoring_version: "1.0.0",
+      execution_stage: "queued",
+      progress_completed: 0,
+      progress_total: snapshot.length,
+      heartbeat_at: new Date().toISOString(),
       created_by: c.get("userId"),
     })
     .select()
@@ -1675,7 +1679,12 @@ async function runAudit(env: Env, id: string) {
   const started = Date.now();
   const { data: run } = await db
     .from("audit_runs")
-    .update({ status: "running", started_at: new Date().toISOString() })
+    .update({
+      status: "running",
+      execution_stage: "fetching_page",
+      started_at: new Date().toISOString(),
+      heartbeat_at: new Date().toISOString(),
+    })
     .eq("id", id)
     .select()
     .single();
@@ -1688,8 +1697,23 @@ async function runAudit(env: Env, id: string) {
     const responseMs = Date.now() - fetchStarted;
     const snapshot = run.registry_snapshot as AuditRegistrySnapshot[];
     const html = await limitedText(res, 2_000_000);
+    await db
+      .from("audit_runs")
+      .update({
+        execution_stage: "evaluating_checks",
+        heartbeat_at: new Date().toISOString(),
+      })
+      .eq("id", id);
     const results = evaluateSourceChecks(snapshot, res, html, responseMs);
     const snapshotById = new Map(snapshot.map((check) => [check.id, check]));
+    await db
+      .from("audit_runs")
+      .update({
+        execution_stage: "persisting_results",
+        progress_completed: results.length,
+        heartbeat_at: new Date().toISOString(),
+      })
+      .eq("id", id);
     await db.from("audit_results").insert(
       results.map((r) => {
         const check = snapshotById.get(r.check_id);
@@ -1711,6 +1735,10 @@ async function runAudit(env: Env, id: string) {
           : "completed",
         score,
         coverage,
+        execution_stage: "completed",
+        progress_completed: results.length,
+        progress_total: snapshot.length,
+        heartbeat_at: new Date().toISOString(),
         completed_at: new Date().toISOString(),
         duration_ms: Date.now() - started,
       })
@@ -1733,6 +1761,8 @@ async function runAudit(env: Env, id: string) {
       .from("audit_runs")
       .update({
         status: "failed",
+        execution_stage: "failed",
+        heartbeat_at: new Date().toISOString(),
         error: errorMessage(e),
         completed_at: new Date().toISOString(),
         duration_ms: Date.now() - started,

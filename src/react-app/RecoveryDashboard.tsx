@@ -32,15 +32,19 @@ import {
   Menu,
   MoreHorizontal,
   Monitor,
+  OctagonAlert,
   Pause,
   Plus,
   RefreshCw,
   Search,
   Settings,
-  ShieldCheck,
+  ShieldAlert,
+  SquareCheckBig,
   Smartphone,
   Tablet,
+  TriangleAlert,
   Users,
+  Eye,
   X,
 } from "lucide-react";
 import {
@@ -83,6 +87,11 @@ type AuditRun = {
   created_at: string;
   completed_at?: string;
   duration_ms?: number;
+  error?: string;
+  execution_stage?: string;
+  progress_completed?: number;
+  progress_total?: number | null;
+  heartbeat_at?: string;
   audit_results?: any[];
   category_scores?: Record<string, number>;
   performance_metrics?: {
@@ -1687,6 +1696,7 @@ function UptimeView({
       reload();
     } catch (e: any) {
       notify(e.message);
+      setBusy(false);
     } finally {
       setBusy(false);
     }
@@ -2418,6 +2428,25 @@ function AuditView({
         setRealUserPerformance(null);
       });
   }, [property?.id, session, fixture, livePeriod, selectedPage?.id]);
+  const activeRunId = runs.find((run) => ["queued", "running"].includes(run.status))?.id;
+  useEffect(() => {
+    if (!activeRunId || !session || !property || !selectedPage) return;
+    const interval = window.setInterval(() => {
+      const sequence = ++requestSequence.current;
+      api<AuditRun[]>(session, `/api/properties/${property.id}/audits?${livePeriod}&pageId=${encodeURIComponent(selectedPage.id)}`)
+        .then((nextRuns) => {
+          if (requestSequence.current !== sequence) return;
+          setRuns(nextRuns);
+          const finished = nextRuns.find((run) => run.id === activeRunId);
+          if (finished && ["completed", "partial", "failed"].includes(finished.status)) {
+            setBusy(false);
+            notify(finished.status === "failed" ? "Audit failed" : "Audit results are ready");
+          }
+        })
+        .catch(() => undefined);
+    }, 1800);
+    return () => window.clearInterval(interval);
+  }, [activeRunId, session, property?.id, selectedPage?.id, livePeriod]);
   if (!property)
     return (
       <Empty
@@ -2425,15 +2454,16 @@ function AuditView({
         detail="Audit results are property-specific."
       />
     );
-  const latest = runs.find((run) => ["completed", "partial"].includes(run.status)),
+  const activeRun = runs.find((run) => ["queued", "running"].includes(run.status)),
+    latest = runs.find((run) => ["completed", "partial"].includes(run.status)),
     results = latest?.audit_results || [],
     completedCategoryCount = Object.values(auditRunCategoryScores(latest)).filter((score) => score != null).length,
     partial = Boolean(latest) && !isAuditRunComplete(latest),
     actionable = results.filter((result: any) => ["fail", "warning"].includes(result.outcome));
   const resultCounts = {
-    critical: actionable.filter((result: any) => ["critical", "high"].includes(result.severity) || result.outcome === "fail").length,
+    critical: actionable.filter((result: any) => String(result.category) !== "Security" && (["critical", "high"].includes(result.severity) || result.outcome === "fail")).length,
     security: actionable.filter((result: any) => result.category === "Security" && ["critical", "high"].includes(result.severity)).length,
-    warnings: actionable.filter((result: any) => !(["critical", "high"].includes(result.severity) || result.outcome === "fail")).length,
+    warnings: actionable.filter((result: any) => !["critical", "high"].includes(result.severity) && result.outcome === "warning").length,
   };
   async function run(checkIds?: string[]) {
     if (!selectedPage) return;
@@ -2448,29 +2478,17 @@ function AuditView({
             ...(checkIds?.length ? { checkIds } : {}),
           }),
         });
-      notify("Audit started");
+      notify("Audit queued");
       if (session) {
-        for (let attempt = 0; attempt < 24; attempt += 1) {
-          await new Promise((resolve) => window.setTimeout(resolve, 1250));
-          const next = await api<AuditRun[]>(
-            session,
-            `/api/properties/${property!.id}/audits?${livePeriod}&pageId=${encodeURIComponent(selectedPage.id)}`,
-          );
-          setRuns(next);
-          if (next[0] && ["completed", "partial", "failed"].includes(next[0].status)) {
-            notify(
-              next[0].status === "failed"
-                ? "Audit failed—open History for the recorded error"
-                : `Audit ${next[0].status}: ${next[0].coverage ?? 0}% catalogue coverage`,
-            );
-            break;
-          }
-        }
+        const next = await api<AuditRun[]>(session, `/api/properties/${property!.id}/audits?${livePeriod}&pageId=${encodeURIComponent(selectedPage.id)}`);
+        setRuns(next);
+        setBusy(next.some((candidate) => ["queued", "running"].includes(candidate.status)));
       }
     } catch (e: any) {
       notify(e.message);
-    } finally {
       setBusy(false);
+    } finally {
+      if (!session) setBusy(false);
     }
   }
   async function saveAuditPage() {
@@ -2505,14 +2523,15 @@ function AuditView({
     }
   }
   const visible = filterAuditFindings(results, filter);
+  const failedRun = !activeRun && runs[0]?.status === "failed" ? runs[0] : undefined;
   return (
     <Page
       title="Audit"
       status={<Period />}
       actions={
-        <button className="primary" onClick={() => void run()} disabled={busy || !selectedPage}>
-          <RefreshCw />
-          {busy ? "Queuing…" : "Run audit"}
+        <button className="primary" onClick={() => void run()} disabled={busy || Boolean(activeRun) || !selectedPage}>
+          <RefreshCw className={busy || activeRun ? "audit-spin" : ""} />
+          {activeRun?.status === "queued" ? "Queued" : activeRun?.status === "running" ? "Running" : busy ? "Queuing…" : "Run audit"}
         </button>
       }
     >
@@ -2550,6 +2569,7 @@ function AuditView({
           onChange={(nextTab) => { setTab(nextTab); updateAuditLocation({ auditTab: nextTab }); }}
         />
       </div>
+      {(activeRun || failedRun) && <AuditProgress run={(activeRun || failedRun)!} onRetry={() => void run()} />}
       {partial && (
         <div className="coverage-note partial">
           <b>Incomplete audit coverage</b>
@@ -2566,27 +2586,18 @@ function AuditView({
           <AuditScore run={latest} />
           <div className="grid">
             <Panel title={`Fix these first · ${selectedPage?.name || "Selected page"}`}>
-              <div className="audit-summary">
+              <div className="audit-summary" aria-label="Finding severity filters">
                 <button className={`audit-summary-item ${filter === "critical" ? "selected" : ""}`} onClick={() => setFilter(filter === "critical" ? "All" : "critical")}>
-                  <CircleAlert />{resultCounts.critical}
+                  <OctagonAlert />{resultCounts.critical}
                 </button>
                 <button className={`audit-summary-item ${filter === "security" ? "selected" : ""}`} onClick={() => setFilter(filter === "security" ? "All" : "security")}>
-                  <ShieldCheck />{resultCounts.security}
+                  <ShieldAlert />{resultCounts.security}
                 </button>
                 <button className={`audit-summary-item ${filter === "warning" ? "selected" : ""}`} onClick={() => setFilter(filter === "warning" ? "All" : "warning")}>
-                  <CircleAlert />{resultCounts.warnings}
+                  <TriangleAlert />{resultCounts.warnings}
                 </button>
               </div>
-              <button className="btn audit-overview-filter" onClick={() => setFilterOpen((value) => !value)}><Filter /> Filters</button>
-              {filterOpen && (
-                <div className="action-menu audit-filter-actions audit-overview-filter-menu">
-                  {["All", "critical", "security", "warning"].map((value) => (
-                    <button key={value} className={filter === value ? "selected" : ""} onClick={() => { setFilter(value); setFilterOpen(false); }}>
-                      {cap(value)}{filter === value && <Check />}
-                    </button>
-                  ))}
-                </div>
-              )}
+              <AuditFilterButton value={filter} onChange={setFilter} compact />
               <AuditResults
                 results={filterAuditFindings(actionable, filter).slice(0, 7)}
                 onRetest={() => void run()}
@@ -5692,6 +5703,98 @@ function EventsPanel({
     </>
   );
 }
+function AuditProgress({ run, onRetry }: { run: AuditRun; onRetry: () => void }) {
+  const total = run.progress_total || 0;
+  const complete = Math.min(run.progress_completed || 0, total || Number.MAX_SAFE_INTEGER);
+  const percent = total ? Math.round((complete / total) * 100) : null;
+  const stageLabels: Record<string, string> = {
+    queued: "Waiting for an audit worker",
+    fetching_page: "Collecting the selected page",
+    evaluating_checks: "Evaluating available checks",
+    persisting_results: "Saving evidence and scores",
+    failed: "Audit failed",
+  };
+  return (
+    <section className={`audit-progress ${run.status === "failed" ? "failed" : ""}`} aria-live="polite">
+      <div className="audit-progress-copy">
+        <b>{run.status === "queued" ? "Queued" : run.status === "failed" ? "Audit failed" : "Audit in progress"}</b>
+        <span>{stageLabels[run.execution_stage || run.status] || cap((run.execution_stage || run.status).replaceAll("_", " "))}</span>
+        <small>
+          {total ? `${complete} of ${total} checks` : "Preparing work total"}
+          {run.created_at ? ` · ${relative(run.created_at)}` : ""}
+        </small>
+      </div>
+      <div
+        className={`audit-progress-track ${percent == null ? "indeterminate" : ""}`}
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={total || undefined}
+        aria-valuenow={total ? complete : undefined}
+      >
+        <span style={percent == null ? undefined : { width: `${percent}%` }} />
+      </div>
+      {run.status === "failed" && <button className="btn" onClick={onRetry}><RefreshCw /> Retry audit</button>}
+    </section>
+  );
+}
+
+function AuditFilterButton({
+  value,
+  onChange,
+  compact = false,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  compact?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapper = useRef<HTMLDivElement>(null);
+  const menuId = useId();
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!wrapper.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { setOpen(false); wrapper.current?.querySelector<HTMLButtonElement>("button")?.focus(); }
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeEscape);
+    };
+  }, [open]);
+  const options = compact
+    ? ["critical", "security", "warning"]
+    : ["critical", "security", "warning", "advisory", "pass"];
+  const icons: Record<string, ReactNode> = {
+    critical: <OctagonAlert />,
+    security: <ShieldAlert />,
+    warning: <TriangleAlert />,
+    advisory: <Eye />,
+    pass: <SquareCheckBig />,
+  };
+  return (
+    <div className="audit-filter-wrap" ref={wrapper}>
+      <button className="btn audit-overview-filter" aria-haspopup="menu" aria-expanded={open} aria-controls={menuId} onClick={() => setOpen((current) => !current)}>
+        <Filter /> {value === "All" ? "Filters" : cap(value)}
+      </button>
+      {open && (
+        <div className="action-menu audit-filter-actions" id={menuId} role="menu">
+          {options.map((option) => (
+            <button key={option} role="menuitemcheckbox" aria-checked={value === option} className={value === option ? "selected" : ""} onClick={() => { onChange(option); setOpen(false); }}>
+              <span className={`audit-filter-icon ${option}`}>{icons[option]}</span>{option === "security" ? "Security critical" : cap(option)}{value === option && <Check />}
+            </button>
+          ))}
+          <div className="menu-separator" />
+          <button role="menuitem" disabled={value === "All"} onClick={() => { onChange("All"); setOpen(false); }}>Clear filters</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AuditScore({ run }: { run?: AuditRun }) {
   const categoryScores = auditRunCategoryScores(run);
   const complete = isAuditRunComplete(run);
@@ -5775,9 +5878,11 @@ function filterAuditFindings(results: any[], filter: string) {
   if (filter === "All") return results;
   const normalized = filter.toLowerCase();
   if (normalized === "critical")
-    return results.filter((result) => ["critical", "high"].includes(result.severity) || result.outcome === "fail");
+    return results.filter((result) => String(result.category) !== "Security" && (["critical", "high"].includes(result.severity) || result.outcome === "fail"));
   if (normalized === "security")
-    return results.filter((result) => String(result.category).toLowerCase() === "security");
+    return results.filter((result) => String(result.category).toLowerCase() === "security" && (["critical", "high"].includes(result.severity) || result.outcome === "fail"));
+  if (normalized === "advisory")
+    return results.filter((result) => ["informational", "not_applicable", "unable_to_test"].includes(result.outcome));
   return results.filter(
     (result) =>
       String(result.category || "").toLowerCase().includes(normalized) ||
