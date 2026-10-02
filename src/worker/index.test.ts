@@ -147,6 +147,25 @@ describe("worker evidence pipelines", () => {
     expect(summary.series.every((point) => point.day.includes("T"))).toBe(true);
   });
 
+  it("uses 23 and 25 hourly points across Europe/London DST transitions", () => {
+    const springForward = buildAnalyticsSummary(
+      [],
+      1,
+      "2026-03-29T00:00:00.000Z",
+      "2026-03-29T22:59:59.999Z",
+      "Europe/London",
+    );
+    const fallBack = buildAnalyticsSummary(
+      [],
+      1,
+      "2026-10-24T23:00:00.000Z",
+      "2026-10-25T23:59:59.999Z",
+      "Europe/London",
+    );
+    expect(springForward.series).toHaveLength(23);
+    expect(fallBack.series).toHaveLength(25);
+  });
+
   it("executes source and header checks with evidence", () => {
     const html = `<!doctype html><html lang="en"><head><title>Example</title><meta name="description" content="Useful description"><meta name="viewport" content="width=device-width"><link rel="canonical" href="https://example.com/"></head><body><main><h1>Example</h1><p>${"useful content ".repeat(20)}</p></main></body></html>`;
     const response = new Response(html, {
