@@ -4826,31 +4826,6 @@ function AnalyticsTable({
     </>
   );
 }
-function BarRows({ rows }: { rows: (string | number)[][] }) {
-  if (!rows.length)
-    return (
-      <Empty
-        title="No measured data"
-        detail="This breakdown will populate after compatible events are received."
-      />
-    );
-  const max = Math.max(...rows.map((r) => Number(r[1])));
-  return (
-    <div className="bar-rows">
-      {rows.map((r) => (
-        <div className="bar-row" key={String(r[0])}>
-          <span
-            className="bar-fill"
-            style={{ width: `${(Number(r[1]) / max) * 100}%` }}
-          />
-          <b>{r[0]}</b>
-          <span>{fmt(Number(r[1]))}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function AnalyticsSourceTable({ sources }: { sources: any[] }) {
   if (!sources.length)
     return <Empty title="No measured sources" detail="Source categories appear after pageviews are received." />;

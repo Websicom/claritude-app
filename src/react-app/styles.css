@@ -2033,31 +2033,6 @@ input[type="checkbox"]:checked:after {
   color: #7a4b00;
   font-size: 12px;
 }
-.bar-rows {
-  display: grid;
-}
-.bar-row {
-  position: relative;
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 15px;
-  padding: 10px 8px;
-  border-bottom: 1px solid var(--line);
-  overflow: hidden;
-}
-.bar-fill {
-  position: absolute;
-  left: 5px;
-  top: 5px;
-  bottom: 5px;
-  border-radius: 4px;
-  background: #eef0f3;
-}
-.bar-row b,
-.bar-row > span:last-child {
-  position: relative;
-  z-index: 1;
-}
 .audit-score {
   position: relative;
   border: 0 !important;
