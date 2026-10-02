@@ -172,11 +172,22 @@ app.get("/api/bootstrap", async (c) => {
     profile: profile.data,
     accounts: accounts.data,
     workspaces: workspaces.data,
-    properties: properties.data,
+    properties: normalizePropertyRelations(properties.data || []),
     incidents: incidents.data,
     notifications: notifications.data,
   });
 });
+
+export function normalizePropertyRelations(properties: any[]) {
+  return properties.map((property) => ({
+    ...property,
+    uptime_monitors: Array.isArray(property.uptime_monitors)
+      ? property.uptime_monitors
+      : property.uptime_monitors
+        ? [property.uptime_monitors]
+        : [],
+  }));
+}
 
 app.post("/api/onboarding", async (c) => {
   const body = await c.req.json<{

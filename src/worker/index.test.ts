@@ -1,7 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { buildAnalyticsSummary, evaluateSourceChecks } from "./index";
+import {
+  buildAnalyticsSummary,
+  evaluateSourceChecks,
+  normalizePropertyRelations,
+} from "./index";
 
 describe("worker evidence pipelines", () => {
+  it("normalizes Supabase one-to-one monitor embeds for the dashboard", () => {
+    expect(
+      normalizePropertyRelations([
+        { id: "with-monitor", uptime_monitors: { id: "monitor-1", last_status: "online" } },
+        { id: "without-monitor", uptime_monitors: null },
+      ]),
+    ).toEqual([
+      { id: "with-monitor", uptime_monitors: [{ id: "monitor-1", last_status: "online" }] },
+      { id: "without-monitor", uptime_monitors: [] },
+    ]);
+  });
+
   it("aggregates measured analytics dimensions and engagement", () => {
     const summary = buildAnalyticsSummary(
       [
