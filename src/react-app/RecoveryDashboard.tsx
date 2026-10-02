@@ -4778,12 +4778,7 @@ function AnalyticsTable({
           <tbody>
             {rows.map((page) => (
               <tr key={page.page}>
-                <td className="bar-cell">
-                  <span
-                    className="bar-bg"
-                    aria-hidden="true"
-                    style={{ width: `${Math.max(4, (page.views / max) * 92)}%` }}
-                  />
+                <InCellBar value={page.views} max={max}>
                   {page.grouped ? (
                     <button className="table-detail-link" onClick={() => setGroupOpen(true)}>
                       Other grouped pages
@@ -4803,7 +4798,7 @@ function AnalyticsTable({
                       </a>
                     </span>
                   )}
-                </td>
+                </InCellBar>
                 <td>{fmt(page.views)}</td>
                 <td>{fmt(page.events)}</td>
               </tr>
@@ -4839,10 +4834,9 @@ function AnalyticsSourceTable({ sources }: { sources: any[] }) {
             const pageviews = Number(source.pageviews || source.count || 0);
             return (
               <tr key={source.name}>
-                <td className="bar-cell">
-                  <span className="bar-bg" aria-hidden="true" style={{ width: `${Math.max(4, pageviews / max * 92)}%` }} />
+                <InCellBar value={pageviews} max={max}>
                   <span className="dimension-label"><DimensionMark kind="source" value={source.name} /><b>{source.name}</b></span>
-                </td>
+                </InCellBar>
                 <td>{fmt(pageviews)}</td>
                 <td>{fmt(Number(source.events || 0))}</td>
               </tr>
@@ -4871,13 +4865,12 @@ function AnalyticsValueTable({
         <tbody>
           {rows.map((row, index) => (
             <tr key={`${String(row.label)}-${index}`}>
-              <td className="bar-cell">
-                <span className="bar-bg" aria-hidden="true" style={{ width: `${Math.max(4, Number(row.value) / max * 92)}%` }} />
+              <InCellBar value={row.value} max={max}>
                 <span className="dimension-label">
                   {row.iconKind && <DimensionMark kind={row.iconKind} value={row.iconValue || String(row.label)} />}
                   <b>{row.label}</b>
                 </span>
-              </td>
+              </InCellBar>
               <td>{headers.length === 2 && row.secondary != null ? row.secondary : fmt(row.value)}</td>
               {headers.length === 3 && <td>{row.secondary}</td>}
             </tr>
@@ -4885,6 +4878,24 @@ function AnalyticsValueTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+function InCellBar({
+  value,
+  max,
+  children,
+}: {
+  value: number;
+  max: number;
+  children: ReactNode;
+}) {
+  const width = Math.max(4, (Math.max(0, Number(value) || 0) / Math.max(1, max)) * 92);
+  return (
+    <td className="bar-cell">
+      <span className="bar-bg" aria-hidden="true" style={{ width: `${width}%` }} />
+      {children}
+    </td>
   );
 }
 
