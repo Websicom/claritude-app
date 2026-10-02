@@ -362,6 +362,16 @@ app.post("/api/properties", async (c) => {
     );
   if (monitorError)
     return c.json({ error: `property_created_monitor_failed: ${monitorError.message}` }, 500);
+  const { error: auditPageError } = await admin(c.env)
+    .from("property_audit_pages")
+    .insert({
+      property_id: data.id,
+      name: "Homepage",
+      path: "/",
+      created_by: c.get("userId"),
+    });
+  if (auditPageError)
+    return c.json({ error: `property_created_audit_page_failed: ${auditPageError.message}` }, 500);
   await recordActivity(c.env, c.get("userId"), "property.created", data.id, {
     workspaceId: b.workspaceId,
   });
@@ -785,7 +795,11 @@ app.post("/api/properties/:id/verify", async (c) => {
 });
 
 app.post("/api/audits", async (c) => {
-  const b = await c.req.json<{ propertyId: string; pageUrl?: string }>();
+  const b = await c.req.json<{
+    propertyId: string;
+    pageId: string;
+    checkIds?: string[];
+  }>();
   const db = c.get("db");
   const { data: property } = await db
     .from("properties")
@@ -793,6 +807,26 @@ app.post("/api/audits", async (c) => {
     .eq("id", b.propertyId)
     .single();
   if (!property) return c.json({ error: "property_not_found" }, 404);
+  const { data: auditPage } = await db
+    .from("property_audit_pages")
+    .select("id,property_id,name,path")
+    .eq("id", b.pageId)
+    .eq("property_id", property.id)
+    .single();
+  if (!auditPage) return c.json({ error: "audit_page_not_found" }, 404);
+  const target = validPublicUrl(new URL(auditPage.path, property.url).href);
+  if (!target || !sameSiteHost(target.hostname, new URL(property.url).hostname))
+    return c.json({ error: "page_must_belong_to_property" }, 400);
+  const { data: activeRun } = await db
+    .from("audit_runs")
+    .select("id,status")
+    .eq("property_id", property.id)
+    .eq("audit_page_id", auditPage.id)
+    .in("status", ["queued", "running"])
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (activeRun) return c.json({ error: "audit_already_active", run: activeRun }, 409);
   const dayStart = `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`;
   const { count: runsToday } = await db
     .from("audit_runs")
@@ -801,9 +835,6 @@ app.post("/api/audits", async (c) => {
     .gte("created_at", dayStart);
   if ((runsToday || 0) >= LIMITS.auditsPerPropertyPerDay)
     return c.json({ error: "audit_daily_limit_reached" }, 429);
-  const target = validPublicUrl(b.pageUrl || property.url);
-  if (!target || target.hostname !== new URL(property.url).hostname)
-    return c.json({ error: "page_must_belong_to_property" }, 400);
   const { data: registryRows, error: registryError } = await db
     .from("audit_check_definitions")
     .select("id,title,weight,logic_version,configuration_version")
@@ -811,15 +842,20 @@ app.post("/api/audits", async (c) => {
     .order("id");
   if (registryError)
     return c.json({ error: "audit_registry_unavailable" }, 503);
-  const snapshot = buildRegistrySnapshot(
+  let snapshot = buildRegistrySnapshot(
     registryRows || [],
     IMPLEMENTED_AUDIT_IDS,
   );
+  if (Array.isArray(b.checkIds) && b.checkIds.length) {
+    const requested = new Set(b.checkIds.slice(0, 100));
+    snapshot = snapshot.filter((check) => requested.has(check.id));
+  }
   if (!snapshot.length) return c.json({ error: "audit_registry_empty" }, 503);
   const { data: run, error } = await db
     .from("audit_runs")
     .insert({
       property_id: property.id,
+      audit_page_id: auditPage.id,
       page_url: target.href,
       status: "queued",
       registry_snapshot: snapshot,
@@ -850,20 +886,41 @@ app.get("/api/properties/:id/audit-pages", async (c) => {
 app.post("/api/properties/:id/audit-pages", async (c) => {
   const body = await c.req.json<{ name: string; path: string }>();
   const name = body.name?.trim().slice(0, 100);
-  const path = cleanPath(body.path);
+  const db = c.get("db");
+  const { data: property } = await db
+    .from("properties")
+    .select("id,url,canonical_host")
+    .eq("id", c.req.param("id"))
+    .single();
+  if (!property) return c.json({ error: "property_not_found" }, 404);
+  const supplied = String(body.path || "").trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(supplied || "/", property.url);
+  } catch {
+    return c.json({ error: "valid_audit_page_required" }, 400);
+  }
+  if (!sameSiteHost(parsed.hostname, property.canonical_host))
+    return c.json({ error: "page_must_belong_to_property" }, 400);
+  if (parsed.search || parsed.hash)
+    return c.json({ error: "audit_page_query_and_fragment_not_allowed" }, 400);
+  const path = cleanPath(parsed.pathname);
   if (!name || !path) return c.json({ error: "valid_audit_page_required" }, 400);
-  const { data, error } = await c
-    .get("db")
+  const { data: duplicate } = await db
     .from("property_audit_pages")
-    .upsert(
-      {
-        property_id: c.req.param("id"),
-        name,
-        path,
-        created_by: c.get("userId"),
-      },
-      { onConflict: "property_id,path" },
-    )
+    .select("id,name,path")
+    .eq("property_id", property.id)
+    .eq("path", path)
+    .maybeSingle();
+  if (duplicate) return c.json({ error: "audit_page_already_exists", page: duplicate }, 409);
+  const { data, error } = await db
+    .from("property_audit_pages")
+    .insert({
+      property_id: c.req.param("id"),
+      name,
+      path,
+      created_by: c.get("userId"),
+    })
     .select()
     .single();
   if (error) return c.json({ error: error.message }, 400);
@@ -876,15 +933,26 @@ app.post("/api/properties/:id/audit-pages", async (c) => {
 app.get("/api/properties/:id/audits", async (c) => {
   const window = requestedWindow(c);
   if (!window) return c.json({ error: "invalid_date_range" }, 400);
-  const { data, error } = await c
-    .get("db")
+  const db = c.get("db");
+  const pageId = c.req.query("pageId");
+  if (pageId) {
+    const { data: page } = await db
+      .from("property_audit_pages")
+      .select("id")
+      .eq("id", pageId)
+      .eq("property_id", c.req.param("id"))
+      .maybeSingle();
+    if (!page) return c.json({ error: "audit_page_not_found" }, 404);
+  }
+  let query = db
     .from("audit_runs")
     .select("*,audit_results(*)")
     .eq("property_id", c.req.param("id"))
     .gte("created_at", window.from)
     .lte("created_at", window.to)
-    .order("created_at", { ascending: false })
-    .limit(20);
+    .order("created_at", { ascending: false });
+  if (pageId) query = query.eq("audit_page_id", pageId);
+  const { data, error } = await query.limit(50);
   if (error) return c.json({ error: error.message }, 400);
   const definitions = new Map(AUDIT_REGISTRY.map((check) => [check.id, check]));
   return c.json(

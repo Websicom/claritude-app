@@ -76,6 +76,7 @@ type Monitor = {
 type AuditRun = {
   id: string;
   status: string;
+  audit_page_id?: string;
   score?: number;
   coverage?: number;
   page_url?: string;
@@ -96,6 +97,12 @@ type AuditRun = {
     successfullyExecutedChecks: number;
     passedChecks: number;
   };
+};
+type AuditPage = {
+  id: string;
+  property_id?: string;
+  name: string;
+  path: string;
 };
 type Property = {
   id: string;
@@ -2337,9 +2344,17 @@ function AuditView({
   notify: Notify;
 }) {
   const auditLocation = useLocation();
+  const auditNavigate = useNavigate();
   const livePeriod = periodQuery(auditLocation.search);
+  const auditParams = new URLSearchParams(auditLocation.search);
+  const requestedTab = auditParams.get("auditTab");
+  const requestedPageId = auditParams.get("auditPage");
   const [runs, setRuns] = useState<AuditRun[]>([]),
-    [tab, setTab] = useState("Overview"),
+    [tab, setTab] = useState(
+      ["Overview", "Findings", "Checks", "History", "Compare"].includes(requestedTab || "")
+        ? requestedTab!
+        : "Overview",
+    ),
     [busy, setBusy] = useState(false),
     [filter, setFilter] = useState("All"),
     [filterOpen, setFilterOpen] = useState(false),
@@ -2347,38 +2362,62 @@ function AuditView({
     [addPage, setAddPage] = useState(false),
     [performanceMode, setPerformanceMode] = useState<"Lab audit" | "Real-user data">("Lab audit"),
     [realUserPerformance, setRealUserPerformance] = useState<any>(null),
-    [auditPages, setAuditPages] = useState<any[]>([]),
-    [selectedPage, setSelectedPage] = useState<any>({ name: "Homepage", path: "/" }),
+    [auditPages, setAuditPages] = useState<AuditPage[]>([]),
+    [selectedPage, setSelectedPage] = useState<AuditPage | null>(null),
     [pageName, setPageName] = useState(""),
-    [pagePath, setPagePath] = useState("/");
+    [pagePath, setPagePath] = useState("/"),
+    [pageSaveState, setPageSaveState] = useState<"idle" | "saving" | "success">("idle"),
+    [pageError, setPageError] = useState("");
+  const requestSequence = useRef(0);
+  function updateAuditLocation(changes: Record<string, string | null>) {
+    const next = new URLSearchParams(auditLocation.search);
+    Object.entries(changes).forEach(([key, value]) => value ? next.set(key, value) : next.delete(key));
+    auditNavigate(`${auditLocation.pathname}?${next.toString()}`, { replace: true });
+  }
   useEffect(() => {
     if (session && property) {
-      api<AuditRun[]>(session, `/api/properties/${property.id}/audits?${livePeriod}`)
-        .then(setRuns)
-        .catch(() => setRuns([]));
       api<any[]>(session, `/api/properties/${property.id}/audit-pages`)
         .then((pages) => {
-          const next = [{ name: "Homepage", path: "/" }, ...pages.filter((page) => page.path !== "/")];
+          const next = [...pages].sort((left, right) => left.path === "/" ? -1 : right.path === "/" ? 1 : left.name.localeCompare(right.name));
           setAuditPages(next);
-          setSelectedPage(next[0]);
+          const chosen = next.find((page) => page.id === requestedPageId) || next[0] || null;
+          setSelectedPage(chosen);
+          if (chosen && chosen.id !== requestedPageId) updateAuditLocation({ auditPage: chosen.id });
         })
-        .catch(() => setAuditPages([{ name: "Homepage", path: "/" }]));
-      Promise.all([
-        api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}&device=desktop`),
-        api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}&device=mobile`),
-      ])
-        .then(([desktop, mobile]) => setRealUserPerformance({ desktop, mobile }))
-        .catch(() => setRealUserPerformance(null));
+        .catch(() => { setAuditPages([]); setSelectedPage(null); });
     } else if (fixture) {
       setRuns([fixtureAudit(property)]);
-      setAuditPages([{ name: "Homepage", path: "/" }]);
+      const page = { id: "fixture-homepage", name: "Homepage", path: "/" };
+      setAuditPages([page]);
+      setSelectedPage(page);
       const analytics = fixtureAnalytics(property!);
       setRealUserPerformance({
         desktop: { performance: { vitals: analytics.desktopVitals, minimumSamples: 75, method: "p75" } },
         mobile: { performance: { vitals: analytics.mobileVitals, minimumSamples: 75, method: "p75" } },
       });
     }
-  }, [property?.id, session, fixture, livePeriod]);
+  }, [property?.id, session, fixture]);
+  useEffect(() => {
+    if (!session || !property || !selectedPage) return;
+    const sequence = ++requestSequence.current;
+    setRuns([]);
+    setRealUserPerformance(null);
+    Promise.all([
+      api<AuditRun[]>(session, `/api/properties/${property.id}/audits?${livePeriod}&pageId=${encodeURIComponent(selectedPage.id)}`),
+      api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}&device=desktop&pathMode=exact&pathValue=${encodeURIComponent(selectedPage.path)}`),
+      api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}&device=mobile&pathMode=exact&pathValue=${encodeURIComponent(selectedPage.path)}`),
+    ])
+      .then(([nextRuns, desktop, mobile]) => {
+        if (requestSequence.current !== sequence) return;
+        setRuns(nextRuns);
+        setRealUserPerformance({ desktop, mobile });
+      })
+      .catch(() => {
+        if (requestSequence.current !== sequence) return;
+        setRuns([]);
+        setRealUserPerformance(null);
+      });
+  }, [property?.id, session, fixture, livePeriod, selectedPage?.id]);
   if (!property)
     return (
       <Empty
@@ -2386,7 +2425,7 @@ function AuditView({
         detail="Audit results are property-specific."
       />
     );
-  const latest = runs[0],
+  const latest = runs.find((run) => ["completed", "partial"].includes(run.status)),
     results = latest?.audit_results || [],
     completedCategoryCount = Object.values(auditRunCategoryScores(latest)).filter((score) => score != null).length,
     partial = Boolean(latest) && !isAuditRunComplete(latest),
@@ -2396,7 +2435,8 @@ function AuditView({
     security: actionable.filter((result: any) => result.category === "Security" && ["critical", "high"].includes(result.severity)).length,
     warnings: actionable.filter((result: any) => !(["critical", "high"].includes(result.severity) || result.outcome === "fail")).length,
   };
-  async function run() {
+  async function run(checkIds?: string[]) {
+    if (!selectedPage) return;
     setBusy(true);
     try {
       if (session)
@@ -2404,7 +2444,8 @@ function AuditView({
           method: "POST",
           body: JSON.stringify({
             propertyId: property!.id,
-            pageUrl: new URL(selectedPage.path, property!.url).href,
+            pageId: selectedPage.id,
+            ...(checkIds?.length ? { checkIds } : {}),
           }),
         });
       notify("Audit started");
@@ -2413,7 +2454,7 @@ function AuditView({
           await new Promise((resolve) => window.setTimeout(resolve, 1250));
           const next = await api<AuditRun[]>(
             session,
-            `/api/properties/${property!.id}/audits?${livePeriod}`,
+            `/api/properties/${property!.id}/audits?${livePeriod}&pageId=${encodeURIComponent(selectedPage.id)}`,
           );
           setRuns(next);
           if (next[0] && ["completed", "partial", "failed"].includes(next[0].status)) {
@@ -2433,6 +2474,8 @@ function AuditView({
     }
   }
   async function saveAuditPage() {
+    setPageError("");
+    setPageSaveState("saving");
     try {
       if (!session) throw new Error("Authentication required");
       const saved = await api<any>(session, `/api/properties/${property!.id}/audit-pages`, {
@@ -2440,18 +2483,25 @@ function AuditView({
         body: JSON.stringify({ name: pageName, path: pagePath }),
       });
       const next = [
-        { name: "Homepage", path: "/" },
-        ...auditPages.filter((page) => page.path !== "/" && page.path !== saved.path),
+        ...auditPages,
         saved,
-      ];
+      ].sort((left, right) => left.path === "/" ? -1 : right.path === "/" ? 1 : left.name.localeCompare(right.name));
       setAuditPages(next);
       setSelectedPage(saved);
-      setAddPage(false);
+      updateAuditLocation({ auditPage: saved.id });
+      setPageSaveState("success");
       setPageName("");
       setPagePath("/");
       notify("Page added to this audit selection");
+      window.setTimeout(() => { setAddPage(false); setPageSaveState("idle"); }, 550);
     } catch (error: any) {
-      notify(error.message);
+      const message = error.message === "audit_page_already_exists"
+        ? "That page is already in this property."
+        : error.message === "page_must_belong_to_property"
+          ? `Enter a URL or path on ${property!.canonical_host}.`
+          : error.message;
+      setPageError(message);
+      setPageSaveState("idle");
     }
   }
   const visible = filterAuditFindings(results, filter);
@@ -2460,7 +2510,7 @@ function AuditView({
       title="Audit"
       status={<Period />}
       actions={
-        <button className="primary" onClick={run} disabled={busy}>
+        <button className="primary" onClick={() => void run()} disabled={busy || !selectedPage}>
           <RefreshCw />
           {busy ? "Queuing…" : "Run audit"}
         </button>
@@ -2469,10 +2519,7 @@ function AuditView({
       <div className="audit-nav-row">
         <button className="audit-page-picker" onClick={() => setPageMenu((value) => !value)}>
           <Globe2 />
-          <span>
-            <b>{selectedPage.name}</b>
-            <small>{selectedPage.path}</small>
-          </span>
+          <span><b>{selectedPage?.name || "Select a page"}</b></span>
           <ChevronDown />
         </button>
         {pageMenu && (
@@ -2480,10 +2527,15 @@ function AuditView({
             {auditPages.map((page) => (
               <button
                 key={page.path}
-                className={selectedPage.path === page.path ? "selected" : ""}
-                onClick={() => { setSelectedPage(page); setPageMenu(false); }}
+                className={selectedPage?.id === page.id ? "selected" : ""}
+                onClick={() => {
+                  setSelectedPage(page);
+                  setPageMenu(false);
+                  setFilter("All");
+                  updateAuditLocation({ auditPage: page.id });
+                }}
               >
-                <Globe2 /> {page.name} {selectedPage.path === page.path && <Check />}
+                <Globe2 /> {page.name} {selectedPage?.id === page.id && <Check />}
               </button>
             ))}
             <button onClick={() => { setPageMenu(false); setAddPage(true); }}><Plus /> Add page</button>
@@ -2495,7 +2547,7 @@ function AuditView({
         <Tabs
           labels={["Overview", "Findings", "Checks", "History", "Compare"]}
           value={tab}
-          onChange={setTab}
+          onChange={(nextTab) => { setTab(nextTab); updateAuditLocation({ auditTab: nextTab }); }}
         />
       </div>
       {partial && (
@@ -2513,7 +2565,7 @@ function AuditView({
         <>
           <AuditScore run={latest} />
           <div className="grid">
-            <Panel title={`Fix these first · ${selectedPage.name}`}>
+            <Panel title={`Fix these first · ${selectedPage?.name || "Selected page"}`}>
               <div className="audit-summary">
                 <button className={`audit-summary-item ${filter === "critical" ? "selected" : ""}`} onClick={() => setFilter(filter === "critical" ? "All" : "critical")}>
                   <CircleAlert />{resultCounts.critical}
@@ -2677,12 +2729,14 @@ function AuditView({
       )}
       {addPage && (
         <Modal title="Add page to audit" close={() => setAddPage(false)}>
-          <label className="field">Page name<input value={pageName} onChange={(event) => setPageName(event.target.value)} placeholder="About" /></label>
-          <label className="field">Path<input value={pagePath} onChange={(event) => setPagePath(event.target.value)} placeholder="/about" /></label>
-          <p className="subtle">The path is resolved on {property.canonical_host}.</p>
+          <label className="field">Page name<input value={pageName} onChange={(event) => setPageName(event.target.value)} placeholder="About" autoFocus /></label>
+          <label className="field">URL or path<input value={pagePath} onChange={(event) => setPagePath(event.target.value)} placeholder="/about/" /></label>
+          <p className="subtle">Only pages on {property.canonical_host} can be added. Adding a page does not start an audit.</p>
+          {pageError && <div className="error-note" role="alert">{pageError}</div>}
+          {pageSaveState === "success" && <div className="notice" role="status">Page saved and selected.</div>}
           <div className="dialog-actions">
-            <button className="btn" onClick={() => setAddPage(false)}>Cancel</button>
-            <button className="primary" onClick={() => void saveAuditPage()}>Add page</button>
+            <button className="btn" onClick={() => setAddPage(false)} disabled={pageSaveState === "saving"}>Cancel</button>
+            <button className="primary" onClick={() => void saveAuditPage()} disabled={!pageName.trim() || !pagePath.trim() || pageSaveState === "saving"}>{pageSaveState === "saving" ? "Saving…" : "Add page"}</button>
           </div>
         </Modal>
       )}
