@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildAnalyticsSummary,
+  auditCheckHasExecutableLogic,
   cleanPath,
   editableWorkspaceRole,
   evaluateSourceChecks,
@@ -12,6 +13,7 @@ import {
   validPublicUrl,
   workspaceDeletionError,
 } from "./index";
+import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 
 describe("worker evidence pipelines", () => {
   it("normalizes Supabase one-to-one monitor embeds for the dashboard", () => {
@@ -188,6 +190,27 @@ describe("worker evidence pipelines", () => {
     const results = evaluateSourceChecks(snapshot, response, html, 123);
     expect(results).toHaveLength(snapshot.length);
     expect(results.every((item) => item.outcome === "pass")).toBe(true);
+  });
+
+  it("reconciles every active catalogue check to executable logic or an explicit capability gap", () => {
+    const active = AUDIT_REGISTRY.filter((check) => check.lifecycle === "active");
+    const implemented = active.filter((check) => auditCheckHasExecutableLogic(check.id));
+    const gaps = active.filter((check) => !auditCheckHasExecutableLogic(check.id));
+    expect(active).toHaveLength(306);
+    expect(implemented).toHaveLength(126);
+    expect(implemented.length + gaps.length).toBe(active.length);
+    expect(gaps.every((check) => ["source_html", "network", "rendered_browser", "dns", "lab"].includes(check.executionMethod))).toBe(true);
+  });
+
+  it("records a result for every snapshotted catalogue check without treating gaps as passes", () => {
+    const html = "<!doctype html><html lang=\"en\"><head><title>Coverage probe</title></head><body><main>" + "evidence ".repeat(30) + "</main></body></html>";
+    const response = new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } });
+    Object.defineProperty(response, "url", { value: "https://example.com/" });
+    const active = AUDIT_REGISTRY.filter((check) => check.lifecycle === "active");
+    const results = evaluateSourceChecks(active, response, html, 100);
+    expect(results).toHaveLength(306);
+    expect(results.filter((result) => result.outcome === "unable_to_test")).toHaveLength(180);
+    expect(results.filter((result) => result.outcome === "pass").length).toBeLessThan(306);
   });
 
   it("rejects private, credentialed and non-HTTP audit targets", () => {

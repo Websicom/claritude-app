@@ -27,4 +27,18 @@ describe('audit runtime configuration', () => {
 
     expect(result).toEqual({ score: 75, coverage: 67 });
   });
+
+  it('counts informational and not-applicable checks as executed without scoring them', () => {
+    const snapshot = [
+      { id: 'pass', title: 'Pass', weight: 1, logicVersion: '1.0.0', configurationVersion: 1 },
+      { id: 'info', title: 'Info', weight: 1, logicVersion: '1.0.0', configurationVersion: 1 },
+      { id: 'na', title: 'N/A', weight: 1, logicVersion: '1.0.0', configurationVersion: 1 },
+      { id: 'missing', title: 'Missing result', weight: 1, logicVersion: '1.0.0', configurationVersion: 1 },
+    ];
+    expect(scoreAuditResults(snapshot, [
+      { check_id: 'pass', outcome: 'pass' },
+      { check_id: 'info', outcome: 'informational' },
+      { check_id: 'na', outcome: 'not_applicable' },
+    ])).toEqual({ score: 100, coverage: 75 });
+  });
 });

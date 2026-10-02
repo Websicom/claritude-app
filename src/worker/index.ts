@@ -55,11 +55,27 @@ export function workspaceDeletionError(workspaceCount: number, propertyCount: nu
 const ACTIVE_AUDIT_CHECKS = AUDIT_REGISTRY.filter(
   (check) => check.lifecycle === "active",
 );
+const ACTIVE_AUDIT_IDS = new Set(ACTIVE_AUDIT_CHECKS.map((check) => check.id));
+const EXPLICIT_SOURCE_CHECK_IDS = new Set([
+  "seo.metadata.title.present",
+  "seo.metadata.title.not_empty",
+  "seo.metadata.title.length",
+  "seo.metadata.description.present",
+  "seo.metadata.description.not_empty",
+  "seo.crawling.http_status",
+  "seo.crawling.html_content",
+  "seo.content.h1.present",
+  "seo.content.h1.multiple",
+  "accessibility.document.title",
+  "accessibility.mobile.viewport",
+  "security.https.selected",
+  "security.headers.hsts",
+  "security.headers.csp",
+  "infrastructure.http.content_type",
+  "ai.content.source_extractable",
+]);
 const IMPLEMENTED_AUDIT_CHECKS = ACTIVE_AUDIT_CHECKS.filter(
-  (check) => check.implementationStatus === "implemented",
-);
-const IMPLEMENTED_AUDIT_IDS = new Set(
-  IMPLEMENTED_AUDIT_CHECKS.map((check) => check.id),
+  (check) => auditCheckHasExecutableLogic(check.id),
 );
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -844,7 +860,7 @@ app.post("/api/audits", async (c) => {
     return c.json({ error: "audit_registry_unavailable" }, 503);
   let snapshot = buildRegistrySnapshot(
     registryRows || [],
-    IMPLEMENTED_AUDIT_IDS,
+    ACTIVE_AUDIT_IDS,
   );
   if (Array.isArray(b.checkIds) && b.checkIds.length) {
     const requested = new Set(b.checkIds.slice(0, 100));
@@ -1027,6 +1043,56 @@ app.patch("/api/audit-results/:id/review", async (c) => {
     status: body.status,
   });
   return c.json(data);
+});
+
+app.get("/api/properties/:id/audit-coverage", async (c) => {
+  const runId = c.req.query("runId");
+  let run: any = null;
+  if (runId) {
+    const response = await c.get("db")
+      .from("audit_runs")
+      .select("id,status,registry_snapshot,audit_results(check_id,outcome,evidence,duration_ms)")
+      .eq("id", runId)
+      .eq("property_id", c.req.param("id"))
+      .single();
+    if (response.error || !response.data) return c.json({ error: "audit_run_not_found" }, 404);
+    run = response.data;
+  }
+  const selected = new Set((run?.registry_snapshot || []).map((check: any) => check.id));
+  const resultById = new Map((run?.audit_results || []).map((result: any) => [result.check_id, result]));
+  const checks = ACTIVE_AUDIT_CHECKS.map((check) => {
+    const result: any = resultById.get(check.id);
+    const executable = auditCheckHasExecutableLogic(check.id);
+    return {
+      id: check.id,
+      title: check.title,
+      detailedCategory: check.subcategory,
+      scoreCategory: categoryLabel(check.primaryCategory),
+      scope: check.scope,
+      collectionMethod: check.executionMethod,
+      enabled: true,
+      executable,
+      selectedInRun: run ? selected.has(check.id) : null,
+      outcome: result?.outcome || null,
+      executionDurationMs: result?.duration_ms ?? null,
+      reason: result?.outcome === "unable_to_test"
+        ? result?.evidence?.reason || methodReason(check.executionMethod)
+        : executable
+          ? null
+          : methodReason(check.executionMethod),
+      logicVersion: check.logicVersion,
+      configurationVersion: check.configurationVersion,
+      sourceReference: check.sourceReference,
+    };
+  });
+  return c.json({
+    catalogueSize: checks.length,
+    implementedChecks: checks.filter((check) => check.executable).length,
+    successfullyExecutedChecks: checks.filter((check) => check.outcome && check.outcome !== "unable_to_test").length,
+    runId: run?.id || null,
+    runStatus: run?.status || null,
+    checks,
+  });
 });
 
 app.get("/api/properties/:id/incidents", async (c) => {
@@ -1950,6 +2016,24 @@ function analyseHtml(html: string, baseUrl: string) {
   };
 }
 
+export function auditCheckHasExecutableLogic(id: string) {
+  if (EXPLICIT_SOURCE_CHECK_IDS.has(id)) return true;
+  const definition = registry(id);
+  if (!definition || !["source_html", "network"].includes(definition.executionMethod)) return false;
+  const html = "<!doctype html><html lang=\"en\"><head><title>Probe</title></head><body><main>Probe content for evaluator capability detection.</main></body></html>";
+  const response = new Response(html, {
+    status: 200,
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+  return evaluateStaticCheck(
+    id,
+    response,
+    html,
+    analyseHtml(html, "https://audit-capability.invalid/"),
+    1,
+  ) !== null;
+}
+
 function evaluateStaticCheck(
   id: string,
   res: Response,
@@ -1957,7 +2041,10 @@ function evaluateStaticCheck(
   a: ReturnType<typeof analyseHtml>,
   responseMs: number,
 ): [CheckOutcome, Record<string, unknown>] | null {
-  const count = (pattern: RegExp) => [...html.matchAll(pattern)].length;
+  const count = (pattern: RegExp) => {
+    const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+    return [...html.matchAll(new RegExp(pattern.source, flags))].length;
+  };
   const present = (pattern: RegExp) => pattern.test(html);
   const result = (
     ok: boolean,
@@ -1973,7 +2060,7 @@ function evaluateStaticCheck(
     html.match(new RegExp(`<link[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*${rel}[^"']*["']`, "i"))?.[1] ||
     null;
   const method = registry(id)?.executionMethod;
-  if (!['source_html', 'headers', 'http', 'static_analysis'].includes(method || '')) return null;
+  if (!["source_html", "network"].includes(method || "")) return null;
 
   if (id.includes("multiple.page.titles")) return result(count(/<title\b[^>]*>/gi) <= 1, { count: count(/<title\b[^>]*>/gi) }, "warning");
   if (id.includes("multiple.meta.descriptions")) return result(count(/<meta[^>]+name=["']description["']/gi) <= 1, { count: count(/<meta[^>]+name=["']description["']/gi) }, "warning");
@@ -2954,9 +3041,13 @@ function categoryLabel(value: string) {
     .join(" ");
 }
 function methodReason(method?: string) {
-  return method === "rendered_browser" || method === "lab"
-    ? `${method} execution requires Cloudflare Browser Rendering, which is not configured in Stage 1 preview`
-    : "This catalogue entry is mapped but its execution module is not yet implemented";
+  if (method === "rendered_browser" || method === "lab")
+    return `${method} execution requires an authorised rendered-browser worker, which is not configured`;
+  if (method === "dns")
+    return "DNS evidence collection is not yet implemented by the audit worker";
+  if (method === "network")
+    return "This network check requires a wider crawl or resource request that the selected-page collector did not perform";
+  return "No reliable automated evaluator is implemented for this catalogue entry";
 }
 function errorMessage(e: unknown) {
   return e instanceof Error ? e.message.slice(0, 500) : "unknown_error";

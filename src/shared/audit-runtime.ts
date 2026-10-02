@@ -39,11 +39,12 @@ export function scoreAuditResults(snapshot: AuditRegistrySnapshot[], results: Sc
     weight: Math.max(0, weights.get(result.check_id) ?? 1),
   }));
   const totalWeight = weighted.reduce((total, item) => total + item.weight, 0);
+  const executed = results.filter((result) => result.outcome !== 'unable_to_test');
 
   return {
     score: totalWeight > 0
       ? Math.round(weighted.reduce((total, item) => total + item.value * item.weight, 0) / totalWeight * 100)
       : null,
-    coverage: results.length ? Math.round(scorable.length / results.length * 100) : 0,
+    coverage: snapshot.length ? Math.round(executed.length / snapshot.length * 100) : 0,
   };
 }

@@ -9,7 +9,8 @@
     "deploy": "npm run build && wrangler deploy",
     "check": "tsc --noEmit",
     "test": "vitest run",
-    "audit:registry": "node scripts/generate-audit-registry.mjs"
+    "audit:registry": "node scripts/generate-audit-registry.mjs",
+    "audit:coverage": "vite-node scripts/report-audit-coverage.ts"
   },
   "dependencies": {
     "@browser-logos/chrome": "^2.0.0",
