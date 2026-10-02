@@ -4,6 +4,7 @@
 
 - Repair branch: `repair/stage1-reference-parity`
 - Worker version preview URLs are explicitly enabled; repair builds remain outside production traffic until promotion.
+- The build patches the Vite plugin's generated deploy config so Cloudflare receives the `preview_urls` flag instead of silently dropping it.
 - Rejected production baseline: `6365b65312dea5e29a27683dda2aba6ca7e4dca9`
 - Authoritative visual source: the supplied `HTML reference pack.zip` (`index.html`, CSS, interaction code, and supplied brand assets).
 - Root cause: the original React implementation used a generic dark application shell and broad placeholder components instead of translating the supplied 50px header, 270px light sidebar, compact type scale, flat metric rows, thin tab underline, bordered panels, and page-specific interaction model.
