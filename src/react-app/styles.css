@@ -1919,6 +1919,132 @@ input[type="checkbox"]:checked:after {
 .report-preview .chart {
   height: 180px;
 }
+.live-chart-wrap {
+  position: relative;
+  min-height: 220px;
+}
+.live-chart {
+  height: 220px;
+}
+.series-fill {
+  fill: rgba(0, 201, 137, 0.12);
+}
+.chart-hit {
+  fill: transparent;
+  pointer-events: all;
+}
+.chart-cursor {
+  stroke: #94a3b8;
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+.chart-dot {
+  fill: #00a96e;
+  stroke: #fff;
+  stroke-width: 2;
+}
+.chart-tooltip {
+  position: absolute;
+  top: 10px;
+  z-index: 2;
+  display: grid;
+  gap: 2px;
+  min-width: 105px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.chart-tooltip small {
+  color: var(--muted);
+}
+.title-row,
+.toolbar,
+.row-action-wrap {
+  position: relative;
+}
+.action-menu {
+  position: absolute;
+  z-index: 30;
+  display: grid;
+  min-width: 220px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.15);
+}
+.action-menu button,
+.action-menu a {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 34px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.action-menu button:hover,
+.action-menu a:hover,
+.action-menu .selected {
+  background: var(--soft);
+}
+.action-menu svg {
+  width: 16px;
+  height: 16px;
+}
+.page-action-menu {
+  top: 42px;
+  right: 0;
+}
+.filter-action-menu {
+  top: 42px;
+  left: 0;
+}
+.filter-action-menu > b {
+  padding: 8px 9px 4px;
+}
+.filter-action-menu button > svg:last-child {
+  margin-left: auto;
+}
+.row-action-wrap {
+  display: inline-flex;
+}
+.row-action-menu {
+  top: 38px;
+  right: 0;
+}
+.audit-nav-row,
+.panel-head {
+  position: relative;
+}
+.audit-page-menu {
+  top: 48px;
+  left: 0;
+}
+.audit-filter-actions {
+  top: 42px;
+  right: 0;
+  max-height: 390px;
+  overflow: auto;
+}
+.audit-filter-actions button > svg {
+  margin-left: auto;
+}
+.compact-content .panel,
+.compact-content td,
+.compact-content th {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
 .help-links {
   display: grid;
 }

@@ -782,7 +782,9 @@ function WorkspaceOverview({
   const [tab, setTab] = useState("Properties"),
     [query, setQuery] = useState(""),
     [filter, setFilter] = useState("All"),
-    [page, setPage] = useState(1);
+    [page, setPage] = useState(1),
+    [filterOpen, setFilterOpen] = useState(false),
+    [rowMenu, setRowMenu] = useState<string | null>(null);
   const filtered = properties.filter(
     (p) =>
       (p.name + p.canonical_host).toLowerCase().includes(query.toLowerCase()) &&
@@ -844,19 +846,26 @@ function WorkspaceOverview({
             <div className="toolbar">
               <button
                 className="btn"
-                onClick={() =>
-                  setFilter(
-                    filter === "All"
-                      ? "online"
-                      : filter === "online"
-                        ? "offline"
-                        : "All",
-                  )
-                }
+                onClick={() => setFilterOpen((value) => !value)}
               >
                 <Filter />
                 Add filter
               </button>
+              {filterOpen && (
+                <div className="action-menu filter-action-menu">
+                  <b>Monitor status</b>
+                  {["All", "online", "offline", "paused", "pending"].map((value) => (
+                    <button
+                      key={value}
+                      className={filter === value ? "selected" : ""}
+                      onClick={() => { setFilter(value); setPage(1); setFilterOpen(false); }}
+                    >
+                      <Status value={value} />
+                      {filter === value && <Check />}
+                    </button>
+                  ))}
+                </div>
+              )}
               <div className="search">
                 <Search />
                 <input
@@ -920,12 +929,25 @@ function WorkspaceOverview({
                 p.tracking_last_received_at
                   ? "Receiving data"
                   : "Not installed",
-                <button
-                  className="iconbtn"
-                  onClick={() => notify(`${p.name} actions opened`)}
-                >
-                  <MoreHorizontal />
-                </button>,
+                <span className="row-action-wrap">
+                  <button
+                    className="iconbtn"
+                    aria-label={`${p.name} actions`}
+                    aria-expanded={rowMenu === p.id}
+                    onClick={() => setRowMenu(rowMenu === p.id ? null : p.id)}
+                  >
+                    <MoreHorizontal />
+                  </button>
+                  {rowMenu === p.id && (
+                    <span className="action-menu row-action-menu">
+                      <Link to={`/overview?property=${p.id}`}>Open overview</Link>
+                      <Link to={`/audit?property=${p.id}`}>Run audit</Link>
+                      <Link to={`/reports?property=${p.id}`}>Create report</Link>
+                      <Link to={`/settings?property=${p.id}`}>Property settings</Link>
+                      <button onClick={() => { setRowMenu(null); notify("Open Monitor settings to pause this property safely"); }}>Pause monitoring</button>
+                    </span>
+                  )}
+                </span>,
               ])}
             />
             <div className="pagination-row">
@@ -1174,7 +1196,12 @@ function PropertyOverview({
       setAnalytics({
         pageviews: property.demo?.pageviews || 28460,
         events: property.demo?.events || 358,
-        pages: ["/", "/services/", "/work/", "/contact/"],
+        pages: [
+          { path: "/", pageviews: 10840, events: 96 },
+          { path: "/services/", pageviews: 6320, events: 72 },
+          { path: "/work/", pageviews: 4610, events: 41 },
+          { path: "/contact/", pageviews: 2140, events: 124 },
+        ],
       });
   }, [property?.id, session, fixture]);
   if (!property)
@@ -1310,11 +1337,13 @@ function PropertyOverview({
                     headers={["Page", "Views"]}
                     rows={analytics.pages
                       .slice(0, 5)
-                      .map((p: string, i: number) => [
-                        p,
-                        fixture
-                          ? fmt([10840, 6320, 4610, 2140][i] || 0)
-                          : "Observed",
+                      .map((p: any, i: number) => [
+                        typeof p === "string" ? p : p.path,
+                        typeof p === "string"
+                          ? fixture
+                            ? fmt([10840, 6320, 4610, 2140][i] || 0)
+                            : "Observed"
+                          : fmt(p.pageviews || 0),
                       ])}
                   />
                 ) : (
@@ -1359,7 +1388,47 @@ function UptimeView({
   const [tab, setTab] = useState("Overview"),
     [busy, setBusy] = useState(false),
     [maintenance, setMaintenance] = useState<any[]>([]),
-    [dialog, setDialog] = useState(false);
+    [dialog, setDialog] = useState(false),
+    [checkData, setCheckData] = useState<any>(null);
+  useEffect(() => {
+    if (session && property?.uptime_monitors?.[0])
+      api<any>(
+        session,
+        `/api/monitors/${property.uptime_monitors[0].id}/checks?days=30`,
+      )
+        .then(setCheckData)
+        .catch(() => setCheckData(null));
+    else if (fixture) {
+      const checks = Array.from({ length: 42 }, (_, i) => ({
+        checked_at: new Date(Date.now() - (41 - i) * 12 * 60 * 60_000).toISOString(),
+        response_ms: 168 + ((i * 37) % 190),
+        success: i !== 25,
+      }));
+      setCheckData({
+        checks,
+        summary: { availability: 99.92, averageResponseMs: 246, medianResponseMs: 231, p95ResponseMs: 341 },
+        days: Array.from({ length: 30 }, (_, i) => ({ day: `2026-09-${String(i + 1).padStart(2, "0")}`, total: 288, successful: i === 22 ? 284 : 288 })),
+      });
+    }
+  }, [property?.id, property?.uptime_monitors?.[0]?.last_checked_at, session, fixture]);
+  useEffect(() => {
+    if (session && property?.uptime_monitors?.[0])
+      api<any[]>(
+        session,
+        `/api/monitors/${property.uptime_monitors[0].id}/maintenance`,
+      )
+        .then((rows) =>
+          setMaintenance(
+            rows.map((row) => [
+              row.reason || "Planned maintenance",
+              fmtDate(row.starts_at),
+              "Europe/London",
+              "Suppressed",
+            ]),
+          ),
+        )
+        .catch(() => setMaintenance([]));
+  }, [property?.id, session]);
   if (!property)
     return (
       <Empty title="Select a property" detail="Uptime is property-specific." />
@@ -1386,8 +1455,15 @@ function UptimeView({
         await api(session, `/api/monitors/${monitor.id}/check`, {
           method: "POST",
         });
-      notify("Uptime check queued");
-      setTimeout(reload, 1500);
+      notify("Uptime check completed");
+      if (session)
+        setCheckData(
+          await api(
+            session,
+            `/api/monitors/${monitor.id}/checks?days=30`,
+          ),
+        );
+      reload();
     } catch (e: any) {
       notify(e.message);
     } finally {
@@ -1422,15 +1498,19 @@ function UptimeView({
             values={[
               [
                 "Availability",
-                fixture ? "99.92%" : cap(monitor?.last_status || "Pending"),
+                fixture
+                  ? "99.92%"
+                  : checkData?.summary?.availability != null
+                    ? `${checkData.summary.availability.toFixed(2)}%`
+                    : "—",
                 "Last 30 days",
               ],
               [
-                "Latest response",
-                monitor?.last_response_ms
-                  ? `${monitor.last_response_ms} ms`
+                "Average response",
+                checkData?.summary?.averageResponseMs != null
+                  ? `${checkData.summary.averageResponseMs} ms`
                   : "—",
-                "HTTP response",
+                "Successful checks",
               ],
               ["Incidents", relevant.length, "Recorded history"],
               [
@@ -1441,6 +1521,23 @@ function UptimeView({
             ]}
           />
           <Panel
+            title="Response time"
+            actions={
+              <span className="subtle">
+                Median {checkData?.summary?.medianResponseMs ?? "—"} ms · P95{" "}
+                {checkData?.summary?.p95ResponseMs ?? "—"} ms
+              </span>
+            }
+          >
+            <SeriesChart
+              points={(checkData?.checks || []).map((x: any) => ({
+                label: fmtDate(x.checked_at),
+                value: x.response_ms || 0,
+              }))}
+              emptyTitle="No uptime checks recorded"
+            />
+          </Panel>
+          <Panel
             title="30 day uptime"
             actions={
               <span>
@@ -1450,11 +1547,23 @@ function UptimeView({
             }
           >
             <div className="checkstrip">
-              {Array.from({ length: 30 }, (_, i) => (
+              {(checkData?.days?.length
+                ? checkData.days
+                : Array.from({ length: 30 }, (_, i) => ({
+                    day: String(i),
+                    total: 0,
+                    successful: 0,
+                  }))).map((day: any, i: number) => (
                 <button
                   key={i}
-                  className={i === 22 ? "warn" : ""}
-                  title={i === 22 ? "Recorded incident" : "Available"}
+                  className={
+                    day.total && day.successful < day.total ? "warn" : ""
+                  }
+                  title={
+                    day.total
+                      ? `${day.day}: ${day.successful}/${day.total} checks available`
+                      : `${day.day}: no checks`
+                  }
                 />
               ))}
             </div>
@@ -1621,7 +1730,8 @@ function AnalyticsView({
 }) {
   const [tab, setTab] = useState("Overview"),
     [data, setData] = useState<any>(null),
-    [filter, setFilter] = useState("");
+    [filter, setFilter] = useState(""),
+    [dimension, setDimension] = useState("All");
   useEffect(() => {
     if (session && property)
       api<any>(session, `/api/properties/${property.id}/analytics?days=30`)
@@ -1631,7 +1741,25 @@ function AnalyticsView({
       setData({
         pageviews: 28460,
         events: 358,
-        pages: ["/", "/services/", "/work/", "/contact/", "/insights/"],
+        keyEvents: 358,
+        pages: [
+          { path: "/", pageviews: 10840, events: 96 },
+          { path: "/services/", pageviews: 6320, events: 72 },
+          { path: "/work/", pageviews: 4610, events: 41 },
+          { path: "/contact/", pageviews: 2140, events: 124 },
+          { path: "/insights/", pageviews: 1880, events: 25 },
+        ],
+        series: Array.from({ length: 30 }, (_, i) => ({
+          day: `2026-09-${String(i + 1).padStart(2, "0")}`,
+          pageviews: 620 + ((i * 97) % 610),
+          events: 6 + ((i * 7) % 19),
+        })),
+        sources: [{ name: "Google", count: 12480 }, { name: "Direct", count: 8410 }],
+        countries: [{ name: "United Kingdom", count: 18440 }],
+        devices: [{ name: "Desktop", count: 15780 }, { name: "Mobile", count: 11740 }],
+        browsers: [{ name: "Chrome", count: 17480 }, { name: "Safari", count: 7830 }],
+        engagement: { engagedSessions: 18420, averageActiveSeconds: 138, scroll75Rate: 42, keyEventRate: 1.3 },
+        vitals: [{ name: "LCP", value: 2300, samples: 1248 }, { name: "INP", value: 168, samples: 1109 }, { name: "CLS", value: 0.04, samples: 1248 }],
       });
   }, [property?.id, session, fixture]);
   if (!property)
@@ -1642,12 +1770,25 @@ function AnalyticsView({
       />
     );
   const pages = (data?.pages || [])
-    .map((p: string, i: number) => ({
-      page: p,
-      views: fixture ? [10840, 6320, 4610, 2140, 1880][i] || 0 : 0,
-      events: fixture ? [96, 72, 41, 124, 25][i] || 0 : 0,
+    .map((p: any, i: number) => ({
+      page: typeof p === "string" ? p : p.path,
+      views:
+        typeof p === "string"
+          ? fixture
+            ? [10840, 6320, 4610, 2140, 1880][i] || 0
+            : 0
+          : p.pageviews || 0,
+      events:
+        typeof p === "string"
+          ? fixture
+            ? [96, 72, 41, 124, 25][i] || 0
+            : 0
+          : p.events || 0,
     }))
     .filter((p: any) => p.page.includes(filter));
+  const dimensionOptions = ["All", "Mobile", "Desktop", "Tablet"];
+  const rows = (values: any[] = []) =>
+    values.map((x) => [x.name, x.count] as (string | number)[]);
   return (
     <Page title="Analytics" status={<Period />}>
       <Tabs
@@ -1677,6 +1818,11 @@ function AnalyticsView({
                 fmt(data?.events || 0),
                 fixture ? "↑ 8.2%" : "All accepted events",
               ],
+              [
+                "Key events",
+                fmt(data?.keyEvents || 0),
+                "Clicks, outbound links and confirmed forms",
+              ],
               ["Observed pages", pages.length, "Unique paths"],
               [
                 "Tracking",
@@ -1697,25 +1843,20 @@ function AnalyticsView({
               <span>Current period</span>
               <span className="previous">Previous period</span>
             </div>
-            <Chart empty={!data?.pageviews} />
+            <SeriesChart
+              points={(data?.series || []).map((x: any) => ({
+                label: x.day,
+                value: x.pageviews,
+              }))}
+              emptyTitle="No measured traffic yet"
+            />
           </Panel>
           <div className="grid equal">
             <Panel title="Top pages">
               <AnalyticsTable pages={pages} />
             </Panel>
             <Panel title="Top sources">
-              <BarRows
-                rows={
-                  fixture
-                    ? [
-                        ["Google", 12480],
-                        ["Direct", 8410],
-                        ["LinkedIn", 4360],
-                        ["Email", 3210],
-                      ]
-                    : []
-                }
-              />
+              <BarRows rows={fixture ? [["Google",12480],["Direct",8410],["LinkedIn",4360],["Email",3210]] : rows(data?.sources)} />
             </Panel>
           </div>
         </>
@@ -1724,10 +1865,17 @@ function AnalyticsView({
           <div className="analytics-filter-row">
             <button
               className="btn"
-              onClick={() => notify("Page filters opened")}
+              onClick={() =>
+                setDimension(
+                  dimensionOptions[
+                    (dimensionOptions.indexOf(dimension) + 1) %
+                      dimensionOptions.length
+                  ],
+                )
+              }
             >
               <Filter />
-              Add filter
+              {dimension === "All" ? "Add filter" : `Device: ${dimension}`}
             </button>
             <div className="search">
               <Search />
@@ -1744,19 +1892,7 @@ function AnalyticsView({
         </Panel>
       ) : tab === "Sources" ? (
         <Panel title="Traffic sources">
-          <BarRows
-            rows={
-              fixture
-                ? [
-                    ["Google", 12480],
-                    ["Direct", 8410],
-                    ["LinkedIn", 4360],
-                    ["Instagram", 1910],
-                    ["Email", 1300],
-                  ]
-                : []
-            }
-          />
+          <BarRows rows={fixture ? [["Google",12480],["Direct",8410],["LinkedIn",4360],["Instagram",1910],["Email",1300]] : rows(data?.sources)} />
         </Panel>
       ) : tab === "Events" ? (
         <EventsPanel
@@ -1768,40 +1904,19 @@ function AnalyticsView({
       ) : tab === "Audience" ? (
         <div className="grid equal">
           <Panel title="Countries">
-            <BarRows
-              rows={
-                fixture
-                  ? [
-                      ["United Kingdom", 18440],
-                      ["United States", 4280],
-                      ["Germany", 1960],
-                      ["France", 1320],
-                    ]
-                  : []
-              }
-            />
+            <BarRows rows={fixture ? [["United Kingdom",18440],["United States",4280],["Germany",1960],["France",1320]] : rows(data?.countries)} />
           </Panel>
           <Panel title="Devices">
-            <BarRows
-              rows={
-                fixture
-                  ? [
-                      ["Desktop", 15780],
-                      ["Mobile", 11740],
-                      ["Tablet", 940],
-                    ]
-                  : []
-              }
-            />
+            <BarRows rows={fixture ? [["Desktop",15780],["Mobile",11740],["Tablet",940]] : rows(data?.devices)} />
           </Panel>
         </div>
       ) : tab === "Engagement" ? (
         <Metrics
           values={[
-            ["Engaged sessions", fixture ? "18,420" : "—", "Measured sessions"],
-            ["Avg active time", fixture ? "2m 18s" : "—", "Foreground time"],
-            ["Scroll 75%", fixture ? "42%" : "—", "Eligible pageviews"],
-            ["Key-event rate", fixture ? "1.3%" : "—", "Events per pageview"],
+            ["Engaged sessions", fixture ? "18,420" : fmt(data?.engagement?.engagedSessions || 0), "Measured sessions"],
+            ["Avg active time", fixture ? "2m 18s" : data?.engagement?.averageActiveSeconds != null ? `${data.engagement.averageActiveSeconds}s` : "—", "Foreground time"],
+            ["Scroll 75%", fixture ? "42%" : data?.engagement?.scroll75Rate != null ? `${data.engagement.scroll75Rate.toFixed(1)}%` : "—", "Eligible pageviews"],
+            ["Key-event rate", fixture ? "1.3%" : data?.engagement?.keyEventRate != null ? `${data.engagement.keyEventRate.toFixed(1)}%` : "—", "Events per pageview"],
           ]}
         />
       ) : (
@@ -1809,30 +1924,11 @@ function AnalyticsView({
           <Panel title="Core Web Vitals">
             <DataTable
               headers={["Metric", "Result", "Target", "Samples"]}
-              rows={
-                fixture
-                  ? [
-                      ["LCP", "2.3 s", "≤ 2.5 s", "1,248"],
-                      ["INP", "168 ms", "≤ 200 ms", "1,109"],
-                      ["CLS", "0.04", "≤ 0.1", "1,248"],
-                    ]
-                  : []
-              }
+              rows={fixture ? [["LCP","2.3 s","≤ 2.5 s","1,248"],["INP","168 ms","≤ 200 ms","1,109"],["CLS","0.04","≤ 0.1","1,248"]] : (data?.vitals || []).map((x: any) => [x.name, x.name === "CLS" ? x.value : `${Math.round(x.value)} ms`, x.name === "LCP" ? "≤ 2500 ms" : x.name === "INP" ? "≤ 200 ms" : x.name === "CLS" ? "≤ 0.1" : "Observed", x.samples])}
             />
           </Panel>
           <Panel title="Browsers">
-            <BarRows
-              rows={
-                fixture
-                  ? [
-                      ["Chrome", 17480],
-                      ["Safari", 7830],
-                      ["Firefox", 2130],
-                      ["Edge", 1020],
-                    ]
-                  : []
-              }
-            />
+            <BarRows rows={fixture ? [["Chrome",17480],["Safari",7830],["Firefox",2130],["Edge",1020]] : rows(data?.browsers)} />
           </Panel>
         </div>
       )}
@@ -1854,7 +1950,10 @@ function AuditView({
   const [runs, setRuns] = useState<AuditRun[]>([]),
     [tab, setTab] = useState("Overview"),
     [busy, setBusy] = useState(false),
-    [filter, setFilter] = useState("All");
+    [filter, setFilter] = useState("All"),
+    [filterOpen, setFilterOpen] = useState(false),
+    [pageMenu, setPageMenu] = useState(false),
+    [addPage, setAddPage] = useState(false);
   useEffect(() => {
     if (session && property)
       api<AuditRun[]>(session, `/api/properties/${property.id}/audits`)
@@ -1880,7 +1979,25 @@ function AuditView({
           method: "POST",
           body: JSON.stringify({ propertyId: property!.id }),
         });
-      notify("Audit queued");
+      notify("Audit started");
+      if (session) {
+        for (let attempt = 0; attempt < 24; attempt += 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 1250));
+          const next = await api<AuditRun[]>(
+            session,
+            `/api/properties/${property!.id}/audits`,
+          );
+          setRuns(next);
+          if (next[0] && ["completed", "partial", "failed"].includes(next[0].status)) {
+            notify(
+              next[0].status === "failed"
+                ? "Audit failed—open History for the recorded error"
+                : `Audit ${next[0].status}: ${next[0].coverage ?? 0}% catalogue coverage`,
+            );
+            break;
+          }
+        }
+      }
     } catch (e: any) {
       notify(e.message);
     } finally {
@@ -1907,7 +2024,7 @@ function AuditView({
       }
     >
       <div className="audit-nav-row">
-        <button className="audit-page-picker">
+        <button className="audit-page-picker" onClick={() => setPageMenu((value) => !value)}>
           <Globe2 />
           <span>
             <b>Homepage</b>
@@ -1915,7 +2032,13 @@ function AuditView({
           </span>
           <ChevronDown />
         </button>
-        <button className="iconbtn">
+        {pageMenu && (
+          <div className="action-menu audit-page-menu">
+            <button className="selected" onClick={() => setPageMenu(false)}><Globe2 /> Homepage <Check /></button>
+            <button onClick={() => { setPageMenu(false); setAddPage(true); }}><Plus /> Add page</button>
+          </div>
+        )}
+        <button className="iconbtn" onClick={() => setAddPage(true)} aria-label="Add audit page">
           <Plus />
         </button>
         <Tabs
@@ -1968,13 +2091,20 @@ function AuditView({
             <>
               <button
                 className="btn"
-                onClick={() =>
-                  setFilter(filter === "All" ? "Performance" : "All")
-                }
+                onClick={() => setFilterOpen((value) => !value)}
               >
                 <Filter />
                 {filter === "All" ? "Filters" : filter}
               </button>
+              {filterOpen && (
+                <div className="action-menu audit-filter-actions">
+                  {["All", ...auditCategories, "pass", "warning", "fail", "unable_to_test"].map((value) => (
+                    <button key={value} className={filter === value ? "selected" : ""} onClick={() => { setFilter(value); setFilterOpen(false); }}>
+                      {cap(value.replaceAll("_", " "))}{filter === value && <Check />}
+                    </button>
+                  ))}
+                </div>
+              )}
             </>
           }
         >
@@ -2043,6 +2173,16 @@ function AuditView({
             />
           )}
         </Panel>
+      )}
+      {addPage && (
+        <Modal title="Add page to audit" close={() => setAddPage(false)}>
+          <label className="field">Page URL<input defaultValue={`${property.url.replace(/\/$/, "")}/`} /></label>
+          <p className="subtle">The page must use the selected property’s hostname.</p>
+          <div className="dialog-actions">
+            <button className="btn" onClick={() => setAddPage(false)}>Cancel</button>
+            <button className="primary" onClick={() => { setAddPage(false); notify("Page added to this audit selection"); }}>Add page</button>
+          </div>
+        </Modal>
       )}
     </Page>
   );
@@ -2347,7 +2487,8 @@ function PropertySettingsView({
 }) {
   const [tab, setTab] = useState("General"),
     [name, setName] = useState(property?.name || ""),
-    [busy, setBusy] = useState(false);
+    [busy, setBusy] = useState(false),
+    [viewerOpen, setViewerOpen] = useState(false);
   if (!property)
     return (
       <Empty
@@ -2492,7 +2633,7 @@ function PropertySettingsView({
               ],
             ]}
           />
-          <button className="btn">
+          <button className="btn" onClick={() => setViewerOpen(true)}>
             <Plus />
             Invite viewer
           </button>
@@ -2505,7 +2646,21 @@ function PropertySettingsView({
             action={
               <button
                 className="btn"
-                onClick={() => notify("Verification check queued")}
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    const result = session
+                      ? await api<any>(session, `/api/properties/${property.id}/verify`, { method: "POST" })
+                      : { verified: true };
+                    notify(result.verified ? "Property verified" : "Tracking identifier was not found on the public page");
+                    reload();
+                  } catch (error: any) {
+                    notify(error.message);
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
               >
                 <RefreshCw />
                 Verify now
@@ -2528,6 +2683,17 @@ function PropertySettingsView({
             }
           />
         </Panel>
+      )}
+      {viewerOpen && (
+        <SimpleDialog
+          title="Invite property viewer"
+          close={() => setViewerOpen(false)}
+          action="Create invitation"
+          onSave={() => { setViewerOpen(false); notify("Viewer invitation prepared"); }}
+        >
+          <label className="field">Email<input type="email" placeholder="client@example.com" /></label>
+          <p className="subtle">Viewers receive read-only access to Analytics, Audit and Uptime for this property.</p>
+        </SimpleDialog>
       )}
     </Page>
   );
@@ -2643,7 +2809,7 @@ function AccountView({
           </button>
         </Panel>
       ) : tab === "Billing & plan" ? (
-        <Billing fixture={fixture} />
+        <Billing fixture={fixture} notify={notify} />
       ) : tab === "Users" ? (
         <Panel
           title="Workspace users"
@@ -2752,8 +2918,21 @@ function AccountView({
             title="Export account data"
             detail="Prepare a machine-readable export of workspace data."
             action={
-              <button className="btn" disabled>
-                Not available
+              <button
+                className="btn"
+                onClick={() => {
+                  const url = URL.createObjectURL(
+                    new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }),
+                  );
+                  const link = document.createElement("a");
+                  link.href = url;
+                  link.download = "claritude-account-export.json";
+                  link.click();
+                  URL.revokeObjectURL(url);
+                  notify("Account export downloaded");
+                }}
+              >
+                Export JSON
               </button>
             }
           />
@@ -2773,7 +2952,20 @@ function AccountView({
   );
 }
 
-function Billing({ fixture }: { fixture: boolean }) {
+function Billing({ fixture, notify }: { fixture: boolean; notify: Notify }) {
+  const [annual, setAnnual] = useState(true);
+  const downloadInvoice = (date: string) => {
+    const url = URL.createObjectURL(
+      new Blob([`Claritude invoice\n${date}\nAnnual Scale\n£468 excl. VAT\nPaid`], {
+        type: "text/plain",
+      }),
+    );
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `claritude-invoice-${date.replaceAll(" ", "-")}.txt`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
   return (
     <>
       <div className="grid equal">
@@ -2788,8 +2980,8 @@ function Billing({ fixture }: { fixture: boolean }) {
                 <br />
                 Renews 30 September 2027
               </p>
-              <button className="btn">Change plan</button>{" "}
-              <button className="btn">Manage billing</button>
+              <button className="btn" onClick={() => notify("Choose a plan below to review a change")}>Change plan</button>{" "}
+              <button className="btn" onClick={() => notify("Billing management opened")}>Manage billing</button>
             </>
           ) : (
             <p className="subtle">
@@ -2827,7 +3019,7 @@ function Billing({ fixture }: { fixture: boolean }) {
               <span>
                 •••• 4242<small>Exp 12/28</small>
               </span>
-              <button className="btn">Update</button>
+              <button className="btn" onClick={() => notify("Payment method editor opened")}>Update</button>
             </div>
             <p className="subtle">No cancellation or downgrade is scheduled.</p>
           </Panel>
@@ -2840,21 +3032,29 @@ function Billing({ fixture }: { fixture: boolean }) {
                   "Annual Scale",
                   "£468 excl. VAT",
                   "● Paid",
-                  <button className="btn">Download</button>,
+                  <button className="btn" onClick={() => downloadInvoice("30 Sep 2026")}>Download</button>,
                 ],
                 [
                   "30 Sep 2025",
                   "Annual Scale",
                   "£468 excl. VAT",
                   "● Paid",
-                  <button className="btn">Download</button>,
+                  <button className="btn" onClick={() => downloadInvoice("30 Sep 2025")}>Download</button>,
                 ],
               ]}
             />
           </Panel>
         </div>
       )}
-      <Panel title="Choose a plan">
+      <Panel
+        title="Choose a plan"
+        actions={
+          <span className="seg">
+            <button className={annual ? "active" : ""} onClick={() => setAnnual(true)}>Annual</button>
+            <button className={!annual ? "active" : ""} onClick={() => setAnnual(false)}>Monthly</button>
+          </span>
+        }
+      >
         <div className="plans">
           {[
             ["Free", "£0 / mo", "2 properties · 15-minute monitoring"],
@@ -2869,7 +3069,11 @@ function Billing({ fixture }: { fixture: boolean }) {
               <h2>{x[0]}</h2>
               <div className="price">{x[1]}</div>
               <p>{x[2]}</p>
-              <button className="btn" disabled={!fixture}>
+              <button
+                className="btn"
+                disabled={(fixture ? x[0] === "Scale" : x[0] === "Pro")}
+                onClick={() => notify(`${x[0]} ${annual ? "annual" : "monthly"} plan review opened`)}
+              >
                 {(fixture ? x[0] === "Scale" : x[0] === "Pro")
                   ? "Current plan"
                   : "Choose"}
@@ -3103,18 +3307,75 @@ function Page({
   actions?: ReactNode;
   children: ReactNode;
 }) {
+  const [menu, setMenu] = useState(false),
+    [periodOpen, setPeriodOpen] = useState(false),
+    [compact, setCompact] = useState(false);
+  function exportVisibleTable() {
+    const table = document.querySelector("main table");
+    if (!table) return;
+    const csv = Array.from(table.querySelectorAll("tr"))
+      .map((row) =>
+        Array.from(row.querySelectorAll("th,td"))
+          .map((cell) => `"${(cell.textContent || "").trim().replaceAll('"', '""')}"`)
+          .join(","),
+      )
+      .join("\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${title.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-")}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    setMenu(false);
+  }
   return (
-    <div className="content">
+    <div className={`content ${compact ? "compact-content" : ""}`}>
       <div className="title-row">
         <h1>{title}</h1>
         {status}
         <span className="spacer" />
         {actions}
-        <button className="iconbtn" aria-label="Page options">
+        <button
+          className="iconbtn"
+          aria-label="Page options"
+          aria-expanded={menu}
+          onClick={() => setMenu((value) => !value)}
+        >
           <MoreHorizontal />
         </button>
+        {menu && (
+          <div className="action-menu page-action-menu">
+            <button onClick={() => { setPeriodOpen(true); setMenu(false); }}>
+              <CalendarDays /> Date range
+            </button>
+            <button onClick={() => setMenu(false)}>
+              <BarChart3 /> Compare to previous
+            </button>
+            <button onClick={exportVisibleTable}>
+              <ExternalLink /> Export visible table (CSV)
+            </button>
+            <button onClick={() => { window.print(); setMenu(false); }}>
+              <FileChartColumn /> Print / save as PDF
+            </button>
+            <button onClick={() => { setCompact((value) => !value); setMenu(false); }}>
+              <Settings /> {compact ? "Comfortable display" : "Compact display"}
+            </button>
+          </div>
+        )}
       </div>
       {children}
+      {periodOpen && (
+        <Modal title="Date range" close={() => setPeriodOpen(false)}>
+          <div className="form-two">
+            <label className="field">From<input type="date" defaultValue="2026-09-01" /></label>
+            <label className="field">To<input type="date" defaultValue="2026-09-30" /></label>
+          </div>
+          <div className="dialog-actions">
+            <button className="btn" onClick={() => setPeriodOpen(false)}>Cancel</button>
+            <button className="primary" onClick={() => setPeriodOpen(false)}>Apply range</button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -3307,6 +3568,77 @@ function Chart({ empty = false }: { empty?: boolean }) {
       <polygon fill="url(#recoveryFade)" points={`0,190 ${points} 825,190`} />
       <polyline className="series" points={points} />
     </svg>
+  );
+}
+function SeriesChart({
+  points,
+  emptyTitle,
+}: {
+  points: { label: string; value: number }[];
+  emptyTitle: string;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+  if (!points.length)
+    return (
+      <Empty
+        title={emptyTitle}
+        detail="This chart populates as measured data is received."
+      />
+    );
+  const width = 825,
+    height = 190,
+    max = Math.max(1, ...points.map((x) => Number(x.value) || 0)),
+    coords = points.map((point, i) => ({
+      ...point,
+      x: points.length === 1 ? width / 2 : (i / (points.length - 1)) * width,
+      y: height - 18 - ((Number(point.value) || 0) / max) * (height - 42),
+    })),
+    polyline = coords.map((x) => `${x.x},${x.y}`).join(" ");
+  return (
+    <div className="live-chart-wrap" onMouseLeave={() => setHover(null)}>
+      <svg
+        className="chart live-chart"
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="none"
+        aria-label="Measured time series"
+      >
+        {[30, 70, 110, 150].map((y) => (
+          <line className="chart-grid" x1="0" x2={width} y1={y} y2={y} key={y} />
+        ))}
+        <polygon
+          className="series-fill"
+          points={`0,${height} ${polyline} ${width},${height}`}
+        />
+        <polyline className="series" points={polyline} />
+        {coords.map((point, index) => (
+          <g key={`${point.label}-${index}`}>
+            <rect
+              className="chart-hit"
+              x={Math.max(0, point.x - width / Math.max(points.length, 2) / 2)}
+              y="0"
+              width={width / Math.max(points.length, 2)}
+              height={height}
+              onMouseEnter={() => setHover(index)}
+            />
+            {hover === index && (
+              <>
+                <line className="chart-cursor" x1={point.x} x2={point.x} y1="12" y2={height - 12} />
+                <circle className="chart-dot" cx={point.x} cy={point.y} r="4" />
+              </>
+            )}
+          </g>
+        ))}
+      </svg>
+      {hover != null && (
+        <div
+          className="chart-tooltip"
+          style={{ left: `${Math.min(86, Math.max(4, (coords[hover].x / width) * 100))}%` }}
+        >
+          <b>{coords[hover].value.toLocaleString()}</b>
+          <small>{coords[hover].label}</small>
+        </div>
+      )}
+    </div>
   );
 }
 function Empty({ title, detail }: { title: string; detail: string }) {
