@@ -153,7 +153,12 @@ const IMPLEMENTED_AUDIT_CHECKS = ACTIVE_AUDIT_CHECKS.filter(
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 const TRACKER_VERSION = "2.1.0";
 const SUPPORTED_TRACKER_VERSIONS = new Set(["2.0.0", TRACKER_VERSION]);
-app.use("*", secureHeaders());
+app.use("*", secureHeaders({ crossOriginResourcePolicy: false }));
+app.use("*", async (c, next) => {
+  await next();
+  const publicScript = ["/c.js", "/tracker.js", "/vendor/web-vitals.js"].includes(c.req.path);
+  c.header("cross-origin-resource-policy", publicScript ? "cross-origin" : "same-origin");
+});
 app.use(
   "/collect",
   cors({ origin: "*", allowMethods: ["POST", "OPTIONS"], maxAge: 86400 }),
