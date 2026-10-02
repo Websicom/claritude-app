@@ -188,7 +188,7 @@ function Workspace({ session }: { session: Session }) {
       </main>
     );
   if (!data) return <Splash />;
-  if (!data.accounts?.length)
+  if (!data.accounts?.length && !data.properties?.length)
     return <Onboarding session={session} done={load} />;
   return (
     <RecoveryDashboard

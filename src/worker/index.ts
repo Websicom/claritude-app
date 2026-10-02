@@ -35,6 +35,12 @@ type AuditResult = {
   duration_ms: number;
 };
 
+const LIMITS = {
+  propertiesPerAccount: 25,
+  auditsPerPropertyPerDay: 20,
+  analyticsEventsPerPropertyPerDay: 50_000,
+} as const;
+
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 app.use("*", secureHeaders());
 app.use(
@@ -90,18 +96,44 @@ app.post("/collect", async (c) => {
   if (!property?.tracking_enabled)
     return c.json({ error: "unknown_property" }, 404);
   const origin = c.req.header("origin");
-  if (origin && new URL(origin).hostname !== property.canonical_host)
-    return c.json({ error: "origin_mismatch" }, 403);
+  if (origin) {
+    try {
+      if (!sameSiteHost(new URL(origin).hostname, property.canonical_host))
+        return c.json({ error: "origin_mismatch" }, 403);
+    } catch {
+      return c.json({ error: "invalid_origin" }, 400);
+    }
+  }
   const now = new Date().toISOString();
+  const dayStart = `${now.slice(0, 10)}T00:00:00.000Z`;
+  const { count: receivedToday } = await db
+    .from("analytics_events")
+    .select("id", { count: "exact", head: true })
+    .eq("property_id", property.id)
+    .gte("received_at", dayStart);
+  if ((receivedToday || 0) + events.length > LIMITS.analyticsEventsPerPropertyPerDay)
+    return c.json({ error: "analytics_daily_limit_reached" }, 429);
   const requestCountry = String(
     (c.req.raw as Request & { cf?: { country?: string } }).cf?.country || "",
   ).toUpperCase();
   const userAgent = c.req.header("user-agent") || "";
+  const { data: definitions } = await db
+    .from("event_definitions")
+    .select("name,event_type")
+    .eq("property_id", property.id)
+    .eq("enabled", true);
+  const configuredEvents = new Set(
+    (definitions || []).map((definition) => `${definition.event_type}:${definition.name}`),
+  );
   const rows = events
     .map((e: any) =>
       sanitizeEvent(e, property.id, now, requestCountry, userAgent),
     )
-    .filter(Boolean);
+    .filter((row: any) => {
+      if (!row) return false;
+      if (!["click", "form_success"].includes(row.event_type) || !row.name) return true;
+      return configuredEvents.has(`${row.event_type}:${row.name}`);
+    });
   if (!rows.length) return c.json({ error: "no_valid_events" }, 400);
   const { error } = await db.from("analytics_events").insert(rows);
   if (error) return c.json({ error: "ingestion_failed" }, 503);
@@ -137,7 +169,16 @@ app.get("/api/bootstrap", async (c) => {
         { onConflict: "property_id", ignoreDuplicates: true },
       );
   }
-  const [profile, accounts, workspaces, properties, incidents, notifications] =
+  const [
+    profile,
+    accounts,
+    workspaces,
+    properties,
+    incidents,
+    notifications,
+    activity,
+    propertyMemberships,
+  ] =
     await Promise.all([
       db.from("profiles").select("*").maybeSingle(),
       db.from("account_memberships").select("role,accounts(*)"),
@@ -158,6 +199,12 @@ app.get("/api/bootstrap", async (c) => {
         .select("*")
         .order("created_at", { ascending: false })
         .limit(50),
+      db
+        .from("activity_log")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(100),
+      db.from("property_memberships").select("property_id,user_id,role,created_at"),
     ]);
   const firstError = [
     profile,
@@ -166,15 +213,37 @@ app.get("/api/bootstrap", async (c) => {
     properties,
     incidents,
     notifications,
+    activity,
+    propertyMemberships,
   ].find((x) => x.error)?.error;
   if (firstError) return c.json({ error: firstError.message }, 500);
+  const knownWorkspaceIds = new Set(
+    (workspaces.data || []).map((membership: any) => membership.workspaces?.id),
+  );
+  const sharedWorkspaceIds = [
+    ...new Set(
+      (properties.data || [])
+        .map((property: any) => property.workspace_id)
+        .filter((id: string) => id && !knownWorkspaceIds.has(id)),
+    ),
+  ];
+  const sharedWorkspaces = sharedWorkspaceIds.length
+    ? await db.from("workspaces").select("*").in("id", sharedWorkspaceIds)
+    : { data: [], error: null };
+  if (sharedWorkspaces.error)
+    return c.json({ error: sharedWorkspaces.error.message }, 500);
   return c.json({
     profile: profile.data,
     accounts: accounts.data,
-    workspaces: workspaces.data,
+    workspaces: [
+      ...(workspaces.data || []),
+      ...(sharedWorkspaces.data || []).map((workspace: any) => ({ role: "viewer", workspaces: workspace })),
+    ],
     properties: normalizePropertyRelations(properties.data || []),
     incidents: incidents.data,
     notifications: notifications.data,
+    activity: activity.data,
+    propertyMemberships: propertyMemberships.data,
   });
 });
 
@@ -215,9 +284,29 @@ app.post("/api/properties", async (c) => {
   }>();
   const target = validPublicUrl(b.url);
   if (!target) return c.json({ error: "public_http_url_required" }, 400);
+  const db = c.get("db");
+  const { data: membership } = await db
+    .from("workspace_memberships")
+    .select("role,workspaces(account_id)")
+    .eq("workspace_id", b.workspaceId)
+    .eq("user_id", c.get("userId"))
+    .in("role", ["owner", "member"])
+    .maybeSingle();
+  const accountId = (membership?.workspaces as any)?.account_id;
+  if (!accountId) return c.json({ error: "workspace_access_denied" }, 403);
+  const service = admin(c.env);
+  const { data: accountWorkspaces } = await service
+    .from("workspaces")
+    .select("id")
+    .eq("account_id", accountId);
+  const { count: propertyCount } = await service
+    .from("properties")
+    .select("id", { count: "exact", head: true })
+    .in("workspace_id", (accountWorkspaces || []).map((workspace) => workspace.id));
+  if ((propertyCount || 0) >= LIMITS.propertiesPerAccount)
+    return c.json({ error: "property_limit_reached" }, 409);
   const trackingId = `cl_${crypto.randomUUID().replaceAll("-", "")}`;
-  const { data, error } = await c
-    .get("db")
+  const { data, error } = await db
     .from("properties")
     .insert({
       workspace_id: b.workspaceId,
@@ -237,28 +326,78 @@ app.post("/api/properties", async (c) => {
     );
   if (monitorError)
     return c.json({ error: `property_created_monitor_failed: ${monitorError.message}` }, 500);
+  await recordActivity(c.env, c.get("userId"), "property.created", data.id, {
+    workspaceId: b.workspaceId,
+  });
   return c.json(data, 201);
 });
 
 app.patch("/api/properties/:id", async (c) => {
-  const body = await c.req.json<{ name?: string }>();
+  const body = await c.req.json<{ name?: string; settings?: Record<string, unknown> }>();
   const name = body.name?.trim().slice(0, 100);
   if (!name) return c.json({ error: "property_name_required" }, 400);
+  const db = c.get("db");
+  let settings: Record<string, unknown> | null = null;
+  if (body.settings) {
+    const { data: current } = await db
+      .from("properties")
+      .select("settings")
+      .eq("id", c.req.param("id"))
+      .single();
+    if (!current) return c.json({ error: "property_not_found" }, 404);
+    const incoming = sanitizePropertySettings(body.settings);
+    settings = {
+      ...(current.settings || {}),
+      ...incoming,
+      ...(incoming.report_branding
+        ? {
+            report_branding: {
+              ...((current.settings as any)?.report_branding || {}),
+              ...(incoming.report_branding as object),
+            },
+          }
+        : {}),
+    };
+  }
   const { data, error } = await c
     .get("db")
     .from("properties")
-    .update({ name, updated_at: new Date().toISOString() })
+    .update({
+      name,
+      ...(settings ? { settings } : {}),
+      updated_at: new Date().toISOString(),
+    })
     .eq("id", c.req.param("id"))
     .select()
     .single();
-  return error ? c.json({ error: error.message }, 400) : c.json(data);
+  if (error) return c.json({ error: error.message }, 400);
+  await recordActivity(c.env, c.get("userId"), "property.settings_updated", data.id);
+  return c.json(data);
 });
 
 app.patch("/api/profile", async (c) => {
-  const body = await c.req.json<{ full_name?: string; timezone?: string }>();
+  const body = await c.req.json<{
+    full_name?: string;
+    timezone?: string;
+    notification_preferences?: Record<string, boolean>;
+    alerts_snoozed_until?: string | null;
+  }>();
+  const snoozedUntil = body.alerts_snoozed_until
+    ? validDateRange(body.alerts_snoozed_until, 31 * 864e5)
+    : null;
   const update = {
-    full_name: body.full_name?.trim().slice(0, 100) || null,
-    timezone: body.timezone?.trim().slice(0, 80) || "Europe/London",
+    ...(body.full_name !== undefined
+      ? { full_name: body.full_name.trim().slice(0, 100) || null }
+      : {}),
+    ...(body.timezone !== undefined
+      ? { timezone: body.timezone.trim().slice(0, 80) || "Europe/London" }
+      : {}),
+    ...(body.notification_preferences
+      ? { notification_preferences: sanitizeNotificationPreferences(body.notification_preferences) }
+      : {}),
+    ...(body.alerts_snoozed_until !== undefined
+      ? { alerts_snoozed_until: snoozedUntil }
+      : {}),
     updated_at: new Date().toISOString(),
   };
   const { data, error } = await c
@@ -270,14 +409,176 @@ app.patch("/api/profile", async (c) => {
   return error ? c.json({ error: error.message }, 400) : c.json(data);
 });
 
+app.post("/api/workspaces", async (c) => {
+  const body = await c.req.json<{ accountId: string; name: string }>();
+  const { data, error } = await c.get("db").rpc("create_workspace", {
+    p_account_id: body.accountId,
+    p_name: body.name,
+  });
+  return error ? c.json({ error: error.message }, 400) : c.json(data, 201);
+});
+
+app.get("/api/users", async (c) => {
+  const db = c.get("db");
+  const { data: memberships, error } = await db
+    .from("account_memberships")
+    .select("account_id,role")
+    .in("role", ["owner", "member"]);
+  if (error) return c.json({ error: error.message }, 400);
+  const accountIds = (memberships || []).map((membership) => membership.account_id);
+  if (!accountIds.length) return c.json([]);
+  const service = admin(c.env);
+  const { data: workspaces } = await service
+    .from("workspaces")
+    .select("id,account_id,name")
+    .in("account_id", accountIds);
+  const workspaceIds = (workspaces || []).map((workspace) => workspace.id);
+  const { data: workspaceMembers } = workspaceIds.length
+    ? await service
+        .from("workspace_memberships")
+        .select("workspace_id,user_id,role,created_at")
+        .in("workspace_id", workspaceIds)
+    : { data: [] as any[] };
+  const { data: properties } = workspaceIds.length
+    ? await service.from("properties").select("id,workspace_id,name").in("workspace_id", workspaceIds)
+    : { data: [] as any[] };
+  const propertyIds = (properties || []).map((property) => property.id);
+  const { data: propertyMembers } = propertyIds.length
+    ? await service
+        .from("property_memberships")
+        .select("property_id,user_id,role,created_at")
+        .in("property_id", propertyIds)
+    : { data: [] as any[] };
+  const userIds = [
+    ...new Set([
+      ...(workspaceMembers || []).map((member) => member.user_id),
+      ...(propertyMembers || []).map((member) => member.user_id),
+    ]),
+  ];
+  const users = await authUsersById(service, userIds);
+  return c.json({
+    workspaces,
+    properties,
+    workspaceMemberships: workspaceMembers,
+    propertyMemberships: propertyMembers,
+    users,
+  });
+});
+
+app.post("/api/workspaces/:id/members", async (c) => {
+  const db = c.get("db");
+  const workspaceId = c.req.param("id");
+  if (!(await canManageWorkspace(db, c.get("userId"), workspaceId)))
+    return c.json({ error: "workspace_manage_access_required" }, 403);
+  const body = await c.req.json<{ email: string; role?: "member" | "viewer" }>();
+  const email = body.email?.trim().toLowerCase();
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+    return c.json({ error: "valid_email_required" }, 400);
+  const service = admin(c.env);
+  const invited = await findOrInviteUser(service, email, c.env.APP_ORIGIN);
+  const { data, error } = await service
+    .from("workspace_memberships")
+    .upsert(
+      {
+        workspace_id: workspaceId,
+        user_id: invited.id,
+        role: body.role === "viewer" ? "viewer" : "member",
+      },
+      { onConflict: "workspace_id,user_id" },
+    )
+    .select()
+    .single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordActivity(c.env, c.get("userId"), "workspace.member_invited", undefined, {
+    workspaceId,
+    invitedUserId: invited.id,
+  });
+  return c.json({ ...data, email, invitationSent: invited.invitationSent }, 201);
+});
+
+app.get("/api/properties/:id/viewers", async (c) => {
+  const db = c.get("db");
+  const propertyId = c.req.param("id");
+  const { data, error } = await db
+    .from("property_memberships")
+    .select("property_id,user_id,role,created_at")
+    .eq("property_id", propertyId);
+  if (error) return c.json({ error: error.message }, 400);
+  const users = await authUsersById(admin(c.env), (data || []).map((member) => member.user_id));
+  return c.json(
+    (data || []).map((member) => ({
+      ...member,
+      email: users.find((user) => user.id === member.user_id)?.email || "",
+      name: users.find((user) => user.id === member.user_id)?.name || "",
+    })),
+  );
+});
+
+app.post("/api/properties/:id/viewers", async (c) => {
+  const db = c.get("db");
+  const propertyId = c.req.param("id");
+  const { data: property } = await db
+    .from("properties")
+    .select("id,workspace_id")
+    .eq("id", propertyId)
+    .single();
+  if (!property) return c.json({ error: "property_not_found" }, 404);
+  if (!(await canManageWorkspace(db, c.get("userId"), property.workspace_id)))
+    return c.json({ error: "property_manage_access_required" }, 403);
+  const body = await c.req.json<{ email: string }>();
+  const email = body.email?.trim().toLowerCase();
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+    return c.json({ error: "valid_email_required" }, 400);
+  const service = admin(c.env);
+  const invited = await findOrInviteUser(service, email, c.env.APP_ORIGIN);
+  const { data, error } = await service
+    .from("property_memberships")
+    .upsert(
+      {
+        property_id: propertyId,
+        user_id: invited.id,
+        role: "viewer",
+        invited_by: c.get("userId"),
+      },
+      { onConflict: "property_id,user_id" },
+    )
+    .select()
+    .single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordActivity(c.env, c.get("userId"), "property.viewer_invited", propertyId, {
+    invitedUserId: invited.id,
+  });
+  return c.json({ ...data, email, invitationSent: invited.invitationSent }, 201);
+});
+
+app.patch("/api/workspaces/:id", async (c) => {
+  const body = await c.req.json<{ name: string }>();
+  const name = body.name?.trim().slice(0, 100);
+  if (!name) return c.json({ error: "workspace_name_required" }, 400);
+  const { data, error } = await c
+    .get("db")
+    .from("workspaces")
+    .update({ name })
+    .eq("id", c.req.param("id"))
+    .select()
+    .single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordActivity(c.env, c.get("userId"), "workspace.updated", undefined, {
+    workspaceId: data.id,
+  });
+  return c.json(data);
+});
+
 app.post("/api/properties/:id/verify", async (c) => {
   const db = c.get("db");
   const { data: property, error } = await db
     .from("properties")
-    .select("id,url,tracking_id")
+    .select("id,url,tracking_id,workspace_id")
     .eq("id", c.req.param("id"))
     .single();
   if (error || !property) return c.json({ error: "property_not_found" }, 404);
+  if (!(await canManageWorkspace(db, c.get("userId"), property.workspace_id)))
+    return c.json({ error: "property_manage_access_required" }, 403);
   try {
     const res = await safeFetch(property.url, {
       method: "GET",
@@ -287,18 +588,21 @@ app.post("/api/properties/:id/verify", async (c) => {
     const verified =
       html.includes(property.tracking_id.toLowerCase()) ||
       res.headers.get("x-claritude-verification") === property.tracking_id;
-    await db
+    const { error: updateError } = await db
       .from("properties")
       .update({
         verification_status: verified ? "verified" : "pending",
         verified_at: verified ? new Date().toISOString() : null,
       })
       .eq("id", property.id);
+    if (updateError) return c.json({ error: updateError.message }, 400);
     return c.json({
       verified,
-      method: html.includes(property.tracking_id.toLowerCase())
-        ? "tracking_script"
-        : "header",
+      method: verified
+        ? html.includes(property.tracking_id.toLowerCase())
+          ? "tracking_script"
+          : "header"
+        : null,
     });
   } catch (e) {
     return c.json({ verified: false, error: errorMessage(e) }, 422);
@@ -314,6 +618,14 @@ app.post("/api/audits", async (c) => {
     .eq("id", b.propertyId)
     .single();
   if (!property) return c.json({ error: "property_not_found" }, 404);
+  const dayStart = `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`;
+  const { count: runsToday } = await db
+    .from("audit_runs")
+    .select("id", { count: "exact", head: true })
+    .eq("property_id", property.id)
+    .gte("created_at", dayStart);
+  if ((runsToday || 0) >= LIMITS.auditsPerPropertyPerDay)
+    return c.json({ error: "audit_daily_limit_reached" }, 429);
   const target = validPublicUrl(b.pageUrl || property.url);
   if (!target || target.hostname !== new URL(property.url).hostname)
     return c.json({ error: "page_must_belong_to_property" }, 400);
@@ -337,20 +649,65 @@ app.post("/api/audits", async (c) => {
       status: "queued",
       registry_snapshot: snapshot,
       scoring_version: "1.0.0",
+      created_by: c.get("userId"),
     })
     .select()
     .single();
   if (error) return c.json({ error: error.message }, 400);
   await c.env.JOBS.send({ type: "audit", id: run.id });
+  await recordActivity(c.env, c.get("userId"), "audit.queued", property.id, {
+    auditRunId: run.id,
+    pageUrl: target.href,
+  });
   return c.json(run, 202);
 });
 
+app.get("/api/properties/:id/audit-pages", async (c) => {
+  const { data, error } = await c
+    .get("db")
+    .from("property_audit_pages")
+    .select("*")
+    .eq("property_id", c.req.param("id"))
+    .order("created_at");
+  return error ? c.json({ error: error.message }, 400) : c.json(data);
+});
+
+app.post("/api/properties/:id/audit-pages", async (c) => {
+  const body = await c.req.json<{ name: string; path: string }>();
+  const name = body.name?.trim().slice(0, 100);
+  const path = cleanPath(body.path);
+  if (!name || !path) return c.json({ error: "valid_audit_page_required" }, 400);
+  const { data, error } = await c
+    .get("db")
+    .from("property_audit_pages")
+    .upsert(
+      {
+        property_id: c.req.param("id"),
+        name,
+        path,
+        created_by: c.get("userId"),
+      },
+      { onConflict: "property_id,path" },
+    )
+    .select()
+    .single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordActivity(c.env, c.get("userId"), "audit.page_saved", c.req.param("id"), {
+    path,
+  });
+  return c.json(data, 201);
+});
+
 app.get("/api/properties/:id/audits", async (c) => {
+  const window = requestedWindow(c);
+  if (!window) return c.json({ error: "invalid_date_range" }, 400);
   const { data, error } = await c
     .get("db")
     .from("audit_runs")
     .select("*,audit_results(*)")
     .eq("property_id", c.req.param("id"))
+    .gte("created_at", window.from)
+    .lte("created_at", window.to)
     .order("created_at", { ascending: false })
     .limit(20);
   if (error) return c.json({ error: error.message }, 400);
@@ -375,14 +732,31 @@ app.get("/api/properties/:id/audits", async (c) => {
   );
 });
 
+app.get("/api/properties/:id/incidents", async (c) => {
+  const window = requestedWindow(c);
+  if (!window) return c.json({ error: "invalid_date_range" }, 400);
+  const { data, error } = await c
+    .get("db")
+    .from("incidents")
+    .select("*")
+    .eq("property_id", c.req.param("id"))
+    .lte("opened_at", window.to)
+    .or(`resolved_at.is.null,resolved_at.gte.${window.from}`)
+    .order("opened_at", { ascending: false })
+    .limit(1000);
+  return error ? c.json({ error: error.message }, 400) : c.json(data || []);
+});
+
 app.post("/api/monitors/:id/check", async (c) => {
   const { data, error } = await c
     .get("db")
     .from("uptime_monitors")
-    .select("id")
+    .select("id,property_id,properties(workspace_id)")
     .eq("id", c.req.param("id"))
     .single();
   if (error || !data) return c.json({ error: "monitor_not_found" }, 404);
+  if (!(await canManageWorkspace(c.get("db"), c.get("userId"), (data.properties as any)?.workspace_id)))
+    return c.json({ error: "monitor_manage_access_required" }, 403);
   await runUptime(c.env, data.id);
   const { data: check } = await admin(c.env)
     .from("uptime_checks")
@@ -391,23 +765,28 @@ app.post("/api/monitors/:id/check", async (c) => {
     .order("checked_at", { ascending: false })
     .limit(1)
     .maybeSingle();
+  await recordActivity(c.env, c.get("userId"), "uptime.checked_manually", data.property_id, {
+    checkId: check?.id,
+  });
   return c.json({ status: "completed", check });
 });
 
 app.get("/api/monitors/:id/checks", async (c) => {
-  const days = Math.min(90, Math.max(1, Number(c.req.query("days") || 30)));
-  const from = new Date(Date.now() - days * 864e5).toISOString();
+  const window = requestedWindow(c);
+  if (!window) return c.json({ error: "invalid_date_range" }, 400);
   const { data, error } = await c
     .get("db")
     .from("uptime_checks")
-    .select("id,checked_at,success,status_code,response_ms,error_code")
+    .select("id,checked_at,success,status_code,response_ms,error_code,suppressed_by_maintenance")
     .eq("monitor_id", c.req.param("id"))
-    .gte("checked_at", from)
+    .gte("checked_at", window.from)
+    .lte("checked_at", window.to)
     .order("checked_at", { ascending: true })
     .limit(10000);
   if (error) return c.json({ error: error.message }, 400);
   const checks = data || [];
-  const successful = checks.filter((x) => x.success);
+  const eligible = checks.filter((x) => !x.suppressed_by_maintenance);
+  const successful = eligible.filter((x) => x.success);
   const responseValues = successful
     .map((x) => x.response_ms)
     .filter((x): x is number => typeof x === "number")
@@ -417,7 +796,7 @@ app.get("/api/monitors/:id/checks", async (c) => {
       ? responseValues[Math.min(responseValues.length - 1, Math.floor((responseValues.length - 1) * p))]
       : null;
   const byDay = new Map<string, { total: number; successful: number }>();
-  for (const check of checks) {
+  for (const check of eligible) {
     const day = check.checked_at.slice(0, 10);
     const current = byDay.get(day) || { total: 0, successful: 0 };
     current.total += 1;
@@ -427,9 +806,10 @@ app.get("/api/monitors/:id/checks", async (c) => {
   return c.json({
     checks,
     summary: {
-      total: checks.length,
+      total: eligible.length,
       successful: successful.length,
-      availability: checks.length ? (successful.length / checks.length) * 100 : null,
+      suppressed: checks.length - eligible.length,
+      availability: eligible.length ? (successful.length / eligible.length) * 100 : null,
       averageResponseMs: responseValues.length
         ? Math.round(responseValues.reduce((a, b) => a + b, 0) / responseValues.length)
         : null,
@@ -535,14 +915,96 @@ app.post("/api/properties/:id/alert-recipients", async (c) => {
   return error ? c.json({ error: error.message }, 400) : c.json(data, 201);
 });
 
-app.get("/api/properties/:id/events", async (c) => {
-  const { data, error } = await c
+app.delete("/api/properties/:id/alert-recipients/:recipientId", async (c) => {
+  const { error } = await c
     .get("db")
+    .from("alert_recipients")
+    .delete()
+    .eq("property_id", c.req.param("id"))
+    .eq("id", c.req.param("recipientId"));
+  return error ? c.json({ error: error.message }, 400) : c.json({ deleted: true });
+});
+
+app.post("/api/properties/:id/test-alert", async (c) => {
+  const db = c.get("db");
+  const propertyId = c.req.param("id");
+  const { data: property } = await db
+    .from("properties")
+    .select("id,name,workspace_id")
+    .eq("id", propertyId)
+    .single();
+  if (!property) return c.json({ error: "property_not_found" }, 404);
+  if (!(await canManageWorkspace(db, c.get("userId"), property.workspace_id)))
+    return c.json({ error: "property_manage_access_required" }, 403);
+  const { data: recipients } = await db
+    .from("alert_recipients")
+    .select("email")
+    .eq("property_id", propertyId)
+    .eq("enabled", true);
+  if (!recipients?.length) return c.json({ error: "alert_recipient_required" }, 409);
+  if (!c.env.RESEND_API_KEY || !c.env.RESEND_FROM)
+    return c.json({ error: "email_delivery_not_configured" }, 503);
+  const key = `test:${propertyId}:${crypto.randomUUID()}`;
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${c.env.RESEND_API_KEY}`,
+      "content-type": "application/json",
+      "Idempotency-Key": key,
+    },
+    body: JSON.stringify({
+      from: c.env.RESEND_FROM,
+      to: recipients.map((recipient) => recipient.email),
+      subject: `Claritude test alert · ${property.name}`,
+      html: `<h1>Claritude test alert</h1><p>Email delivery is configured for ${escapeHtml(property.name)}.</p>`,
+    }),
+  });
+  if (!response.ok)
+    return c.json({ error: `email_delivery_failed:${(await response.text()).slice(0, 240)}` }, 502);
+  await recordActivity(c.env, c.get("userId"), "uptime.test_alert_sent", propertyId, {
+    recipients: recipients.length,
+  });
+  return c.json({ delivered: recipients.length });
+});
+
+app.get("/api/properties/:id/events", async (c) => {
+  const db = c.get("db");
+  const propertyId = c.req.param("id");
+  const from = new Date(Date.now() - 30 * 864e5).toISOString();
+  const [{ data, error }, { data: received, error: receivedError }] = await Promise.all([
+    db
     .from("event_definitions")
     .select("*")
-    .eq("property_id", c.req.param("id"))
-    .order("created_at");
-  return error ? c.json({ error: error.message }, 400) : c.json(data);
+    .eq("property_id", propertyId)
+    .order("created_at"),
+    db
+      .from("analytics_events")
+      .select("name,event_type,occurred_at")
+      .eq("property_id", propertyId)
+      .gte("occurred_at", from)
+      .not("name", "is", null)
+      .limit(50000),
+  ]);
+  if (error || receivedError)
+    return c.json({ error: (error || receivedError)?.message }, 400);
+  const counts = new Map<string, { count: number; last: string | null }>();
+  for (const event of received || []) {
+    const key = `${event.event_type}:${event.name}`;
+    const current = counts.get(key) || { count: 0, last: null };
+    current.count += 1;
+    if (!current.last || event.occurred_at > current.last) current.last = event.occurred_at;
+    counts.set(key, current);
+  }
+  return c.json(
+    (data || []).map((definition) => {
+      const measured = counts.get(`${definition.event_type}:${definition.name}`);
+      return {
+        ...definition,
+        received: measured?.count || 0,
+        last_received_at: measured?.last || null,
+      };
+    }),
+  );
 });
 
 app.post("/api/properties/:id/events", async (c) => {
@@ -574,6 +1036,19 @@ app.post("/api/properties/:id/events", async (c) => {
     .select()
     .single();
   return error ? c.json({ error: error.message }, 400) : c.json(data, 201);
+});
+
+app.patch("/api/properties/:id/events/:eventId", async (c) => {
+  const body = await c.req.json<{ enabled: boolean }>();
+  const { data, error } = await c
+    .get("db")
+    .from("event_definitions")
+    .update({ enabled: Boolean(body.enabled) })
+    .eq("property_id", c.req.param("id"))
+    .eq("id", c.req.param("eventId"))
+    .select()
+    .single();
+  return error ? c.json({ error: error.message }, 400) : c.json(data);
 });
 
 app.get("/api/properties/:id/report-schedules", async (c) => {
@@ -666,39 +1141,93 @@ app.patch("/api/notifications/:id/read", async (c) => {
   return error ? c.json({ error: error.message }, 400) : c.json(data);
 });
 
-app.get("/api/properties/:id/analytics", async (c) => {
-  const days = Math.min(90, Math.max(1, Number(c.req.query("days") || 30)));
-  const from = new Date(Date.now() - days * 864e5).toISOString();
+app.post("/api/notifications/read-all", async (c) => {
   const { data, error } = await c
+    .get("db")
+    .from("notifications")
+    .update({ read_at: new Date().toISOString() })
+    .eq("user_id", c.get("userId"))
+    .is("read_at", null)
+    .select("id");
+  return error ? c.json({ error: error.message }, 400) : c.json({ updated: data?.length || 0 });
+});
+
+app.get("/api/account/export", async (c) => {
+  const db = c.get("db");
+  const [profile, accounts, workspaces, properties, incidents, audits, analytics, reports, schedules, activity] =
+    await Promise.all([
+      db.from("profiles").select("*").maybeSingle(),
+      db.from("account_memberships").select("role,accounts(*)"),
+      db.from("workspace_memberships").select("role,workspaces(*)"),
+      db.from("properties").select("*,uptime_monitors(*),property_audit_pages(*)"),
+      db.from("incidents").select("*"),
+      db.from("audit_runs").select("*,audit_results(*)").limit(500),
+      db.from("analytics_daily").select("*").limit(100000),
+      db.from("saved_reports").select("*").limit(1000),
+      db.from("report_schedules").select("*").limit(1000),
+      db.from("activity_log").select("*").limit(5000),
+    ]);
+  const failure = [profile, accounts, workspaces, properties, incidents, audits, analytics, reports, schedules, activity]
+    .find((result) => result.error)?.error;
+  if (failure) return c.json({ error: failure.message }, 500);
+  return c.json({
+    exportedAt: new Date().toISOString(),
+    profile: profile.data,
+    accounts: accounts.data,
+    workspaces: workspaces.data,
+    properties: properties.data,
+    incidents: incidents.data,
+    audits: audits.data,
+    analyticsDaily: analytics.data,
+    savedReports: reports.data,
+    reportSchedules: schedules.data,
+    activity: activity.data,
+  });
+});
+
+app.get("/api/properties/:id/analytics", async (c) => {
+  const window = requestedWindow(c);
+  if (!window) return c.json({ error: "invalid_date_range" }, 400);
+  const device = c.req.query("device")?.toLowerCase();
+  let query = c
     .get("db")
     .from("analytics_events")
     .select(
       "event_type,path,referrer_host,source,device,country_code,name,value,metadata,occurred_at",
     )
     .eq("property_id", c.req.param("id"))
-    .gte("occurred_at", from)
+    .gte("occurred_at", window.from)
+    .lte("occurred_at", window.to)
     .order("occurred_at", { ascending: true })
     .limit(50000);
+  if (device && ["mobile", "desktop", "tablet"].includes(device))
+    query = query.eq("device", device);
+  const { data, error } = await query;
   if (error) return c.json({ error: error.message }, 400);
-  return c.json(buildAnalyticsSummary(data || [], days));
+  return c.json(buildAnalyticsSummary(data || [], window.days, window.from, window.to));
 });
 
 app.get("/api/properties/:id/report", async (c) => {
   const db = c.get("db");
   const id = c.req.param("id");
-  const from = new Date(Date.now() - 30 * 864e5).toISOString();
+  const window = requestedWindow(c);
+  if (!window) return c.json({ error: "invalid_date_range" }, 400);
   const [property, incidents, audits, analytics] = await Promise.all([
     db.from("properties").select("*").eq("id", id).single(),
     db
       .from("incidents")
       .select("*")
       .eq("property_id", id)
+      .gte("opened_at", window.from)
+      .lte("opened_at", window.to)
       .order("opened_at", { ascending: false })
       .limit(20),
     db
       .from("audit_runs")
       .select("*")
       .eq("property_id", id)
+      .gte("created_at", window.from)
+      .lte("created_at", window.to)
       .order("created_at", { ascending: false })
       .limit(5),
     db
@@ -707,18 +1236,26 @@ app.get("/api/properties/:id/report", async (c) => {
         "event_type,path,referrer_host,source,device,country_code,name,value,metadata,occurred_at",
       )
       .eq("property_id", id)
-      .gte("occurred_at", from)
+      .gte("occurred_at", window.from)
+      .lte("occurred_at", window.to)
       .order("occurred_at", { ascending: true })
       .limit(50000),
   ]);
   if (property.error) return c.json({ error: "property_not_found" }, 404);
   return c.json({
     generatedAt: new Date().toISOString(),
-    period: "Last 30 days",
+    period: `${window.from.slice(0, 10)}–${window.to.slice(0, 10)}`,
+    periodStart: window.from.slice(0, 10),
+    periodEnd: window.to.slice(0, 10),
     property: property.data,
     incidents: incidents.data,
     audits: audits.data,
-    analytics: buildAnalyticsSummary(analytics.data || [], 30),
+    analytics: buildAnalyticsSummary(
+      analytics.data || [],
+      window.days,
+      window.from,
+      window.to,
+    ),
     limitations: [
       "Visitor totals are aggregate estimates; no persistent visitor identifiers are used.",
     ],
@@ -772,6 +1309,19 @@ async function runAudit(env: Env, id: string) {
         duration_ms: Date.now() - started,
       })
       .eq("id", id);
+    await createPropertyNotification(env, run.property_id, {
+      category: "audit_issues",
+      title: "Audit completed",
+      body: `Audit finished with score ${score ?? "—"} and ${coverage}% coverage.`,
+      severity: score != null && score < 80 ? "warning" : "info",
+      dedupeKey: `audit:${id}:completed`,
+    });
+    if (run.created_by)
+      await recordActivity(env, run.created_by, "audit.completed", run.property_id, {
+        auditRunId: id,
+        score,
+        coverage,
+      });
   } catch (e) {
     await db
       .from("audit_runs")
@@ -1082,6 +1632,15 @@ async function runUptime(env: Env, id: string) {
     .eq("id", id)
     .single();
   if (!monitor?.enabled) return;
+  const now = new Date().toISOString();
+  const { data: maintenance } = await db
+    .from("maintenance_windows")
+    .select("id")
+    .eq("monitor_id", id)
+    .lte("starts_at", now)
+    .gt("ends_at", now)
+    .limit(1)
+    .maybeSingle();
   const started = Date.now();
   let status: number | null = null,
     ok = false,
@@ -1109,8 +1668,13 @@ async function runUptime(env: Env, id: string) {
       status_code: status,
       response_ms: Date.now() - started,
       error_code: failure,
+      suppressed_by_maintenance: Boolean(maintenance),
     });
-  const failures = ok ? 0 : (monitor.consecutive_failures || 0) + 1;
+  const failures = maintenance
+    ? monitor.consecutive_failures || 0
+    : ok
+      ? 0
+      : (monitor.consecutive_failures || 0) + 1;
   await db
     .from("uptime_monitors")
     .update({
@@ -1129,6 +1693,7 @@ async function runUptime(env: Env, id: string) {
     .eq("monitor_id", id)
     .is("resolved_at", null)
     .maybeSingle();
+  if (maintenance) return;
   if (!ok && failures >= monitor.failure_threshold && !open) {
     const { data: incident } = await db
       .from("incidents")
@@ -1156,6 +1721,20 @@ async function sendAlert(
   incident: any,
   kind: "down" | "recovered",
 ) {
+  const { data: property } = await db
+    .from("properties")
+    .select("id,name,workspaces(account_id)")
+    .eq("id", incident.property_id)
+    .single();
+  await createPropertyNotification(env, incident.property_id, {
+    category: kind === "down" ? "monitor_incidents" : "recoveries",
+    title: kind === "down" ? "Website unavailable" : "Website recovered",
+    body: kind === "down"
+      ? `${property?.name || "A property"} exceeded its configured failure threshold.`
+      : `${property?.name || "A property"} returned a successful response and the incident was closed.`,
+    severity: kind === "down" ? "critical" : "info",
+    dedupeKey: `${incident.id}:${kind}:in_app`,
+  });
   if (!env.RESEND_API_KEY || !env.RESEND_FROM) return;
   const { data: recipients } = await db
     .from("alert_recipients")
@@ -1211,10 +1790,130 @@ async function scheduled(env: Env, cron: string) {
     await Promise.all(
       (data || []).map((m) => env.JOBS.send({ type: "uptime", id: m.id })),
     );
-  } else
+  } else {
     await db.rpc("aggregate_analytics_day", {
       p_day: new Date(Date.now() - 864e5).toISOString().slice(0, 10),
     });
+    await runDueReportSchedules(env, db);
+  }
+}
+
+async function runDueReportSchedules(env: Env, db: SupabaseClient) {
+  const now = new Date();
+  const { data: schedules } = await db
+    .from("report_schedules")
+    .select("*,properties(id,name,canonical_host)")
+    .eq("enabled", true)
+    .lte("next_run_at", now.toISOString())
+    .limit(100);
+  for (const schedule of schedules || []) {
+    const nextRun = new Date(
+      now.getTime() + (schedule.cadence === "weekly" ? 7 : 30) * 864e5,
+    ).toISOString();
+    try {
+      const from = new Date(now.getTime() - (schedule.cadence === "weekly" ? 7 : 30) * 864e5);
+      const [events, incidents, audits] = await Promise.all([
+        db
+          .from("analytics_events")
+          .select("event_type,path,referrer_host,source,device,country_code,name,value,metadata,occurred_at")
+          .eq("property_id", schedule.property_id)
+          .gte("occurred_at", from.toISOString())
+          .order("occurred_at")
+          .limit(50000),
+        db
+          .from("incidents")
+          .select("*")
+          .eq("property_id", schedule.property_id)
+          .gte("opened_at", from.toISOString())
+          .order("opened_at", { ascending: false }),
+        db
+          .from("audit_runs")
+          .select("id,status,score,coverage,created_at")
+          .eq("property_id", schedule.property_id)
+          .order("created_at", { ascending: false })
+          .limit(5),
+      ]);
+      const days = schedule.cadence === "weekly" ? 7 : 30;
+      const snapshot = {
+        generatedAt: now.toISOString(),
+        periodStart: from.toISOString().slice(0, 10),
+        periodEnd: now.toISOString().slice(0, 10),
+        property: schedule.properties,
+        analytics: buildAnalyticsSummary(events.data || [], days),
+        incidents: incidents.data || [],
+        audits: audits.data || [],
+      };
+      const reportName = `${schedule.properties?.name || "Property"} ${schedule.cadence} report`;
+      await db.from("saved_reports").insert({
+        property_id: schedule.property_id,
+        template_id: schedule.template_id,
+        name: reportName,
+        period_start: snapshot.periodStart,
+        period_end: snapshot.periodEnd,
+        data_snapshot: snapshot,
+        created_by: schedule.created_by,
+      });
+      let delivered = 0;
+      let lastError: string | null = null;
+      if (!env.RESEND_API_KEY || !env.RESEND_FROM) {
+        lastError = "email_delivery_not_configured";
+      } else {
+        for (const recipient of schedule.recipients || []) {
+          const key = `report:${schedule.id}:${snapshot.periodEnd}:${recipient}`;
+          const { data: claimed } = await db.rpc("claim_notification", {
+            p_key: key,
+            p_kind: "scheduled_report",
+            p_recipient: recipient,
+            p_payload: { scheduleId: schedule.id, propertyId: schedule.property_id },
+          });
+          if (!claimed) continue;
+          const response = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${env.RESEND_API_KEY}`,
+              "content-type": "application/json",
+              "Idempotency-Key": key,
+            },
+            body: JSON.stringify({
+              from: env.RESEND_FROM,
+              to: [recipient],
+              subject: `Claritude report · ${schedule.properties?.name || "Property"}`,
+              html: renderReportEmail(snapshot),
+            }),
+          });
+          await db
+            .from("notification_deliveries")
+            .update({
+              status: response.ok ? "sent" : "failed",
+              provider_id: response.headers.get("x-message-id"),
+              error: response.ok ? null : (await response.text()).slice(0, 1000),
+              updated_at: new Date().toISOString(),
+            })
+            .eq("dedupe_key", key);
+          if (response.ok) delivered += 1;
+          else lastError = "one_or_more_deliveries_failed";
+        }
+      }
+      await db
+        .from("report_schedules")
+        .update({
+          last_run_at: now.toISOString(),
+          last_error: lastError,
+          last_delivery_count: delivered,
+          next_run_at: nextRun,
+        })
+        .eq("id", schedule.id);
+    } catch (error) {
+      await db
+        .from("report_schedules")
+        .update({
+          last_run_at: now.toISOString(),
+          last_error: errorMessage(error),
+          next_run_at: nextRun,
+        })
+        .eq("id", schedule.id);
+    }
+  }
 }
 
 function sanitizeEvent(
@@ -1272,7 +1971,12 @@ function browserFromUserAgent(value: string) {
   return value ? "Other" : "Unknown";
 }
 
-export function buildAnalyticsSummary(events: any[], days: number) {
+export function buildAnalyticsSummary(
+  events: any[],
+  days: number,
+  from = new Date(Date.now() - days * 864e5).toISOString(),
+  to = new Date().toISOString(),
+) {
   const pageMap = new Map<string, { pageviews: number; events: number }>();
   const seriesMap = new Map<string, { pageviews: number; events: number }>();
   const sourceMap = new Map<string, number>();
@@ -1337,8 +2041,8 @@ export function buildAnalyticsSummary(events: any[], days: number) {
     samples: values.length,
   }));
   return {
-    from: new Date(Date.now() - days * 864e5).toISOString(),
-    to: new Date().toISOString(),
+    from,
+    to,
     pageviews,
     events: events.length,
     keyEvents,
@@ -1399,7 +2103,7 @@ function validDate(v: unknown) {
     ? d.toISOString()
     : null;
 }
-function validPublicUrl(value: string) {
+export function validPublicUrl(value: string) {
   try {
     const u = new URL(value);
     if (
@@ -1414,25 +2118,54 @@ function validPublicUrl(value: string) {
     return null;
   }
 }
-function isPrivateHost(h: string) {
+export function isPrivateHost(h: string) {
   const x = h.toLowerCase().replace(/\.$/, "");
   return (
     x === "localhost" ||
     x.endsWith(".local") ||
     x.endsWith(".internal") ||
-    /^(127\.|10\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(
+    /^(127\.|10\.|0\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(
       x,
     ) ||
+    x === "::" ||
     x === "::1" ||
+    x.startsWith("::ffff:127.") ||
+    x.startsWith("::ffff:10.") ||
+    x.startsWith("::ffff:192.168.") ||
     x.startsWith("fc") ||
     x.startsWith("fd") ||
-    x.startsWith("fe80:")
+    x.startsWith("fe80:") ||
+    x.startsWith("ff")
   );
+}
+async function assertPublicResolution(hostname: string) {
+  if (isPrivateHost(hostname)) throw new Error("Target resolved to a private address");
+  if (/^[0-9.]+$/.test(hostname) || hostname.includes(":")) return;
+  const answers = await Promise.all(
+    ["A", "AAAA"].map(async (type) => {
+      const response = await fetch(
+        `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=${type}`,
+        {
+          headers: { accept: "application/dns-json" },
+          signal: AbortSignal.timeout(5000),
+        },
+      );
+      if (!response.ok) throw new Error("DNS validation failed");
+      const body = (await response.json()) as { Answer?: { type: number; data: string }[] };
+      return (body.Answer || [])
+        .filter((answer) => answer.type === 1 || answer.type === 28)
+        .map((answer) => answer.data);
+    }),
+  );
+  const addresses = answers.flat();
+  if (!addresses.length) throw new Error("Target hostname did not resolve");
+  if (addresses.some(isPrivateHost)) throw new Error("Target resolved to a private address");
 }
 async function safeFetch(value: string, init: RequestInit = {}) {
   let url = validPublicUrl(value);
   if (!url) throw new Error("Target must be a public HTTP or HTTPS URL");
   for (let i = 0; i < 5; i++) {
+    await assertPublicResolution(url.hostname);
     const response = await fetch(url, {
       ...init,
       redirect: "manual",
@@ -1480,10 +2213,276 @@ function errorMessage(e: unknown) {
   return e instanceof Error ? e.message.slice(0, 500) : "unknown_error";
 }
 
+function sameSiteHost(left: string, right: string) {
+  const normalize = (value: string) =>
+    value.toLowerCase().replace(/\.$/, "").replace(/^www\./, "");
+  return normalize(left) === normalize(right);
+}
+
+function validDateRange(value: string, maximumFutureMs: number) {
+  const date = new Date(value);
+  return Number.isFinite(date.valueOf()) &&
+    date.valueOf() >= Date.now() - 5 * 60_000 &&
+    date.valueOf() <= Date.now() + maximumFutureMs
+    ? date.toISOString()
+    : null;
+}
+
+function requestedWindow(c: any, defaultDays = 30, maximumDays = 90) {
+  const fromValue = c.req.query("from");
+  const toValue = c.req.query("to");
+  if (!fromValue && !toValue) {
+    const days = Math.min(
+      maximumDays,
+      Math.max(1, Number(c.req.query("days") || defaultDays)),
+    );
+    if (!Number.isFinite(days)) return null;
+    return {
+      days,
+      from: new Date(Date.now() - days * 864e5).toISOString(),
+      to: new Date().toISOString(),
+    };
+  }
+  if (!fromValue || !toValue) return null;
+  const fromDate = new Date(`${fromValue}T00:00:00.000Z`);
+  const toDate = new Date(`${toValue}T23:59:59.999Z`);
+  const span = toDate.valueOf() - fromDate.valueOf();
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(fromValue) ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(toValue) ||
+    !Number.isFinite(span) ||
+    span < 0 ||
+    span > maximumDays * 864e5
+  )
+    return null;
+  return {
+    days: Math.max(1, Math.ceil((span + 1) / 864e5)),
+    from: fromDate.toISOString(),
+    to: toDate.toISOString(),
+  };
+}
+
+function sanitizeNotificationPreferences(input: Record<string, boolean>) {
+  const keys = [
+    "monitor_incidents",
+    "recoveries",
+    "tracking_problems",
+    "audit_issues",
+    "billing_subscription",
+    "account_security",
+  ];
+  return Object.fromEntries(keys.map((key) => [key, input[key] !== false]));
+}
+
+function sanitizePropertySettings(input?: Record<string, unknown>) {
+  if (!input) return {};
+  const output: Record<string, unknown> = {};
+  if (typeof input.timezone === "string")
+    output.timezone = input.timezone.trim().slice(0, 80);
+  if (["GBP", "USD", "EUR"].includes(String(input.reporting_currency)))
+    output.reporting_currency = input.reporting_currency;
+  if (["disabled"].includes(String(input.analytics_cookies)))
+    output.analytics_cookies = input.analytics_cookies;
+  if (["anonymous"].includes(String(input.visitor_profiles)))
+    output.visitor_profiles = input.visitor_profiles;
+  if (["discard_after_geolocation", "discard_immediately"].includes(String(input.ip_address_handling)))
+    output.ip_address_handling = input.ip_address_handling;
+  if (Array.isArray(input.sensitive_query_parameters))
+    output.sensitive_query_parameters = input.sensitive_query_parameters
+      .map((item) => String(item).toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 40))
+      .filter(Boolean)
+      .slice(0, 30);
+  if (input.report_branding && typeof input.report_branding === "object") {
+    const branding = input.report_branding as Record<string, unknown>;
+    output.report_branding = {
+      agency_name: String(branding.agency_name || "").trim().slice(0, 100),
+      accent_colour: /^#[0-9a-f]{6}$/i.test(String(branding.accent_colour || ""))
+        ? branding.accent_colour
+        : "#111111",
+      footer_note: String(branding.footer_note || "").trim().slice(0, 240),
+    };
+  }
+  return output;
+}
+
+async function canManageWorkspace(
+  db: SupabaseClient,
+  userId: string,
+  workspaceId?: string,
+) {
+  if (!workspaceId) return false;
+  const { data } = await db
+    .from("workspace_memberships")
+    .select("role")
+    .eq("workspace_id", workspaceId)
+    .eq("user_id", userId)
+    .in("role", ["owner", "member"])
+    .maybeSingle();
+  return Boolean(data);
+}
+
+async function authUsersById(service: SupabaseClient, userIds: string[]) {
+  if (!userIds.length) return [];
+  const wanted = new Set(userIds);
+  const { data, error } = await service.auth.admin.listUsers({ page: 1, perPage: 1000 });
+  if (error) throw error;
+  return data.users
+    .filter((user) => wanted.has(user.id))
+    .map((user) => ({
+      id: user.id,
+      email: user.email || "",
+      name: String(user.user_metadata?.full_name || "").slice(0, 100),
+      confirmedAt: user.email_confirmed_at || null,
+      lastSignInAt: user.last_sign_in_at || null,
+    }));
+}
+
+async function findOrInviteUser(
+  service: SupabaseClient,
+  email: string,
+  appOrigin: string,
+) {
+  const { data: listed, error: listError } = await service.auth.admin.listUsers({
+    page: 1,
+    perPage: 1000,
+  });
+  if (listError) throw listError;
+  const existing = listed.users.find(
+    (user) => user.email?.toLowerCase() === email.toLowerCase(),
+  );
+  if (existing) return { id: existing.id, invitationSent: false };
+  const { data, error } = await service.auth.admin.inviteUserByEmail(email, {
+    redirectTo: `${appOrigin.replace(/\/$/, "")}/auth/confirmed`,
+  });
+  if (error || !data.user) throw error || new Error("Invitation could not be created");
+  return { id: data.user.id, invitationSent: true };
+}
+
+async function recordActivity(
+  env: Env,
+  actorId: string,
+  action: string,
+  propertyId?: string,
+  metadata: Record<string, unknown> = {},
+) {
+  const db = admin(env);
+  let accountId: string | undefined;
+  if (propertyId) {
+    const { data: property } = await db
+      .from("properties")
+      .select("workspaces(account_id)")
+      .eq("id", propertyId)
+      .maybeSingle();
+    accountId = (property?.workspaces as any)?.account_id;
+  } else if (metadata.workspaceId) {
+    const { data: workspace } = await db
+      .from("workspaces")
+      .select("account_id")
+      .eq("id", metadata.workspaceId)
+      .maybeSingle();
+    accountId = workspace?.account_id;
+  } else {
+    const { data: membership } = await db
+      .from("account_memberships")
+      .select("account_id")
+      .eq("user_id", actorId)
+      .limit(1)
+      .maybeSingle();
+    accountId = membership?.account_id;
+  }
+  if (!accountId) return;
+  await db.from("activity_log").insert({
+    account_id: accountId,
+    actor_id: actorId,
+    action,
+    property_id: propertyId || null,
+    metadata,
+  });
+}
+
+async function createPropertyNotification(
+  env: Env,
+  propertyId: string,
+  notification: {
+    category: string;
+    title: string;
+    body: string;
+    severity: string;
+    dedupeKey: string;
+  },
+) {
+  const db = admin(env);
+  const { data: property } = await db
+    .from("properties")
+    .select("workspaces(account_id)")
+    .eq("id", propertyId)
+    .maybeSingle();
+  const accountId = (property?.workspaces as any)?.account_id;
+  if (!accountId) return;
+  const { data: members } = await db
+    .from("account_memberships")
+    .select("user_id")
+    .eq("account_id", accountId);
+  if (!members?.length) return;
+  const { data: profiles } = await db
+    .from("profiles")
+    .select("id,notification_preferences,alerts_snoozed_until")
+    .in("id", members.map((member) => member.user_id));
+  const now = Date.now();
+  const allowedUsers = new Set(
+    (profiles || [])
+      .filter(
+        (profile) =>
+          profile.notification_preferences?.[notification.category] !== false &&
+          (!profile.alerts_snoozed_until ||
+            new Date(profile.alerts_snoozed_until).valueOf() <= now),
+      )
+      .map((profile) => profile.id),
+  );
+  const rows = members.filter((member) => allowedUsers.has(member.user_id)).map((member) => ({
+      account_id: accountId,
+      user_id: member.user_id,
+      property_id: propertyId,
+      category: notification.category,
+      title: notification.title,
+      body: notification.body,
+      severity: notification.severity,
+      dedupe_key: `${notification.dedupeKey}:${member.user_id}`,
+    }));
+  if (!rows.length) return;
+  await db.from("notifications").upsert(
+    rows,
+    { onConflict: "dedupe_key", ignoreDuplicates: true },
+  );
+}
+
+function escapeHtml(value: unknown) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function renderReportEmail(snapshot: any) {
+  const analytics = snapshot.analytics || {};
+  const latestAudit = snapshot.audits?.[0];
+  return `<h1>${escapeHtml(snapshot.property?.name || "Claritude report")}</h1>
+    <p>${escapeHtml(snapshot.periodStart)} to ${escapeHtml(snapshot.periodEnd)}</p>
+    <ul>
+      <li>Pageviews: ${escapeHtml(analytics.pageviews || 0)}</li>
+      <li>Key events: ${escapeHtml(analytics.keyEvents || 0)}</li>
+      <li>Incidents: ${escapeHtml(snapshot.incidents?.length || 0)}</li>
+      <li>Latest audit: ${escapeHtml(latestAudit?.score ?? "Not run")} (${escapeHtml(latestAudit?.coverage ?? 0)}% coverage)</li>
+    </ul>
+    <p>Open Claritude for evidence, filters and the full report.</p>`;
+}
+
 const TRACKER_SOURCE = `(()=>{
   const s=document.currentScript,p=s&&s.dataset.property,endpoint=s&&new URL('/collect',s.src).href;
   if(!p||!endpoint||window.__claritude)return;window.__claritude=1;
-  let q=[],timer,lastUrl=location.href,active=0,cls=0,lcp=0,inp=0;
+  let q=[],timer,lastUrl=location.href,active=0,reportedActive=0,cls=0,lcp=0,inp=0;
   const params=new URLSearchParams(location.search);
   const session=sessionStorage.getItem('_claritude_session')||crypto.randomUUID();
   sessionStorage.setItem('_claritude_session',session);
@@ -1492,14 +2491,17 @@ const TRACKER_SOURCE = `(()=>{
   const send=()=>{if(!q.length)return;const body=JSON.stringify(q.splice(0,20));if(navigator.sendBeacon&&document.visibilityState==='hidden')navigator.sendBeacon(endpoint,new Blob([body],{type:'application/json'}));else fetch(endpoint,{method:'POST',headers:{'content-type':'application/json'},body,keepalive:true}).catch(()=>{})};
   const emit=(type,data={})=>{q.push({type,property:p,path:location.pathname,referrer:document.referrer,at:new Date().toISOString(),device:innerWidth<768?'mobile':innerWidth<1024?'tablet':'desktop',meta:common(),...data});clearTimeout(timer);timer=setTimeout(send,500)};
   const page=()=>emit('pageview',{source:params.get('utm_source')||''});page();
-  new MutationObserver(()=>{if(location.href!==lastUrl){lastUrl=location.href;page()}}).observe(document,{subtree:true,childList:true});
-  addEventListener('popstate',page);
+  const navigation=()=>{if(location.href!==lastUrl){lastUrl=location.href;page()}};
+  new MutationObserver(navigation).observe(document,{subtree:true,childList:true});
+  ['pushState','replaceState'].forEach(k=>{const original=history[k];history[k]=function(...args){const result=original.apply(this,args);queueMicrotask(navigation);return result}});
+  addEventListener('popstate',navigation);
   addEventListener('click',e=>{const a=e.target.closest('[data-claritude-event],a[href]');if(!a)return;const name=a.dataset.claritudeEvent;if(name)emit('click',{name});if(a.href&&new URL(a.href,location.href).host!==location.host)emit('outbound',{name:new URL(a.href).host})},{passive:true});
   const marks=new Set;addEventListener('scroll',()=>{const height=Math.max(document.documentElement.scrollHeight,1),n=Math.round((scrollY+innerHeight)/height*100);[25,50,75,100].forEach(x=>{if(n>=x&&!marks.has(x)){marks.add(x);emit('scroll',{value:x})}})},{passive:true});
-  const tick=setInterval(()=>{if(document.visibilityState==='visible'&&document.hasFocus())active+=5;if(active&&active%30===0)emit('active_time',{value:active})},5000);
+  const reportActive=()=>{const delta=active-reportedActive;if(delta>0){reportedActive=active;emit('active_time',{value:delta})}};
+  const tick=setInterval(()=>{if(document.visibilityState==='visible'&&document.hasFocus())active+=5;if(active-reportedActive>=30)reportActive()},5000);
   const flushVitals=()=>{if(lcp)emit('web_vital',{name:'LCP',value:lcp});if(cls)emit('web_vital',{name:'CLS',value:cls});if(inp)emit('web_vital',{name:'INP',value:inp})};
   addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){flushVitals();send()}});
-  addEventListener('pagehide',()=>{clearInterval(tick);if(active)emit('active_time',{value:active});flushVitals();send()});
+  addEventListener('pagehide',()=>{clearInterval(tick);reportActive();flushVitals();send()});
   window.claritude={event:(name,meta)=>emit('click',{name,meta:{...common(),...meta}}),formSuccess:(name,meta)=>emit('form_success',{name,meta:{...common(),...meta}}),flush:send};
   if('PerformanceObserver'in window){
     try{new PerformanceObserver(list=>list.getEntries().forEach(e=>{lcp=e.startTime||e.duration||0})).observe({type:'largest-contentful-paint',buffered:true})}catch{}

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   buildAnalyticsSummary,
   evaluateSourceChecks,
+  isPrivateHost,
   normalizePropertyRelations,
+  validPublicUrl,
 } from "./index";
 
 describe("worker evidence pipelines", () => {
@@ -78,5 +80,23 @@ describe("worker evidence pipelines", () => {
     const results = evaluateSourceChecks(snapshot, response, html, 123);
     expect(results).toHaveLength(snapshot.length);
     expect(results.every((item) => item.outcome === "pass")).toBe(true);
+  });
+
+  it("rejects private, credentialed and non-HTTP audit targets", () => {
+    for (const host of [
+      "localhost",
+      "127.0.0.1",
+      "10.0.0.5",
+      "169.254.169.254",
+      "172.16.0.1",
+      "192.168.1.1",
+      "::1",
+      "fd00::1",
+    ])
+      expect(isPrivateHost(host)).toBe(true);
+    expect(validPublicUrl("http://127.0.0.1/admin")).toBeNull();
+    expect(validPublicUrl("https://user:secret@example.com/")).toBeNull();
+    expect(validPublicUrl("file:///etc/passwd")).toBeNull();
+    expect(validPublicUrl("https://example.com/path")?.hostname).toBe("example.com");
   });
 });

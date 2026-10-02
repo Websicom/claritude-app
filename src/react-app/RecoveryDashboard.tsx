@@ -80,6 +80,7 @@ type Property = {
   tracking_last_received_at?: string;
   uptime_monitors?: Monitor[];
   audit_runs?: AuditRun[];
+  settings?: Record<string, any>;
   demo?: DemoMetrics;
 };
 type Bootstrap = {
@@ -89,6 +90,8 @@ type Bootstrap = {
   properties: Property[];
   incidents: any[];
   notifications: any[];
+  activity?: any[];
+  propertyMemberships?: any[];
 };
 type DemoMetrics = {
   pageviews: number;
@@ -275,17 +278,36 @@ export function RecoveryDashboard({
     [mobile, setMobile] = useState(false),
     [toast, setToast] = useState(""),
     [addOpen, setAddOpen] = useState(false),
+    [workspaceOpen, setWorkspaceOpen] = useState(false),
+    [workspaceName, setWorkspaceName] = useState(""),
     [helpOpen, setHelpOpen] = useState(false);
-  const properties = fixture ? fixtureProjects : data.properties;
+  const allProperties = fixture ? fixtureProjects : data.properties;
+  const requestedWorkspace = new URLSearchParams(loc.search).get("workspace");
   const requested = new URLSearchParams(loc.search).get("property");
   const property =
-    properties.find((p) => p.id === requested) ||
+    allProperties.find((p) => p.id === requested) ||
     (loc.pathname !== "/" && loc.pathname !== "/notifications"
-      ? properties[0]
+      ? allProperties[0]
       : undefined);
-  const workspace: any = data.workspaces?.[0]?.workspaces || {
+  const workspaceMemberships = data.workspaces || [];
+  const workspace: any =
+    workspaceMemberships.find((entry: any) => entry.workspaces?.id === requestedWorkspace)
+      ?.workspaces ||
+    workspaceMemberships.find((entry: any) => entry.workspaces?.id === property?.workspace_id)
+      ?.workspaces ||
+    workspaceMemberships[0]?.workspaces || {
     name: "Websi workspace",
   };
+  const currentWorkspaceMembership = workspaceMemberships.find(
+    (entry: any) => entry.workspaces?.id === workspace?.id,
+  );
+  const canManageWorkspace = fixture || ["owner", "member"].includes(currentWorkspaceMembership?.role);
+  const canManageAccount = fixture || ["owner", "member"].includes(data.accounts?.[0]?.role);
+  const properties = property
+    ? allProperties
+    : workspace?.id
+      ? allProperties.filter((item) => item.workspace_id === workspace.id)
+      : allProperties;
   const workspaceContext =
     loc.pathname === "/" || loc.pathname === "/notifications";
   const section = loc.pathname.split("/")[1] || "workspace";
@@ -302,7 +324,11 @@ export function RecoveryDashboard({
       : section === "settings"
         ? "Property settings"
         : cap(section);
-  const warning = fixture
+  const alertsSnoozed = data.profile?.alerts_snoozed_until &&
+    new Date(data.profile.alerts_snoozed_until).valueOf() > Date.now();
+  const warning = alertsSnoozed
+    ? null
+    : fixture
     ? {
         title: workspaceContext
           ? "North Commerce monitor alert"
@@ -332,6 +358,23 @@ export function RecoveryDashboard({
     setPropertyMenu(false);
     navigate(id ? href("overview", id) : "/");
   }
+  async function snoozeAlerts() {
+    if (!session) return;
+    try {
+      await api(session, "/api/profile", {
+        method: "PATCH",
+        body: JSON.stringify({
+          full_name: data.profile?.full_name,
+          timezone: data.profile?.timezone,
+          alerts_snoozed_until: new Date(Date.now() + 60 * 60_000).toISOString(),
+        }),
+      });
+      notify("Alerts snoozed for one hour");
+      reload();
+    } catch (error: any) {
+      notify(error.message);
+    }
+  }
   return (
     <div className="app reference-app">
       <header className="top">
@@ -343,7 +386,7 @@ export function RecoveryDashboard({
           <span className="avatar">
             <img src="/assets/websi-mark.svg" alt="" />
           </span>
-          <b>{fixture ? "Websi workspace" : workspace.name}</b>
+          <b>{fixture ? "Websi workspace" : workspace.name || "Shared properties"}</b>
           <span className="badge">{fixture ? "Scale" : "Pro"}</span>
           <span className="chevs">
             ⌃<br />⌄
@@ -375,28 +418,47 @@ export function RecoveryDashboard({
           search="Find workspace"
           close={() => setWorkspaceMenu(false)}
         >
-          <button className="selector-option">
-            <span className="avatar">
-              <img src="/assets/websi-mark.svg" alt="" />
-            </span>
-            <span>
-              <b>{fixture ? "Websi workspace" : workspace.name}</b>
-              <small>{properties.length} properties</small>
-            </span>
-            <Check />
-          </button>
-          <button
-            className="selector-option"
-            onClick={() =>
-              notify("Workspace creation is not enabled for this preview")
-            }
-          >
-            <Plus />
-            <span>
-              <b>Add new workspace</b>
-              <small>Create another workspace</small>
-            </span>
-          </button>
+          {(fixture
+            ? [{ workspaces: { id: "fixture", name: "Websi workspace" } }]
+            : workspaceMemberships
+          ).map((entry: any) => {
+            const candidate = entry.workspaces;
+            const count = allProperties.filter((item) => item.workspace_id === candidate.id).length;
+            return (
+              <button
+                className="selector-option"
+                key={candidate.id}
+                onClick={() => {
+                  setWorkspaceMenu(false);
+                  navigate(fixture ? "/" : `/?workspace=${candidate.id}`);
+                }}
+              >
+                <span className="avatar">
+                  <img src="/assets/websi-mark.svg" alt="" />
+                </span>
+                <span>
+                  <b>{candidate.name}</b>
+                  <small>{count} properties</small>
+                </span>
+                {candidate.id === workspace.id && <Check />}
+              </button>
+            );
+          })}
+          {canManageAccount && (
+            <button
+              className="selector-option"
+              onClick={() => {
+                setWorkspaceMenu(false);
+                setWorkspaceOpen(true);
+              }}
+            >
+              <Plus />
+              <span>
+                <b>Add new workspace</b>
+                <small>Create another workspace</small>
+              </span>
+            </button>
+          )}
         </SelectorMenu>
       )}
       {propertyMenu && (
@@ -404,10 +466,10 @@ export function RecoveryDashboard({
           properties={properties}
           active={property?.id}
           select={selectProperty}
-          add={() => {
+          add={canManageWorkspace ? () => {
             setPropertyMenu(false);
             setAddOpen(true);
-          }}
+          } : undefined}
         />
       )}
       <div className="layout">
@@ -476,7 +538,7 @@ export function RecoveryDashboard({
           </nav>
           <div className="nav-bottom">
             <nav>
-              {!workspaceContext && property && (
+              {!workspaceContext && property && canManageWorkspace && (
                 <Link
                   className={section === "settings" ? "active" : ""}
                   to={href("settings")}
@@ -523,7 +585,16 @@ export function RecoveryDashboard({
                 to="/notifications"
               >
                 <Bell />
-                {fixture && <i className="notif-count">5</i>}
+                {(fixture
+                  ? 5
+                  : data.notifications.filter((notification: any) => !notification.read_at).length
+                ) > 0 && (
+                  <i className="notif-count">
+                    {fixture
+                      ? 5
+                      : data.notifications.filter((notification: any) => !notification.read_at).length}
+                  </i>
+                )}
               </Link>
             </div>
           </div>
@@ -543,7 +614,7 @@ export function RecoveryDashboard({
                 </Link>
                 <button
                   className="text-link"
-                  onClick={() => notify("Alerts snoozed for one hour")}
+                  onClick={snoozeAlerts}
                 >
                   Snooze alerts
                 </button>
@@ -555,9 +626,11 @@ export function RecoveryDashboard({
               path="/"
               element={
                 <WorkspaceOverview
+                  session={session}
                   properties={properties}
                   data={data}
                   fixture={fixture}
+                  canManage={canManageWorkspace}
                   openAdd={() => setAddOpen(true)}
                   notify={notify}
                 />
@@ -566,7 +639,13 @@ export function RecoveryDashboard({
             <Route
               path="/notifications"
               element={
-                <Notifications data={data} fixture={fixture} notify={notify} />
+                <Notifications
+                  session={session}
+                  data={data}
+                  fixture={fixture}
+                  reload={reload}
+                  notify={notify}
+                />
               }
             />
             <Route
@@ -652,7 +731,7 @@ export function RecoveryDashboard({
           </Routes>
         </main>
       </div>
-      {addOpen && (
+      {addOpen && canManageWorkspace && (
         <AddPropertyDialog
           session={session}
           workspaceId={workspace?.id}
@@ -663,6 +742,31 @@ export function RecoveryDashboard({
             notify("Property added");
           }}
         />
+      )}
+      {workspaceOpen && canManageAccount && (
+        <SimpleDialog
+          title="Create workspace"
+          close={() => setWorkspaceOpen(false)}
+          action="Create workspace"
+          onSave={async () => {
+            if (!session || !workspaceName.trim()) return;
+            const accountId = data.accounts?.[0]?.accounts?.id;
+            if (!accountId) throw new Error("Account not available");
+            await api(session, "/api/workspaces", {
+              method: "POST",
+              body: JSON.stringify({ accountId, name: workspaceName }),
+            });
+            setWorkspaceOpen(false);
+            setWorkspaceName("");
+            reload();
+            notify("Workspace created");
+          }}
+        >
+          <label className="field">
+            Workspace name
+            <input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} />
+          </label>
+        </SimpleDialog>
       )}
       {helpOpen && (
         <HelpDialog close={() => setHelpOpen(false)} property={property} />
@@ -702,7 +806,7 @@ function PropertyMenu({
   properties: Property[];
   active?: string;
   select: (id?: string) => void;
-  add: () => void;
+  add?: () => void;
 }) {
   const [q, setQ] = useState("");
   const rows = properties.filter((p) =>
@@ -756,35 +860,63 @@ function PropertyMenu({
             </button>
           ))}
         </div>
-        <div className="menu-divider" />
-        <button onClick={add}>
-          <Plus />
-          Add property
-        </button>
+        {add && (
+          <>
+            <div className="menu-divider" />
+            <button onClick={add}>
+              <Plus />
+              Add property
+            </button>
+          </>
+        )}
       </div>
     </>
   );
 }
 
 function WorkspaceOverview({
+  session,
   properties,
   data,
   fixture,
+  canManage,
   openAdd,
   notify,
 }: {
+  session: Session | null;
   properties: Property[];
   data: Bootstrap;
   fixture: boolean;
+  canManage: boolean;
   openAdd: () => void;
   notify: Notify;
 }) {
+  const workspaceLocation = useLocation();
+  const livePeriod = periodQuery(workspaceLocation.search);
   const [tab, setTab] = useState("Properties"),
     [query, setQuery] = useState(""),
     [filter, setFilter] = useState("All"),
     [page, setPage] = useState(1),
     [filterOpen, setFilterOpen] = useState(false),
-    [rowMenu, setRowMenu] = useState<string | null>(null);
+    [rowMenu, setRowMenu] = useState<string | null>(null),
+    [measured, setMeasured] = useState<Record<string, any>>({});
+  useEffect(() => {
+    if (fixture || !session || !properties.length) return;
+    let cancelled = false;
+    Promise.all(
+      properties.map(async (property) => {
+        try {
+          const summary = await api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}`);
+          return [property.id, summary] as const;
+        } catch {
+          return [property.id, null] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (!cancelled) setMeasured(Object.fromEntries(entries));
+    });
+    return () => { cancelled = true; };
+  }, [fixture, session, properties.map((property) => property.id).join(","), livePeriod]);
   const filtered = properties.filter(
     (p) =>
       (p.name + p.canonical_host).toLowerCase().includes(query.toLowerCase()) &&
@@ -793,17 +925,26 @@ function WorkspaceOverview({
   const shown = filtered.slice((page - 1) * 7, page * 7);
   const totals = properties.reduce(
     (a, p) => ({
-      views: a.views + (p.demo?.pageviews || 0),
-      events: a.events + (p.demo?.events || 0),
+      views: a.views + (fixture ? p.demo?.pageviews || 0 : measured[p.id]?.pageviews || 0),
+      events: a.events + (fixture ? p.demo?.events || 0 : measured[p.id]?.keyEvents || 0),
     }),
     { views: 0, events: 0 },
   );
+  const workspaceSeries = fixture
+    ? []
+    : Array.from(
+        Object.values(measured).reduce((days: Map<string, number>, summary: any) => {
+          for (const point of summary?.series || [])
+            days.set(point.day, (days.get(point.day) || 0) + Number(point.pageviews || 0));
+          return days;
+        }, new Map<string, number>()),
+      ).map(([label, value]) => ({ label, value }));
   return (
     <Page
       title="Your properties"
       status={<Period />}
       actions={
-        <button className="primary" onClick={openAdd}>
+        <button className="primary" onClick={openAdd} disabled={!canManage}>
           <Plus />
           Add property
         </button>
@@ -832,13 +973,13 @@ function WorkspaceOverview({
               ],
               [
                 "Pageviews",
-                fixture ? fmt(totals.views) : "—",
-                fixture ? "↗ 12.8%" : "Measured data is property-scoped",
+                fmt(totals.views),
+                fixture ? "↗ 12.8%" : "Accepted pageviews across this workspace",
               ],
               [
                 "Key events",
-                fixture ? fmt(totals.events) : "—",
-                fixture ? "↗ 8.2%" : "Measured data is property-scoped",
+                fmt(totals.events),
+                fixture ? "↗ 8.2%" : "Configured events across this workspace",
               ],
             ]}
           />
@@ -920,8 +1061,8 @@ function WorkspaceOverview({
                   value={p.uptime_monitors?.[0]?.last_status || "pending"}
                 />,
                 p.demo?.uptime || "—",
-                p.demo ? fmt(p.demo.pageviews) : "—",
-                p.demo ? fmt(p.demo.events) : "—",
+                fixture ? fmt(p.demo?.pageviews || 0) : measured[p.id] ? fmt(measured[p.id].pageviews || 0) : "—",
+                fixture ? fmt(p.demo?.events || 0) : measured[p.id] ? fmt(measured[p.id].keyEvents || 0) : "—",
                 p.audit_runs?.[0]?.score
                   ? `${p.audit_runs[0].score} / 100`
                   : "—",
@@ -985,7 +1126,7 @@ function WorkspaceOverview({
             title="Workspace traffic"
             actions={<ChartSwitch notify={notify} />}
           >
-            <Chart empty={!fixture} />
+            {fixture ? <Chart /> : <SeriesChart points={workspaceSeries} emptyTitle="No measured workspace traffic yet" />}
           </Panel>
         </>
       ) : tab === "Traffic" ? (
@@ -997,12 +1138,12 @@ function WorkspaceOverview({
             values={[
               [
                 "Pageviews",
-                fixture ? fmt(totals.views) : "—",
+                fmt(totals.views),
                 "Current period",
               ],
               [
                 "Key events",
-                fixture ? fmt(totals.events) : "—",
+                fmt(totals.events),
                 "Current period",
               ],
               [
@@ -1010,10 +1151,10 @@ function WorkspaceOverview({
                 properties.filter((p) => p.tracking_last_received_at).length,
                 "Active tracking",
               ],
-              ["Period", "30 days", "1–30 Sep 2026"],
+              ["Period", "30 days", `${shortDate(new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10))}–${shortDate(new Date().toISOString().slice(0, 10))}`],
             ]}
           />
-          <Chart empty={!fixture} />
+          {fixture ? <Chart /> : <SeriesChart points={workspaceSeries} emptyTitle="No measured workspace traffic yet" />}
         </Panel>
       ) : tab === "Incidents" ? (
         <IncidentTable
@@ -1058,55 +1199,70 @@ function WorkspaceOverview({
 }
 
 function Notifications({
+  session,
   data,
   fixture,
+  reload,
   notify,
 }: {
+  session: Session | null;
   data: Bootstrap;
   fixture: boolean;
+  reload: () => void;
   notify: Notify;
 }) {
-  const [scope, setScope] = useState("All notifications");
-  const items = fixture
+  const [scope, setScope] = useState("All"),
+    [status, setStatus] = useState("All statuses");
+  const fixtureItems = fixture
     ? [
-        [
-          "Monitor alert",
-          "North Commerce returned HTTP 503 and is currently unavailable.",
-          "North Commerce",
-          "6 minutes ago",
-        ],
-        [
-          "Audit issues",
-          "Five unresolved audit findings need review.",
-          "Websi",
-          "1 hour ago",
-        ],
-        [
-          "Recovery confirmed",
-          "Atlas Studio recovered after one failed check.",
-          "Atlas Studio",
-          "Yesterday",
-        ],
-        [
-          "Tracking inactive",
-          "New project has not sent analytics data.",
-          "New project",
-          "2 days ago",
-        ],
+        { id: "f1", title: "Monitor alert", body: "North Commerce returned HTTP 503 and is currently unavailable.", category: "monitoring", created_at: new Date().toISOString(), read_at: null },
+        { id: "f2", title: "Audit issues", body: "Five unresolved audit findings need review.", category: "audits", created_at: new Date().toISOString(), read_at: null },
       ]
-    : data.notifications.map((n: any) => [
-        n.title,
-        n.body,
-        "Workspace",
-        relative(n.created_at),
-      ]);
+    : [];
+  const source = fixture ? fixtureItems : data.notifications;
+  const items = source.filter((notification: any) => {
+    const category = String(notification.category || "account").toLowerCase();
+    const scopeMatch =
+      scope === "All" ||
+      (scope === "Unread" && !notification.read_at) ||
+      (scope === "Monitoring" && category === "monitoring") ||
+      (scope === "Audits" && category === "audits") ||
+      (scope === "Analytics" && category === "analytics") ||
+      (scope === "Account" && category === "account");
+    const statusMatch =
+      status === "All statuses" ||
+      (status === "Unread" && !notification.read_at) ||
+      (status === "Read" && Boolean(notification.read_at));
+    return scopeMatch && statusMatch;
+  });
+  async function markRead(id: string) {
+    if (!session) return;
+    try {
+      await api(session, `/api/notifications/${id}/read`, { method: "PATCH" });
+      reload();
+      notify("Notification marked as read");
+    } catch (error: any) {
+      notify(error.message);
+    }
+  }
+  async function markAllRead() {
+    if (!session) return;
+    try {
+      const result = await api<{ updated: number }>(session, "/api/notifications/read-all", { method: "POST" });
+      reload();
+      notify(`${result.updated} notifications marked as read`);
+    } catch (error: any) {
+      notify(error.message);
+    }
+  }
   return (
     <Page
       title="Notifications"
       actions={
         <button
           className="btn"
-          onClick={() => notify("All visible notifications marked as read")}
+          onClick={markAllRead}
+          disabled={!session || !items.some((notification: any) => !notification.read_at)}
         >
           <Check />
           Mark all read
@@ -1136,7 +1292,7 @@ function Notifications({
           </label>
           <label>
             Status
-            <select>
+            <select value={status} onChange={(event) => setStatus(event.target.value)}>
               <option>All statuses</option>
               <option>Unread</option>
               <option>Read</option>
@@ -1145,21 +1301,23 @@ function Notifications({
           <small className="subtle">{items.length} notifications</small>
         </div>
         {items.length ? (
-          items.map((x, i) => (
-            <div className="notification-card" key={i}>
+          items.map((notification: any) => (
+            <div className="notification-card" key={notification.id}>
               <CircleAlert />
               <span>
-                <b>{x[0]}</b>
+                <b>{notification.title}</b>
                 <small>
-                  {x[1]} <i className="notification-property-tag">{x[2]}</i>
+                  {notification.body}{" "}
+                  <i className="notification-property-tag">{cap(notification.category || "account")}</i>
                 </small>
-                <small>{x[3]}</small>
+                <small>{relative(notification.created_at)}</small>
               </span>
               <button
                 className="btn"
-                onClick={() => notify("Notification marked as read")}
+                onClick={() => markRead(notification.id)}
+                disabled={!session || Boolean(notification.read_at)}
               >
-                Mark read
+                {notification.read_at ? "Read" : "Mark read"}
               </button>
             </div>
           ))
@@ -1185,11 +1343,13 @@ function PropertyOverview({
   fixture: boolean;
   notify: Notify;
 }) {
+  const overviewLocation = useLocation();
+  const livePeriod = periodQuery(overviewLocation.search);
   const [tab, setTab] = useState("Overview"),
     [analytics, setAnalytics] = useState<any>(null);
   useEffect(() => {
     if (session && property)
-      api<any>(session, `/api/properties/${property.id}/analytics?days=30`)
+      api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}`)
         .then(setAnalytics)
         .catch(() => setAnalytics(null));
     else if (property && fixture)
@@ -1203,7 +1363,7 @@ function PropertyOverview({
           { path: "/contact/", pageviews: 2140, events: 124 },
         ],
       });
-  }, [property?.id, session, fixture]);
+  }, [property?.id, session, fixture, livePeriod]);
   if (!property)
     return (
       <Empty
@@ -1385,19 +1545,55 @@ function UptimeView({
   reload: () => void;
   notify: Notify;
 }) {
+  const uptimeLocation = useLocation();
+  const livePeriod = periodQuery(uptimeLocation.search);
   const [tab, setTab] = useState("Overview"),
     [busy, setBusy] = useState(false),
     [maintenance, setMaintenance] = useState<any[]>([]),
     [dialog, setDialog] = useState(false),
+    [maintenanceName, setMaintenanceName] = useState("Planned update"),
+    [maintenanceStart, setMaintenanceStart] = useState(() => {
+      const date = new Date(Date.now() + 24 * 60 * 60_000);
+      return new Date(date.valueOf() - date.getTimezoneOffset() * 60_000)
+        .toISOString()
+        .slice(0, 16);
+    }),
+    [maintenanceHours, setMaintenanceHours] = useState(1),
+    [incidentData, setIncidentData] = useState<any[]>(incidents),
     [checkData, setCheckData] = useState<any>(null);
+  const loadMaintenance = () => {
+    if (!session || !property?.uptime_monitors?.[0]) return Promise.resolve();
+    return api<any[]>(
+      session,
+      `/api/monitors/${property.uptime_monitors[0].id}/maintenance`,
+    ).then((rows) =>
+      setMaintenance(
+        rows.map((row) => [
+          row.reason || "Planned maintenance",
+          fmtDate(row.starts_at),
+          property.settings?.timezone || "Europe/London",
+          new Date(row.ends_at).valueOf() > Date.now() ? "Suppressed" : "Complete",
+        ]),
+      ),
+    );
+  };
   useEffect(() => {
     if (session && property?.uptime_monitors?.[0])
-      api<any>(
-        session,
-        `/api/monitors/${property.uptime_monitors[0].id}/checks?days=30`,
-      )
-        .then(setCheckData)
-        .catch(() => setCheckData(null));
+      Promise.all([
+        api<any>(
+          session,
+          `/api/monitors/${property.uptime_monitors[0].id}/checks?${livePeriod}`,
+        ),
+        api<any[]>(session, `/api/properties/${property.id}/incidents?${livePeriod}`),
+      ])
+        .then(([checks, storedIncidents]) => {
+          setCheckData(checks);
+          setIncidentData(storedIncidents);
+        })
+        .catch(() => {
+          setCheckData(null);
+          setIncidentData([]);
+        });
     else if (fixture) {
       const checks = Array.from({ length: 42 }, (_, i) => ({
         checked_at: new Date(Date.now() - (41 - i) * 12 * 60 * 60_000).toISOString(),
@@ -1410,24 +1606,9 @@ function UptimeView({
         days: Array.from({ length: 30 }, (_, i) => ({ day: `2026-09-${String(i + 1).padStart(2, "0")}`, total: 288, successful: i === 22 ? 284 : 288 })),
       });
     }
-  }, [property?.id, property?.uptime_monitors?.[0]?.last_checked_at, session, fixture]);
+  }, [property?.id, property?.uptime_monitors?.[0]?.last_checked_at, session, fixture, livePeriod]);
   useEffect(() => {
-    if (session && property?.uptime_monitors?.[0])
-      api<any[]>(
-        session,
-        `/api/monitors/${property.uptime_monitors[0].id}/maintenance`,
-      )
-        .then((rows) =>
-          setMaintenance(
-            rows.map((row) => [
-              row.reason || "Planned maintenance",
-              fmtDate(row.starts_at),
-              "Europe/London",
-              "Suppressed",
-            ]),
-          ),
-        )
-        .catch(() => setMaintenance([]));
+    void loadMaintenance().catch(() => setMaintenance([]));
   }, [property?.id, session]);
   if (!property)
     return (
@@ -1446,7 +1627,7 @@ function UptimeView({
             cause: "HTTP 500",
           },
         ]
-      : incidents.filter((i) => i.property_id === property.id);
+      : incidentData;
   async function check() {
     if (!monitor) return;
     setBusy(true);
@@ -1460,8 +1641,12 @@ function UptimeView({
         setCheckData(
           await api(
             session,
-            `/api/monitors/${monitor.id}/checks?days=30`,
+            `/api/monitors/${monitor.id}/checks?${livePeriod}`,
           ),
+        );
+      if (session)
+        setIncidentData(
+          await api(session, `/api/properties/${property!.id}/incidents?${livePeriod}`),
         );
       reload();
     } catch (e: any) {
@@ -1677,35 +1862,43 @@ function UptimeView({
               await api(session, `/api/monitors/${monitor.id}/maintenance`, {
                 method: "POST",
                 body: JSON.stringify({
-                  startsAt: "2026-10-05T20:00:00+01:00",
-                  reason: "Planned update",
+                  startsAt: new Date(maintenanceStart).toISOString(),
+                  endsAt: new Date(
+                    new Date(maintenanceStart).valueOf() + maintenanceHours * 60 * 60_000,
+                  ).toISOString(),
+                  reason: maintenanceName,
                 }),
               });
             }
-            setMaintenance([
-              [
-                "Planned update",
-                "5 Oct 2026, 20:00",
-                "Europe/London",
-                "Suppressed",
-              ],
-            ]);
+            await loadMaintenance();
             setDialog(false);
             notify("Maintenance window saved");
           }}
         >
           <label className="field">
             Name
-            <input defaultValue="Planned update" />
+            <input value={maintenanceName} onChange={(event) => setMaintenanceName(event.target.value)} />
           </label>
           <label className="field">
             Start
-            <input type="datetime-local" defaultValue="2026-10-05T20:00" />
+            <input
+              type="datetime-local"
+              value={maintenanceStart}
+              onChange={(event) => setMaintenanceStart(event.target.value)}
+            />
           </label>
           <label className="field">
             Timezone
             <select>
-              <option>Europe/London</option>
+              <option>{property.settings?.timezone || "Europe/London"}</option>
+            </select>
+          </label>
+          <label className="field">
+            Duration
+            <select value={maintenanceHours} onChange={(event) => setMaintenanceHours(Number(event.target.value))}>
+              {[1, 2, 4, 8, 12, 24].map((hours) => (
+                <option key={hours} value={hours}>{hours} hour{hours === 1 ? "" : "s"}</option>
+              ))}
             </select>
           </label>
           <label>
@@ -1728,13 +1921,23 @@ function AnalyticsView({
   fixture: boolean;
   notify: Notify;
 }) {
+  const analyticsLocation = useLocation();
   const [tab, setTab] = useState("Overview"),
     [data, setData] = useState<any>(null),
     [filter, setFilter] = useState(""),
     [dimension, setDimension] = useState("All");
+  const analyticsParams = new URLSearchParams(analyticsLocation.search);
+  const selectedFrom = analyticsParams.get("from");
+  const selectedTo = analyticsParams.get("to");
+  const rangeDays = selectedFrom && selectedTo
+    ? Math.min(90, Math.max(1, Math.ceil((new Date(selectedTo).valueOf() - new Date(selectedFrom).valueOf()) / 864e5) + 1))
+    : 30;
   useEffect(() => {
     if (session && property)
-      api<any>(session, `/api/properties/${property.id}/analytics?days=30`)
+      api<any>(
+        session,
+        `/api/properties/${property.id}/analytics?days=${rangeDays}${dimension === "All" ? "" : `&device=${dimension.toLowerCase()}`}`,
+      )
         .then(setData)
         .catch(() => setData(null));
     else if (fixture)
@@ -1761,7 +1964,7 @@ function AnalyticsView({
         engagement: { engagedSessions: 18420, averageActiveSeconds: 138, scroll75Rate: 42, keyEventRate: 1.3 },
         vitals: [{ name: "LCP", value: 2300, samples: 1248 }, { name: "INP", value: 168, samples: 1109 }, { name: "CLS", value: 0.04, samples: 1248 }],
       });
-  }, [property?.id, session, fixture]);
+  }, [property?.id, session, fixture, dimension, rangeDays]);
   if (!property)
     return (
       <Empty
@@ -1947,20 +2150,36 @@ function AuditView({
   fixture: boolean;
   notify: Notify;
 }) {
+  const auditLocation = useLocation();
+  const livePeriod = periodQuery(auditLocation.search);
   const [runs, setRuns] = useState<AuditRun[]>([]),
     [tab, setTab] = useState("Overview"),
     [busy, setBusy] = useState(false),
     [filter, setFilter] = useState("All"),
     [filterOpen, setFilterOpen] = useState(false),
     [pageMenu, setPageMenu] = useState(false),
-    [addPage, setAddPage] = useState(false);
+    [addPage, setAddPage] = useState(false),
+    [auditPages, setAuditPages] = useState<any[]>([]),
+    [selectedPage, setSelectedPage] = useState<any>({ name: "Homepage", path: "/" }),
+    [pageName, setPageName] = useState(""),
+    [pagePath, setPagePath] = useState("/");
   useEffect(() => {
-    if (session && property)
-      api<AuditRun[]>(session, `/api/properties/${property.id}/audits`)
+    if (session && property) {
+      api<AuditRun[]>(session, `/api/properties/${property.id}/audits?${livePeriod}`)
         .then(setRuns)
         .catch(() => setRuns([]));
-    else if (fixture) setRuns([fixtureAudit()]);
-  }, [property?.id, session, fixture]);
+      api<any[]>(session, `/api/properties/${property.id}/audit-pages`)
+        .then((pages) => {
+          const next = [{ name: "Homepage", path: "/" }, ...pages.filter((page) => page.path !== "/")];
+          setAuditPages(next);
+          setSelectedPage(next[0]);
+        })
+        .catch(() => setAuditPages([{ name: "Homepage", path: "/" }]));
+    } else if (fixture) {
+      setRuns([fixtureAudit()]);
+      setAuditPages([{ name: "Homepage", path: "/" }]);
+    }
+  }, [property?.id, session, fixture, livePeriod]);
   if (!property)
     return (
       <Empty
@@ -1971,13 +2190,21 @@ function AuditView({
   const latest = runs[0],
     results = latest?.audit_results || [],
     partial = (latest?.coverage ?? 0) < 80;
+  const resultCounts = {
+    failed: results.filter((result: any) => result.outcome === "fail").length,
+    unavailable: results.filter((result: any) => result.outcome === "unable_to_test").length,
+    warnings: results.filter((result: any) => result.outcome === "warning").length,
+  };
   async function run() {
     setBusy(true);
     try {
       if (session)
         await api(session, "/api/audits", {
           method: "POST",
-          body: JSON.stringify({ propertyId: property!.id }),
+          body: JSON.stringify({
+            propertyId: property!.id,
+            pageUrl: new URL(selectedPage.path, property!.url).href,
+          }),
         });
       notify("Audit started");
       if (session) {
@@ -1985,7 +2212,7 @@ function AuditView({
           await new Promise((resolve) => window.setTimeout(resolve, 1250));
           const next = await api<AuditRun[]>(
             session,
-            `/api/properties/${property!.id}/audits`,
+            `/api/properties/${property!.id}/audits?${livePeriod}`,
           );
           setRuns(next);
           if (next[0] && ["completed", "partial", "failed"].includes(next[0].status)) {
@@ -2002,6 +2229,28 @@ function AuditView({
       notify(e.message);
     } finally {
       setBusy(false);
+    }
+  }
+  async function saveAuditPage() {
+    try {
+      if (!session) throw new Error("Authentication required");
+      const saved = await api<any>(session, `/api/properties/${property!.id}/audit-pages`, {
+        method: "POST",
+        body: JSON.stringify({ name: pageName, path: pagePath }),
+      });
+      const next = [
+        { name: "Homepage", path: "/" },
+        ...auditPages.filter((page) => page.path !== "/" && page.path !== saved.path),
+        saved,
+      ];
+      setAuditPages(next);
+      setSelectedPage(saved);
+      setAddPage(false);
+      setPageName("");
+      setPagePath("/");
+      notify("Page added to this audit selection");
+    } catch (error: any) {
+      notify(error.message);
     }
   }
   const visible =
@@ -2027,14 +2276,22 @@ function AuditView({
         <button className="audit-page-picker" onClick={() => setPageMenu((value) => !value)}>
           <Globe2 />
           <span>
-            <b>Homepage</b>
-            <small>/</small>
+            <b>{selectedPage.name}</b>
+            <small>{selectedPage.path}</small>
           </span>
           <ChevronDown />
         </button>
         {pageMenu && (
           <div className="action-menu audit-page-menu">
-            <button className="selected" onClick={() => setPageMenu(false)}><Globe2 /> Homepage <Check /></button>
+            {auditPages.map((page) => (
+              <button
+                key={page.path}
+                className={selectedPage.path === page.path ? "selected" : ""}
+                onClick={() => { setSelectedPage(page); setPageMenu(false); }}
+              >
+                <Globe2 /> {page.name} {selectedPage.path === page.path && <Check />}
+              </button>
+            ))}
             <button onClick={() => { setPageMenu(false); setAddPage(true); }}><Plus /> Add page</button>
           </div>
         )}
@@ -2060,16 +2317,16 @@ function AuditView({
         <>
           <AuditScore run={latest} fixture={fixture} />
           <div className="grid">
-            <Panel title="Fix these first · Homepage">
+            <Panel title={`Fix these first · ${selectedPage.name}`}>
               <div className="audit-summary">
                 <button className="audit-summary-item">
-                  <CircleAlert />2
+                  <CircleAlert />{resultCounts.failed}
                 </button>
                 <button className="audit-summary-item">
-                  <ShieldCheck />0
+                  <ShieldCheck />{resultCounts.unavailable}
                 </button>
                 <button className="audit-summary-item">
-                  <CircleAlert />5
+                  <CircleAlert />{resultCounts.warnings}
                 </button>
               </div>
               <AuditResults results={results.slice(0, 7)} />
@@ -2176,11 +2433,12 @@ function AuditView({
       )}
       {addPage && (
         <Modal title="Add page to audit" close={() => setAddPage(false)}>
-          <label className="field">Page URL<input defaultValue={`${property.url.replace(/\/$/, "")}/`} /></label>
-          <p className="subtle">The page must use the selected property’s hostname.</p>
+          <label className="field">Page name<input value={pageName} onChange={(event) => setPageName(event.target.value)} placeholder="About" /></label>
+          <label className="field">Path<input value={pagePath} onChange={(event) => setPagePath(event.target.value)} placeholder="/about" /></label>
+          <p className="subtle">The path is resolved on {property.canonical_host}.</p>
           <div className="dialog-actions">
             <button className="btn" onClick={() => setAddPage(false)}>Cancel</button>
-            <button className="primary" onClick={() => { setAddPage(false); notify("Page added to this audit selection"); }}>Add page</button>
+            <button className="primary" onClick={() => void saveAuditPage()}>Add page</button>
           </div>
         </Modal>
       )}
@@ -2199,11 +2457,22 @@ function ReportsView({
   fixture: boolean;
   notify: Notify;
 }) {
+  const reportsLocation = useLocation();
+  const livePeriod = periodQuery(reportsLocation.search);
   const [tab, setTab] = useState("Quick reports"),
     [preview, setPreview] = useState<any>(),
     [scheduleOpen, setScheduleOpen] = useState(false),
     [scheduleCadence, setScheduleCadence] = useState("monthly"),
     [scheduleRecipient, setScheduleRecipient] = useState("client@example.com"),
+    [agencyName, setAgencyName] = useState(
+      property?.settings?.report_branding?.agency_name || "",
+    ),
+    [accentColour, setAccentColour] = useState(
+      property?.settings?.report_branding?.accent_colour || "#111111",
+    ),
+    [footerNote, setFooterNote] = useState(
+      property?.settings?.report_branding?.footer_note || "",
+    ),
     [savedReports, setSavedReports] = useState<any[]>([]),
     [schedules, setSchedules] = useState<any[]>(
       fixture
@@ -2233,7 +2502,7 @@ function ReportsView({
     if (!property) return;
     setPreview(
       session
-        ? await api(session, `/api/properties/${property.id}/report`)
+        ? await api(session, `/api/properties/${property.id}/report?${livePeriod}`)
         : {
             property,
             period: "1–30 Sep 2026",
@@ -2249,6 +2518,8 @@ function ReportsView({
           method: "POST",
           body: JSON.stringify({
             name: `${property.name} ${preview.period || "website"} report`,
+            periodStart: preview.periodStart,
+            periodEnd: preview.periodEnd,
             dataSnapshot: preview,
           }),
         })
@@ -2263,9 +2534,31 @@ function ReportsView({
     setSavedReports((current) => [report, ...current]);
     notify("Report saved");
   }
+  async function saveBranding() {
+    if (!session || !property) return;
+    try {
+      await api(session, `/api/properties/${property.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          name: property.name,
+          settings: {
+            report_branding: {
+              agency_name: agencyName,
+              accent_colour: accentColour,
+              footer_note: footerNote,
+            },
+          },
+        }),
+      });
+      notify("Report branding saved");
+    } catch (error: any) {
+      notify(error.message);
+    }
+  }
   return (
     <Page
       title="Reports"
+      status={<Period />}
       actions={
         <button
           className="primary"
@@ -2353,7 +2646,7 @@ function ReportsView({
         >
           {schedules.length ? (
             <DataTable
-              headers={["Template", "Frequency", "Recipient", "Status"]}
+              headers={["Template", "Frequency", "Recipient", "Next delivery", "Last result"]}
               rows={schedules.map((schedule) =>
                 Array.isArray(schedule)
                   ? schedule
@@ -2361,7 +2654,12 @@ function ReportsView({
                       "Monthly overview",
                       `${schedule.cadence?.[0]?.toUpperCase() || ""}${schedule.cadence?.slice(1) || ""}`,
                       schedule.recipients?.join(", "),
-                      schedule.enabled ? "Active" : "Paused",
+                      schedule.enabled ? fmtDate(schedule.next_run_at) : "Paused",
+                      schedule.last_error
+                        ? `Failed: ${schedule.last_error}`
+                        : schedule.last_run_at
+                          ? `${schedule.last_delivery_count} delivered · ${fmtDate(schedule.last_run_at)}`
+                          : "Awaiting first run",
                     ],
               )}
             />
@@ -2377,19 +2675,19 @@ function ReportsView({
           <Panel title="Report branding">
             <label className="field">
               Agency name
-              <input defaultValue="Websi workspace" />
+              <input value={agencyName} onChange={(event) => setAgencyName(event.target.value)} />
             </label>
             <label className="field">
               Accent colour
-              <input type="color" defaultValue="#111111" />
+              <input type="color" value={accentColour} onChange={(event) => setAccentColour(event.target.value)} />
             </label>
             <label className="field">
               Footer note
-              <input defaultValue="Prepared by Websi" />
+              <input value={footerNote} onChange={(event) => setFooterNote(event.target.value)} />
             </label>
             <button
               className="primary"
-              onClick={() => notify("Branding preview updated")}
+              onClick={saveBranding}
             >
               Save branding
             </button>
@@ -2400,7 +2698,7 @@ function ReportsView({
               <h2>{property?.name || "Website"} performance report</h2>
               <p>1–30 Sep 2026</p>
               <hr />
-              <b>Prepared by Websi</b>
+              <b>{footerNote || (agencyName ? `Prepared by ${agencyName}` : "Claritude report")}</b>
             </div>
           </Panel>
         </div>
@@ -2487,8 +2785,31 @@ function PropertySettingsView({
 }) {
   const [tab, setTab] = useState("General"),
     [name, setName] = useState(property?.name || ""),
+    [timezone, setTimezone] = useState(property?.settings?.timezone || "Europe/London"),
+    [currency, setCurrency] = useState(property?.settings?.reporting_currency || "GBP"),
+    [ipHandling, setIpHandling] = useState(
+      property?.settings?.ip_address_handling || "discard_after_geolocation",
+    ),
+    [sensitiveParams, setSensitiveParams] = useState(
+      (property?.settings?.sensitive_query_parameters || ["token", "email", "session"]).join(", "),
+    ),
     [busy, setBusy] = useState(false),
-    [viewerOpen, setViewerOpen] = useState(false);
+    [viewerOpen, setViewerOpen] = useState(false),
+    [viewerEmail, setViewerEmail] = useState(""),
+    [viewers, setViewers] = useState<any[]>([]);
+  useEffect(() => {
+    if (!session || !property) return;
+    setName(property.name || "");
+    setTimezone(property.settings?.timezone || "Europe/London");
+    setCurrency(property.settings?.reporting_currency || "GBP");
+    setIpHandling(property.settings?.ip_address_handling || "discard_after_geolocation");
+    setSensitiveParams(
+      (property.settings?.sensitive_query_parameters || ["token", "email", "session"]).join(", "),
+    );
+    api<any[]>(session, `/api/properties/${property.id}/viewers`)
+      .then(setViewers)
+      .catch(() => setViewers([]));
+  }, [property?.id, session]);
   if (!property)
     return (
       <Empty
@@ -2502,7 +2823,20 @@ function PropertySettingsView({
       if (session)
         await api(session, `/api/properties/${property!.id}`, {
           method: "PATCH",
-          body: JSON.stringify({ name }),
+          body: JSON.stringify({
+            name,
+            settings: {
+              timezone,
+              reporting_currency: currency,
+              ip_address_handling: ipHandling,
+              analytics_cookies: "disabled",
+              visitor_profiles: "anonymous",
+              sensitive_query_parameters: sensitiveParams
+                .split(",")
+                .map((value: string) => value.trim())
+                .filter(Boolean),
+            },
+          }),
         });
       notify("Property settings saved");
       reload();
@@ -2543,21 +2877,24 @@ function PropertySettingsView({
           <div className="form-two">
             <label className="field">
               Timezone
-              <select>
+              <select value={timezone} onChange={(event) => setTimezone(event.target.value)}>
                 <option>Europe/London</option>
+                <option>UTC</option>
               </select>
             </label>
             <label className="field">
               Reporting currency
-              <select>
-                <option>GBP (£)</option>
+              <select value={currency} onChange={(event) => setCurrency(event.target.value)}>
+                <option value="GBP">GBP (£)</option>
+                <option value="USD">USD ($)</option>
+                <option value="EUR">EUR (€)</option>
               </select>
             </label>
           </div>
           <div className="settings-actions right">
             <button
               className="primary"
-              disabled={busy || !name || name === property.name}
+              disabled={busy || !name}
               onClick={save}
             >
               Save general settings
@@ -2623,14 +2960,15 @@ function PropertySettingsView({
               "Settings",
             ]}
             rows={[
-              [
-                "Account holder",
-                "Owner",
-                "Allowed",
-                "Allowed",
-                "Allowed",
-                "Allowed",
-              ],
+              ["Account holder", "Owner", "Allowed", "Allowed", "Allowed", "Allowed"],
+              ...viewers.map((viewer) => [
+                viewer.name || viewer.email,
+                cap(viewer.role),
+                "View only",
+                "View only",
+                "View only",
+                "Not allowed",
+              ]),
             ]}
           />
           <button className="btn" onClick={() => setViewerOpen(true)}>
@@ -2639,7 +2977,34 @@ function PropertySettingsView({
           </button>
         </Panel>
       ) : (
-        <Panel title="Advanced">
+        <>
+        <Panel title="Privacy & data collection">
+          <div className="form-two">
+            <label className="field">
+              Analytics cookies
+              <select value="disabled" disabled><option value="disabled">Disabled — cookieless</option></select>
+            </label>
+            <label className="field">
+              Visitor profiles
+              <select value="anonymous" disabled><option value="anonymous">Anonymous</option></select>
+            </label>
+            <label className="field">
+              Sensitive query parameters
+              <input value={sensitiveParams} onChange={(event) => setSensitiveParams(event.target.value)} />
+            </label>
+            <label className="field">
+              IP address handling
+              <select value={ipHandling} onChange={(event) => setIpHandling(event.target.value)}>
+                <option value="discard_after_geolocation">Discard after geolocation</option>
+                <option value="discard_immediately">Discard immediately</option>
+              </select>
+            </label>
+          </div>
+          <div className="settings-actions right">
+            <button className="primary" disabled={busy} onClick={save}>Save privacy options</button>
+          </div>
+        </Panel>
+        <Panel title="Advanced actions">
           <AdvancedRow
             title="Property verification"
             detail="Check the public site for this property’s tracking identifier."
@@ -2683,15 +3048,33 @@ function PropertySettingsView({
             }
           />
         </Panel>
+        </>
       )}
       {viewerOpen && (
         <SimpleDialog
           title="Invite property viewer"
           close={() => setViewerOpen(false)}
           action="Create invitation"
-          onSave={() => { setViewerOpen(false); notify("Viewer invitation prepared"); }}
+          onSave={async () => {
+            if (!session || !viewerEmail) return;
+            try {
+              const viewer = await api<any>(session, `/api/properties/${property.id}/viewers`, {
+                method: "POST",
+                body: JSON.stringify({ email: viewerEmail }),
+              });
+              setViewers((current) => [
+                ...current.filter((item) => item.user_id !== viewer.user_id),
+                viewer,
+              ]);
+              setViewerOpen(false);
+              setViewerEmail("");
+              notify(viewer.invitationSent ? "Viewer invited" : "Existing user granted access");
+            } catch (error: any) {
+              notify(error.message);
+            }
+          }}
         >
-          <label className="field">Email<input type="email" placeholder="client@example.com" /></label>
+          <label className="field">Email<input type="email" value={viewerEmail} onChange={(event) => setViewerEmail(event.target.value)} placeholder="client@example.com" /></label>
           <p className="subtle">Viewers receive read-only access to Analytics, Audit and Uptime for this property.</p>
         </SimpleDialog>
       )}
@@ -2716,18 +3099,31 @@ function AccountView({
     [name, setName] = useState(data.profile?.full_name || ""),
     [timezone, setTimezone] = useState(
       data.profile?.timezone || "Europe/London",
-    );
-  const role = data.accounts?.[0]?.role || "owner";
-  const tabs = [
-    "Profile",
-    "Workspace",
-    "Billing & plan",
-    "Users",
-    "Notification preferences",
-    "Activity logs",
-    "Security",
-    "Data & privacy",
-  ];
+    ),
+    [workspaceName, setWorkspaceName] = useState(
+      data.workspaces?.[0]?.workspaces?.name || "",
+    ),
+    [usersData, setUsersData] = useState<any>(null),
+    [inviteOpen, setInviteOpen] = useState(false),
+    [inviteEmail, setInviteEmail] = useState(""),
+    [inviteRole, setInviteRole] = useState("member");
+  const role = data.accounts?.[0]?.role || data.workspaces?.[0]?.role || "viewer";
+  const tabs = role === "viewer"
+    ? ["Profile", "Notification preferences", "Security"]
+    : [
+        "Profile",
+        "Workspace",
+        "Billing & plan",
+        "Users",
+        "Notification preferences",
+        "Activity logs",
+        "Security",
+        "Data & privacy",
+      ];
+  useEffect(() => {
+    if (!session || role === "viewer") return;
+    api(session, "/api/users").then(setUsersData).catch(() => setUsersData(null));
+  }, [session, data.workspaces.length, role]);
   async function save() {
     try {
       if (session)
@@ -2739,6 +3135,20 @@ function AccountView({
       reload();
     } catch (e: any) {
       notify(e.message);
+    }
+  }
+  async function saveWorkspace() {
+    const workspaceId = data.workspaces?.[0]?.workspaces?.id;
+    if (!session || !workspaceId || !workspaceName.trim()) return;
+    try {
+      await api(session, `/api/workspaces/${workspaceId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: workspaceName }),
+      });
+      notify("Workspace settings saved");
+      reload();
+    } catch (error: any) {
+      notify(error.message);
     }
   }
   return (
@@ -2786,24 +3196,21 @@ function AccountView({
           <label className="field">
             Workspace name
             <input
-              defaultValue={
-                data.workspaces?.[0]?.workspaces?.name || "Websi workspace"
-              }
+              value={workspaceName}
+              onChange={(event) => setWorkspaceName(event.target.value)}
             />
           </label>
           <DataTable
             headers={["Workspace", "Properties", "Access"]}
-            rows={[
-              [
-                data.workspaces?.[0]?.workspaces?.name || "Websi workspace",
-                fixture ? 12 : data.properties.length,
-                cap(role),
-              ],
-            ]}
+            rows={data.workspaces.map((entry: any) => [
+              entry.workspaces?.name || "Workspace",
+              data.properties.filter((property) => property.workspace_id === entry.workspaces?.id).length,
+              cap(entry.role),
+            ])}
           />
           <button
             className="primary"
-            onClick={() => notify("Workspace settings saved")}
+            onClick={saveWorkspace}
           >
             Save workspace
           </button>
@@ -2816,7 +3223,7 @@ function AccountView({
           actions={
             <button
               className="btn"
-              onClick={() => notify("Invitation dialog opened")}
+              onClick={() => setInviteOpen(true)}
             >
               <Plus />
               Invite user
@@ -2832,54 +3239,33 @@ function AccountView({
               "Status",
               "",
             ]}
-            rows={[
-              [
-                data.profile?.full_name || "Current user",
-                "Included editing user",
-                "Owner",
-                "All properties",
-                "Active",
-                <button className="iconbtn">
-                  <MoreHorizontal />
-                </button>,
-              ],
-              [
-                fixture ? "Sam Davies" : "—",
-                fixture ? "Included editing user" : "—",
-                fixture ? "Administrator" : "—",
-                fixture ? "All properties" : "—",
-                fixture ? "Active" : "—",
+            rows={(usersData?.workspaceMemberships || []).map((membership: any) => {
+              const user = usersData.users?.find((item: any) => item.id === membership.user_id);
+              const workspace = usersData.workspaces?.find((item: any) => item.id === membership.workspace_id);
+              return [
+                user?.name || user?.email || membership.user_id,
+                membership.role === "viewer" ? "Free viewer" : "Editing user",
+                cap(membership.role),
+                workspace?.name || "Workspace",
+                user?.confirmedAt ? "Active" : "Invited",
                 "",
-              ],
-            ]}
+              ];
+            })}
           />
         </Panel>
       ) : tab === "Notification preferences" ? (
-        <Preferences notify={notify} />
+        <Preferences session={session} profile={data.profile} reload={reload} notify={notify} />
       ) : tab === "Activity logs" ? (
         <Panel title="Account activity logs">
           <DataTable
             headers={["Time", "Actor", "Action", "Target", "Result"]}
-            rows={
-              fixture
-                ? [
-                    [
-                      "Today, 09:42",
-                      data.profile?.full_name || "Adam Jordan",
-                      "Ran audit",
-                      "websi.com",
-                      "Completed",
-                    ],
-                    [
-                      "Yesterday, 16:10",
-                      data.profile?.full_name || "Adam Jordan",
-                      "Updated monitor",
-                      "websi.com",
-                      "Saved",
-                    ],
-                  ]
-                : []
-            }
+            rows={(data.activity || []).map((entry: any) => [
+              fmtDate(entry.created_at),
+              entry.actor_id === session?.user.id ? data.profile?.full_name || "Current user" : "Workspace member",
+              entry.action.replaceAll(".", " "),
+              entry.property_id || entry.metadata?.workspaceId || "Account",
+              "Success",
+            ])}
           />
         </Panel>
       ) : tab === "Security" ? (
@@ -2897,14 +3283,7 @@ function AccountView({
                 ["Last active", "Now"],
               ]}
             />
-            <button
-              className="btn"
-              onClick={() =>
-                notify("Session sign-out is available from the user menu")
-              }
-            >
-              Review sessions
-            </button>
+            <p className="subtle">Other-session management is not exposed by the current authentication provider configuration.</p>
           </Panel>
         </div>
       ) : (
@@ -2921,15 +3300,20 @@ function AccountView({
               <button
                 className="btn"
                 onClick={() => {
-                  const url = URL.createObjectURL(
-                    new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }),
-                  );
-                  const link = document.createElement("a");
-                  link.href = url;
-                  link.download = "claritude-account-export.json";
-                  link.click();
-                  URL.revokeObjectURL(url);
-                  notify("Account export downloaded");
+                  if (!session) return;
+                  void api<any>(session, "/api/account/export")
+                    .then((exported) => {
+                      const url = URL.createObjectURL(
+                        new Blob([JSON.stringify(exported, null, 2)], { type: "application/json" }),
+                      );
+                      const link = document.createElement("a");
+                      link.href = url;
+                      link.download = "claritude-account-export.json";
+                      link.click();
+                      URL.revokeObjectURL(url);
+                      notify("Account export downloaded");
+                    })
+                    .catch((error) => notify(error.message));
                 }}
               >
                 Export JSON
@@ -2947,6 +3331,32 @@ function AccountView({
             }
           />
         </Panel>
+      )}
+      {inviteOpen && (
+        <SimpleDialog
+          title="Invite workspace user"
+          close={() => setInviteOpen(false)}
+          action="Send invitation"
+          onSave={async () => {
+            const workspaceId = data.workspaces?.[0]?.workspaces?.id;
+            if (!session || !workspaceId || !inviteEmail) return;
+            try {
+              const invited = await api<any>(session, `/api/workspaces/${workspaceId}/members`, {
+                method: "POST",
+                body: JSON.stringify({ email: inviteEmail, role: inviteRole }),
+              });
+              setInviteOpen(false);
+              setInviteEmail("");
+              setUsersData(await api(session, "/api/users"));
+              notify(invited.invitationSent ? "Invitation sent" : "Existing user granted access");
+            } catch (error: any) {
+              notify(error.message);
+            }
+          }}
+        >
+          <label className="field">Email<input type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} /></label>
+          <label className="field">Role<select value={inviteRole} onChange={(event) => setInviteRole(event.target.value)}><option value="member">Member</option><option value="viewer">Viewer</option></select></label>
+        </SimpleDialog>
       )}
     </Page>
   );
@@ -3046,42 +3456,47 @@ function Billing({ fixture, notify }: { fixture: boolean; notify: Notify }) {
           </Panel>
         </div>
       )}
-      <Panel
-        title="Choose a plan"
-        actions={
-          <span className="seg">
-            <button className={annual ? "active" : ""} onClick={() => setAnnual(true)}>Annual</button>
-            <button className={!annual ? "active" : ""} onClick={() => setAnnual(false)}>Monthly</button>
-          </span>
-        }
-      >
-        <div className="plans">
-          {[
-            ["Free", "£0 / mo", "2 properties · 15-minute monitoring"],
-            ["Essentials", "£9 / mo", "5 properties · 5-minute monitoring"],
-            ["Scale", "£39 / mo", "50 properties · 5-minute monitoring"],
-            ["Pro", "£99 / mo", "200 properties · branded reports"],
-          ].map((x) => (
-            <div
-              className={`plan ${(fixture ? x[0] === "Scale" : x[0] === "Pro") ? "current" : ""}`}
-              key={x[0]}
-            >
-              <h2>{x[0]}</h2>
-              <div className="price">{x[1]}</div>
-              <p>{x[2]}</p>
-              <button
-                className="btn"
-                disabled={(fixture ? x[0] === "Scale" : x[0] === "Pro")}
-                onClick={() => notify(`${x[0]} ${annual ? "annual" : "monthly"} plan review opened`)}
-              >
-                {(fixture ? x[0] === "Scale" : x[0] === "Pro")
-                  ? "Current plan"
-                  : "Choose"}
-              </button>
-            </div>
-          ))}
-        </div>
-      </Panel>
+      {fixture ? (
+        <Panel
+          title="Choose a plan"
+          actions={
+            <span className="seg">
+              <button className={annual ? "active" : ""} onClick={() => setAnnual(true)}>Annual</button>
+              <button className={!annual ? "active" : ""} onClick={() => setAnnual(false)}>Monthly</button>
+            </span>
+          }
+        >
+          <div className="plans">
+            {[
+              ["Free", "£0 / mo", "2 properties · 15-minute monitoring"],
+              ["Essentials", "£9 / mo", "5 properties · 5-minute monitoring"],
+              ["Scale", "£39 / mo", "50 properties · 5-minute monitoring"],
+              ["Pro", "£99 / mo", "200 properties · branded reports"],
+            ].map((x) => (
+              <div className={`plan ${x[0] === "Scale" ? "current" : ""}`} key={x[0]}>
+                <h2>{x[0]}</h2>
+                <div className="price">{x[1]}</div>
+                <p>{x[2]}</p>
+                <button
+                  className="btn"
+                  disabled={x[0] === "Scale"}
+                  onClick={() => notify(`${x[0]} ${annual ? "annual" : "monthly"} plan review opened`)}
+                >
+                  {x[0] === "Scale" ? "Current plan" : "Choose"}
+                </button>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      ) : (
+        <Panel title="Billing integration deferred">
+          <p>
+            Early-access Pro features are enabled without a charge. Stripe checkout,
+            payment methods, invoices, plan changes and usage billing are not active in Stage 1.
+          </p>
+          <p className="subtle">No billing action can be performed from this screen.</p>
+        </Panel>
+      )}
     </>
   );
 }
@@ -3243,13 +3658,21 @@ function ReportPreview({
   fixture: boolean;
   onSave: () => void | Promise<void>;
 }) {
+  const reportMetrics = fixture
+    ? { incidents: "0", pageviews: "28,460", keyEvents: "358", audit: "87 / 100" }
+    : {
+        incidents: String(report.incidents?.length || 0),
+        pageviews: fmt(report.analytics?.pageviews || 0),
+        keyEvents: fmt(report.analytics?.keyEvents || 0),
+        audit: report.audits?.[0]?.score != null ? `${report.audits[0].score} / 100` : "—",
+      };
   function exportCsv() {
     const rows = [
       ["Metric", "Value"],
-      ["Uptime", fixture ? "99.92%" : "Measured"],
-      ["Pageviews", fixture ? "28,460" : "Measured"],
-      ["Key events", fixture ? "358" : "Measured"],
-      ["Audit", fixture ? "87 / 100" : "Measured"],
+      ["Incidents", reportMetrics.incidents],
+      ["Pageviews", reportMetrics.pageviews],
+      ["Key events", reportMetrics.keyEvents],
+      ["Audit", reportMetrics.audit],
     ];
     const csv = rows
       .map((row) => row.map((value) => `"${value}"`).join(","))
@@ -3266,20 +3689,37 @@ function ReportPreview({
       <div className="report-preview">
         <Metrics
           values={[
-            ["Uptime", fixture ? "99.92%" : "Measured"],
-            ["Pageviews", fixture ? "28,460" : "Measured"],
-            ["Key events", fixture ? "358" : "Measured"],
-            ["Audit", fixture ? "87 / 100" : "Measured"],
+            ["Incidents", reportMetrics.incidents],
+            ["Pageviews", reportMetrics.pageviews],
+            ["Key events", reportMetrics.keyEvents],
+            ["Audit", reportMetrics.audit],
           ]}
         />
         <h2>Traffic</h2>
-        <Chart empty={!fixture} />
+        {fixture ? (
+          <Chart />
+        ) : (
+          <SeriesChart
+            points={(report.analytics?.series || []).map((point: any) => ({
+              label: point.day,
+              value: point.pageviews,
+            }))}
+            emptyTitle="No measured traffic in this report period"
+          />
+        )}
         <h2>Recommendations</h2>
-        <ol>
-          <li>Resolve critical accessibility findings.</li>
-          <li>Prioritise the hero image for mobile LCP.</li>
-          <li>Review event trends next month.</li>
-        </ol>
+        {fixture ? (
+          <ol>
+            <li>Resolve critical accessibility findings.</li>
+            <li>Prioritise the hero image for mobile LCP.</li>
+            <li>Review event trends next month.</li>
+          </ol>
+        ) : (
+          <p className="subtle">
+            Recommendations are derived from the recorded audit and incident detail;
+            open those sections for the current evidence and fixes.
+          </p>
+        )}
         <div className="dialog-actions">
           <button className="btn" onClick={onSave}>
             Save report
@@ -3307,9 +3747,16 @@ function Page({
   actions?: ReactNode;
   children: ReactNode;
 }) {
+  const pageLocation = useLocation(),
+    pageNavigate = useNavigate();
+  const pageParams = new URLSearchParams(pageLocation.search);
+  const defaultTo = new Date().toISOString().slice(0, 10);
+  const defaultFrom = new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10);
   const [menu, setMenu] = useState(false),
     [periodOpen, setPeriodOpen] = useState(false),
-    [compact, setCompact] = useState(false);
+    [compact, setCompact] = useState(false),
+    [periodFrom, setPeriodFrom] = useState(pageParams.get("from") || defaultFrom),
+    [periodTo, setPeriodTo] = useState(pageParams.get("to") || defaultTo);
   function exportVisibleTable() {
     const table = document.querySelector("main table");
     if (!table) return;
@@ -3345,10 +3792,14 @@ function Page({
         </button>
         {menu && (
           <div className="action-menu page-action-menu">
-            <button onClick={() => { setPeriodOpen(true); setMenu(false); }}>
+            <button
+              disabled={!status}
+              title={status ? undefined : "This page does not expose period-filtered data"}
+              onClick={() => { setPeriodOpen(true); setMenu(false); }}
+            >
               <CalendarDays /> Date range
             </button>
-            <button onClick={() => setMenu(false)}>
+            <button disabled title="Comparison is available in Audit history and will be added to analytics after period snapshots are enabled">
               <BarChart3 /> Compare to previous
             </button>
             <button onClick={exportVisibleTable}>
@@ -3367,12 +3818,22 @@ function Page({
       {periodOpen && (
         <Modal title="Date range" close={() => setPeriodOpen(false)}>
           <div className="form-two">
-            <label className="field">From<input type="date" defaultValue="2026-09-01" /></label>
-            <label className="field">To<input type="date" defaultValue="2026-09-30" /></label>
+            <label className="field">From<input type="date" value={periodFrom} onChange={(event) => setPeriodFrom(event.target.value)} /></label>
+            <label className="field">To<input type="date" value={periodTo} onChange={(event) => setPeriodTo(event.target.value)} /></label>
           </div>
           <div className="dialog-actions">
             <button className="btn" onClick={() => setPeriodOpen(false)}>Cancel</button>
-            <button className="primary" onClick={() => setPeriodOpen(false)}>Apply range</button>
+            <button
+              className="primary"
+              disabled={!periodFrom || !periodTo || new Date(periodFrom) > new Date(periodTo)}
+              onClick={() => {
+                const next = new URLSearchParams(pageLocation.search);
+                next.set("from", periodFrom);
+                next.set("to", periodTo);
+                pageNavigate(`${pageLocation.pathname}?${next.toString()}`);
+                setPeriodOpen(false);
+              }}
+            >Apply range</button>
           </div>
         </Modal>
       )}
@@ -3380,12 +3841,25 @@ function Page({
   );
 }
 function Period() {
+  const periodLocation = useLocation();
+  const params = new URLSearchParams(periodLocation.search);
+  const to = params.get("to") || new Date().toISOString().slice(0, 10);
+  const from = params.get("from") || new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10);
   return (
     <span className="period-chip">
       <CalendarDays />
-      1–30 Sep 2026
+      {shortDate(from)}–{shortDate(to)}
     </span>
   );
+}
+
+function periodQuery(search: string) {
+  const params = new URLSearchParams(search);
+  const from = params.get("from");
+  const to = params.get("to");
+  return from && to
+    ? new URLSearchParams({ from, to }).toString()
+    : "days=30";
 }
 function Tabs({
   labels,
@@ -3695,7 +4169,9 @@ function IncidentTable({ incidents }: { incidents: any[] }) {
             i.property || "Selected property",
             fmtDate(i.opened_at),
             i.cause || "Check failed",
-            i.resolved_at ? "20 min" : "Ongoing",
+            i.resolved_at
+              ? formatDuration(new Date(i.resolved_at).valueOf() - new Date(i.opened_at).valueOf())
+              : formatDuration(Date.now() - new Date(i.opened_at).valueOf()),
             i.resolved_at ? "Resolved" : "Open",
           ])}
         />
@@ -3719,7 +4195,8 @@ function AlertPanel({
   fixture: boolean;
   notify: Notify;
 }) {
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(""),
+    [testing, setTesting] = useState(false);
   const [recipients, setRecipients] = useState<any[]>(
     fixture ? [{ email: "alerts@websi.co.uk", enabled: true }] : [],
   );
@@ -3749,6 +4226,18 @@ function AlertPanel({
       notify(error.message);
     }
   }
+  async function removeRecipient(recipient: any) {
+    try {
+      if (!session || !recipient.id) throw new Error("This recipient cannot be removed here");
+      await api(session, `/api/properties/${property.id}/alert-recipients/${recipient.id}`, {
+        method: "DELETE",
+      });
+      setRecipients((current) => current.filter((item) => item.id !== recipient.id));
+      notify("Alert recipient removed");
+    } catch (error: any) {
+      notify(error.message);
+    }
+  }
   return (
     <div className="grid equal">
       <Panel title="Recipients">
@@ -3758,11 +4247,8 @@ function AlertPanel({
             recipient.email,
             recipient.enabled ? "On" : "Off",
             recipient.enabled ? "On" : "Off",
-            <button
-              className="iconbtn"
-              onClick={() => notify(`${recipient.email} actions opened`)}
-            >
-              <MoreHorizontal />
+            <button className="btn" onClick={() => void removeRecipient(recipient)}>
+              Remove
             </button>,
           ])}
         />
@@ -3788,8 +4274,27 @@ function AlertPanel({
             ["Email delivery", "Resend"],
           ]}
         />
-        <button className="btn" onClick={() => notify("Test alert queued")}>
-          Send test alert
+        <button
+          className="btn"
+          disabled={testing || !recipients.length || !session}
+          onClick={async () => {
+            if (!session) return;
+            setTesting(true);
+            try {
+              const result = await api<{ delivered: number }>(
+                session,
+                `/api/properties/${property.id}/test-alert`,
+                { method: "POST" },
+              );
+              notify(`Test alert delivered to ${result.delivered} recipient${result.delivered === 1 ? "" : "s"}`);
+            } catch (error: any) {
+              notify(error.message);
+            } finally {
+              setTesting(false);
+            }
+          }}
+        >
+          {testing ? "Sending…" : "Send test alert"}
         </button>
       </Panel>
     </div>
@@ -3987,6 +4492,19 @@ function EventsPanel({
       notify(error.message);
     }
   }
+  async function toggleEvent(event: any) {
+    try {
+      if (!session || !event.id) throw new Error("This event cannot be changed here");
+      const updated = await api<any>(session, `/api/properties/${property.id}/events/${event.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled: !event.enabled }),
+      });
+      setEvents((current) => current.map((item) => item.id === updated.id ? { ...item, ...updated } : item));
+      notify(updated.enabled ? "Event enabled" : "Event disabled");
+    } catch (error: any) {
+      notify(error.message);
+    }
+  }
   return (
     <>
       <Panel
@@ -4010,11 +4528,8 @@ function EventsPanel({
             "Yes",
             event.received ?? "—",
             event.enabled === false ? "Paused" : "Active",
-            <button
-              className="iconbtn"
-              onClick={() => notify(`${event.name} actions opened`)}
-            >
-              <MoreHorizontal />
+            <button className="btn" onClick={() => void toggleEvent(event)}>
+              {event.enabled ? "Disable" : "Enable"}
             </button>,
           ])}
         />
@@ -4047,14 +4562,11 @@ function EventsPanel({
               <option value="form_success">Confirmed form success</option>
             </select>
           </label>
-          <label className="field">
-            Match value
-            <input placeholder="[data-claritude-event='download-brochure']" />
-          </label>
-          <label>
-            <input type="checkbox" defaultChecked /> Mark as a key event
-          </label>
-          <p className="subtle">Property: {property.canonical_host}</p>
+          <p className="subtle">
+            Property: {property.canonical_host}. For click events, add{" "}
+            <code>data-claritude-event=&quot;{name}&quot;</code> to the tracked element.
+            Confirmed form successes must be emitted only after the provider reports success.
+          </p>
         </SimpleDialog>
       )}
     </>
@@ -4208,25 +4720,56 @@ function SetupPanel({ property }: { property: Property }) {
     </Panel>
   );
 }
-function Preferences({ notify }: { notify: Notify }) {
+function Preferences({
+  session,
+  profile,
+  reload,
+  notify,
+}: {
+  session: Session | null;
+  profile: any;
+  reload: () => void;
+  notify: Notify;
+}) {
+  const labels: [string, string][] = [
+    ["monitor_incidents", "Monitor incidents"],
+    ["recoveries", "Recoveries"],
+    ["tracking_problems", "Tracking problems"],
+    ["audit_issues", "Audit issues"],
+    ["billing_subscription", "Billing & subscription"],
+    ["account_security", "Account security"],
+  ];
+  const stored = profile?.notification_preferences || {};
+  const [preferences, setPreferences] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(labels.map(([key]) => [key, stored[key] !== false])),
+  );
+  async function update(key: string, checked: boolean) {
+    const next = { ...preferences, [key]: checked };
+    setPreferences(next);
+    try {
+      if (!session) throw new Error("Authentication required");
+      await api(session, "/api/profile", {
+        method: "PATCH",
+        body: JSON.stringify({ notification_preferences: next }),
+      });
+      notify("Notification preference saved");
+      reload();
+    } catch (error: any) {
+      setPreferences(preferences);
+      notify(error.message);
+    }
+  }
   return (
     <Panel title="Notification preferences">
-      {[
-        "Monitor incidents",
-        "Recoveries",
-        "Tracking problems",
-        "Audit issues",
-        "Billing & subscription",
-        "Account security",
-      ].map((x) => (
-        <label className="pref-row" key={x}>
+      {labels.map(([key, label]) => (
+        <label className="pref-row" key={key}>
           <input
             type="checkbox"
-            defaultChecked
-            onChange={() => notify(`${x} preference updated`)}
+            checked={preferences[key] !== false}
+            onChange={(event) => void update(key, event.target.checked)}
           />
           <span>
-            <b>{x}</b>
+            <b>{label}</b>
             <small>Email and in-app notifications</small>
           </span>
         </label>
@@ -4348,6 +4891,21 @@ function fmtDate(x: string) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(x));
+}
+function shortDate(x: string) {
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: new Date(x).getFullYear() === new Date().getFullYear() ? undefined : "numeric",
+  }).format(new Date(`${x}T12:00:00`));
+}
+function formatDuration(milliseconds: number) {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "—";
+  const minutes = Math.max(1, Math.round(milliseconds / 60_000));
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
 }
 function relative(x: string) {
   const s = Math.max(
