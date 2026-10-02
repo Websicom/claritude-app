@@ -15,6 +15,7 @@ import {
   ExternalLink,
   FileChartColumn,
   Filter,
+  Earth,
   Globe2,
   HelpCircle,
   Home,
@@ -22,12 +23,15 @@ import {
   LogOut,
   Menu,
   MoreHorizontal,
+  Monitor,
   Pause,
   Plus,
   RefreshCw,
   Search,
   Settings,
   ShieldCheck,
+  Smartphone,
+  Tablet,
   Users,
   X,
 } from "lucide-react";
@@ -124,12 +128,26 @@ type AnalyticsPageFilters = {
   device?: string;
   source?: string;
   country?: string;
+  browser?: string;
+  eventName?: string;
+  metric?: string;
+  sourceType?: string;
+  utmSource?: string;
+  utmMedium?: string;
+  utmCampaign?: string;
 };
 type AnalyticsFilterOptions = {
   paths: string[];
   devices: string[];
   sources: string[];
   countries: string[];
+  browsers: string[];
+  eventNames: string[];
+  metrics: string[];
+  sourceTypes: string[];
+  utmSources: string[];
+  utmMediums: string[];
+  utmCampaigns: string[];
 };
 
 async function api<T>(
@@ -1524,7 +1542,9 @@ function UptimeView({
     }),
     [maintenanceHours, setMaintenanceHours] = useState(1),
     [incidentData, setIncidentData] = useState<any[]>(incidents),
-    [checkData, setCheckData] = useState<any>(null);
+    [checkData, setCheckData] = useState<any>(null),
+    [chartMenuOpen, setChartMenuOpen] = useState(false),
+    [showPreviousChecks, setShowPreviousChecks] = useState(true);
   const loadMaintenance = () => {
     if (!session || !property?.uptime_monitors?.[0]) return Promise.resolve();
     return api<any[]>(
@@ -1559,14 +1579,20 @@ function UptimeView({
           setIncidentData([]);
         });
     else if (fixture) {
-      const checks = Array.from({ length: 42 }, (_, i) => ({
-        checked_at: new Date(Date.now() - (41 - i) * 12 * 60 * 60_000).toISOString(),
+      const fixtureStart = new Date("2026-09-01T09:00:00.000Z").valueOf();
+      const checks = Array.from({ length: 60 }, (_, i) => ({
+        checked_at: new Date(fixtureStart + i * 12 * 60 * 60_000).toISOString(),
         response_ms: 168 + ((i * 37) % 190),
         success: i !== 25,
+        status_code: i === 25 ? 500 : 200,
       }));
       setCheckData({
         checks,
         summary: { availability: 99.92, averageResponseMs: 246, medianResponseMs: 231, p95ResponseMs: 341 },
+        previous: {
+          checks: checks.map((check) => ({ ...check, response_ms: Math.round(check.response_ms * 1.18) })),
+          summary: { availability: 99.9, averageResponseMs: 300, medianResponseMs: 284, p95ResponseMs: 710 },
+        },
         days: Array.from({ length: 30 }, (_, i) => ({ day: `2026-09-${String(i + 1).padStart(2, "0")}`, total: 288, successful: i === 22 ? 284 : 288 })),
       });
     }
@@ -1590,8 +1616,33 @@ function UptimeView({
             ).toISOString(),
             cause: "HTTP 500",
           },
+          {
+            id: "i2",
+            property_id: property.id,
+            opened_at: new Date(Date.now() - 19 * 864e5).toISOString(),
+            resolved_at: new Date(Date.now() - 19 * 864e5 + 900000).toISOString(),
+            cause: "Timeout",
+          },
         ]
       : incidentData;
+  const resolvedIncidents = relevant.filter((incident) => incident.resolved_at);
+  const downtimeMs = resolvedIncidents.reduce(
+    (total, incident) =>
+      total + Math.max(0, new Date(incident.resolved_at).valueOf() - new Date(incident.opened_at).valueOf()),
+    0,
+  );
+  const latestCheck = checkData?.checks?.at(-1);
+  const availabilityDelta = metricDelta(
+    checkData?.summary?.availability,
+    checkData?.previous?.summary?.availability,
+    "percentage points",
+  );
+  const responseDelta = metricDelta(
+    checkData?.summary?.averageResponseMs,
+    checkData?.previous?.summary?.averageResponseMs,
+    "percent",
+    true,
+  );
   async function check() {
     if (!monitor) return;
     setBusy(true);
@@ -1622,7 +1673,12 @@ function UptimeView({
   return (
     <Page
       title="Uptime"
-      status={<Period />}
+      status={
+        <>
+          <span className="online-label"><i className="status-dot online" /> Online</span>
+          <Period />
+        </>
+      }
       actions={
         <button className="primary" onClick={check} disabled={busy || !monitor}>
           <RefreshCw />
@@ -1652,30 +1708,52 @@ function UptimeView({
                   : checkData?.summary?.availability != null
                     ? `${checkData.summary.availability.toFixed(2)}%`
                     : "—",
-                "Last 30 days",
+                availabilityDelta || "Selected period",
               ],
               [
                 "Average response",
                 checkData?.summary?.averageResponseMs != null
                   ? `${checkData.summary.averageResponseMs} ms`
                   : "—",
-                "Successful checks",
+                responseDelta || "Successful checks",
               ],
-              ["Incidents", relevant.length, "Recorded history"],
+              ["Resolved incidents", resolvedIncidents.length, `${relevant.length - resolvedIncidents.length} open`],
               [
-                "Check interval",
-                monitor ? `${monitor.interval_minutes} min` : "—",
-                "Automatic schedule",
+                "Estimated downtime",
+                downtimeMs ? formatDuration(downtimeMs) : "0 min",
+                "Confirmed incident duration",
               ],
             ]}
           />
           <Panel
             title="Response time"
             actions={
-              <span className="subtle">
-                Median {checkData?.summary?.medianResponseMs ?? "—"} ms · P95{" "}
-                {checkData?.summary?.p95ResponseMs ?? "—"} ms
-              </span>
+              <>
+                <span className="subtle">
+                  Median {checkData?.summary?.medianResponseMs ?? "—"} ms · P95{" "}
+                  {checkData?.summary?.p95ResponseMs ?? "—"} ms
+                </span>
+                <span className="chart-menu-wrap">
+                  <button className="iconbtn" aria-label="Response chart options" aria-expanded={chartMenuOpen} onClick={() => setChartMenuOpen((value) => !value)}>
+                    <MoreHorizontal />
+                  </button>
+                  {chartMenuOpen && (
+                    <span className="action-menu chart-context-menu" role="menu">
+                      <button onClick={() => { setShowPreviousChecks((value) => !value); setChartMenuOpen(false); }}>
+                        {showPreviousChecks ? "Hide" : "Show"} previous period
+                      </button>
+                      <button onClick={() => {
+                        downloadSeriesCsv(
+                          (checkData?.checks || []).map((entry: any) => ({ label: entry.checked_at, value: entry.response_ms || 0 })),
+                          "uptime-response-time.csv",
+                          "Response time (ms)",
+                        );
+                        setChartMenuOpen(false);
+                      }}>Download CSV</button>
+                    </span>
+                  )}
+                </span>
+              </>
             }
           >
             <SeriesChart
@@ -1683,6 +1761,14 @@ function UptimeView({
                 label: fmtDate(x.checked_at),
                 value: x.response_ms || 0,
               }))}
+              previousPoints={showPreviousChecks
+                ? (checkData?.previous?.checks || []).map((x: any) => ({
+                    label: fmtDate(x.checked_at),
+                    value: x.response_ms || 0,
+                  }))
+                : []}
+              unit="ms"
+              label="Response time"
               emptyTitle="No uptime checks recorded"
             />
           </Panel>
@@ -1691,7 +1777,7 @@ function UptimeView({
             actions={
               <span>
                 <i className="status-dot online" /> Available &nbsp;{" "}
-                <i className="status-dot down" /> Incident
+                <i className="status-dot down" /> Days with incidents
               </span>
             }
           >
@@ -1706,12 +1792,20 @@ function UptimeView({
                 <button
                   key={i}
                   className={
-                    day.total && day.successful < day.total ? "warn" : ""
+                    day.total
+                      ? day.successful < day.total
+                        ? "warn"
+                        : "available"
+                      : day.suppressed
+                        ? "suppressed"
+                        : "missing"
                   }
                   title={
                     day.total
                       ? `${day.day}: ${day.successful}/${day.total} checks available`
-                      : `${day.day}: no checks`
+                    : day.suppressed
+                      ? `${day.day}: checks suppressed during maintenance`
+                      : `${day.day}: no checks recorded`
                   }
                 />
               ))}
@@ -1723,18 +1817,21 @@ function UptimeView({
                 rows={[
                   [
                     "Status",
-                    <Status value={monitor?.last_status || "pending"} />,
+                    <Status value={latestCheck?.success ? "online" : monitor?.last_status || "pending"} />,
                   ],
                   [
                     "Response",
-                    monitor?.last_response_ms
-                      ? `${monitor.last_response_ms} ms`
+                    latestCheck?.response_ms ?? monitor?.last_response_ms
+                      ? `${latestCheck?.response_ms ?? monitor?.last_response_ms} ms`
                       : "—",
                   ],
+                  ["HTTP response", latestCheck?.status_code ? `HTTP ${latestCheck.status_code}` : "Not recorded"],
+                  ["HTTPS connection", property.url.startsWith("https://") ? "Valid at latest check" : "Not HTTPS"],
+                  ["Certificate expiry", "Not monitored"],
                   [
                     "Checked",
-                    monitor?.last_checked_at
-                      ? relative(monitor.last_checked_at)
+                    latestCheck?.checked_at || monitor?.last_checked_at
+                      ? relative(latestCheck?.checked_at || monitor!.last_checked_at!)
                       : "Awaiting first check",
                   ],
                   [
@@ -1745,27 +1842,29 @@ function UptimeView({
               />
             </Panel>
             <Panel title="Recent incidents">
-              <IncidentTable incidents={relevant.slice(0, 2)} />
+              <IncidentTable incidents={relevant.slice(0, 2)} compact />
               <button
                 className="btn panel-action"
                 onClick={() => setTab("Incidents")}
               >
-                View all incidents
+                View incident details
               </button>
             </Panel>
             <Panel title="Monitor configuration">
               <KeyValues
                 rows={[
                   ["Method", "GET"],
+                  ["URL", property.url],
                   [
-                    "Expected response",
+                    "Expected status",
                     `HTTP ${monitor?.expected_status_min || 200}–${monitor?.expected_status_max || 399}`,
                   ],
                   [
                     "Failure threshold",
                     `${monitor?.failure_threshold || 2} checks`,
                   ],
-                  ["Execution", "Cloudflare queue worker"],
+                  ["Alerts", property.settings?.alert_recipient_count ? `${property.settings.alert_recipient_count} recipients` : "Configured recipients"],
+                  ["Execution", "Distributed queue worker"],
                 ]}
               />
               <button
@@ -1885,262 +1984,238 @@ function AnalyticsView({
   fixture: boolean;
   notify: Notify;
 }) {
-  const analyticsLocation = useLocation();
-  const analyticsNavigate = useNavigate();
-  const analyticsParams = useMemo(
-    () => new URLSearchParams(analyticsLocation.search),
-    [analyticsLocation.search],
-  );
-  const analyticsTabs = [
-    "Overview",
-    "Pages",
-    "Sources",
-    "Events",
-    "Audience",
-    "Engagement",
-    "Performance",
-  ];
-  const requestedTab = analyticsParams.get("analyticsTab");
-  const tab = analyticsTabs.includes(requestedTab || "") ? requestedTab! : "Overview";
-  const pageFilters = analyticsPageFiltersFromParams(analyticsParams);
-  const livePeriod = periodQuery(analyticsLocation.search);
-  const pageFilterQuery = analyticsPageFilterQuery(pageFilters);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const params = useMemo(() => new URLSearchParams(location.search), [location.search]);
+  const tabs = ["Overview", "Pages", "Sources", "Events", "Audience", "Engagement", "Performance"];
+  const requestedTab = params.get("analyticsTab");
+  const tab = tabs.includes(requestedTab || "") ? requestedTab! : "Overview";
+  const filters = analyticsPageFiltersFromParams(params);
+  const filterQuery = analyticsPageFilterQuery(filters);
+  const livePeriod = periodQuery(location.search);
+  const [baseData, setBaseData] = useState<any>(null);
   const [data, setData] = useState<any>(null);
-  const [pagesData, setPagesData] = useState<any>(null);
-  const [pagesLoading, setPagesLoading] = useState(false);
-  const [pagesError, setPagesError] = useState("");
-  const [pagesReload, setPagesReload] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [reloadToken, setReloadToken] = useState(0);
+  const [chartMetric, setChartMetric] = useState("Pageviews");
+  const [chartMenuOpen, setChartMenuOpen] = useState(false);
+  const [showPreviousTraffic, setShowPreviousTraffic] = useState(true);
 
-  const setTab = (nextTab: string) => {
-    const next = new URLSearchParams(analyticsLocation.search);
+  const changeTab = (nextTab: string) => {
+    const next = new URLSearchParams(location.search);
     if (nextTab === "Overview") next.delete("analyticsTab");
     else next.set("analyticsTab", nextTab);
-    analyticsNavigate(`${analyticsLocation.pathname}?${next.toString()}`, { replace: true });
+    for (const key of analyticsFilterParamKeys) next.delete(key);
+    navigate(`${location.pathname}?${next.toString()}`, { replace: true });
   };
-  const setPageFilters = (nextFilters: AnalyticsPageFilters) => {
-    const next = new URLSearchParams(analyticsLocation.search);
-    for (const key of ["pageSearch", "pathMode", "pathValue", "device", "source", "country"])
-      next.delete(key);
-    if (nextFilters.pageSearch) next.set("pageSearch", nextFilters.pageSearch);
-    if (nextFilters.pathMode && nextFilters.pathValue) {
-      next.set("pathMode", nextFilters.pathMode);
-      next.set("pathValue", nextFilters.pathValue);
-    }
-    if (nextFilters.device) next.set("device", nextFilters.device);
-    if (nextFilters.source) next.set("source", nextFilters.source);
-    if (nextFilters.country) next.set("country", nextFilters.country);
-    next.set("analyticsTab", "Pages");
-    analyticsNavigate(`${analyticsLocation.pathname}?${next.toString()}`, { replace: true });
+  const changeFilters = (nextFilters: AnalyticsPageFilters) => {
+    const next = new URLSearchParams(location.search);
+    for (const key of analyticsFilterParamKeys) next.delete(key);
+    writeAnalyticsFilters(next, nextFilters);
+    navigate(`${location.pathname}?${next.toString()}`, { replace: true });
   };
 
   useEffect(() => {
     let cancelled = false;
     if (session && property) {
-      api<any>(
-        session,
-        `/api/properties/${property.id}/analytics?${livePeriod}`,
-      )
-        .then((next) => !cancelled && setData(next))
-        .catch(() => !cancelled && setData(null));
-    } else if (fixture) setData(analyticsFixtureSummary());
-    return () => {
-      cancelled = true;
-    };
-  }, [property?.id, session, fixture, livePeriod]);
+      api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}`)
+        .then((next) => !cancelled && setBaseData(next))
+        .catch(() => !cancelled && setBaseData(null));
+    } else if (fixture) setBaseData(analyticsFixtureSummary());
+    return () => { cancelled = true; };
+  }, [fixture, livePeriod, property?.id, session]);
 
   useEffect(() => {
-    if (tab !== "Pages" || !property) return;
+    if (!property) return;
     let cancelled = false;
-    setPagesLoading(true);
-    setPagesError("");
-    setPagesData(null);
+    setLoading(true);
+    setError("");
+    setData(null);
     if (session) {
-      api<any>(
-        session,
-        `/api/properties/${property.id}/analytics?${livePeriod}${pageFilterQuery ? `&${pageFilterQuery}` : ""}`,
-      )
-        .then((next) => {
-          if (!cancelled) setPagesData(next);
-        })
-        .catch((error) => {
-          if (!cancelled) setPagesError(error.message || "Page analytics could not be loaded");
-        })
-        .finally(() => {
-          if (!cancelled) setPagesLoading(false);
-        });
+      api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}${filterQuery ? `&${filterQuery}` : ""}`)
+        .then((next) => !cancelled && setData(next))
+        .catch((reason) => !cancelled && setError(reason.message || "Analytics could not be loaded"))
+        .finally(() => !cancelled && setLoading(false));
     } else if (fixture) {
-      setPagesData(filterAnalyticsFixture(pageFilters));
-      setPagesLoading(false);
+      setData(filterAnalyticsFixture(filters));
+      setLoading(false);
     } else {
-      setPagesError("Authentication is required to load page analytics.");
-      setPagesLoading(false);
+      setError("Authentication is required to load analytics.");
+      setLoading(false);
     }
-    return () => {
-      cancelled = true;
-    };
-  }, [fixture, livePeriod, pageFilterQuery, pagesReload, property?.id, session, tab]);
-  if (!property)
-    return (
-      <Empty
-        title="Select a property"
-        detail="Analytics is property-specific."
-      />
-    );
-  const toPageRows = (source: any[] = []) =>
-    source.map((p: any) => ({
-      page: typeof p === "string" ? p : p.path,
-      views: typeof p === "string" ? 0 : p.pageviews || 0,
-      events: typeof p === "string" ? 0 : p.events || 0,
-    }));
-  const pages = toPageRows(pagesData?.pages);
-  const overviewPages = toPageRows(data?.pages);
-  const filterOptions: AnalyticsFilterOptions = pagesData?.filterOptions ||
-    data?.filterOptions || { paths: [], devices: [], sources: [], countries: [] };
-  const rows = (values: any[] = []) =>
-    values.map((x) => [x.name, x.count] as (string | number)[]);
+    return () => { cancelled = true; };
+  }, [filterQuery, fixture, livePeriod, property?.id, reloadToken, session, tab]);
+
+  if (!property) return <Empty title="Select a property" detail="Analytics is property-specific." />;
+
+  const scoped = data || baseData || analyticsFixtureSummary();
+  const options: AnalyticsFilterOptions = baseData?.filterOptions || scoped.filterOptions || emptyAnalyticsFilterOptions;
+  const pages = (scoped.pages || []).map((page: any) => ({
+    page: page.path,
+    views: page.pageviews || 0,
+    events: page.events || 0,
+  }));
+  const config = analyticsFilterConfigs[tab];
+  const keyEventRate = scoped.pageviews ? (scoped.keyEvents / scoped.pageviews) * 100 : null;
+  const engagement = scoped.engagement || {};
+  const performance = scoped.performance || { vitals: scoped.vitals || [], series: {}, minimumSamples: 75 };
+  const minimumSamples = performance.minimumSamples || 75;
+  const vital = (name: string) => (performance.vitals || []).find((entry: any) => entry.name === name);
+  const selectedPerformanceMetric = filters.metric || "LCP";
+  const seriesKey = chartMetric === "Daily visitors" ? "dailyVisitors" : chartMetric === "Events" ? "events" : "pageviews";
+  const chartPoints = (scoped.series || []).map((point: any) => ({ label: point.day, value: point[seriesKey] || 0 }));
+  const previousChartPoints = (scoped.previous?.series || []).map((point: any) => ({ label: point.day, value: point[seriesKey] || 0 }));
+  const performancePoints = (performance.series?.[selectedPerformanceMetric] || [])
+    .filter((point: any) => point.value != null)
+    .map((point: any) => ({ label: point.day, value: point.value }));
+  const previousPerformancePoints = (scoped.previous?.performance?.series?.[selectedPerformanceMetric] || [])
+    .filter((point: any) => point.value != null)
+    .map((point: any) => ({ label: point.day, value: point.value }));
+  const filtersToolbar = (
+    <AnalyticsPageFilterToolbar
+      filters={filters}
+      options={options}
+      onChange={changeFilters}
+      title={config.title}
+      categories={config.categories}
+      scope={config.scope}
+    />
+  );
+
   return (
     <Page title="Analytics" status={<Period />}>
-      <Tabs
-        labels={analyticsTabs}
-        value={tab}
-        onChange={setTab}
-      />
-      {tab === "Overview" ? (
+      <Tabs labels={tabs} value={tab} onChange={changeTab} />
+      {loading ? (
+        <Empty title="Loading analytics…" detail="Applying the selected property, dates and filters." />
+      ) : error ? (
+        <div className="analytics-state" role="alert">
+          <Empty title="Analytics could not be loaded" detail={error} />
+          <button className="btn" onClick={() => setReloadToken((value) => value + 1)}>Retry</button>
+        </div>
+      ) : tab === "Overview" ? (
         <>
-          <Metrics
-            values={[
-              [
-                "Pageviews",
-                fmt(data?.pageviews || 0),
-                fixture ? "↑ 12.4%" : "Accepted pageviews",
-              ],
-              [
-                "Events",
-                fmt(data?.events || 0),
-                fixture ? "↑ 8.2%" : "All accepted events",
-              ],
-              [
-                "Key events",
-                fmt(data?.keyEvents || 0),
-                "Clicks, outbound links and confirmed forms",
-              ],
-              ["Observed pages", overviewPages.length, "Unique paths"],
-              [
-                "Tracking",
-                property.tracking_last_received_at
-                  ? "Receiving data"
-                  : "Not installed",
-                property.tracking_last_received_at
-                  ? relative(property.tracking_last_received_at)
-                  : "Never",
-              ],
-            ]}
-          />
+          <Metrics values={[
+            ["Pageviews", fmt(scoped.pageviews || 0), comparisonText(scoped.pageviews, scoped.previous?.pageviews)],
+            ["Avg daily visitors", scoped.averageDailyVisitors == null ? "Unavailable" : fmt(scoped.averageDailyVisitors), scoped.averageDailyVisitors == null ? "Anonymous session estimate unavailable" : "Anonymous sessions per calendar day"],
+            ["Key events", fmt(scoped.keyEvents || 0), comparisonText(scoped.keyEvents, scoped.previous?.keyEvents)],
+            ["Key events per pageview", keyEventRate == null ? "—" : `${keyEventRate.toFixed(1)}%`, scoped.pageviews ? `${fmt(scoped.keyEvents)} ÷ ${fmt(scoped.pageviews)}` : "No pageviews in range"],
+          ]} />
           <Panel
             title="Traffic"
-            actions={<ChartSwitch notify={notify} events />}
+            actions={
+              <>
+                <span className="seg">
+                  {["Pageviews", "Daily visitors", "Events"].map((metric) => (
+                    <button className={chartMetric === metric ? "active" : ""} onClick={() => setChartMetric(metric)} key={metric}>{metric}</button>
+                  ))}
+                </span>
+                <span className="chart-menu-wrap">
+                  <button className="iconbtn" aria-label="Traffic chart options" aria-expanded={chartMenuOpen} onClick={() => setChartMenuOpen((value) => !value)}><MoreHorizontal /></button>
+                  {chartMenuOpen && (
+                    <span className="action-menu chart-context-menu" role="menu">
+                      <button onClick={() => { setShowPreviousTraffic((value) => !value); setChartMenuOpen(false); }}>
+                        {showPreviousTraffic ? "Hide" : "Show"} previous period
+                      </button>
+                      <button onClick={() => {
+                        downloadSeriesCsv(chartPoints, `analytics-${chartMetric.toLowerCase().replaceAll(" ", "-")}.csv`, chartMetric);
+                        setChartMenuOpen(false);
+                        notify("Analytics CSV downloaded");
+                      }}>Download CSV</button>
+                    </span>
+                  )}
+                </span>
+              </>
+            }
           >
-            <div className="chart-legend">
-              <span>Current period</span>
-              <span className="previous">Previous period</span>
-            </div>
-            <SeriesChart
-              points={(data?.series || []).map((x: any) => ({
-                label: x.day,
-                value: x.pageviews,
-              }))}
-              emptyTitle="No measured traffic yet"
-            />
+            {filtersToolbar}
+            <div className="chart-legend"><span>Current period</span>{showPreviousTraffic && <span className="previous">Previous period</span>}</div>
+            <SeriesChart points={chartPoints} previousPoints={showPreviousTraffic ? previousChartPoints : []} emptyTitle="No measured traffic yet" unit={chartMetric === "Events" ? " events" : ""} label={`${chartMetric} by day`} />
           </Panel>
           <div className="grid equal">
-            <Panel title="Top pages">
-              <AnalyticsTable pages={overviewPages} property={property} groupedLimit={5} />
-            </Panel>
-            <Panel title="Top sources">
-              <BarRows rows={fixture ? [["Google",12480],["Direct",8410],["LinkedIn",4360],["Email",3210]] : rows(data?.sources)} />
-            </Panel>
+            <Panel title="Top pages"><AnalyticsTable pages={pages} property={property} groupedLimit={5} eventHeader="Key events" /></Panel>
+            <Panel title="Traffic sources"><AnalyticsSourceTable sources={scoped.sources || []} /></Panel>
+          </div>
+          <div className="grid analytics-overview-bottom">
+            <Panel title="Key events"><AnalyticsValueTable headers={["Event", "Count", "%"]} rows={(scoped.eventBreakdown || []).slice(0, 5).map((row: any) => ({ label: eventLabel(row.name), value: row.count, secondary: scoped.keyEvents ? `${Math.round(row.count / scoped.keyEvents * 100)}%` : "0%" }))} /></Panel>
+            <Panel title="Devices"><AnalyticsValueTable headers={["Device", "Share"]} rows={shareRows(scoped.devices, scoped.pageviews, "device")} /></Panel>
+            <Panel title="Countries"><AnalyticsValueTable headers={["Country", "Visitors"]} rows={shareRows(scoped.countries, scoped.pageviews, "country")} /></Panel>
           </div>
         </>
       ) : tab === "Pages" ? (
         <Panel title="Pages">
-          <AnalyticsPageFilterToolbar
-            filters={pageFilters}
-            options={filterOptions}
-            onChange={setPageFilters}
-          />
-          {pagesData?.truncated && (
-            <p className="analytics-data-warning" role="status">
-              This result reached the 50,000-event query limit. Narrow the date range or add a filter before treating the totals as complete.
-            </p>
-          )}
-          {pagesLoading ? (
-            <Empty title="Loading page analytics…" detail="Applying the selected property, dates and filters." />
-          ) : pagesError ? (
-            <div className="analytics-state" role="alert">
-              <Empty title="Page analytics could not be loaded" detail={pagesError} />
-              <button className="btn" onClick={() => setPagesReload((value) => value + 1)}>Retry</button>
-            </div>
-          ) : pages.length ? (
+          {filtersToolbar}
+          {scoped.truncated && <p className="analytics-data-warning" role="status">This result reached the 50,000-event query limit. Narrow the date range or add a filter before treating the totals as complete.</p>}
+          {pages.length ? (
             <AnalyticsTable pages={pages} property={property} groupedLimit={5} />
           ) : (
             <div className="analytics-state">
-              <Empty
-                title={hasAnalyticsPageFilters(pageFilters) ? "No matching page results" : "No pageviews in this period"}
-                detail={hasAnalyticsPageFilters(pageFilters)
-                  ? "No recorded pageviews or configured events match every active filter."
-                  : "A genuinely tracked pageview will appear here after it is received."}
-              />
-              {hasAnalyticsPageFilters(pageFilters) && (
-                <button className="btn" onClick={() => setPageFilters({})}>Clear all filters</button>
-              )}
+              <Empty title={hasAnalyticsPageFilters(filters) ? "No matching page results" : "No pageviews in this period"} detail={hasAnalyticsPageFilters(filters) ? "No recorded pageviews or configured events match every active filter." : "A genuinely tracked pageview will appear here after it is received."} />
+              {hasAnalyticsPageFilters(filters) && <button className="btn" onClick={() => changeFilters({})}>Clear all filters</button>}
             </div>
           )}
         </Panel>
       ) : tab === "Sources" ? (
         <Panel title="Traffic sources">
-          <BarRows rows={fixture ? [["Google",12480],["Direct",8410],["LinkedIn",4360],["Instagram",1910],["Email",1300]] : rows(data?.sources)} />
+          {filtersToolbar}
+          <AnalyticsSourceTable sources={scoped.sources || []} />
+          <p className="subtle">Source categories are mutually exclusive and total {fmt((scoped.sources || []).reduce((sum: number, source: any) => sum + source.pageviews, 0))} pageviews.</p>
         </Panel>
       ) : tab === "Events" ? (
-        <EventsPanel
-          session={session}
-          property={property}
-          fixture={fixture}
-          notify={notify}
-        />
+        <EventsPanel session={session} property={property} fixture={fixture} notify={notify} data={scoped} filters={filters} options={options} onFilterChange={changeFilters} />
       ) : tab === "Audience" ? (
-        <div className="grid equal">
-          <Panel title="Countries">
-            <BarRows rows={fixture ? [["United Kingdom",18440],["United States",4280],["Germany",1960],["France",1320]] : rows(data?.countries)} />
-          </Panel>
-          <Panel title="Devices">
-            <BarRows rows={fixture ? [["Desktop",15780],["Mobile",11740],["Tablet",940]] : rows(data?.devices)} />
-          </Panel>
-        </div>
+        <>
+          {filtersToolbar}
+          <div className="grid equal">
+            <Panel title="Devices"><AnalyticsValueTable headers={["Device", "Share"]} rows={shareRows(scoped.devices, scoped.pageviews, "device")} /></Panel>
+            <Panel title="Countries"><AnalyticsValueTable headers={["Country", "Visitors"]} rows={shareRows(scoped.countries, scoped.pageviews, "country")} /></Panel>
+            <Panel title="Browsers"><AnalyticsValueTable headers={["Browser", "Share"]} rows={shareRows(scoped.browsers, scoped.pageviews, "browser")} /></Panel>
+            <Panel title="Screen categories"><AnalyticsValueTable headers={["Width", "Share"]} rows={shareRows(scoped.screens, scoped.pageviews)} /></Panel>
+          </div>
+        </>
       ) : tab === "Engagement" ? (
-        <Metrics
-          values={[
-            ["Engaged sessions", fixture ? "18,420" : fmt(data?.engagement?.engagedSessions || 0), "Measured sessions"],
-            ["Avg active time", fixture ? "2m 18s" : data?.engagement?.averageActiveSeconds != null ? `${data.engagement.averageActiveSeconds}s` : "—", "Foreground time"],
-            ["Scroll 75%", fixture ? "42%" : data?.engagement?.scroll75Rate != null ? `${data.engagement.scroll75Rate.toFixed(1)}%` : "—", "Eligible pageviews"],
-            ["Key-event rate", fixture ? "1.3%" : data?.engagement?.keyEventRate != null ? `${data.engagement.keyEventRate.toFixed(1)}%` : "—", "Events per pageview"],
-          ]}
-        />
+        <>
+          <Metrics values={[
+            ["Engaged pageviews", engagement.engagedPageviews == null ? "Unavailable" : fmt(engagement.engagedPageviews), engagement.engagedPageviews == null ? "New correlated pageviews only" : `${fmt(engagement.eligiblePageviews)} eligible pageviews`],
+            ["Median scroll depth", engagement.medianScrollDepth == null ? "Unavailable" : `${Math.round(engagement.medianScrollDepth)}%`, engagement.medianScrollDepth == null ? "Awaiting correlated scroll signals" : "Per-page-view maximum"],
+            ["Pageviews with key events", engagement.pageviewsWithKeyEvents == null ? "Unavailable" : fmt(engagement.pageviewsWithKeyEvents), "Each pageview counted once"],
+            ["Median active time", engagement.medianActiveSeconds == null ? "Unavailable" : durationLabel(engagement.medianActiveSeconds), "Visible foreground time"],
+          ]} />
+          {filtersToolbar}
+          <div className="grid equal">
+            <Panel title="Scroll depth"><AnalyticsValueTable headers={["Depth", "Pageviews"]} rows={(engagement.scrollDepth || []).map((row: any) => ({ label: `${row.depth}% reached`, value: row.pageviews }))} /></Panel>
+            <Panel title="Most engaging pages"><AnalyticsValueTable headers={["Page", "Engaged views"]} rows={(engagement.pages || []).map((row: any) => ({ label: row.path, value: row.engagedViews }))} /></Panel>
+          </div>
+          <Panel title="Additional aggregate insights">
+            <KeyValues rows={[
+              ["Engagement rate", engagement.engagementRate == null ? "Unavailable" : `${engagement.engagementRate.toFixed(1)}%`],
+              ["JavaScript errors", fmt(engagement.javascriptErrors || 0)],
+              ["Median active time", engagement.medianActiveSeconds == null ? "Unavailable" : durationLabel(engagement.medianActiveSeconds)],
+              ["Top visible section", engagement.visibleSections?.[0] ? `${eventLabel(engagement.visibleSections[0].name)} · ${fmt(engagement.visibleSections[0].count)} pageviews` : "Unavailable"],
+            ]} />
+            <p className="subtle">Aggregate signals use anonymous page-view identifiers and do not create person profiles.</p>
+          </Panel>
+        </>
       ) : (
-        <div className="grid equal">
-          <Panel title="Core Web Vitals">
-            <DataTable
-              headers={["Metric", "Result", "Target", "Samples"]}
-              rows={fixture ? [["LCP","2.3 s","≤ 2.5 s","1,248"],["INP","168 ms","≤ 200 ms","1,109"],["CLS","0.04","≤ 0.1","1,248"]] : (data?.vitals || []).map((x: any) => [x.name, x.name === "CLS" ? x.value : `${Math.round(x.value)} ms`, x.name === "LCP" ? "≤ 2500 ms" : x.name === "INP" ? "≤ 200 ms" : x.name === "CLS" ? "≤ 0.1" : "Observed", x.samples])}
-            />
+        <>
+          <Metrics values={[
+            ["LCP", vitalMetricValue(vital("LCP"), minimumSamples), vitalMetricSamples(vital("LCP"), minimumSamples)],
+            ["INP", vitalMetricValue(vital("INP"), minimumSamples), vitalMetricSamples(vital("INP"), minimumSamples)],
+            ["CLS", vitalMetricValue(vital("CLS"), minimumSamples), vitalMetricSamples(vital("CLS"), minimumSamples)],
+            ["Good experiences", performance.goodExperiencesPercent == null || performance.eligibleGoodExperienceViews < minimumSamples ? "Unavailable" : `${Math.round(performance.goodExperiencesPercent)}%`, performance.goodExperiencesPercent == null ? "Requires LCP, INP and CLS per view" : `${fmt(performance.eligibleGoodExperienceViews)} eligible pageviews`],
+          ]} />
+          <Panel>
+            {filtersToolbar}
+            <p className="subtle">Metrics use the 75th percentile. Fewer than {minimumSamples} samples are shown as unavailable rather than estimated.</p>
+            <div className="chart-legend"><span>Current period</span><span className="previous">Previous period</span></div>
+            <SeriesChart points={performancePoints} previousPoints={previousPerformancePoints} emptyTitle={`Insufficient ${selectedPerformanceMetric} samples`} unit={selectedPerformanceMetric === "CLS" ? "" : " ms"} label={`${selectedPerformanceMetric} p75 by day`} />
           </Panel>
-          <Panel title="Browsers">
-            <BarRows rows={fixture ? [["Chrome",17480],["Safari",7830],["Firefox",2130],["Edge",1020]] : rows(data?.browsers)} />
-          </Panel>
-        </div>
+        </>
       )}
     </Page>
   );
 }
+
 
 function AuditView({
   session,
@@ -2162,6 +2237,8 @@ function AuditView({
     [filterOpen, setFilterOpen] = useState(false),
     [pageMenu, setPageMenu] = useState(false),
     [addPage, setAddPage] = useState(false),
+    [performanceMode, setPerformanceMode] = useState<"Lab audit" | "Real-user data">("Lab audit"),
+    [realUserPerformance, setRealUserPerformance] = useState<any>(null),
     [auditPages, setAuditPages] = useState<any[]>([]),
     [selectedPage, setSelectedPage] = useState<any>({ name: "Homepage", path: "/" }),
     [pageName, setPageName] = useState(""),
@@ -2178,9 +2255,20 @@ function AuditView({
           setSelectedPage(next[0]);
         })
         .catch(() => setAuditPages([{ name: "Homepage", path: "/" }]));
+      Promise.all([
+        api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}&device=desktop`),
+        api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}&device=mobile`),
+      ])
+        .then(([desktop, mobile]) => setRealUserPerformance({ desktop, mobile }))
+        .catch(() => setRealUserPerformance(null));
     } else if (fixture) {
       setRuns([fixtureAudit(property)]);
       setAuditPages([{ name: "Homepage", path: "/" }]);
+      const analytics = fixtureAnalytics(property!);
+      setRealUserPerformance({
+        desktop: { performance: { vitals: analytics.desktopVitals, minimumSamples: 75, method: "p75" } },
+        mobile: { performance: { vitals: analytics.mobileVitals, minimumSamples: 75, method: "p75" } },
+      });
     }
   }, [property?.id, session, fixture, livePeriod]);
   if (!property)
@@ -2192,11 +2280,13 @@ function AuditView({
     );
   const latest = runs[0],
     results = latest?.audit_results || [],
-    partial = (latest?.coverage ?? 0) < 80;
+    completedCategoryCount = Object.values(auditRunCategoryScores(latest)).filter((score) => score != null).length,
+    partial = Boolean(latest) && !isAuditRunComplete(latest),
+    actionable = results.filter((result: any) => ["fail", "warning"].includes(result.outcome));
   const resultCounts = {
-    failed: results.filter((result: any) => result.outcome === "fail").length,
-    unavailable: results.filter((result: any) => result.outcome === "unable_to_test").length,
-    warnings: results.filter((result: any) => result.outcome === "warning").length,
+    critical: actionable.filter((result: any) => ["critical", "high"].includes(result.severity) || result.outcome === "fail").length,
+    security: actionable.filter((result: any) => result.category === "Security" && ["critical", "high"].includes(result.severity)).length,
+    warnings: actionable.filter((result: any) => !(["critical", "high"].includes(result.severity) || result.outcome === "fail")).length,
   };
   async function run() {
     setBusy(true);
@@ -2256,14 +2346,7 @@ function AuditView({
       notify(error.message);
     }
   }
-  const visible =
-    filter === "All"
-      ? results
-      : results.filter(
-          (x: any) =>
-            (x.category || "").toLowerCase().includes(filter.toLowerCase()) ||
-            String(x.outcome).includes(filter.toLowerCase()),
-        );
+  const visible = filterAuditFindings(results, filter);
   return (
     <Page
       title="Audit"
@@ -2309,10 +2392,12 @@ function AuditView({
       </div>
       {partial && (
         <div className="coverage-note partial">
-          <b>Partial catalogue coverage</b>
+          <b>Incomplete audit coverage</b>
           <span>
-            {latest?.coverage || 0}% of the active catalogue produced evidence.
-            This score must not be treated as a complete site grade.
+            {(latest?.coverage ?? 0) < 80
+              ? `${latest?.coverage || 0}% of the selected checks produced evidence.`
+              : `${completedCategoryCount} of ${auditCategories.length} approved score categories produced evidence.`}
+            {" "}The recorded score is not presented as a complete site grade.
           </span>
         </div>
       )}
@@ -2322,25 +2407,48 @@ function AuditView({
           <div className="grid">
             <Panel title={`Fix these first · ${selectedPage.name}`}>
               <div className="audit-summary">
-                <button className="audit-summary-item">
-                  <CircleAlert />{resultCounts.failed}
+                <button className={`audit-summary-item ${filter === "critical" ? "selected" : ""}`} onClick={() => setFilter(filter === "critical" ? "All" : "critical")}>
+                  <CircleAlert />{resultCounts.critical}
                 </button>
-                <button className="audit-summary-item">
-                  <ShieldCheck />{resultCounts.unavailable}
+                <button className={`audit-summary-item ${filter === "security" ? "selected" : ""}`} onClick={() => setFilter(filter === "security" ? "All" : "security")}>
+                  <ShieldCheck />{resultCounts.security}
                 </button>
-                <button className="audit-summary-item">
+                <button className={`audit-summary-item ${filter === "warning" ? "selected" : ""}`} onClick={() => setFilter(filter === "warning" ? "All" : "warning")}>
                   <CircleAlert />{resultCounts.warnings}
                 </button>
               </div>
-              <AuditResults results={results.slice(0, 7)} />
+              <button className="btn audit-overview-filter" onClick={() => setFilterOpen((value) => !value)}><Filter /> Filters</button>
+              {filterOpen && (
+                <div className="action-menu audit-filter-actions audit-overview-filter-menu">
+                  {["All", "critical", "security", "warning"].map((value) => (
+                    <button key={value} className={filter === value ? "selected" : ""} onClick={() => { setFilter(value); setFilterOpen(false); }}>
+                      {cap(value)}{filter === value && <Check />}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <AuditResults
+                results={filterAuditFindings(actionable, filter).slice(0, 7)}
+                onRetest={() => void run()}
+              />
             </Panel>
             <div>
-              <Panel title="Desktop performance">
-                <PerformanceTable mobile={false} run={latest} />
-              </Panel>
-              <Panel title="Mobile performance">
-                <PerformanceTable mobile run={latest} />
-              </Panel>
+              <div className="segmented audit-performance-mode" role="group" aria-label="Performance data source">
+                {(["Lab audit", "Real-user data"] as const).map((mode) => (
+                  <button key={mode} className={performanceMode === mode ? "active" : ""} onClick={() => setPerformanceMode(mode)}>{mode}</button>
+                ))}
+              </div>
+              {performanceMode === "Lab audit" ? (
+                <>
+                  <Panel title="Desktop performance"><PerformanceTable mobile={false} run={latest} /></Panel>
+                  <Panel title="Mobile performance"><PerformanceTable mobile run={latest} /></Panel>
+                </>
+              ) : (
+                <>
+                  <Panel title="Desktop performance"><RealUserPerformanceTable data={realUserPerformance} device="desktop" /></Panel>
+                  <Panel title="Mobile performance"><RealUserPerformanceTable data={realUserPerformance} device="mobile" /></Panel>
+                </>
+              )}
             </div>
           </div>
         </>
@@ -2368,7 +2476,7 @@ function AuditView({
             </>
           }
         >
-          <AuditResults results={visible} />
+          <AuditResults results={visible} onRetest={() => void run()} />
         </Panel>
       ) : tab === "Checks" ? (
         <Panel title="Catalogue checks">
@@ -2820,7 +2928,10 @@ function PropertySettingsView({
   reload: () => void;
   notify: Notify;
 }) {
-  const [tab, setTab] = useState("General"),
+  const settingsLocation = useLocation();
+  const requestedSettingsTab = new URLSearchParams(settingsLocation.search).get("settingsTab");
+  const settingsTabs = ["General", "Tracking", "Uptime", "Events", "Sharing", "Advanced"];
+  const [tab, setTab] = useState(settingsTabs.includes(requestedSettingsTab || "") ? requestedSettingsTab! : "General"),
     [name, setName] = useState(property?.name || ""),
     [timezone, setTimezone] = useState(property?.settings?.timezone || "Europe/London"),
     [currency, setCurrency] = useState(property?.settings?.reporting_currency || "GBP"),
@@ -2847,6 +2958,9 @@ function PropertySettingsView({
       .then(setViewers)
       .catch(() => setViewers([]));
   }, [property?.id, session]);
+  useEffect(() => {
+    if (requestedSettingsTab && settingsTabs.includes(requestedSettingsTab)) setTab(requestedSettingsTab);
+  }, [requestedSettingsTab]);
   if (!property)
     return (
       <Empty
@@ -2890,14 +3004,7 @@ function PropertySettingsView({
       status={<Status value={property.verification_status} />}
     >
       <Tabs
-        labels={[
-          "General",
-          "Tracking",
-          "Uptime",
-          "Events",
-          "Sharing",
-          "Advanced",
-        ]}
+        labels={settingsTabs}
         value={tab}
         onChange={setTab}
       />
@@ -4045,10 +4152,16 @@ function ChartSwitch({
 }
 function SeriesChart({
   points,
+  previousPoints = [],
   emptyTitle,
+  unit = "",
+  label = "Measured time series",
 }: {
   points: { label: string; value: number }[];
+  previousPoints?: { label: string; value: number }[];
   emptyTitle: string;
+  unit?: string;
+  label?: string;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   if (!points.length)
@@ -4060,38 +4173,56 @@ function SeriesChart({
     );
   const width = 825,
     height = 190,
-    max = Math.max(1, ...points.map((x) => Number(x.value) || 0)),
+    plotLeft = 48,
+    plotRight = width - 8,
+    plotTop = 14,
+    plotBottom = height - 28,
+    max = Math.max(1, ...points.map((x) => Number(x.value) || 0), ...previousPoints.map((x) => Number(x.value) || 0)),
     coords = points.map((point, i) => ({
       ...point,
-      x: points.length === 1 ? width / 2 : (i / (points.length - 1)) * width,
-      y: height - 18 - ((Number(point.value) || 0) / max) * (height - 42),
+      x: points.length === 1 ? (plotLeft + plotRight) / 2 : plotLeft + (i / (points.length - 1)) * (plotRight - plotLeft),
+      y: plotBottom - ((Number(point.value) || 0) / max) * (plotBottom - plotTop),
     })),
-    polyline = coords.map((x) => `${x.x},${x.y}`).join(" ");
+    previousCoords = previousPoints.map((point, i) => ({
+      ...point,
+      x: previousPoints.length === 1 ? (plotLeft + plotRight) / 2 : plotLeft + (i / (previousPoints.length - 1)) * (plotRight - plotLeft),
+      y: plotBottom - ((Number(point.value) || 0) / max) * (plotBottom - plotTop),
+    })),
+    polyline = coords.map((x) => `${x.x},${x.y}`).join(" "),
+    previousPolyline = previousCoords.map((x) => `${x.x},${x.y}`).join(" "),
+    ticks = [max, max * 2 / 3, max / 3, 0],
+    xLabelIndexes = [...new Set([0, Math.floor((points.length - 1) / 3), Math.floor((points.length - 1) * 2 / 3), points.length - 1])];
   return (
     <div className="live-chart-wrap" onMouseLeave={() => setHover(null)}>
       <svg
         className="chart live-chart"
         viewBox={`0 0 ${width} ${height}`}
         preserveAspectRatio="none"
-        aria-label="Measured time series"
+        aria-label={label}
       >
-        {[30, 70, 110, 150].map((y) => (
-          <line className="chart-grid" x1="0" x2={width} y1={y} y2={y} key={y} />
-        ))}
+        {ticks.map((tick, index) => {
+          const y = plotTop + index * (plotBottom - plotTop) / 3;
+          return <g key={index}><line className="chart-grid" x1={plotLeft} x2={plotRight} y1={y} y2={y} /><text className="chart-axis-label" x="2" y={y + 4}>{formatChartAxis(tick, unit)}</text></g>;
+        })}
         <polygon
           className="series-fill"
-          points={`0,${height} ${polyline} ${width},${height}`}
+          points={`${plotLeft},${plotBottom} ${polyline} ${plotRight},${plotBottom}`}
         />
+        {previousPolyline && <polyline className="compare" points={previousPolyline} />}
         <polyline className="series" points={polyline} />
+        {xLabelIndexes.map((index) => coords[index] && <text className="chart-axis-label chart-x-label" x={coords[index].x} y={height - 5} textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"} key={`label-${index}`}>{chartDateLabel(coords[index].label)}</text>)}
         {coords.map((point, index) => (
           <g key={`${point.label}-${index}`}>
             <rect
               className="chart-hit"
-              x={Math.max(0, point.x - width / Math.max(points.length, 2) / 2)}
+              x={Math.max(plotLeft, point.x - (plotRight - plotLeft) / Math.max(points.length, 2) / 2)}
               y="0"
-              width={width / Math.max(points.length, 2)}
+              width={(plotRight - plotLeft) / Math.max(points.length, 2)}
               height={height}
               onMouseEnter={() => setHover(index)}
+              onFocus={() => setHover(index)}
+              tabIndex={0}
+              aria-label={`${point.label}: ${formatChartTooltip(point.value, unit)}`}
             />
             {hover === index && (
               <>
@@ -4107,8 +4238,9 @@ function SeriesChart({
           className="chart-tooltip"
           style={{ left: `${Math.min(86, Math.max(4, (coords[hover].x / width) * 100))}%` }}
         >
-          <b>{coords[hover].value.toLocaleString()}</b>
+          <b>{formatChartTooltip(coords[hover].value, unit)}</b>
           <small>{coords[hover].label}</small>
+          {previousCoords[hover] && <small>Previous: {formatChartTooltip(previousCoords[hover].value, unit)}</small>}
         </div>
       )}
     </div>
@@ -4167,30 +4299,29 @@ function Modal({
     </div>
   );
 }
-function IncidentTable({ incidents }: { incidents: any[] }) {
-  return (
-    <Panel title="Incident history">
-      {incidents.length ? (
-        <DataTable
-          headers={["Property", "Opened", "Cause", "Duration", "Status"]}
-          rows={incidents.map((i) => [
-            i.property || "Selected property",
-            fmtDate(i.opened_at),
-            i.cause || "Check failed",
-            i.resolved_at
-              ? formatDuration(new Date(i.resolved_at).valueOf() - new Date(i.opened_at).valueOf())
-              : formatDuration(Date.now() - new Date(i.opened_at).valueOf()),
-            i.resolved_at ? "Resolved" : "Open",
-          ])}
-        />
-      ) : (
-        <Empty
-          title="No incidents recorded"
-          detail="Confirmed failures and recoveries appear here."
-        />
-      )}
-    </Panel>
+function IncidentTable({ incidents, compact = false }: { incidents: any[]; compact?: boolean }) {
+  const content = incidents.length ? (
+    <DataTable
+      headers={compact ? ["Date & time", "Type", "Duration", "Status"] : ["Property", "Opened", "Cause", "Duration", "Status"]}
+      rows={incidents.map((incident) => {
+        const values = [
+          fmtDate(incident.opened_at),
+          incident.cause || "Check failed",
+          incident.resolved_at
+            ? formatDuration(new Date(incident.resolved_at).valueOf() - new Date(incident.opened_at).valueOf())
+            : formatDuration(Date.now() - new Date(incident.opened_at).valueOf()),
+          incident.resolved_at ? "Resolved" : "Open",
+        ];
+        return compact ? values : [incident.property || "Selected property", ...values];
+      })}
+    />
+  ) : (
+    <EmptyCompact
+      title="No incidents recorded"
+      detail="Confirmed failures and recoveries appear here."
+    />
   );
+  return compact ? content : <Panel title="Incident history">{content}</Panel>;
 }
 function AlertPanel({
   session,
@@ -4409,14 +4540,20 @@ function AnalyticsPageFilterToolbar({
   filters,
   options,
   onChange,
+  title = "Pages",
+  categories = ["Page search", "Exact path / prefix", "Device", "Source", "Country"],
+  scope = "this page table",
 }: {
   filters: AnalyticsPageFilters;
   options: AnalyticsFilterOptions;
   onChange: (filters: AnalyticsPageFilters) => void;
+  title?: string;
+  categories?: string[];
+  scope?: string;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
-  const [category, setCategory] = useState("Page search");
+  const [category, setCategory] = useState(categories[0] || "Page search");
   const [menuSearch, setMenuSearch] = useState("");
   const [pageDraft, setPageDraft] = useState(filters.pageSearch || "");
   const [pathDraft, setPathDraft] = useState(filters.pathValue || "");
@@ -4428,6 +4565,9 @@ function AnalyticsPageFilterToolbar({
     setPathDraft(filters.pathValue || "");
     setPathMode(filters.pathMode || "exact");
   }, [filters.pageSearch, filters.pathMode, filters.pathValue]);
+  useEffect(() => {
+    if (!categories.includes(category)) setCategory(categories[0] || "Page search");
+  }, [categories.join("|"), category]);
   useEffect(() => {
     if (!open) return;
     const close = (event: PointerEvent) => {
@@ -4444,14 +4584,8 @@ function AnalyticsPageFilterToolbar({
     };
   }, [open]);
 
-  const categories = ["Page search", "Exact path / prefix", "Device", "Source", "Country"];
-  const categoryOptions = category === "Device"
-    ? options.devices
-    : category === "Source"
-      ? options.sources
-      : category === "Country"
-        ? options.countries
-        : [];
+  const categoryKey = analyticsFilterKey(category);
+  const categoryOptions = analyticsFilterValues(category, options);
   const visibleOptions = categoryOptions.filter((value) =>
     `${value} ${category === "Country" ? countryLabel(value) : ""}`
       .toLocaleLowerCase()
@@ -4482,20 +4616,25 @@ function AnalyticsPageFilterToolbar({
   if (filters.source) chips.push({ key: "source", label: `Source: ${filters.source}` });
   if (filters.country)
     chips.push({ key: "country", label: `Country: ${countryLabel(filters.country)}` });
+  if (filters.browser) chips.push({ key: "browser", label: `Browser: ${filters.browser}` });
+  if (filters.eventName) chips.push({ key: "eventName", label: `Event: ${eventLabel(filters.eventName)}` });
+  if (filters.metric) chips.push({ key: "metric", label: `Metric: ${filters.metric}` });
+  if (filters.sourceType) chips.push({ key: "sourceType", label: `Source type: ${filters.sourceType}` });
+  if (filters.utmSource) chips.push({ key: "utmSource", label: `UTM source: ${filters.utmSource}` });
+  if (filters.utmMedium) chips.push({ key: "utmMedium", label: `UTM medium: ${filters.utmMedium}` });
+  if (filters.utmCampaign) chips.push({ key: "utmCampaign", label: `UTM campaign: ${filters.utmCampaign}` });
   const remove = (key: keyof AnalyticsPageFilters) => {
     const next = { ...filters };
     delete next[key];
     if (key === "pathValue") delete next.pathMode;
     onChange(next);
   };
-  const selectedValue = category === "Device"
-    ? filters.device
-    : category === "Source"
-      ? filters.source
-      : filters.country;
+  const selectedValue = categoryKey ? filters[categoryKey] : undefined;
   const setDimensionValue = (value: string) => {
-    const key = category === "Device" ? "device" : category === "Source" ? "source" : "country";
-    onChange({ ...filters, [key]: selectedValue === value ? undefined : value });
+    if (!categoryKey) return;
+    const next = { ...filters, [categoryKey]: selectedValue === value ? undefined : value };
+    if (categoryKey === "pathValue") next.pathMode = selectedValue === value ? undefined : "exact";
+    onChange(next);
     setOpen(false);
   };
 
@@ -4512,7 +4651,7 @@ function AnalyticsPageFilterToolbar({
         </button>
         {open && (
           <div className="action-menu analytics-filter-menu" role="menu">
-            <b className="analytics-filter-title">Filter Pages</b>
+            <b className="analytics-filter-title">Filter {title}</b>
             <label className="analytics-menu-search">
               <Search />
               <input
@@ -4569,7 +4708,7 @@ function AnalyticsPageFilterToolbar({
                 ) : visibleOptions.length ? (
                   visibleOptions.map((value) => (
                     <button onClick={() => setDimensionValue(value)} key={value}>
-                      {category === "Country" ? countryLabel(value) : cap(value)}
+                      {analyticsFilterValueLabel(category, value)}
                       {selectedValue === value && <><span className="spacer" /><Check /></>}
                     </button>
                   ))
@@ -4598,7 +4737,7 @@ function AnalyticsPageFilterToolbar({
       {chips.length > 0 && (
         <button className="text-link" onClick={() => onChange({})}>Clear all</button>
       )}
-      <small className="subtle">Filters affect this page table.</small>
+      <small className="subtle">Filters affect {scope}.</small>
     </div>
   );
 }
@@ -4607,10 +4746,12 @@ function AnalyticsTable({
   pages,
   property,
   groupedLimit = 5,
+  eventHeader = "Events",
 }: {
   pages: any[];
   property: Property;
   groupedLimit?: number;
+  eventHeader?: string;
 }) {
   const [groupOpen, setGroupOpen] = useState(false);
   const groupedPages = pages.slice(groupedLimit);
@@ -4632,7 +4773,7 @@ function AnalyticsTable({
       <div className="table-wrap">
         <table className="bar-table analytics-pages-table">
           <thead>
-            <tr><th>Page</th><th>Pageviews</th><th>Events</th></tr>
+            <tr><th>Page</th><th>Pageviews</th><th>{eventHeader}</th></tr>
           </thead>
           <tbody>
             {rows.map((page) => (
@@ -4709,20 +4850,111 @@ function BarRows({ rows }: { rows: (string | number)[][] }) {
     </div>
   );
 }
+
+function AnalyticsSourceTable({ sources }: { sources: any[] }) {
+  if (!sources.length)
+    return <Empty title="No measured sources" detail="Source categories appear after pageviews are received." />;
+  const max = Math.max(1, ...sources.map((source) => Number(source.pageviews || source.count || 0)));
+  return (
+    <div className="table-wrap">
+      <table className="bar-table analytics-three-column-table">
+        <thead><tr><th>Source / referrer</th><th>Pageviews</th><th>Events</th></tr></thead>
+        <tbody>
+          {sources.map((source) => {
+            const pageviews = Number(source.pageviews || source.count || 0);
+            return (
+              <tr key={source.name}>
+                <td className="bar-cell">
+                  <span className="bar-bg" aria-hidden="true" style={{ width: `${Math.max(4, pageviews / max * 92)}%` }} />
+                  <span className="dimension-label"><DimensionMark kind="source" value={source.name} /><b>{source.name}</b></span>
+                </td>
+                <td>{fmt(pageviews)}</td>
+                <td>{fmt(Number(source.events || 0))}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function AnalyticsValueTable({
+  headers,
+  rows,
+}: {
+  headers: string[];
+  rows: { label: ReactNode; value: number; secondary?: ReactNode; iconKind?: string; iconValue?: string }[];
+}) {
+  if (!rows.length)
+    return <Empty title="No measured data" detail="This breakdown will populate after compatible events are received." />;
+  const max = Math.max(1, ...rows.map((row) => Number(row.value) || 0));
+  return (
+    <div className="table-wrap">
+      <table className={`bar-table analytics-value-table ${headers.length === 3 ? "analytics-three-column-table" : ""}`}>
+        <thead><tr>{headers.map((header) => <th key={header}>{header}</th>)}</tr></thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={`${String(row.label)}-${index}`}>
+              <td className="bar-cell">
+                <span className="bar-bg" aria-hidden="true" style={{ width: `${Math.max(4, Number(row.value) / max * 92)}%` }} />
+                <span className="dimension-label">
+                  {row.iconKind && <DimensionMark kind={row.iconKind} value={row.iconValue || String(row.label)} />}
+                  <b>{row.label}</b>
+                </span>
+              </td>
+              <td>{headers.length === 2 && row.secondary != null ? row.secondary : fmt(row.value)}</td>
+              {headers.length === 3 && <td>{row.secondary}</td>}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function DimensionMark({ kind, value }: { kind: string; value: string }) {
+  const clean = value.toLocaleLowerCase();
+  if (kind === "device") {
+    const Icon = clean.includes("mobile") ? Smartphone : clean.includes("tablet") ? Tablet : Monitor;
+    return <span className="dimension-mark neutral"><Icon /></span>;
+  }
+  if (kind === "country") {
+    const flag = countryFlag(value);
+    return flag ? <span className="dimension-flag" aria-hidden="true">{flag}</span> : <span className="dimension-mark neutral"><Earth /></span>;
+  }
+  const short = clean.includes("google") ? "G" : clean.includes("linkedin") ? "in" : clean.includes("instagram") ? "◎" : clean.includes("chrome") ? "●" : clean.includes("safari") ? "●" : clean.includes("edge") ? "e" : clean.includes("firefox") ? "●" : clean.includes("direct") ? "↗" : "↗";
+  const brand = clean.includes("google") ? "google" : clean.includes("linkedin") ? "linkedin" : clean.includes("instagram") ? "instagram" : clean.includes("chrome") ? "chrome" : clean.includes("safari") ? "safari" : clean.includes("edge") ? "edge" : clean.includes("firefox") ? "firefox" : "neutral";
+  return <span className={`dimension-mark ${brand}`} aria-hidden="true">{short}</span>;
+}
+
 function EventsPanel({
   session,
   property,
   fixture,
   notify,
+  data,
+  filters,
+  options,
+  onFilterChange,
 }: {
   session: Session | null;
   property: Property;
   fixture: boolean;
   notify: Notify;
+  data?: any;
+  filters?: AnalyticsPageFilters;
+  options?: AnalyticsFilterOptions;
+  onFilterChange?: (filters: AnalyticsPageFilters) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("download-brochure");
   const [eventType, setEventType] = useState("click");
+  const [description, setDescription] = useState("");
+  const [pathMode, setPathMode] = useState<"exact" | "prefix">("exact");
+  const [pathValue, setPathValue] = useState("/");
+  const [eventError, setEventError] = useState("");
+  const [instruction, setInstruction] = useState("");
   const [events, setEvents] = useState<any[]>(
     fixture
       ? [
@@ -4749,17 +4981,30 @@ function EventsPanel({
   }, [session, property.id]);
   async function saveEvent() {
     try {
+      const normalizedName = name.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+      if (!normalizedName) throw new Error("Enter a stable event name");
+      if (eventType === "pageview" && !normalisePagePath(pathValue))
+        throw new Error("Enter a valid page path");
+      const matchSettings = eventType === "pageview" ? { mode: pathMode, path: normalisePagePath(pathValue) } : undefined;
       const created = session
         ? await api<any>(session, `/api/properties/${property.id}/events`, {
             method: "POST",
-            body: JSON.stringify({ name, eventType }),
+            body: JSON.stringify({ name: normalizedName, eventType, description, matchSettings }),
           })
-        : { name, event_type: eventType, enabled: true };
+        : { name: normalizedName, event_type: eventType, description, match_settings: matchSettings, enabled: true };
       setEvents((current) => [...current, created]);
       setOpen(false);
+      setEventError("");
+      setInstruction(
+        eventType === "click"
+          ? `<button data-claritude-event="${normalizedName}">…</button>`
+          : eventType === "pageview"
+            ? `claritude.pageview({ path: "${normalisePagePath(pathValue)}" });`
+            : `claritude.event("${normalizedName}", { page: location.pathname }); // call only after confirmed success`,
+      );
       notify("Event configuration saved");
     } catch (error: any) {
-      notify(error.message);
+      setEventError(error.message);
     }
   }
   async function toggleEvent(event: any) {
@@ -4778,34 +5023,46 @@ function EventsPanel({
   return (
     <>
       <Panel
-        title="Configured events"
+        title={data ? `Events · ${fmt(data.keyEvents || 0)} total` : "Configured events"}
         actions={
-          <button className="btn" onClick={() => setOpen(true)}>
-            <Plus />
-            Create event
-          </button>
+          <>
+            {data && <Link className="btn" to={`/settings?property=${property.id}&settingsTab=Events`}>Event setup instructions</Link>}
+            <button className={data ? "primary" : "btn"} onClick={() => setOpen(true)}>
+              {!data && <Plus />}
+              Create event
+            </button>
+          </>
         }
       >
-        <DataTable
-          headers={["Event", "Trigger", "Key event", "Received", "Status", ""]}
-          rows={events.map((event) => [
-            event.name,
-            event.event_type === "form_success"
-              ? "Confirmed success"
-              : event.event_type === "pageview"
-                ? "Page view"
-                : "Element click",
-            "Yes",
-            event.received ?? "—",
-            event.enabled === false ? "Paused" : "Active",
-            <button className="btn" onClick={() => void toggleEvent(event)}>
-              {event.enabled ? "Disable" : "Enable"}
-            </button>,
-          ])}
-        />
-        <p className="subtle">
-          No form values or unrestricted button text are collected.
-        </p>
+        {data && filters && options && onFilterChange ? (
+          <>
+            <AnalyticsPageFilterToolbar filters={filters} options={options} onChange={onFilterChange} title="Events" categories={analyticsFilterConfigs.Events.categories} scope="this event table" />
+            <AnalyticsValueTable
+              headers={["Event", "Count", "Share"]}
+              rows={(data.eventBreakdown || []).map((event: any) => ({
+                label: eventLabel(event.name),
+                value: event.count,
+                secondary: data.keyEvents ? `${(event.count / data.keyEvents * 100).toFixed(1)}%` : "0.0%",
+              }))}
+            />
+            <p className="subtle">Event share is the proportion of all recorded key events in the selected scope.</p>
+          </>
+        ) : (
+          <>
+            <DataTable
+              headers={["Event", "Trigger", "Key event", "Received", "Status", ""]}
+              rows={events.map((event) => [
+                event.name,
+                event.event_type === "form_success" ? "Confirmed success" : event.event_type === "pageview" ? "Page view" : "Element click",
+                "Yes",
+                event.received ?? "—",
+                event.enabled === false ? "Paused" : "Active",
+                <button className="btn" onClick={() => void toggleEvent(event)}>{event.enabled ? "Disable" : "Enable"}</button>,
+              ])}
+            />
+            <p className="subtle">No form values or unrestricted button text are collected.</p>
+          </>
+        )}
       </Panel>
       {open && (
         <SimpleDialog
@@ -4822,6 +5079,10 @@ function EventsPanel({
             />
           </label>
           <label className="field">
+            Description
+            <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="What this event records" />
+          </label>
+          <label className="field">
             Trigger type
             <select
               value={eventType}
@@ -4832,6 +5093,13 @@ function EventsPanel({
               <option value="form_success">Confirmed form success</option>
             </select>
           </label>
+          {eventType === "pageview" && (
+            <div className="dialog-grid">
+              <label className="field">Path match<select value={pathMode} onChange={(event) => setPathMode(event.target.value as "exact" | "prefix")}><option value="exact">Exact path</option><option value="prefix">Path prefix</option></select></label>
+              <label className="field">Page path<input value={pathValue} onChange={(event) => setPathValue(event.target.value)} placeholder="/thank-you/" /></label>
+            </div>
+          )}
+          {eventError && <div className="error-note" role="alert">{eventError}</div>}
           <p className="subtle">
             Property: {property.canonical_host}. For click events, add{" "}
             <code>data-claritude-event=&quot;{name}&quot;</code> to the tracked element.
@@ -4839,32 +5107,31 @@ function EventsPanel({
           </p>
         </SimpleDialog>
       )}
+      {instruction && (
+        <Modal title="Installation instructions" close={() => setInstruction("")}>
+          <p>Use this on <b>{property.canonical_host}</b>. The tracker accepts no form values or unrestricted text.</p>
+          <code className="instruction-code">{instruction}</code>
+          <div className="dialog-actions"><button className="primary" onClick={() => setInstruction("")}>Done</button></div>
+        </Modal>
+      )}
     </>
   );
 }
 function AuditScore({ run }: { run?: AuditRun }) {
-  const score = run?.score;
-  const categoryPrefixes: Record<string, string[]> = {
-    SEO: ["SEO"],
-    Performance: ["Performance", "Mobile"],
-    Accessibility: ["Accessibility"],
-    Security: ["Security"],
-    Infrastructure: ["Server", "DNS", "Structured Data", "Social Sharing"],
-    "AI Readiness": ["AI Readiness"],
-  };
+  const categoryScores = auditRunCategoryScores(run);
+  const complete = isAuditRunComplete(run);
+  const score = complete ? run?.score : undefined;
   return (
     <div className="audit-score-row">
       <div
-        className={`audit-score ${(score || 0) >= 80 ? "good" : "warn"}`}
+        className={`audit-score ${complete && (score || 0) >= 80 ? "good" : "warn"} ${complete ? "" : "partial"}`}
         style={{ "--score": score || 0 } as any}
       >
-        <span>{score ?? "—"}</span>
+        <span>{complete ? score ?? "—" : run ? "Partial" : "—"}</span>
       </div>
       <div className="audit-six-stats">
         {auditCategories.map((x) => {
-          const categoryScore =
-            run?.category_scores?.[x] ??
-            auditCategoryScore(run?.audit_results, categoryPrefixes[x]);
+          const categoryScore = categoryScores[x];
           return (
           <div className="audit-six-stat" key={x}>
             <small>{x}</small>
@@ -4883,7 +5150,7 @@ function AuditScore({ run }: { run?: AuditRun }) {
     </div>
   );
 }
-function AuditResults({ results }: { results: any[] }) {
+function AuditResults({ results, onRetest }: { results: any[]; onRetest?: () => void }) {
   return (
     <div>
       {results.length ? (
@@ -4898,18 +5165,25 @@ function AuditResults({ results }: { results: any[] }) {
               <span>
                 <b>{x.title || x.title_snapshot || x.check_id}</b>
                 <small>
-                  {x.category || "General"} ·{" "}
-                  {cap(x.outcome || x.status || "Recorded")}
+                  {x.category || "General"}
+                  {x.subcategory && x.subcategory !== "General" ? ` · ${x.subcategory}` : ` · ${cap(x.outcome || x.status || "Recorded")}`}
                 </small>
               </span>
             </summary>
             <div className="audit-detail">
-              <p>
-                {typeof x.evidence === "string"
-                  ? x.evidence
-                  : JSON.stringify(x.evidence || {})}
-              </p>
-              <button className="btn">View evidence and fix</button>
+              <div className="audit-review-row">
+                <span className="tag">Open</span>
+                <span className="subtle">Review status: not reviewed</span>
+              </div>
+              <p>{x.description || "The audit recorded this result for the selected page."}</p>
+              <b className="audit-detail-label">Affected element or resource</b>
+              <code>{auditEvidenceText(x.evidence)}</code>
+              <b className="audit-detail-label">Recommended fix</b>
+              <p>{x.recommendation || "Review the recorded evidence and update the affected implementation."}</p>
+              <div className="audit-detail-actions">
+                <button className="btn" onClick={onRetest} disabled={!onRetest}><RefreshCw /> Re-test</button>
+                <a className="btn" href={auditLearnMoreUrl(x.category)} target="_blank" rel="noreferrer"><HelpCircle /> Learn more</a>
+              </div>
             </div>
           </details>
         ))
@@ -4921,6 +5195,35 @@ function AuditResults({ results }: { results: any[] }) {
       )}
     </div>
   );
+}
+function filterAuditFindings(results: any[], filter: string) {
+  if (filter === "All") return results;
+  const normalized = filter.toLowerCase();
+  if (normalized === "critical")
+    return results.filter((result) => ["critical", "high"].includes(result.severity) || result.outcome === "fail");
+  if (normalized === "security")
+    return results.filter((result) => String(result.category).toLowerCase() === "security");
+  return results.filter(
+    (result) =>
+      String(result.category || "").toLowerCase().includes(normalized) ||
+      String(result.outcome || "").toLowerCase().includes(normalized) ||
+      String(result.severity || "").toLowerCase().includes(normalized),
+  );
+}
+function auditEvidenceText(evidence: unknown) {
+  if (typeof evidence === "string") return evidence;
+  if (!evidence || typeof evidence !== "object") return "No element-level evidence was recorded.";
+  const entries = Object.entries(evidence as Record<string, unknown>)
+    .filter(([, value]) => value != null && value !== "")
+    .slice(0, 6)
+    .map(([key, value]) => `${key}: ${typeof value === "object" ? JSON.stringify(value) : String(value)}`);
+  return entries.join(" · ") || "No element-level evidence was recorded.";
+}
+function auditLearnMoreUrl(category?: string) {
+  if (category === "Accessibility") return "https://web.dev/learn/accessibility/";
+  if (category === "Performance") return "https://web.dev/learn/performance/";
+  if (category === "Security") return "https://developer.mozilla.org/en-US/docs/Web/Security";
+  return "https://web.dev/learn/seo/";
 }
 function PerformanceTable({
   mobile,
@@ -4941,6 +5244,33 @@ function PerformanceTable({
         detail="The current source audit did not execute a rendered-browser performance pass."
       />
     )
+  );
+}
+function RealUserPerformanceTable({ data, device }: { data: any; device: "desktop" | "mobile" }) {
+  const performance = data?.[device]?.performance;
+  const vitals = performance?.vitals || [];
+  if (!vitals.length)
+    return (
+      <EmptyCompact
+        title="Awaiting real-user performance samples"
+        detail="No field Core Web Vitals were recorded for this device in the selected period."
+      />
+    );
+  return (
+    <>
+      <DataTable
+        headers={["Metric", "P75 value", "Target", "Samples"]}
+        rows={vitals.map((vital: any) => [
+          vital.name,
+          formatVital(vital.name, vital.value),
+          vital.name === "LCP" ? "≤ 2.5 s" : vital.name === "INP" ? "≤ 200 ms" : vital.name === "CLS" ? "≤ 0.1" : "Observed",
+          fmt(vital.samples || 0),
+        ])}
+      />
+      {vitals.some((vital: any) => vital.samples < (performance.minimumSamples || 75)) && (
+        <p className="subtle">Metrics below {performance.minimumSamples || 75} samples are insufficient, not estimated.</p>
+      )}
+    </>
   );
 }
 function ActivityList({ property }: { property: Property }) {
@@ -5084,6 +5414,32 @@ const auditCategories = [
   "Infrastructure",
   "AI Readiness",
 ];
+const auditCategoryPrefixes: Record<string, string[]> = {
+  SEO: ["SEO"],
+  Performance: ["Performance", "Mobile"],
+  Accessibility: ["Accessibility"],
+  Security: ["Security"],
+  Infrastructure: ["Server", "DNS", "Structured Data", "Social Sharing"],
+  "AI Readiness": ["AI Readiness"],
+};
+
+function auditRunCategoryScores(run?: AuditRun) {
+  return Object.fromEntries(
+    auditCategories.map((category) => [
+      category,
+      run?.category_scores?.[category] ?? auditCategoryScore(run?.audit_results, auditCategoryPrefixes[category]),
+    ]),
+  ) as Record<string, number | null>;
+}
+
+function isAuditRunComplete(run?: AuditRun) {
+  return Boolean(
+    run &&
+      (run.coverage ?? 0) >= 80 &&
+      Object.values(auditRunCategoryScores(run)).every((score) => score != null),
+  );
+}
+
 function fixtureAudit(property?: Property): AuditRun {
   return {
     id: "fixture-audit",
@@ -5126,11 +5482,15 @@ function fixtureAudit(property?: Property): AuditRun {
     audit_results: [
       {
         id: "1",
+        check_id: "performance.lcp.discovery",
         title: "Hero image discovered too late",
         category: "Performance",
+        subcategory: "Mobile · LCP 3.4s",
         outcome: "fail",
         severity: "critical",
-        evidence: "LCP image was not preloaded; mobile LCP 3.4s.",
+        description: "The largest image is only discovered after the stylesheet and script queue.",
+        evidence: { element: "<img src=\"/assets/hero-home.webp\" loading=\"lazy\">" },
+        recommendation: "Remove lazy loading from the hero image and add fetchpriority=\"high\" with explicit dimensions.",
       },
       {
         id: "2",
@@ -5280,62 +5640,295 @@ function formatVital(name: string, value: number) {
   return `${Math.round(Number(value))} ms`;
 }
 
+function downloadSeriesCsv(
+  points: Array<{ label: string; value: number }>,
+  filename: string,
+  valueHeader: string,
+) {
+  const rows = [["Date", valueHeader], ...points.map((point) => [point.label, String(point.value)])];
+  const csv = rows
+    .map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","))
+    .join("\n");
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+const analyticsFilterParamKeys = [
+  "pageSearch", "pathMode", "pathValue", "device", "source", "country", "browser",
+  "eventName", "metric", "sourceType", "utmSource", "utmMedium", "utmCampaign",
+] as const;
+
+const emptyAnalyticsFilterOptions: AnalyticsFilterOptions = {
+  paths: [], devices: [], sources: [], countries: [], browsers: [], eventNames: [], metrics: [],
+  sourceTypes: [], utmSources: [], utmMediums: [], utmCampaigns: [],
+};
+
+const analyticsFilterConfigs: Record<string, { title: string; categories: string[]; scope: string }> = {
+  Overview: { title: "Analytics overview", categories: ["Device", "Page", "Source", "Country", "Browser", "Event name", "UTM source", "UTM medium", "UTM campaign"], scope: "the whole analytics overview" },
+  Pages: { title: "Pages", categories: ["Page search", "Exact path / prefix", "Device", "Source", "Country"], scope: "this page table" },
+  Sources: { title: "Sources", categories: ["Source", "Source type", "UTM source", "UTM medium", "UTM campaign", "Page", "Device"], scope: "this source table" },
+  Events: { title: "Events", categories: ["Event name", "Page", "Source", "Device", "Country"], scope: "this event table" },
+  Audience: { title: "Audience", categories: ["Device", "Browser", "Country", "Page"], scope: "all audience breakdowns" },
+  Engagement: { title: "Engagement", categories: ["Page", "Device", "Source", "Country"], scope: "all engagement panels" },
+  Performance: { title: "Visitor performance", categories: ["Page", "Metric", "Device", "Browser", "Country"], scope: "this performance chart" },
+};
+
+function writeAnalyticsFilters(params: URLSearchParams, filters: AnalyticsPageFilters) {
+  if (filters.pageSearch) params.set("pageSearch", filters.pageSearch);
+  if (filters.pathMode && filters.pathValue) {
+    params.set("pathMode", filters.pathMode);
+    params.set("pathValue", filters.pathValue);
+  }
+  if (filters.device) params.set("device", filters.device);
+  if (filters.source) params.set("source", filters.source);
+  if (filters.country) params.set("country", filters.country);
+  if (filters.browser) params.set("browser", filters.browser);
+  if (filters.eventName) params.set("eventName", filters.eventName);
+  if (filters.metric) params.set("metric", filters.metric);
+  if (filters.sourceType) params.set("sourceType", filters.sourceType);
+  if (filters.utmSource) params.set("utmSource", filters.utmSource);
+  if (filters.utmMedium) params.set("utmMedium", filters.utmMedium);
+  if (filters.utmCampaign) params.set("utmCampaign", filters.utmCampaign);
+}
+
+function analyticsFilterKey(category: string): keyof AnalyticsPageFilters | null {
+  const keys: Record<string, keyof AnalyticsPageFilters> = {
+    "Page": "pathValue",
+    "Measured page": "pathValue",
+    "Device": "device",
+    "Source": "source",
+    "Source / referrer": "source",
+    "Country": "country",
+    "Browser": "browser",
+    "Event name": "eventName",
+    "Metric": "metric",
+    "Source type": "sourceType",
+    "UTM source": "utmSource",
+    "UTM medium": "utmMedium",
+    "UTM campaign": "utmCampaign",
+  };
+  return keys[category] || null;
+}
+
+function analyticsFilterValues(category: string, options: AnalyticsFilterOptions): string[] {
+  const values: Record<string, string[] | undefined> = {
+    "Page": options.paths,
+    "Measured page": options.paths,
+    "Device": options.devices,
+    "Source": options.sources,
+    "Source / referrer": options.sources,
+    "Country": options.countries,
+    "Browser": options.browsers,
+    "Event name": options.eventNames,
+    "Metric": options.metrics,
+    "Source type": options.sourceTypes,
+    "UTM source": options.utmSources,
+    "UTM medium": options.utmMediums,
+    "UTM campaign": options.utmCampaigns,
+  };
+  return values[category] || [];
+}
+
+function analyticsFilterValueLabel(category: string, value: string) {
+  if (category === "Country") return countryLabel(value);
+  if (category === "Event name") return eventLabel(value);
+  return ["Page", "Measured page", "Metric"].includes(category) ? value : cap(value);
+}
+
+function comparisonText(current: number | undefined, previous: number | undefined) {
+  if (!Number.isFinite(current) || !Number.isFinite(previous) || !previous) return "No comparable previous period";
+  const change = ((Number(current) - Number(previous)) / Number(previous)) * 100;
+  return `${change >= 0 ? "↑" : "↓"} ${change >= 0 ? "+" : ""}${change.toFixed(1)}%`;
+}
+function metricDelta(
+  current: number | null | undefined,
+  previous: number | null | undefined,
+  mode: "percent" | "percentage points",
+  improvementIsDecrease = false,
+) {
+  if (current == null || previous == null) return "";
+  const raw = mode === "percent" && previous !== 0
+    ? ((current - previous) / previous) * 100
+    : current - previous;
+  if (!Number.isFinite(raw)) return "";
+  const direction = raw === 0 ? "→" : improvementIsDecrease ? (raw < 0 ? "↘" : "↗") : (raw > 0 ? "↗" : "↘");
+  return `${direction} ${raw > 0 ? "+" : ""}${raw.toFixed(mode === "percentage points" ? 2 : 0)}${mode === "percent" ? "%" : "%"} vs previous period`;
+}
+
+function eventLabel(value: string) {
+  const known: Record<string, string> = {
+    form_success: "Successful form submissions",
+    "successful-form-submission": "Successful form submissions",
+    outbound: "Outbound clicks",
+  };
+  return known[value] || String(value || "Event").replaceAll(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function shareRows(values: any[] = [], total = 0, iconKind?: string) {
+  return values.map((row) => ({
+    label: iconKind === "country" ? countryLabel(row.name) : cap(String(row.name)),
+    value: Number(row.count || 0),
+    secondary: total ? `${Math.round(Number(row.count || 0) / total * 100)}%` : "0%",
+    iconKind,
+    iconValue: row.name,
+  }));
+}
+
+function countryFlag(value: string) {
+  const code = String(value || "").toUpperCase();
+  return /^[A-Z]{2}$/.test(code)
+    ? String.fromCodePoint(...[...code].map((letter) => 127397 + letter.charCodeAt(0)))
+    : "";
+}
+
+function durationLabel(seconds: number) {
+  const rounded = Math.max(0, Math.round(seconds));
+  return rounded >= 60 ? `${Math.floor(rounded / 60)} min ${rounded % 60} s` : `${rounded} s`;
+}
+
+function vitalMetricValue(vital: any, minimumSamples: number) {
+  return !vital || vital.samples < minimumSamples ? "Unavailable" : formatVital(vital.name, vital.value);
+}
+
+function vitalMetricSamples(vital: any, minimumSamples: number) {
+  if (!vital) return "No samples";
+  return vital.samples < minimumSamples ? `${fmt(vital.samples)} of ${fmt(minimumSamples)} required samples` : `${fmt(vital.samples)} samples · p75`;
+}
+
+function formatChartAxis(value: number, unit: string) {
+  if (unit.trim() === "ms" && value >= 1000) return `${(value / 1000).toFixed(1)}s`;
+  return `${Math.round(value).toLocaleString()}${unit.trim() === "ms" ? " ms" : ""}`;
+}
+
+function formatChartTooltip(value: number, unit: string) {
+  return `${Number(value).toLocaleString(undefined, { maximumFractionDigits: unit ? 0 : 2 })}${unit}`;
+}
+
+function chartDateLabel(value: string) {
+  const date = new Date(`${value.slice(0, 10)}T12:00:00`);
+  return Number.isFinite(date.valueOf()) ? new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" }).format(date) : value;
+}
+
 const ANALYTICS_FIXTURE_PAGES = [
-  { path: "/", pageviews: 10840, events: 96, device: "desktop", source: "Google", country: "GB" },
-  { path: "/services/", pageviews: 6320, events: 72, device: "desktop", source: "Google", country: "GB" },
-  { path: "/work/", pageviews: 4610, events: 41, device: "desktop", source: "Direct", country: "GB" },
-  { path: "/contact/", pageviews: 2140, events: 124, device: "mobile", source: "Google", country: "US" },
-  { path: "/insights/", pageviews: 1880, events: 25, device: "mobile", source: "LinkedIn", country: "GB" },
-  { path: "/privacy/", pageviews: 980, events: 0, device: "desktop", source: "Direct", country: "GB" },
-  { path: "/terms/", pageviews: 720, events: 0, device: "mobile", source: "Direct", country: "US" },
-  { path: "/about/", pageviews: 610, events: 0, device: "tablet", source: "Google", country: "DE" },
-  { path: "/video/", pageviews: 360, events: 0, device: "mobile", source: "LinkedIn", country: "DE" },
+  { path: "/", pageviews: 10840, events: 96, device: "desktop", source: "Google", country: "GB", browser: "Chrome", sourceType: "Search", utmSource: "google", utmMedium: "organic", utmCampaign: "september-launch" },
+  { path: "/services/", pageviews: 6320, events: 72, device: "desktop", source: "Google", country: "GB", browser: "Chrome", sourceType: "Search", utmSource: "google", utmMedium: "cpc", utmCampaign: "september-launch" },
+  { path: "/work/", pageviews: 4610, events: 41, device: "desktop", source: "Direct", country: "GB", browser: "Safari", sourceType: "Direct", utmSource: "", utmMedium: "", utmCampaign: "" },
+  { path: "/contact/", pageviews: 2140, events: 124, device: "mobile", source: "Google", country: "US", browser: "Safari", sourceType: "Search", utmSource: "google", utmMedium: "cpc", utmCampaign: "september-launch" },
+  { path: "/insights/", pageviews: 1880, events: 25, device: "mobile", source: "LinkedIn", country: "GB", browser: "Chrome", sourceType: "Social", utmSource: "linkedin", utmMedium: "social", utmCampaign: "september-launch" },
+  { path: "/privacy/", pageviews: 980, events: 0, device: "desktop", source: "Direct", country: "GB", browser: "Edge", sourceType: "Direct", utmSource: "", utmMedium: "", utmCampaign: "" },
+  { path: "/terms/", pageviews: 720, events: 0, device: "mobile", source: "Direct", country: "US", browser: "Safari", sourceType: "Direct", utmSource: "", utmMedium: "", utmCampaign: "" },
+  { path: "/about/", pageviews: 610, events: 0, device: "tablet", source: "Google", country: "DE", browser: "Firefox", sourceType: "Search", utmSource: "google", utmMedium: "organic", utmCampaign: "" },
+  { path: "/video/", pageviews: 360, events: 0, device: "mobile", source: "LinkedIn", country: "DE", browser: "Chrome", sourceType: "Social", utmSource: "linkedin", utmMedium: "social", utmCampaign: "" },
 ];
 
 function analyticsFixtureSummary() {
+  const series = Array.from({ length: 30 }, (_, index) => ({
+    day: `2026-09-${String(index + 1).padStart(2, "0")}`,
+    pageviews: 620 + ((index * 97) % 610),
+    events: 6 + ((index * 7) % 19),
+    dailyVisitors: 360 + ((index * 31) % 230),
+  }));
+  const performanceSeries = {
+    LCP: series.map((point, index) => ({ day: point.day, value: 1950 + ((index * 83) % 620), samples: 35 + (index % 14) })),
+    INP: series.map((point, index) => ({ day: point.day, value: 135 + ((index * 17) % 95), samples: 22 + (index % 9) })),
+    CLS: series.map((point, index) => ({ day: point.day, value: 0.025 + ((index * 7) % 5) / 100, samples: 35 + (index % 14) })),
+  };
   return {
     pageviews: 28460,
     events: 358,
     keyEvents: 358,
+    averageDailyVisitors: 474,
+    dailyVisitorMethod: "anonymous_sessions",
     pages: ANALYTICS_FIXTURE_PAGES.map(({ path, pageviews, events }) => ({
       path,
       pageviews,
       events,
     })),
-    series: Array.from({ length: 30 }, (_, index) => ({
-      day: `2026-09-${String(index + 1).padStart(2, "0")}`,
-      pageviews: 620 + ((index * 97) % 610),
-      events: 6 + ((index * 7) % 19),
-    })),
-    sources: [{ name: "Google", count: 12480 }, { name: "Direct", count: 8410 }],
-    countries: [{ name: "GB", count: 18440 }],
-    devices: [{ name: "Desktop", count: 15780 }, { name: "Mobile", count: 11740 }],
-    browsers: [{ name: "Chrome", count: 17480 }, { name: "Safari", count: 7830 }],
+    series,
+    previous: {
+      pageviews: 25320,
+      keyEvents: 334,
+      series: series.map((point, index) => ({ ...point, day: `2026-08-${String(index + 1).padStart(2, "0")}`, pageviews: Math.round(point.pageviews * 0.89), events: Math.round(point.events * 0.91), dailyVisitors: Math.round(point.dailyVisitors * 0.92) })),
+      performance: { series: Object.fromEntries(Object.entries(performanceSeries).map(([metric, points]) => [metric, points.map((point: any, index) => ({ ...point, day: `2026-08-${String(index + 1).padStart(2, "0")}`, value: point.value * 1.08 }))])) },
+    },
+    sources: [
+      { name: "Google", pageviews: 10020, events: 142 },
+      { name: "Direct / unknown", pageviews: 8120, events: 92 },
+      { name: "LinkedIn", pageviews: 3260, events: 41 },
+      { name: "Instagram", pageviews: 2190, events: 29 },
+      { name: "Other referrals", pageviews: 4870, events: 54 },
+    ],
+    countries: [{ name: "GB", count: 19353 }, { name: "US", count: 3984 }, { name: "DE", count: 2846 }, { name: "Unknown", count: 2277 }],
+    devices: [{ name: "Desktop", count: 17645 }, { name: "Mobile", count: 9961 }, { name: "Tablet", count: 854 }],
+    browsers: [{ name: "Chrome", count: 16507 }, { name: "Safari", count: 7684 }, { name: "Edge", count: 2846 }, { name: "Firefox", count: 1423 }],
+    screens: [{ name: "Large · 1280px+", count: 14515 }, { name: "Medium · 768–1279px", count: 3984 }, { name: "Small · under 768px", count: 9961 }],
+    eventBreakdown: [
+      { name: "successful-form-submission", count: 124 },
+      { name: "downloads", count: 86 },
+      { name: "telephone-clicks", count: 68 },
+      { name: "email-clicks", count: 50 },
+      { name: "outbound-clicks", count: 30 },
+    ],
     engagement: {
-      engagedSessions: 18420,
-      averageActiveSeconds: 138,
-      scroll75Rate: 42,
-      keyEventRate: 1.3,
+      eligiblePageviews: 28460,
+      engagedPageviews: 18402,
+      medianScrollDepth: 64,
+      pageviewsWithKeyEvents: 318,
+      medianActiveSeconds: 102,
+      engagementRate: 64.7,
+      javascriptErrors: 36,
+      scrollDepth: [{ depth: 25, pageviews: 21320 }, { depth: 50, pageviews: 16840 }, { depth: 75, pageviews: 10260 }, { depth: 90, pageviews: 6740 }],
+      pages: [{ path: "/services/", engagedViews: 4820 }, { path: "/work/", engagedViews: 3940 }, { path: "/contact/", engagedViews: 1740 }, { path: "/insights/", engagedViews: 1480 }],
+      visibleSections: [{ name: "services", count: 13250 }],
+      collectionStatus: "available",
     },
     vitals: [
       { name: "LCP", value: 2300, samples: 1248 },
       { name: "INP", value: 168, samples: 1109 },
       { name: "CLS", value: 0.04, samples: 1248 },
     ],
+    performance: {
+      vitals: [
+        { name: "LCP", value: 2300, samples: 1248, percentile: 75 },
+        { name: "INP", value: 168, samples: 742, percentile: 75 },
+        { name: "CLS", value: 0.04, samples: 1248, percentile: 75 },
+      ],
+      series: performanceSeries,
+      eligibleGoodExperienceViews: 1040,
+      goodExperiencesPercent: 83,
+      minimumSamples: 75,
+      method: "p75",
+    },
     filterOptions: {
       paths: ANALYTICS_FIXTURE_PAGES.map((page) => page.path),
       devices: ["desktop", "mobile", "tablet"],
       sources: ["Direct", "Google", "LinkedIn"],
       countries: ["DE", "GB", "US"],
+      browsers: ["Chrome", "Edge", "Firefox", "Safari"],
+      eventNames: ["downloads", "email-clicks", "outbound-clicks", "successful-form-submission", "telephone-clicks"],
+      metrics: ["CLS", "INP", "LCP"],
+      sourceTypes: ["Direct", "Referral", "Search", "Social"],
+      utmSources: ["google", "linkedin", "instagram"],
+      utmMediums: ["cpc", "organic", "social"],
+      utmCampaigns: ["september-launch"],
     },
   };
 }
 
 function filterAnalyticsFixture(filters: AnalyticsPageFilters) {
+  const summary = analyticsFixtureSummary();
+  if (!hasAnalyticsPageFilters(filters)) return summary;
   const pageSearch = filters.pageSearch?.trim().toLocaleLowerCase();
-  const pathValue = filters.pathValue
+  const normalizedPathValue = filters.pathValue
     ? normalisePagePath(filters.pathValue).toLocaleLowerCase()
     : "";
+  const pathValue = filters.pathMode === "prefix" && normalizedPathValue !== "/"
+    ? normalizedPathValue.replace(/\/$/, "")
+    : normalizedPathValue;
   const rows = ANALYTICS_FIXTURE_PAGES.filter((page) => {
     const path = page.path.toLocaleLowerCase();
     if (pageSearch && !path.includes(pageSearch)) return false;
@@ -5344,14 +5937,57 @@ function filterAnalyticsFixture(filters: AnalyticsPageFilters) {
     if (filters.device && page.device !== filters.device.toLocaleLowerCase()) return false;
     if (filters.source && page.source !== filters.source) return false;
     if (filters.country && page.country !== filters.country) return false;
+    if (filters.browser && page.browser !== filters.browser) return false;
+    if (filters.sourceType && page.sourceType !== filters.sourceType) return false;
+    if (filters.utmSource && page.utmSource !== filters.utmSource) return false;
+    if (filters.utmMedium && page.utmMedium !== filters.utmMedium) return false;
+    if (filters.utmCampaign && page.utmCampaign !== filters.utmCampaign) return false;
     return true;
   });
+  const pageviews = rows.reduce((sum, page) => sum + page.pageviews, 0);
+  const rowEvents = rows.reduce((sum, page) => sum + page.events, 0);
+  const eventBreakdown = filters.eventName
+    ? summary.eventBreakdown.filter((event) => event.name === filters.eventName)
+    : summary.eventBreakdown;
+  const events = filters.eventName
+    ? eventBreakdown.reduce((sum, event) => sum + event.count, 0)
+    : rowEvents;
+  const aggregate = (field: string, key: string) => {
+    const values = new Map<string, number>();
+    for (const row of rows as Record<string, any>[]) {
+      const name = String(row[field] || "Unknown");
+      values.set(name, (values.get(name) || 0) + Number(row[key] || 0));
+    }
+    return [...values].map(([name, count]) => ({ name, count })).sort((left, right) => right.count - left.count);
+  };
+  const pageviewRatio = summary.pageviews ? pageviews / summary.pageviews : 0;
+  const eventRatio = summary.events ? events / summary.events : 0;
   return {
-    ...analyticsFixtureSummary(),
-    pageviews: rows.reduce((sum, page) => sum + page.pageviews, 0),
-    events: rows.reduce((sum, page) => sum + page.events, 0),
-    keyEvents: rows.reduce((sum, page) => sum + page.events, 0),
+    ...summary,
+    pageviews,
+    events,
+    keyEvents: events,
     pages: rows.map(({ path, pageviews, events }) => ({ path, pageviews, events })),
+    sources: rows.map((row) => ({ name: row.source === "Direct" ? "Direct / unknown" : row.source, pageviews: row.pageviews, events: row.events })),
+    countries: aggregate("country", "pageviews"),
+    devices: aggregate("device", "pageviews"),
+    browsers: aggregate("browser", "pageviews"),
+    eventBreakdown,
+    series: summary.series.map((point) => ({
+      ...point,
+      pageviews: Math.round(point.pageviews * pageviewRatio),
+      events: Math.round(point.events * eventRatio),
+      dailyVisitors: Math.round(point.dailyVisitors * pageviewRatio),
+    })),
+    performance: {
+      ...summary.performance,
+      vitals: filters.metric
+        ? summary.performance.vitals.filter((vital) => vital.name === filters.metric)
+        : summary.performance.vitals,
+      series: filters.metric
+        ? { [filters.metric]: (summary.performance.series as Record<string, any[]>)[filters.metric] || [] }
+        : summary.performance.series,
+    },
   };
 }
 
@@ -5364,6 +6000,13 @@ function analyticsPageFiltersFromParams(params: URLSearchParams): AnalyticsPageF
     device: params.get("device") || undefined,
     source: params.get("source") || undefined,
     country: params.get("country") || undefined,
+    browser: params.get("browser") || undefined,
+    eventName: params.get("eventName") || undefined,
+    metric: params.get("metric") || undefined,
+    sourceType: params.get("sourceType") || undefined,
+    utmSource: params.get("utmSource") || undefined,
+    utmMedium: params.get("utmMedium") || undefined,
+    utmCampaign: params.get("utmCampaign") || undefined,
   };
 }
 
@@ -5377,6 +6020,13 @@ function analyticsPageFilterQuery(filters: AnalyticsPageFilters) {
   if (filters.device) params.set("device", filters.device);
   if (filters.source) params.set("source", filters.source);
   if (filters.country) params.set("country", filters.country);
+  if (filters.browser) params.set("browser", filters.browser);
+  if (filters.eventName) params.set("event_name", filters.eventName);
+  if (filters.metric) params.set("metric", filters.metric);
+  if (filters.sourceType) params.set("source_type", filters.sourceType);
+  if (filters.utmSource) params.set("utm_source", filters.utmSource);
+  if (filters.utmMedium) params.set("utm_medium", filters.utmMedium);
+  if (filters.utmCampaign) params.set("utm_campaign", filters.utmCampaign);
   return params.toString();
 }
 
@@ -5386,7 +6036,14 @@ function hasAnalyticsPageFilters(filters: AnalyticsPageFilters) {
       filters.pathValue ||
       filters.device ||
       filters.source ||
-      filters.country,
+      filters.country ||
+      filters.browser ||
+      filters.eventName ||
+      filters.metric ||
+      filters.sourceType ||
+      filters.utmSource ||
+      filters.utmMedium ||
+      filters.utmCampaign,
   );
 }
 

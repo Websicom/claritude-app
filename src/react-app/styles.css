@@ -1774,6 +1774,22 @@ input[type="checkbox"]:checked:after {
 .checkstrip button.warn {
   background: var(--red);
 }
+.checkstrip button.available {
+  background: #1f8b4c;
+}
+.checkstrip button.missing {
+  background: #dfe3e6;
+}
+.checkstrip button.suppressed {
+  background: repeating-linear-gradient(135deg, #f2b84b 0 4px, #fff1c9 4px 8px);
+}
+.online-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #1f8b4c;
+  font-size: 13px;
+}
 .section-filters {
   padding: 8px 0;
   border-bottom: 1px solid var(--line);
@@ -1857,6 +1873,59 @@ input[type="checkbox"]:checked:after {
 }
 .analytics-pages-table th:nth-child(3) {
   width: 19%;
+}
+.analytics-three-column-table th:first-child {
+  width: 58%;
+}
+.analytics-three-column-table th:nth-child(2) {
+  width: 26%;
+}
+.analytics-three-column-table th:nth-child(3) {
+  width: 16%;
+}
+.analytics-value-table th:first-child {
+  width: 72%;
+}
+.analytics-value-table th:nth-child(2) {
+  width: 28%;
+}
+.analytics-overview-bottom {
+  grid-template-columns: 1.15fr 1fr 1fr;
+}
+.dimension-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 21px;
+}
+.dimension-mark {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 5px;
+  background: #f1f1f3;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+.dimension-mark svg {
+  width: 14px;
+  height: 14px;
+}
+.dimension-mark.google { color: #4285f4; background: #fff; }
+.dimension-mark.linkedin { color: #fff; background: #0a66c2; }
+.dimension-mark.instagram { color: #fff; background: linear-gradient(135deg, #4f5bd5, #c13584, #fd1d1d, #fcb045); }
+.dimension-mark.chrome { color: #34a853; }
+.dimension-mark.safari { color: #1688df; }
+.dimension-mark.edge { color: #087ea4; }
+.dimension-mark.firefox { color: #9b5de5; }
+.dimension-flag {
+  width: 20px;
+  display: inline-grid;
+  place-items: center;
+  font-size: 15px;
 }
 .analytics-filter-menu {
   top: 38px;
@@ -2012,6 +2081,9 @@ input[type="checkbox"]:checked:after {
 .audit-score.warn {
   color: #e58900;
 }
+.audit-score.partial span {
+  font-size: 12px;
+}
 .audit-summary {
   display: flex;
   gap: 9px;
@@ -2029,6 +2101,9 @@ input[type="checkbox"]:checked:after {
 .audit-summary-item:hover {
   background: var(--soft);
   border-color: var(--line);
+}
+.audit-summary-item.selected {
+  border-color: var(--ink);
 }
 .audit-summary-item svg {
   width: 17px;
@@ -2052,11 +2127,69 @@ input[type="checkbox"]:checked:after {
 .severity-icon svg {
   width: 17px;
 }
+.audit-overview-filter {
+  margin-bottom: 8px;
+}
+.audit-overview-filter-menu {
+  left: 12px;
+  top: 92px;
+}
+.audit-performance-mode {
+  width: max-content;
+  margin: 0 0 8px 0;
+}
+.audit-review-row,
+.audit-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.audit-detail-label {
+  display: block;
+  margin: 12px 0 5px;
+}
+.audit-detail code {
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.audit-detail-actions {
+  margin-top: 12px;
+}
+.audit-detail-actions .btn {
+  width: max-content;
+}
+.instruction-code {
+  display: block;
+  padding: 14px;
+  border-radius: 8px;
+  background: #101010;
+  color: #fff;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.error-note {
+  padding: 10px 12px;
+  border: 1px solid #f2b9b9;
+  border-radius: 8px;
+  background: #fff6f6;
+  color: var(--red);
+}
 .sev-critical {
+  color: var(--red);
+}
+.sev-high {
   color: var(--red);
 }
 .sev-warning {
   color: var(--amber);
+}
+.sev-medium {
+  color: var(--amber);
+}
+.sev-informational,
+.sev-info {
+  color: var(--muted);
 }
 .sev-pass {
   color: var(--green);
@@ -2103,6 +2236,15 @@ input[type="checkbox"]:checked:after {
 }
 .live-chart {
   height: 220px;
+}
+.chart-axis-label {
+  fill: #7b8190;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.chart-x-label {
+  font-size: 9px;
 }
 .series-fill {
   fill: rgba(0, 201, 137, 0.12);
@@ -2199,6 +2341,16 @@ input[type="checkbox"]:checked:after {
 .row-action-menu {
   top: 38px;
   right: 0;
+}
+.chart-menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.chart-context-menu {
+  top: 40px;
+  right: 0;
+  left: auto;
+  min-width: 180px;
 }
 .audit-nav-row,
 .panel-head {

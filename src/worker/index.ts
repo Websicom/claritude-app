@@ -734,7 +734,9 @@ app.get("/api/properties/:id/audits", async (c) => {
             : "General",
           subcategory: definition?.subcategory || "General",
           severity: definition?.severity || "informational",
+          description: definition?.description || result.title_snapshot || "Recorded audit result.",
           recommendation: definition?.recommendation || "Review the evidence.",
+          source_reference: definition?.sourceReference || null,
         };
       });
       return {
@@ -801,48 +803,72 @@ app.post("/api/monitors/:id/check", async (c) => {
 app.get("/api/monitors/:id/checks", async (c) => {
   const window = requestedWindow(c);
   if (!window) return c.json({ error: "invalid_date_range" }, 400);
-  const { data, error } = await c
-    .get("db")
-    .from("uptime_checks")
-    .select("id,checked_at,success,status_code,response_ms,error_code,suppressed_by_maintenance")
-    .eq("monitor_id", c.req.param("id"))
-    .gte("checked_at", window.from)
-    .lte("checked_at", window.to)
-    .order("checked_at", { ascending: true })
-    .limit(10000);
-  if (error) return c.json({ error: error.message }, 400);
-  const checks = data || [];
-  const eligible = checks.filter((x) => !x.suppressed_by_maintenance);
-  const successful = eligible.filter((x) => x.success);
-  const responseValues = successful
-    .map((x) => x.response_ms)
-    .filter((x): x is number => typeof x === "number")
-    .sort((a, b) => a - b);
-  const percentile = (p: number) =>
-    responseValues.length
-      ? responseValues[Math.min(responseValues.length - 1, Math.floor((responseValues.length - 1) * p))]
-      : null;
-  const byDay = new Map<string, { total: number; successful: number }>();
-  for (const check of eligible) {
-    const day = check.checked_at.slice(0, 10);
-    const current = byDay.get(day) || { total: 0, successful: 0 };
-    current.total += 1;
-    if (check.success) current.successful += 1;
-    byDay.set(day, current);
-  }
-  return c.json({
-    checks,
-    summary: {
+  const duration = new Date(window.to).valueOf() - new Date(window.from).valueOf() + 1;
+  const previousTo = new Date(new Date(window.from).valueOf() - 1);
+  const previousFrom = new Date(previousTo.valueOf() - duration + 1);
+  const fields = "id,checked_at,success,status_code,response_ms,error_code,suppressed_by_maintenance";
+  const [currentResult, previousResult] = await Promise.all([
+    c.get("db")
+      .from("uptime_checks")
+      .select(fields)
+      .eq("monitor_id", c.req.param("id"))
+      .gte("checked_at", window.from)
+      .lte("checked_at", window.to)
+      .order("checked_at", { ascending: true })
+      .limit(10000),
+    c.get("db")
+      .from("uptime_checks")
+      .select(fields)
+      .eq("monitor_id", c.req.param("id"))
+      .gte("checked_at", previousFrom.toISOString())
+      .lte("checked_at", previousTo.toISOString())
+      .order("checked_at", { ascending: true })
+      .limit(10000),
+  ]);
+  if (currentResult.error) return c.json({ error: currentResult.error.message }, 400);
+  if (previousResult.error) return c.json({ error: previousResult.error.message }, 400);
+  const checks = currentResult.data || [];
+  const previousChecks = previousResult.data || [];
+  const summarize = (rows: typeof checks) => {
+    const eligible = rows.filter((x) => !x.suppressed_by_maintenance);
+    const successful = eligible.filter((x) => x.success);
+    const responseValues = successful
+      .map((x) => x.response_ms)
+      .filter((x): x is number => typeof x === "number")
+      .sort((a, b) => a - b);
+    const percentile = (p: number) =>
+      responseValues.length
+        ? responseValues[Math.min(responseValues.length - 1, Math.floor((responseValues.length - 1) * p))]
+        : null;
+    return {
       total: eligible.length,
       successful: successful.length,
-      suppressed: checks.length - eligible.length,
+      suppressed: rows.length - eligible.length,
       availability: eligible.length ? (successful.length / eligible.length) * 100 : null,
       averageResponseMs: responseValues.length
         ? Math.round(responseValues.reduce((a, b) => a + b, 0) / responseValues.length)
         : null,
       medianResponseMs: percentile(0.5),
       p95ResponseMs: percentile(0.95),
-    },
+    };
+  };
+  const byDay = new Map<string, { total: number; successful: number; suppressed: number }>();
+  for (let cursor = new Date(`${window.from.slice(0, 10)}T00:00:00.000Z`); cursor <= new Date(window.to); cursor = new Date(cursor.valueOf() + 864e5))
+    byDay.set(cursor.toISOString().slice(0, 10), { total: 0, successful: 0, suppressed: 0 });
+  for (const check of checks) {
+    const day = check.checked_at.slice(0, 10);
+    const current = byDay.get(day) || { total: 0, successful: 0, suppressed: 0 };
+    if (check.suppressed_by_maintenance) current.suppressed += 1;
+    else {
+      current.total += 1;
+      if (check.success) current.successful += 1;
+    }
+    byDay.set(day, current);
+  }
+  return c.json({
+    checks,
+    summary: summarize(checks),
+    previous: { checks: previousChecks, summary: summarize(previousChecks) },
     days: [...byDay].map(([day, value]) => ({ day, ...value })),
   });
 });
@@ -1039,6 +1065,7 @@ app.post("/api/properties/:id/events", async (c) => {
     name: string;
     eventType: string;
     description?: string;
+    matchSettings?: Record<string, unknown>;
   }>();
   const name = body.name
     ?.trim()
@@ -1051,6 +1078,8 @@ app.post("/api/properties/:id/events", async (c) => {
     ? body.eventType
     : "click";
   if (!name) return c.json({ error: "event_name_required" }, 400);
+  const matchSettings = sanitizeEventMatchSettings(eventType, body.matchSettings);
+  if (!matchSettings) return c.json({ error: "valid_event_match_settings_required" }, 400);
   const { data, error } = await c
     .get("db")
     .from("event_definitions")
@@ -1059,6 +1088,7 @@ app.post("/api/properties/:id/events", async (c) => {
       name,
       event_type: eventType,
       description: body.description?.trim().slice(0, 240) || null,
+      match_settings: matchSettings,
     })
     .select()
     .single();
@@ -1215,20 +1245,6 @@ app.get("/api/account/export", async (c) => {
 app.get("/api/properties/:id/analytics", async (c) => {
   const window = requestedWindow(c);
   if (!window) return c.json({ error: "invalid_date_range" }, 400);
-  const query = c
-    .get("db")
-    .from("analytics_events")
-    .select(
-      "event_type,path,referrer_host,source,device,country_code,name,value,metadata,occurred_at",
-    )
-    .eq("property_id", c.req.param("id"))
-    .gte("occurred_at", window.from)
-    .lte("occurred_at", window.to)
-    .order("occurred_at", { ascending: true })
-    .limit(50000);
-  const { data, error } = await query;
-  if (error) return c.json({ error: error.message }, 400);
-  const events = data || [];
   const filters: AnalyticsFilters = {
     pageSearch: cleanAnalyticsFilter(c.req.query("page_search"), 120),
     pathMode: ["exact", "prefix"].includes(c.req.query("path_mode") || "")
@@ -1238,13 +1254,55 @@ app.get("/api/properties/:id/analytics", async (c) => {
     device: cleanAnalyticsFilter(c.req.query("device"), 40),
     source: cleanAnalyticsFilter(c.req.query("source"), 255),
     country: cleanAnalyticsFilter(c.req.query("country"), 20),
+    browser: cleanAnalyticsFilter(c.req.query("browser"), 60),
+    eventName: cleanAnalyticsFilter(c.req.query("event_name"), 80),
+    metric: cleanAnalyticsFilter(c.req.query("metric"), 20),
+    sourceType: cleanAnalyticsFilter(c.req.query("source_type"), 40),
+    utmSource: cleanAnalyticsFilter(c.req.query("utm_source"), 100),
+    utmMedium: cleanAnalyticsFilter(c.req.query("utm_medium"), 100),
+    utmCampaign: cleanAnalyticsFilter(c.req.query("utm_campaign"), 100),
   };
+  const db = c.get("db");
+  const select = "event_type,path,referrer_host,source,device,country_code,name,value,metadata,occurred_at";
+  const span = new Date(window.to).valueOf() - new Date(window.from).valueOf() + 1;
+  const previousTo = new Date(new Date(window.from).valueOf() - 1).toISOString();
+  const previousFrom = new Date(new Date(window.from).valueOf() - span).toISOString();
+  const [currentResult, previousResult] = await Promise.all([
+    db
+      .from("analytics_events")
+      .select(select)
+      .eq("property_id", c.req.param("id"))
+      .gte("occurred_at", window.from)
+      .lte("occurred_at", window.to)
+      .order("occurred_at", { ascending: true })
+      .limit(50000),
+    db
+      .from("analytics_events")
+      .select(select)
+      .eq("property_id", c.req.param("id"))
+      .gte("occurred_at", previousFrom)
+      .lte("occurred_at", previousTo)
+      .order("occurred_at", { ascending: true })
+      .limit(50000),
+  ]);
+  if (currentResult.error || previousResult.error)
+    return c.json({ error: (currentResult.error || previousResult.error)?.message }, 400);
+  const events = currentResult.data || [];
+  const previousEvents = previousResult.data || [];
+  const filtered = filterAnalyticsEvents(events, filters);
+  const filteredPrevious = filterAnalyticsEvents(previousEvents, filters);
   return c.json({
     ...buildAnalyticsSummary(
-      filterAnalyticsEvents(events, filters),
+      filtered,
       window.days,
       window.from,
       window.to,
+    ),
+    previous: buildAnalyticsSummary(
+      filteredPrevious,
+      window.days,
+      previousFrom,
+      previousTo,
     ),
     // Filtering can reduce the returned set below the query ceiling. Preserve
     // whether the underlying property/date result hit that ceiling so the UI
@@ -1833,7 +1891,7 @@ async function scheduled(env: Env, cron: string) {
       .from("uptime_monitors")
       .select("id")
       .eq("enabled", true)
-      .lte("next_check_at", new Date().toISOString())
+      .lte("next_check_at", uptimeDueHorizon())
       .limit(100);
     await Promise.all(
       (data || []).map((m) => env.JOBS.send({ type: "uptime", id: m.id })),
@@ -1844,6 +1902,13 @@ async function scheduled(env: Env, cron: string) {
     });
     await runDueReportSchedules(env, db);
   }
+}
+
+export function uptimeDueHorizon(now = Date.now()) {
+  // Cron fires on the five-minute boundary, while a completed check records its
+  // next due time a few seconds later. A bounded look-ahead prevents every
+  // second tick being skipped without treating materially early monitors as due.
+  return new Date(now + 60_000).toISOString();
 }
 
 async function runDueReportSchedules(env: Env, db: SupabaseClient) {
@@ -1979,6 +2044,8 @@ function sanitizeEvent(
     "active_time",
     "form_success",
     "web_vital",
+    "js_error",
+    "visible_section",
   ];
   if (!kinds.includes(e?.type)) return null;
   const path = cleanPath(e.path);
@@ -2026,8 +2093,8 @@ export function buildAnalyticsSummary(
   to = new Date().toISOString(),
 ) {
   const pageMap = new Map<string, { pageviews: number; events: number }>();
-  const seriesMap = new Map<string, { pageviews: number; events: number }>();
-  const sourceMap = new Map<string, number>();
+  const seriesMap = new Map<string, { pageviews: number; events: number; sessions: Set<string> }>();
+  const sourceMap = new Map<string, { pageviews: number; events: number }>();
   const countryMap = new Map<string, number>();
   const deviceMap = new Map<string, number>();
   const browserMap = new Map<string, number>();
@@ -2036,32 +2103,61 @@ export function buildAnalyticsSummary(
   const eventMap = new Map<string, number>();
   const sessions = new Set<string>();
   const vitals = new Map<string, number[]>();
+  const vitalDays = new Map<string, Map<string, number[]>>();
+  const views = new Map<string, {
+    path: string;
+    activeSeconds: number;
+    maxScroll: number;
+    keyEvents: number;
+    jsErrors: number;
+    visibleSections: Set<string>;
+    vitals: Map<string, number>;
+  }>();
   let pageviews = 0;
   let keyEvents = 0;
-  let activeSeconds = 0;
-  let activeSamples = 0;
-  let scroll75 = 0;
+  let javascriptErrors = 0;
   const bump = (map: Map<string, number>, key: unknown, amount = 1) => {
     const clean = String(key || "Unknown").trim() || "Unknown";
     map.set(clean, (map.get(clean) || 0) + amount);
+  };
+  const sourceEntry = (name: string) => {
+    const current = sourceMap.get(name) || { pageviews: 0, events: 0 };
+    sourceMap.set(name, current);
+    return current;
   };
   for (const event of events) {
     const path = normalizeAnalyticsPath(event.path);
     const page = pageMap.get(path) || { pageviews: 0, events: 0 };
     const day = String(event.occurred_at).slice(0, 10);
-    const point = seriesMap.get(day) || { pageviews: 0, events: 0 };
+    const point = seriesMap.get(day) || { pageviews: 0, events: 0, sessions: new Set<string>() };
+    const viewId = typeof event.metadata?.view_id === "string" ? event.metadata.view_id : "";
     if (event.event_type === "pageview") {
       pageviews += 1;
       page.pageviews += 1;
       point.pageviews += 1;
-      bump(sourceMap, event.source || event.referrer_host || "Direct");
+      const source = analyticsSourceCategory(event);
+      sourceEntry(source).pageviews += 1;
       bump(countryMap, event.country_code || "Unknown");
       bump(deviceMap, event.device || "Unknown");
       bump(browserMap, event.metadata?.browser || "Unknown");
-      bump(screenMap, event.metadata?.screen || event.device || "Unknown");
+      bump(screenMap, analyticsScreenCategory(event.metadata?.screen));
       if (event.metadata?.utm_campaign)
         bump(campaignMap, event.metadata.utm_campaign);
-      if (event.metadata?.session) sessions.add(event.metadata.session);
+      if (event.metadata?.session) {
+        sessions.add(event.metadata.session);
+        point.sessions.add(event.metadata.session);
+      }
+      if (viewId && !views.has(viewId)) {
+        views.set(viewId, {
+          path,
+          activeSeconds: 0,
+          maxScroll: 0,
+          keyEvents: 0,
+          jsErrors: 0,
+          visibleSections: new Set<string>(),
+          vitals: new Map<string, number>(),
+        });
+      }
     }
     const keyEvent = ["click", "outbound", "form_success"].includes(event.event_type);
     if (keyEvent) {
@@ -2069,27 +2165,89 @@ export function buildAnalyticsSummary(
       page.events += 1;
       point.events += 1;
       bump(eventMap, event.name || event.event_type);
+      sourceEntry(analyticsSourceCategory(event)).events += 1;
+      if (viewId && views.has(viewId)) views.get(viewId)!.keyEvents += 1;
     }
-    if (event.event_type === "active_time" && Number.isFinite(event.value)) {
-      activeSeconds += Number(event.value);
-      activeSamples += 1;
+    if (event.event_type === "active_time" && Number.isFinite(event.value) && viewId && views.has(viewId))
+      views.get(viewId)!.activeSeconds += Number(event.value);
+    if (event.event_type === "scroll" && Number.isFinite(event.value) && viewId && views.has(viewId))
+      views.get(viewId)!.maxScroll = Math.max(views.get(viewId)!.maxScroll, Number(event.value));
+    if (event.event_type === "js_error") {
+      javascriptErrors += 1;
+      if (viewId && views.has(viewId)) views.get(viewId)!.jsErrors += 1;
     }
-    if (event.event_type === "scroll" && Number(event.value) >= 75) scroll75 += 1;
+    if (event.event_type === "visible_section" && event.name && viewId && views.has(viewId))
+      views.get(viewId)!.visibleSections.add(String(event.name));
     if (event.event_type === "web_vital" && event.name && Number.isFinite(event.value)) {
-      const samples = vitals.get(event.name) || [];
+      const name = String(event.name).toUpperCase();
+      const samples = vitals.get(name) || [];
       samples.push(Number(event.value));
-      vitals.set(event.name, samples);
+      vitals.set(name, samples);
+      const daily = vitalDays.get(name) || new Map<string, number[]>();
+      const dailySamples = daily.get(day) || [];
+      dailySamples.push(Number(event.value));
+      daily.set(day, dailySamples);
+      vitalDays.set(name, daily);
+      if (viewId && views.has(viewId)) views.get(viewId)!.vitals.set(name, Number(event.value));
     }
     if (event.event_type === "pageview" || keyEvent) pageMap.set(path, page);
     seriesMap.set(day, point);
   }
   const ranked = (map: Map<string, number>) =>
     [...map].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count }));
+  const percentile = (values: number[], fraction: number) => {
+    if (!values.length) return null;
+    const ordered = [...values].sort((a, b) => a - b);
+    return ordered[Math.min(ordered.length - 1, Math.ceil(ordered.length * fraction) - 1)];
+  };
   const vitalRows = [...vitals].map(([name, values]) => ({
     name,
-    value: Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 100) / 100,
+    value: Math.round(Number(percentile(values, 0.75)) * 100) / 100,
     samples: values.length,
+    percentile: 75,
   }));
+  const fromDay = from.slice(0, 10);
+  const toDay = to.slice(0, 10);
+  const calendarDays: string[] = [];
+  for (let cursor = new Date(`${fromDay}T00:00:00.000Z`), index = 0;
+    cursor <= new Date(`${toDay}T00:00:00.000Z`) && index < 91;
+    cursor = new Date(cursor.valueOf() + 864e5), index += 1)
+    calendarDays.push(cursor.toISOString().slice(0, 10));
+  const eligibleViews = [...views.values()];
+  const engagedViews = eligibleViews.filter(
+    (view) => view.activeSeconds >= 10 || view.maxScroll >= 50 || view.keyEvents > 0,
+  );
+  const activeTimes = eligibleViews.map((view) => view.activeSeconds);
+  const scrollDepths = eligibleViews.map((view) => view.maxScroll);
+  const engagedPageMap = new Map<string, number>();
+  const visibleSectionMap = new Map<string, number>();
+  for (const view of engagedViews) bump(engagedPageMap, view.path);
+  for (const view of eligibleViews)
+    for (const section of view.visibleSections) bump(visibleSectionMap, section);
+  const scrollDepth = [25, 50, 75, 90].map((depth) => ({
+    depth,
+    pageviews: eligibleViews.filter((view) => view.maxScroll >= depth).length,
+  }));
+  const vitalSeries = Object.fromEntries(
+    [...vitalDays].map(([name, values]) => [
+      name,
+      calendarDays.map((day) => ({
+        day,
+        value: values.has(day) ? percentile(values.get(day)!, 0.75) : null,
+        samples: values.get(day)?.length || 0,
+      })),
+    ]),
+  );
+  const goodVitalViews = eligibleViews.filter((view) =>
+    view.vitals.has("LCP") &&
+    view.vitals.has("INP") &&
+    view.vitals.has("CLS"),
+  );
+  const goodExperiences = goodVitalViews.filter((view) =>
+    view.vitals.get("LCP")! <= 2500 &&
+    view.vitals.get("INP")! <= 200 &&
+    view.vitals.get("CLS")! <= 0.1,
+  ).length;
   return {
     from,
     to,
@@ -2097,14 +2255,24 @@ export function buildAnalyticsSummary(
     events: events.length,
     keyEvents,
     sessions: sessions.size,
+    averageDailyVisitors: sessions.size
+      ? Math.round(calendarDays.reduce((total, day) => total + (seriesMap.get(day)?.sessions.size || 0), 0) / Math.max(1, calendarDays.length))
+      : null,
+    dailyVisitorMethod: sessions.size ? "anonymous_sessions" : "unavailable",
     truncated: events.length >= 50000,
     pages: [...pageMap]
       .map(([path, value]) => ({ path, ...value }))
       .sort((a, b) => b.pageviews - a.pageviews),
-    series: [...seriesMap]
-      .map(([day, value]) => ({ day, ...value }))
-      .sort((a, b) => a.day.localeCompare(b.day)),
-    sources: ranked(sourceMap),
+    series: calendarDays.map((day) => ({
+      day,
+      pageviews: seriesMap.get(day)?.pageviews || 0,
+      events: seriesMap.get(day)?.events || 0,
+      dailyVisitors: seriesMap.get(day)?.sessions.size || 0,
+    })),
+    sources: [...sourceMap]
+      .map(([name, value]) => ({ name, ...value }))
+      .filter((source) => source.pageviews || source.events)
+      .sort((a, b) => b.pageviews - a.pageviews),
     countries: ranked(countryMap),
     devices: ranked(deviceMap),
     browsers: ranked(browserMap),
@@ -2112,12 +2280,31 @@ export function buildAnalyticsSummary(
     campaigns: ranked(campaignMap),
     eventBreakdown: ranked(eventMap),
     engagement: {
-      engagedSessions: sessions.size,
-      averageActiveSeconds: activeSamples ? Math.round(activeSeconds / activeSamples) : null,
-      scroll75Rate: pageviews ? (scroll75 / pageviews) * 100 : null,
-      keyEventRate: pageviews ? (keyEvents / pageviews) * 100 : null,
+      eligiblePageviews: eligibleViews.length,
+      engagedPageviews: eligibleViews.length ? engagedViews.length : null,
+      medianScrollDepth: eligibleViews.length ? percentile(scrollDepths, 0.5) : null,
+      pageviewsWithKeyEvents: eligibleViews.length
+        ? eligibleViews.filter((view) => view.keyEvents > 0).length
+        : null,
+      medianActiveSeconds: eligibleViews.length ? percentile(activeTimes, 0.5) : null,
+      engagementRate: eligibleViews.length ? (engagedViews.length / eligibleViews.length) * 100 : null,
+      javascriptErrors,
+      scrollDepth,
+      pages: ranked(engagedPageMap).map(({ name, count }) => ({ path: name, engagedViews: count })),
+      visibleSections: ranked(visibleSectionMap),
+      collectionStatus: eligibleViews.length ? "available" : "historical_view_ids_unavailable",
     },
     vitals: vitalRows,
+    performance: {
+      vitals: vitalRows,
+      series: vitalSeries,
+      eligibleGoodExperienceViews: goodVitalViews.length,
+      goodExperiencesPercent: goodVitalViews.length
+        ? (goodExperiences / goodVitalViews.length) * 100
+        : null,
+      minimumSamples: 75,
+      method: "p75",
+    },
   };
 }
 
@@ -2128,25 +2315,54 @@ export type AnalyticsFilters = {
   device?: string;
   source?: string;
   country?: string;
+  browser?: string;
+  eventName?: string;
+  metric?: string;
+  sourceType?: string;
+  utmSource?: string;
+  utmMedium?: string;
+  utmCampaign?: string;
 };
 
 export function filterAnalyticsEvents(events: any[], filters: AnalyticsFilters) {
   const search = filters.pageSearch?.trim().toLocaleLowerCase();
-  const pathValue = filters.pathValue
+  const normalizedPathValue = filters.pathValue
     ? normalizeAnalyticsPath(filters.pathValue).toLocaleLowerCase()
     : "";
+  const pathValue = filters.pathMode === "prefix" && normalizedPathValue !== "/"
+    ? normalizedPathValue.replace(/\/$/, "")
+    : normalizedPathValue;
   const device = filters.device?.trim().toLocaleLowerCase();
   const source = filters.source?.trim().toLocaleLowerCase();
   const country = filters.country?.trim().toLocaleLowerCase();
+  const browser = filters.browser?.trim().toLocaleLowerCase();
+  const eventName = filters.eventName?.trim().toLocaleLowerCase();
+  const metric = filters.metric?.trim().toLocaleUpperCase();
+  const sourceType = filters.sourceType?.trim().toLocaleLowerCase();
+  const utmSource = filters.utmSource?.trim().toLocaleLowerCase();
+  const utmMedium = filters.utmMedium?.trim().toLocaleLowerCase();
+  const utmCampaign = filters.utmCampaign?.trim().toLocaleLowerCase();
   return events.filter((event) => {
     const path = normalizeAnalyticsPath(event.path).toLocaleLowerCase();
     if (search && !path.includes(search)) return false;
     if (pathValue && filters.pathMode === "exact" && path !== pathValue) return false;
     if (pathValue && filters.pathMode === "prefix" && !path.startsWith(pathValue)) return false;
     if (device && String(event.device || "Unknown").toLocaleLowerCase() !== device) return false;
-    if (source && analyticsSource(event).toLocaleLowerCase() !== source) return false;
+    if (source && analyticsSourceCategory(event).toLocaleLowerCase() !== source && analyticsSource(event).toLocaleLowerCase() !== source) return false;
     if (country && String(event.country_code || "Unknown").toLocaleLowerCase() !== country)
       return false;
+    if (browser && String(event.metadata?.browser || "Unknown").toLocaleLowerCase() !== browser)
+      return false;
+    const isKeyEvent = ["click", "outbound", "form_success"].includes(event.event_type);
+    if (eventName && isKeyEvent && String(event.name || event.event_type).toLocaleLowerCase() !== eventName)
+      return false;
+    if (eventName && !isKeyEvent && event.event_type !== "pageview") return false;
+    if (metric && event.event_type === "web_vital" && String(event.name || "").toLocaleUpperCase() !== metric)
+      return false;
+    if (sourceType && analyticsSourceType(event).toLocaleLowerCase() !== sourceType) return false;
+    if (utmSource && String(event.metadata?.utm_source || "").toLocaleLowerCase() !== utmSource) return false;
+    if (utmMedium && String(event.metadata?.utm_medium || "").toLocaleLowerCase() !== utmMedium) return false;
+    if (utmCampaign && String(event.metadata?.utm_campaign || "").toLocaleLowerCase() !== utmCampaign) return false;
     return true;
   });
 }
@@ -2161,13 +2377,49 @@ function buildAnalyticsFilterOptions(events: any[]) {
         .map((event) => normalizeAnalyticsPath(event.path)),
     ),
     devices: unique(events.map((event) => String(event.device || "Unknown"))),
-    sources: unique(events.map(analyticsSource)),
+    sources: unique(events.map(analyticsSourceCategory)),
     countries: unique(events.map((event) => String(event.country_code || "Unknown"))),
+    browsers: unique(events.map((event) => String(event.metadata?.browser || "Unknown"))),
+    eventNames: unique(events
+      .filter((event) => ["click", "outbound", "form_success"].includes(event.event_type))
+      .map((event) => String(event.name || event.event_type))),
+    metrics: unique(events
+      .filter((event) => event.event_type === "web_vital")
+      .map((event) => String(event.name || "").toUpperCase())),
+    sourceTypes: unique(events.map(analyticsSourceType)),
+    utmSources: unique(events.map((event) => String(event.metadata?.utm_source || ""))),
+    utmMediums: unique(events.map((event) => String(event.metadata?.utm_medium || ""))),
+    utmCampaigns: unique(events.map((event) => String(event.metadata?.utm_campaign || ""))),
   };
 }
 
 function analyticsSource(event: any) {
-  return String(event.source || event.referrer_host || "Direct").trim() || "Direct";
+  return String(event.source || event.metadata?.utm_source || event.referrer_host || "Direct / unknown").trim() || "Direct / unknown";
+}
+
+function analyticsSourceCategory(event: any) {
+  const source = analyticsSource(event).toLocaleLowerCase();
+  if (source === "direct" || source === "direct / unknown") return "Direct / unknown";
+  if (source.includes("google")) return "Google";
+  if (source.includes("linkedin")) return "LinkedIn";
+  if (source.includes("instagram")) return "Instagram";
+  return "Other referrals";
+}
+
+function analyticsSourceType(event: any) {
+  const category = analyticsSourceCategory(event);
+  if (category === "Direct / unknown") return "Direct";
+  if (category === "Google") return "Search";
+  if (["LinkedIn", "Instagram"].includes(category)) return "Social";
+  return event.metadata?.utm_medium ? String(event.metadata.utm_medium) : "Referral";
+}
+
+function analyticsScreenCategory(value: unknown) {
+  const screen = String(value || "Unknown").toLocaleLowerCase();
+  if (screen === "large") return "Large · 1280px+";
+  if (screen === "medium") return "Medium · 768–1279px";
+  if (screen === "small") return "Small · under 768px";
+  return "Unknown";
 }
 
 function cleanAnalyticsFilter(value: string | undefined, maximumLength: number) {
@@ -2390,6 +2642,15 @@ function sanitizeNotificationPreferences(input: Record<string, boolean>) {
   return Object.fromEntries(keys.map((key) => [key, input[key] !== false]));
 }
 
+function sanitizeEventMatchSettings(eventType: string, input?: Record<string, unknown>) {
+  if (eventType === "click") return { method: "data_attribute" };
+  if (eventType === "form_success") return { method: "confirmed_callback" };
+  if (eventType !== "pageview") return null;
+  const mode = input?.mode === "prefix" ? "prefix" : input?.mode === "exact" ? "exact" : null;
+  const path = cleanPath(input?.path);
+  return mode && path ? { mode, path } : null;
+}
+
 function sanitizePropertySettings(input?: Record<string, unknown>) {
   if (!input) return {};
   const output: Record<string, unknown> = {};
@@ -2598,24 +2859,30 @@ function renderReportEmail(snapshot: any) {
 const TRACKER_SOURCE = `(()=>{
   const s=document.currentScript,p=s&&s.dataset.property,endpoint=s&&new URL('/collect',s.src).href;
   if(!p||!endpoint||window.__claritude)return;window.__claritude=1;
-  let q=[],timer,lastUrl=location.href,active=0,reportedActive=0,cls=0,lcp=0,inp=0;
+  let q=[],timer,lastUrl=location.href,active=0,reportedActive=0,cls=0,lcp=0,inp=0,view=crypto.randomUUID(),vitalsSent=false,errorCount=0;
+  const marks=new Set,visibleSections=new Set;
   const params=new URLSearchParams(location.search);
   const session=sessionStorage.getItem('_claritude_session')||crypto.randomUUID();
   sessionStorage.setItem('_claritude_session',session);
   const browser=/Edg\//.test(navigator.userAgent)?'Edge':/Firefox\//.test(navigator.userAgent)?'Firefox':/Chrome\//.test(navigator.userAgent)?'Chrome':/Safari\//.test(navigator.userAgent)?'Safari':'Other';
-  const common=()=>({session,browser,screen:innerWidth<768?'small':innerWidth<1280?'medium':'large',language:navigator.language||'',utm_source:params.get('utm_source')||'',utm_medium:params.get('utm_medium')||'',utm_campaign:params.get('utm_campaign')||'',utm_content:params.get('utm_content')||'',utm_term:params.get('utm_term')||''});
+  const common=()=>({session,view_id:view,browser,screen:innerWidth<768?'small':innerWidth<1280?'medium':'large',language:navigator.language||'',utm_source:params.get('utm_source')||'',utm_medium:params.get('utm_medium')||'',utm_campaign:params.get('utm_campaign')||'',utm_content:params.get('utm_content')||'',utm_term:params.get('utm_term')||''});
   const send=()=>{if(!q.length)return;const body=JSON.stringify(q.splice(0,20));if(navigator.sendBeacon&&document.visibilityState==='hidden')navigator.sendBeacon(endpoint,new Blob([body],{type:'application/json'}));else fetch(endpoint,{method:'POST',headers:{'content-type':'application/json'},body,keepalive:true}).catch(()=>{})};
   const emit=(type,data={})=>{q.push({type,property:p,path:location.pathname,referrer:document.referrer,at:new Date().toISOString(),device:innerWidth<768?'mobile':innerWidth<1024?'tablet':'desktop',meta:common(),...data});clearTimeout(timer);timer=setTimeout(send,500)};
-  const page=()=>emit('pageview',{source:params.get('utm_source')||''});page();
-  const navigation=()=>{if(location.href!==lastUrl){lastUrl=location.href;page()}};
-  new MutationObserver(navigation).observe(document,{subtree:true,childList:true});
-  ['pushState','replaceState'].forEach(k=>{const original=history[k];history[k]=function(...args){const result=original.apply(this,args);queueMicrotask(navigation);return result}});
-  addEventListener('popstate',navigation);
   addEventListener('click',e=>{const a=e.target.closest('[data-claritude-event],a[href]');if(!a)return;const name=a.dataset.claritudeEvent;if(name)emit('click',{name});if(a.href&&new URL(a.href,location.href).host!==location.host)emit('outbound',{name:new URL(a.href).host})},{passive:true});
-  const marks=new Set;addEventListener('scroll',()=>{const height=Math.max(document.documentElement.scrollHeight,1),n=Math.round((scrollY+innerHeight)/height*100);[25,50,75,100].forEach(x=>{if(n>=x&&!marks.has(x)){marks.add(x);emit('scroll',{value:x})}})},{passive:true});
+  addEventListener('scroll',()=>{const height=Math.max(document.documentElement.scrollHeight,1),n=Math.round((scrollY+innerHeight)/height*100);[25,50,75,90].forEach(x=>{if(n>=x&&!marks.has(x)){marks.add(x);emit('scroll',{value:x})}})},{passive:true});
   const reportActive=()=>{const delta=active-reportedActive;if(delta>0){reportedActive=active;emit('active_time',{value:delta})}};
   const tick=setInterval(()=>{if(document.visibilityState==='visible'&&document.hasFocus())active+=5;if(active-reportedActive>=30)reportActive()},5000);
-  const flushVitals=()=>{if(lcp)emit('web_vital',{name:'LCP',value:lcp});if(cls)emit('web_vital',{name:'CLS',value:cls});if(inp)emit('web_vital',{name:'INP',value:inp})};
+  const flushVitals=()=>{if(vitalsSent)return;vitalsSent=true;if(lcp)emit('web_vital',{name:'LCP',value:lcp});if(cls)emit('web_vital',{name:'CLS',value:cls});if(inp)emit('web_vital',{name:'INP',value:inp})};
+  const sectionObserver='IntersectionObserver'in window?new IntersectionObserver(entries=>entries.forEach(entry=>{const name=entry.target.dataset.claritudeSection;if(entry.isIntersecting&&name&&!visibleSections.has(name)){visibleSections.add(name);emit('visible_section',{name})}}),{threshold:.5}):null;
+  const observeSections=()=>sectionObserver&&document.querySelectorAll('[data-claritude-section]').forEach(node=>sectionObserver.observe(node));
+  const page=()=>{emit('pageview',{source:params.get('utm_source')||''});observeSections()};page();
+  const navigation=()=>{if(location.href!==lastUrl){reportActive();flushVitals();send();lastUrl=location.href;view=crypto.randomUUID();active=0;reportedActive=0;cls=0;lcp=0;inp=0;vitalsSent=false;errorCount=0;marks.clear();visibleSections.clear();page()}};
+  new MutationObserver(()=>{navigation();observeSections()}).observe(document,{subtree:true,childList:true});
+  ['pushState','replaceState'].forEach(k=>{const original=history[k];history[k]=function(...args){const result=original.apply(this,args);queueMicrotask(navigation);return result}});
+  addEventListener('popstate',navigation);
+  const reportError=(name,source)=>{if(errorCount>=5)return;errorCount+=1;let resource_origin='';try{resource_origin=source?new URL(source,location.href).origin:''}catch{}emit('js_error',{name,meta:{...common(),resource_origin}})};
+  addEventListener('error',event=>reportError('script-error',event.filename||''),true);
+  addEventListener('unhandledrejection',()=>reportError('promise-rejection',''));
   addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){flushVitals();send()}});
   addEventListener('pagehide',()=>{clearInterval(tick);reportActive();flushVitals();send()});
   window.claritude={event:(name,meta)=>emit('click',{name,meta:{...common(),...meta}}),formSuccess:(name,meta)=>emit('form_success',{name,meta:{...common(),...meta}}),flush:send};

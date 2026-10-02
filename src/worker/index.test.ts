@@ -6,6 +6,7 @@ import {
   isPrivateHost,
   normalizeAnalyticsPath,
   normalizePropertyRelations,
+  uptimeDueHorizon,
   validPublicUrl,
 } from "./index";
 
@@ -31,14 +32,14 @@ describe("worker evidence pipelines", () => {
           source: "Google",
           device: "desktop",
           country_code: "GB",
-          metadata: { browser: "Chrome", screen: "large", session: "tab-1" },
+          metadata: { browser: "Chrome", screen: "large", session: "tab-1", view_id: "view-1" },
           occurred_at: "2026-10-02T00:00:00Z",
         },
         {
           event_type: "scroll",
           path: "/",
           value: 75,
-          metadata: {},
+          metadata: { view_id: "view-1" },
           occurred_at: "2026-10-02T00:00:10Z",
         },
         {
@@ -46,7 +47,7 @@ describe("worker evidence pipelines", () => {
           path: "/",
           name: "LCP",
           value: 2100,
-          metadata: {},
+          metadata: { view_id: "view-1" },
           occurred_at: "2026-10-02T00:00:12Z",
         },
         {
@@ -55,7 +56,7 @@ describe("worker evidence pipelines", () => {
           source: "Direct",
           device: "mobile",
           country_code: "US",
-          metadata: { session: "tab-2" },
+          metadata: { session: "tab-2", view_id: "view-2" },
           occurred_at: "2026-10-02T00:01:00Z",
         },
         {
@@ -64,7 +65,7 @@ describe("worker evidence pipelines", () => {
           name: "contact-click",
           device: "mobile",
           country_code: "US",
-          metadata: {},
+          metadata: { view_id: "view-2" },
           occurred_at: "2026-10-02T00:01:05Z",
         },
         {
@@ -73,7 +74,7 @@ describe("worker evidence pipelines", () => {
           name: "example.org",
           device: "mobile",
           country_code: "US",
-          metadata: {},
+          metadata: { view_id: "view-2" },
           occurred_at: "2026-10-02T00:01:08Z",
         },
       ],
@@ -89,10 +90,12 @@ describe("worker evidence pipelines", () => {
       pageviews: 1,
       events: 2,
     });
-    expect(summary.sources[0]).toEqual({ name: "Google", count: 1 });
+    expect(summary.sources[0]).toEqual({ name: "Google", pageviews: 1, events: 0 });
     expect(summary.countries).toContainEqual({ name: "GB", count: 1 });
-    expect(summary.engagement.scroll75Rate).toBe(50);
-    expect(summary.vitals[0]).toMatchObject({ name: "LCP", value: 2100, samples: 1 });
+    expect(summary.engagement.engagedPageviews).toBe(2);
+    expect(summary.engagement.pageviewsWithKeyEvents).toBe(1);
+    expect(summary.engagement.scrollDepth.find((row) => row.depth === 75)?.pageviews).toBe(1);
+    expect(summary.vitals[0]).toMatchObject({ name: "LCP", value: 2100, samples: 1, percentile: 75 });
   });
 
   it("normalizes paths and combines analytics page filters", () => {
@@ -114,6 +117,9 @@ describe("worker evidence pipelines", () => {
     expect(
       filterAnalyticsEvents(events, { pathMode: "exact", pathValue: "/work/" }),
     ).toEqual([events[0]]);
+    expect(
+      filterAnalyticsEvents(events, { pathMode: "prefix", pathValue: "/wor" }),
+    ).toEqual([events[0], events[1]]);
   });
 
   it("executes source and header checks with evidence", () => {
@@ -156,5 +162,11 @@ describe("worker evidence pipelines", () => {
     expect(validPublicUrl("https://user:secret@example.com/")).toBeNull();
     expect(validPublicUrl("file:///etc/passwd")).toBeNull();
     expect(validPublicUrl("https://example.com/path")?.hostname).toBe("example.com");
+  });
+
+  it("gives five-minute uptime cron ticks a bounded due horizon", () => {
+    expect(uptimeDueHorizon(Date.parse("2026-10-02T12:25:00.000Z"))).toBe(
+      "2026-10-02T12:26:00.000Z",
+    );
   });
 });
