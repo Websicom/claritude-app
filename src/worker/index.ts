@@ -105,6 +105,25 @@ app.post('/api/properties', async (c) => {
   return error ? c.json({ error: error.message }, 400) : c.json(data, 201);
 });
 
+app.patch('/api/properties/:id', async (c) => {
+  const body = await c.req.json<{ name?: string }>();
+  const name = body.name?.trim().slice(0, 100);
+  if (!name) return c.json({ error: 'property_name_required' }, 400);
+  const { data, error } = await c.get('db').from('properties').update({ name, updated_at: new Date().toISOString() }).eq('id', c.req.param('id')).select().single();
+  return error ? c.json({ error: error.message }, 400) : c.json(data);
+});
+
+app.patch('/api/profile', async (c) => {
+  const body = await c.req.json<{ full_name?: string; timezone?: string }>();
+  const update = {
+    full_name: body.full_name?.trim().slice(0, 100) || null,
+    timezone: body.timezone?.trim().slice(0, 80) || 'Europe/London',
+    updated_at: new Date().toISOString(),
+  };
+  const { data, error } = await c.get('db').from('profiles').update(update).select().single();
+  return error ? c.json({ error: error.message }, 400) : c.json(data);
+});
+
 app.post('/api/properties/:id/verify', async (c) => {
   const db = c.get('db');
   const { data: property, error } = await db.from('properties').select('id,url,tracking_id').eq('id', c.req.param('id')).single();
