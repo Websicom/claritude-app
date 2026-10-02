@@ -998,6 +998,37 @@ app.get("/api/properties/:id/audits", async (c) => {
   );
 });
 
+app.patch("/api/audit-results/:id/review", async (c) => {
+  const body = await c.req.json<{ status: "not_reviewed" | "reviewed" | "fixed" | "accepted" }>();
+  if (!["not_reviewed", "reviewed", "fixed", "accepted"].includes(body.status))
+    return c.json({ error: "invalid_review_status" }, 400);
+  const db = c.get("db");
+  const { data: result } = await db
+    .from("audit_results")
+    .select("id,audit_runs(property_id)")
+    .eq("id", c.req.param("id"))
+    .single();
+  if (!result) return c.json({ error: "audit_result_not_found" }, 404);
+  const propertyId = (result.audit_runs as any)?.property_id;
+  if (!propertyId) return c.json({ error: "audit_result_not_found" }, 404);
+  const { data, error } = await admin(c.env)
+    .from("audit_results")
+    .update({
+      review_status: body.status,
+      reviewed_at: body.status === "not_reviewed" ? null : new Date().toISOString(),
+      reviewed_by: body.status === "not_reviewed" ? null : c.get("userId"),
+    })
+    .eq("id", c.req.param("id"))
+    .select()
+    .single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordActivity(c.env, c.get("userId"), "audit.result_reviewed", propertyId, {
+    auditResultId: result.id,
+    status: body.status,
+  });
+  return c.json(data);
+});
+
 app.get("/api/properties/:id/incidents", async (c) => {
   const window = requestedWindow(c);
   if (!window) return c.json({ error: "invalid_date_range" }, 400);
