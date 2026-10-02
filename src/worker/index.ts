@@ -3954,16 +3954,17 @@ const TRACKER_SOURCE = `(()=>{
 export default {
   fetch: app.fetch,
   queue: async (batch: MessageBatch<Job>, env: Env) => {
-    for (const message of batch.messages) {
+    await Promise.all(batch.messages.map(async (message) => {
       try {
         message.body.type === "audit"
           ? await runAudit(env, message.body.id)
           : await runUptime(env, message.body.id);
         message.ack();
-      } catch {
+      } catch (error) {
+        console.error("queue job failed", message.body.type, message.body.id, errorMessage(error));
         message.retry();
       }
-    }
+    }));
   },
   scheduled: async (event: ScheduledEvent, env: Env, ctx: ExecutionContext) =>
     ctx.waitUntil(scheduled(env, event.cron)),
