@@ -2114,6 +2114,7 @@ function AnalyticsView({
   if (!property) return <Empty title="Select a property" detail="Analytics is property-specific." />;
 
   const scoped = data || baseData || analyticsFixtureSummary();
+  const analyticsTimeZone = scoped.timeZone || property?.settings?.timezone || "Europe/London";
   const options: AnalyticsFilterOptions = baseData?.filterOptions || scoped.filterOptions || emptyAnalyticsFilterOptions;
   const pages = (scoped.pages || []).map((page: any) => ({
     page: page.path,
@@ -2197,7 +2198,7 @@ function AnalyticsView({
           >
             {filtersToolbar}
             <div className="chart-legend"><span>Current period</span>{showPreviousTraffic && <span className="previous">Previous period</span>}</div>
-            <SeriesChart points={chartPoints} previousPoints={showPreviousTraffic ? previousChartPoints : []} emptyTitle="No measured traffic yet" unit={chartMetric === "Events" ? " events" : ""} label={`${chartMetric} by day`} />
+            <SeriesChart points={chartPoints} previousPoints={showPreviousTraffic ? previousChartPoints : []} emptyTitle="No measured traffic yet" unit={chartMetric === "Events" ? " events" : ""} label={`${chartMetric} by day`} timeZone={analyticsTimeZone} />
           </Panel>
           <div className="grid equal">
             <Panel title="Top pages"><AnalyticsTable pages={pages} property={property} groupedLimit={5} eventHeader="Key events" /></Panel>
@@ -2302,7 +2303,7 @@ function AnalyticsView({
             <p className="subtle">Metrics use the 75th percentile. Fewer than {minimumSamples} samples are shown as unavailable rather than estimated.</p>
             <p className="subtle">A good experience is a versioned pageview with all three field measurements: LCP ≤ 2.5 s, INP ≤ 200 ms and CLS ≤ 0.1. Historical observations from the replaced collector are not mixed into these figures.</p>
             <div className="chart-legend"><span>Current period</span><span className="previous">Previous period</span></div>
-            <SeriesChart points={performancePoints} previousPoints={previousPerformancePoints} emptyTitle={`Insufficient ${selectedPerformanceMetric} samples`} unit={selectedPerformanceMetric === "CLS" ? "" : " ms"} label={`${selectedPerformanceMetric} p75 by day`} />
+            <SeriesChart points={performancePoints} previousPoints={previousPerformancePoints} emptyTitle={`Insufficient ${selectedPerformanceMetric} samples`} unit={selectedPerformanceMetric === "CLS" ? "" : " ms"} label={`${selectedPerformanceMetric} p75 by day`} timeZone={analyticsTimeZone} />
           </Panel>
         </>
       )}
@@ -4518,12 +4519,14 @@ function SeriesChart({
   emptyTitle,
   unit = "",
   label = "Measured time series",
+  timeZone,
 }: {
   points: { label: string; value: number }[];
   previousPoints?: { label: string; value: number }[];
   emptyTitle: string;
   unit?: string;
   label?: string;
+  timeZone?: string;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   if (!points.length)
@@ -4572,7 +4575,7 @@ function SeriesChart({
         />
         {previousPolyline && <polyline className="compare" points={previousPolyline} />}
         <polyline className="series" points={polyline} />
-        {xLabelIndexes.map((index) => coords[index] && <text className="chart-axis-label chart-x-label" x={coords[index].x} y={height - 5} textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"} key={`label-${index}`}>{chartDateLabel(coords[index].label)}</text>)}
+        {xLabelIndexes.map((index) => coords[index] && <text className="chart-axis-label chart-x-label" x={coords[index].x} y={height - 5} textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"} key={`label-${index}`}>{chartDateLabel(coords[index].label, timeZone)}</text>)}
         {coords.map((point, index) => (
           <g key={`${point.label}-${index}`}>
             <rect
@@ -4601,7 +4604,7 @@ function SeriesChart({
           style={{ left: `${Math.min(86, Math.max(4, (coords[hover].x / width) * 100))}%` }}
         >
           <b>{formatChartTooltip(coords[hover].value, unit)}</b>
-          <small>{coords[hover].label}</small>
+          <small>{chartDateLabel(coords[hover].label, timeZone)}</small>
           {previousCoords[hover] && <small>Previous: {formatChartTooltip(previousCoords[hover].value, unit)}</small>}
         </div>
       )}
@@ -5296,7 +5299,7 @@ function AnalyticsPageDetail({ data, page, property, onBack }: { data: any; page
         ["Engaged pageviews", data.engagement?.engagedPageviews == null ? "Unavailable" : fmt(data.engagement.engagedPageviews), "Correlated pageviews only"],
         ["Median active time", data.engagement?.medianActiveSeconds == null ? "Unavailable" : durationLabel(data.engagement.medianActiveSeconds), "Visible, active foreground time"],
       ]} />
-      <Panel title="Page traffic"><SeriesChart points={(data.series || []).map((point: any) => ({ label: point.day, value: point.pageviews || 0 }))} previousPoints={(data.previous?.series || []).map((point: any) => ({ label: point.day, value: point.pageviews || 0 }))} emptyTitle="No pageviews for this page" label={`Pageviews for ${page}`} /></Panel>
+      <Panel title="Page traffic"><SeriesChart points={(data.series || []).map((point: any) => ({ label: point.day, value: point.pageviews || 0 }))} previousPoints={(data.previous?.series || []).map((point: any) => ({ label: point.day, value: point.pageviews || 0 }))} emptyTitle="No pageviews for this page" label={`Pageviews for ${page}`} timeZone={data.timeZone || property.settings?.timezone} /></Panel>
       <div className="grid equal">
         <Panel title="Sources"><AnalyticsSourceTable sources={data.sources || []} /></Panel>
         <Panel title="Devices"><AnalyticsValueTable headers={["Device", "Pageviews"]} rows={(data.devices || []).map((row: any) => ({ label: row.name, value: row.count, iconKind: "device", iconValue: row.name }))} /></Panel>
@@ -5318,7 +5321,7 @@ function AnalyticsSourceDetail({ data, source, property, onBack }: { data: any; 
         ["Pages", fmt(pages.length), "Observed landing and visited paths"],
         ["Property", property.name, property.canonical_host],
       ]} />
-      <Panel title="Source traffic"><SeriesChart points={(data.series || []).map((point: any) => ({ label: point.day, value: point.pageviews || 0 }))} previousPoints={(data.previous?.series || []).map((point: any) => ({ label: point.day, value: point.pageviews || 0 }))} emptyTitle="No traffic for this source" label={`Pageviews from ${source}`} /></Panel>
+      <Panel title="Source traffic"><SeriesChart points={(data.series || []).map((point: any) => ({ label: point.day, value: point.pageviews || 0 }))} previousPoints={(data.previous?.series || []).map((point: any) => ({ label: point.day, value: point.pageviews || 0 }))} emptyTitle="No traffic for this source" label={`Pageviews from ${source}`} timeZone={data.timeZone || property.settings?.timezone} /></Panel>
       <div className="grid equal">
         <Panel title="Landing and visited pages"><AnalyticsTable pages={pages} property={property} /></Panel>
         <Panel title="Devices"><AnalyticsValueTable headers={["Device", "Pageviews"]} rows={(data.devices || []).map((row: any) => ({ label: row.name, value: row.count, iconKind: "device", iconValue: row.name }))} /></Panel>
@@ -6326,11 +6329,11 @@ function formatChartTooltip(value: number, unit: string) {
   return `${Number(value).toLocaleString(undefined, { maximumFractionDigits: unit ? 0 : 2 })}${unit}`;
 }
 
-function chartDateLabel(value: string) {
+function chartDateLabel(value: string, timeZone?: string) {
   if (value.includes("T")) {
     const instant = new Date(value);
     return Number.isFinite(instant.valueOf())
-      ? new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", timeZoneName: "short" }).format(instant)
+      ? new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", timeZoneName: "short", timeZone }).format(instant)
       : value;
   }
   const date = new Date(`${value.slice(0, 10)}T12:00:00`);

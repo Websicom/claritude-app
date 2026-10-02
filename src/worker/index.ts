@@ -2500,6 +2500,7 @@ export function buildAnalyticsSummary(
   return {
     from,
     to,
+    timeZone,
     pageviews,
     events: events.length,
     keyEvents,
