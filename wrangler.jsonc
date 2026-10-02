@@ -5,6 +5,7 @@
   "compatibility_date": "2025-10-08",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
+  "preview_urls": true,
   "routes": [{ "pattern": "app.claritude.io/*", "zone_name": "claritude.io" }],
   "assets": {
     "not_found_handling": "single-page-application",
