@@ -2241,6 +2241,7 @@ async function collectAuditNetworkEvidence(
     try {
       const result = await safeFetchTrace(value, {
         headers: { "user-agent": "Claritude-Audit/1.0 (+https://claritude.io)" },
+        signal: AbortSignal.timeout(12_000),
       });
       return {
         url: value,
