@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
+import puppeteer from "@cloudflare/puppeteer";
 import WEB_VITALS_SOURCE from "../../node_modules/web-vitals/dist/web-vitals.iife.js?raw";
 import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import {
@@ -20,6 +21,7 @@ type Env = {
   APP_ORIGIN: string;
   JOBS: Queue<Job>;
   ASSETS: Fetcher;
+  BROWSER: Fetcher;
 };
 type Variables = { db: SupabaseClient; userId: string };
 type Job = { type: "audit" | "uptime"; id: string };
@@ -973,7 +975,6 @@ app.post("/api/audits", async (c) => {
     .from("audit_runs")
     .select("id,status,heartbeat_at,created_at,progress_completed,progress_total,registry_snapshot")
     .eq("property_id", property.id)
-    .eq("audit_page_id", auditPage.id)
     .in("status", ["queued", "running"])
     .order("created_at", { ascending: false })
     .limit(20);
@@ -1166,9 +1167,21 @@ app.get("/api/properties/:id/audits", async (c) => {
   if (pageId) query = query.eq("audit_page_id", pageId);
   const { data, error } = await query.limit(50);
   if (error) return c.json({ error: error.message }, 400);
+  let runs = data || [];
+  if (!pageId) {
+    const { data: active } = await db
+      .from("audit_runs")
+      .select("*,audit_results(*)")
+      .eq("property_id", c.req.param("id"))
+      .in("status", ["queued", "running"])
+      .order("created_at", { ascending: false })
+      .limit(5);
+    const activeIds = new Set((active || []).map((run: any) => run.id));
+    runs = [...(active || []), ...runs.filter((run: any) => !activeIds.has(run.id))];
+  }
   const definitions = new Map(AUDIT_REGISTRY.map((check) => [check.id, check]));
   return c.json(
-    (data || []).map((run: any) => {
+    runs.map((run: any) => {
       const snapshotDefinitions = new Map((Array.isArray(run.registry_snapshot) ? run.registry_snapshot : []).map((check: any) => [check.id, check]));
       const auditResults = (run.audit_results || []).map((result: any) => {
         const definition = definitions.get(result.check_id);
@@ -1188,9 +1201,20 @@ app.get("/api/properties/:id/audits", async (c) => {
           weight: Number(snapshotDefinition?.weight ?? definition?.weight ?? 1),
         };
       });
+      const labEvidence = auditResults.find((result: any) =>
+        result.evidence?.measuredBy === "Cloudflare Browser Run" &&
+        result.evidence?.desktop?.score != null &&
+        result.evidence?.mobile?.score != null,
+      )?.evidence;
       return {
         ...run,
         audit_results: auditResults,
+        performance_metrics: labEvidence ? {
+          desktop: formatLabRows(labEvidence.desktop),
+          mobile: formatLabRows(labEvidence.mobile),
+          scores: { desktop: labEvidence.desktop.score, mobile: labEvidence.mobile.score },
+          source: "Cloudflare Browser Run",
+        } : undefined,
         catalogue_summary: {
           catalogueSize: ACTIVE_AUDIT_CHECKS.length,
           implementedChecks: IMPLEMENTED_AUDIT_CHECKS.length,
@@ -2079,6 +2103,192 @@ app.get("/api/properties/:id/report", async (c) => {
 
 app.notFound((c) => c.env.ASSETS.fetch(c.req.raw));
 
+type BrowserLabResult = {
+  score: number;
+  fcp: number;
+  lcp: number;
+  cls: number;
+  tbt: number;
+  documentResponseMs: number;
+  bytes: number;
+  requests: number;
+  scriptBytes: number;
+  cssBytes: number;
+  imageBytes: number;
+  fontBytes: number;
+  thirdPartyRequests: number;
+  renderBlocking: number;
+  longTasks: number;
+  unusedJavaScriptBytes: number;
+  unusedCssBytes: number;
+  lcpElement: string | null;
+  lcpDiscoveryDelay: number;
+  layoutShiftContributors: number;
+  failedRequests: number;
+  consoleErrors: number;
+  uncaughtExceptions: number;
+  repeatedDownloads: number;
+  preloads: number;
+  unusedPreloads: number;
+};
+
+function labMetricScore(value: number, good: number, poor: number) {
+  if (value <= good) return 100;
+  if (value >= poor) return 0;
+  return Math.round(100 - ((value - good) / (poor - good)) * 100);
+}
+
+async function collectBrowserLab(env: Env, url: string) {
+  const browser = await puppeteer.launch(env.BROWSER);
+  try {
+    const collect = async (strategy: "desktop" | "mobile"): Promise<BrowserLabResult> => {
+      const page = await browser.newPage();
+      const failed = new Set<string>();
+      let consoleErrors = 0;
+      let uncaughtExceptions = 0;
+      page.on("requestfailed", (request) => failed.add(request.url()));
+      page.on("console", (message) => { if (message.type() === "error") consoleErrors += 1; });
+      page.on("pageerror", () => { uncaughtExceptions += 1; });
+      await page.setViewport(strategy === "mobile"
+        ? { width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true }
+        : { width: 1440, height: 900, deviceScaleFactor: 1, isMobile: false, hasTouch: false });
+      if (strategy === "mobile")
+        await page.setUserAgent("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1 Claritude-Audit/1.0");
+      await Promise.all([
+        page.coverage.startJSCoverage({ resetOnNavigation: false }).catch(() => undefined),
+        page.coverage.startCSSCoverage({ resetOnNavigation: false }).catch(() => undefined),
+      ]);
+      await page.goto(url, { waitUntil: "networkidle2", timeout: 55_000 });
+      const measured = await page.evaluate(async () => {
+        const buffered = (type: string) => new Promise<any[]>((resolve) => {
+          const values: any[] = [];
+          try {
+            const observer = new PerformanceObserver((list) => values.push(...list.getEntries().map((entry: any) => ({
+              name: entry.name,
+              startTime: entry.startTime,
+              duration: entry.duration,
+              value: entry.value,
+              hadRecentInput: entry.hadRecentInput,
+              sources: entry.sources?.length || 0,
+              element: entry.element ? `${entry.element.tagName?.toLowerCase() || "element"}${entry.element.id ? `#${entry.element.id}` : ""}${entry.element.className && typeof entry.element.className === "string" ? `.${entry.element.className.trim().split(/\s+/).slice(0, 2).join(".")}` : ""}` : null,
+              renderTime: entry.renderTime,
+              loadTime: entry.loadTime,
+            }))));
+            observer.observe({ type, buffered: true } as any);
+            setTimeout(() => { observer.disconnect(); resolve(values); }, 800);
+          } catch { resolve([]); }
+        });
+        const [lcpEntries, shiftEntries, longTasks] = await Promise.all([buffered("largest-contentful-paint"), buffered("layout-shift"), buffered("longtask")]);
+        const navigation: any = performance.getEntriesByType("navigation")[0];
+        const resources: any[] = performance.getEntriesByType("resource") as any[];
+        const fcp: any = performance.getEntriesByName("first-contentful-paint")[0];
+        const lcp: any = lcpEntries.at(-1);
+        const preloads = Array.from(document.querySelectorAll<HTMLLinkElement>('link[rel~="preload"]')).map((link) => new URL(link.href, location.href).href);
+        const resourceUrls = new Set(resources.map((entry) => entry.name));
+        const blocking = document.querySelectorAll('link[rel="stylesheet"]:not([media="print"]),script[src]:not([async]):not([defer]):not([type="module"])').length;
+        const hosts = resources.map((entry) => { try { return new URL(entry.name).hostname; } catch { return ""; } });
+        const counts = new Map<string, number>();
+        resources.forEach((entry) => counts.set(entry.name, (counts.get(entry.name) || 0) + 1));
+        const bytes = (entry: any) => Number(entry.transferSize || entry.encodedBodySize || 0);
+        return {
+          fcp: Number(fcp?.startTime || 0),
+          lcp: Number(lcp?.renderTime || lcp?.loadTime || lcp?.startTime || 0),
+          cls: shiftEntries.filter((entry) => !entry.hadRecentInput).reduce((sum, entry) => sum + Number(entry.value || 0), 0),
+          tbt: longTasks.reduce((sum, entry) => sum + Math.max(0, Number(entry.duration || 0) - 50), 0),
+          documentResponseMs: Math.max(0, Number(navigation?.responseStart || 0) - Number(navigation?.requestStart || 0)),
+          bytes: resources.reduce((sum, entry) => sum + bytes(entry), Number(navigation?.transferSize || 0)),
+          requests: resources.length + 1,
+          scriptBytes: resources.filter((entry) => entry.initiatorType === "script").reduce((sum, entry) => sum + bytes(entry), 0),
+          cssBytes: resources.filter((entry) => entry.initiatorType === "link" && /css/i.test(entry.name)).reduce((sum, entry) => sum + bytes(entry), 0),
+          imageBytes: resources.filter((entry) => entry.initiatorType === "img" || /\.(?:png|jpe?g|gif|webp|avif|svg)(?:\?|$)/i.test(entry.name)).reduce((sum, entry) => sum + bytes(entry), 0),
+          fontBytes: resources.filter((entry) => /\.(?:woff2?|ttf|otf)(?:\?|$)/i.test(entry.name)).reduce((sum, entry) => sum + bytes(entry), 0),
+          thirdPartyRequests: hosts.filter((host) => host && host !== location.hostname).length,
+          renderBlocking: blocking,
+          longTasks: longTasks.length,
+          lcpElement: lcp?.element || null,
+          lcpDiscoveryDelay: Math.max(0, Number(lcp?.startTime || 0) - Number(navigation?.responseStart || 0)),
+          layoutShiftContributors: shiftEntries.reduce((sum, entry) => sum + Number(entry.sources || 0), 0),
+          repeatedDownloads: [...counts.values()].filter((count) => count > 1).reduce((sum, count) => sum + count - 1, 0),
+          preloads: preloads.length,
+          unusedPreloads: preloads.filter((preload) => !resourceUrls.has(preload)).length,
+        };
+      });
+      const [jsCoverage, cssCoverage] = await Promise.all([
+        page.coverage.stopJSCoverage().catch(() => []),
+        page.coverage.stopCSSCoverage().catch(() => []),
+      ]);
+      await page.close();
+      const unused = (entries: any[]) => entries.reduce((sum, entry) => {
+        const used = (entry.ranges || []).reduce((rangeSum: number, range: any) => rangeSum + Math.max(0, range.end - range.start), 0);
+        return sum + Math.max(0, Number(entry.text?.length || 0) - used);
+      }, 0);
+      return {
+        ...measured,
+        score: Math.round(labMetricScore(measured.lcp, 2500, 4000) * .3 + labMetricScore(measured.tbt, 200, 600) * .3 + labMetricScore(measured.cls, .1, .25) * .25 + labMetricScore(measured.fcp, 1800, 3000) * .15),
+        unusedJavaScriptBytes: unused(jsCoverage),
+        unusedCssBytes: unused(cssCoverage),
+        failedRequests: failed.size,
+        consoleErrors,
+        uncaughtExceptions,
+      };
+    };
+    const desktop = await collect("desktop");
+    const mobile = await collect("mobile");
+    return { desktop, mobile };
+  } finally {
+    await browser.close();
+  }
+}
+
+function formatLabRows(metrics: BrowserLabResult) {
+  return [
+    ["Performance score", `${metrics.score}/100`, "≥ 90"],
+    ["LCP", `${(metrics.lcp / 1000).toFixed(1)} s`, "≤ 2.5 s"],
+    ["TBT", `${Math.round(metrics.tbt)} ms`, "≤ 200 ms"],
+    ["CLS", metrics.cls.toFixed(2), "≤ 0.1"],
+    ["FCP", `${(metrics.fcp / 1000).toFixed(1)} s`, "≤ 1.8 s"],
+  ];
+}
+
+function browserLabAuditResults(snapshot: AuditRegistrySnapshot[], lab: { desktop: BrowserLabResult; mobile: BrowserLabResult }): AuditResult[] {
+  const worst = (key: keyof BrowserLabResult) => Math.max(Number(lab.desktop[key] || 0), Number(lab.mobile[key] || 0));
+  const outcome = (value: number, good: number, poor: number): CheckOutcome => value <= good ? "pass" : value >= poor ? "fail" : "warning";
+  const bytes = (value: number) => Math.round(value / 1024);
+  return snapshot.filter((check) => check.primaryCategory === "performance").map((check) => {
+    const id = check.id;
+    let value = 0, good = 0, poor = Number.MAX_SAFE_INTEGER;
+    if (id.includes("document.response.time")) [value, good, poor] = [worst("documentResponseMs"), 800, 1800];
+    else if (id.includes("first.contentful.paint")) [value, good, poor] = [worst("fcp"), 1800, 3000];
+    else if (id.includes("largest.contentful.paint.measured")) [value, good, poor] = [worst("lcp"), 2500, 4000];
+    else if (id.includes("cumulative.layout.shift")) [value, good, poor] = [worst("cls"), .1, .25];
+    else if (id.includes("total.blocking.time")) [value, good, poor] = [worst("tbt"), 200, 600];
+    else if (id.includes("total.transferred")) [value, good, poor] = [worst("bytes"), 1_600_000, 3_000_000];
+    else if (id.includes("resource.request.count")) [value, good, poor] = [worst("requests"), 50, 100];
+    else if (id.includes("javascript.transfer")) [value, good, poor] = [worst("scriptBytes"), 600_000, 1_000_000];
+    else if (id.includes("css.transfer")) [value, good, poor] = [worst("cssBytes"), 150_000, 300_000];
+    else if (id.includes("image.transfer")) [value, good, poor] = [worst("imageBytes"), 1_000_000, 2_000_000];
+    else if (id.includes("font.transfer")) [value, good, poor] = [worst("fontBytes"), 200_000, 500_000];
+    else if (id.includes("third.party")) [value, good, poor] = [worst("thirdPartyRequests"), 10, 25];
+    else if (id.includes("render.blocking")) [value, good, poor] = [worst("renderBlocking"), 0, 5];
+    else if (id.includes("long.main.thread")) [value, good, poor] = [worst("longTasks"), 0, 5];
+    else if (id.includes("unused.javascript")) [value, good, poor] = [worst("unusedJavaScriptBytes"), 20_000, 100_000];
+    else if (id.includes("unused.css")) [value, good, poor] = [worst("unusedCssBytes"), 10_000, 50_000];
+    else if (id.includes("discovery.delay")) [value, good, poor] = [worst("lcpDiscoveryDelay"), 500, 1500];
+    else if (id.includes("layout.shift.contributors")) [value, good, poor] = [worst("layoutShiftContributors"), 0, 4];
+    else if (id.includes("failed.network")) [value, good, poor] = [worst("failedRequests"), 0, 2];
+    else if (id.includes("console.errors")) [value, good, poor] = [worst("consoleErrors"), 0, 3];
+    else if (id.includes("uncaught.javascript")) [value, good, poor] = [worst("uncaughtExceptions"), 0, 1];
+    else if (id.includes("repeated.downloads")) [value, good, poor] = [worst("repeatedDownloads"), 0, 3];
+    else if (id.includes("preloaded.resources.unused")) [value, good, poor] = [worst("unusedPreloads"), 0, 2];
+    else if (id.includes("largest.contentful.paint.element"))
+      return { check_id: id, outcome: lab.desktop.lcpElement || lab.mobile.lcpElement ? "informational" : "warning", evidence: { desktop: lab.desktop.lcpElement, mobile: lab.mobile.lcpElement }, duration_ms: 0 };
+    else if (id.includes("resource.preload"))
+      return { check_id: id, outcome: "informational", evidence: { desktop: lab.desktop.preloads, mobile: lab.mobile.preloads }, duration_ms: 0 };
+    else return { check_id: id, outcome: "informational", evidence: { desktop: lab.desktop, mobile: lab.mobile, measuredBy: "Cloudflare Browser Run" }, duration_ms: 0 };
+    return { check_id: id, outcome: outcome(value, good, poor), evidence: { desktop: lab.desktop, mobile: lab.mobile, measuredValue: value, measuredKilobytes: id.includes("transfer") || id.includes("unused") ? bytes(value) : undefined, measuredBy: "Cloudflare Browser Run" }, duration_ms: 0 };
+  });
+}
+
 async function runAudit(env: Env, id: string) {
   const db = admin(env);
   const started = Date.now();
@@ -2121,12 +2331,30 @@ async function runAudit(env: Env, id: string) {
     const responseMs = Date.now() - fetchStarted;
     const snapshot = run.registry_snapshot as AuditRegistrySnapshot[];
     const html = await limitedText(res, 2_000_000);
+    let browserLab: { desktop: BrowserLabResult; mobile: BrowserLabResult } | null = null;
+    if (snapshot.some((check) => check.primaryCategory === "performance")) {
+      await updateRun({
+        execution_stage: "collecting_browser_evidence",
+        heartbeat_at: new Date().toISOString(),
+      });
+      try {
+        browserLab = await collectBrowserLab(env, run.page_url);
+        await updateRun({ heartbeat_at: new Date().toISOString() });
+      } catch (error) {
+        console.error("browser lab collection failed", id, errorMessage(error));
+        await updateRun({ heartbeat_at: new Date().toISOString() });
+      }
+    }
     await updateRun({
         execution_stage: "evaluating_checks",
         heartbeat_at: new Date().toISOString(),
       });
-    const staticResults = evaluateSourceChecks(snapshot, res, html, responseMs)
+    let staticResults = evaluateSourceChecks(snapshot, res, html, responseMs)
       .filter((result) => !CONTEXT_AUDIT_CHECK_IDS.has(result.check_id));
+    if (browserLab) {
+      const replacements = new Map(browserLabAuditResults(snapshot, browserLab).map((result) => [result.check_id, result]));
+      staticResults = staticResults.map((result) => replacements.get(result.check_id) || result);
+    }
     const snapshotById = new Map(snapshot.map((check) => [check.id, check]));
     await updateRun({
         execution_stage: "persisting_results",

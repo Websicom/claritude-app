@@ -1,6 +1,6 @@
 import { createClient, type Session } from "@supabase/supabase-js";
 import { Check } from "lucide-react";
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { apiRequest as api } from "./api";
 import { ClaritudeApplication } from "./RecoveryDashboard";
@@ -125,7 +125,7 @@ export function App() {
       setReady(true);
     });
     const { data } = supabase.auth.onAuthStateChange((_event, next) =>
-      setSession(next),
+      setSession((current) => current?.access_token === next?.access_token && current?.user.id === next?.user.id ? current : next),
     );
     return () => data.subscription.unsubscribe();
   }, [fixture]);
@@ -163,15 +163,17 @@ export function App() {
 function Workspace({ session }: { session: Session }) {
   const [data, setData] = useState<Bootstrap | null>(null),
     [error, setError] = useState("");
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
   const load = useCallback(async (signal?: AbortSignal) => {
     setError("");
     try {
-      setData(await api<Bootstrap>(session, "/api/bootstrap", { signal }));
+      setData(await api<Bootstrap>(sessionRef.current, "/api/bootstrap", { signal }));
     } catch (reason) {
       if (reason instanceof DOMException && reason.name === "AbortError") return;
       setError(reason instanceof Error ? reason.message : "Workspace could not be loaded");
     }
-  }, [session]);
+  }, [session.user.id]);
   useEffect(() => {
     const controller = new AbortController();
     void load(controller.signal);

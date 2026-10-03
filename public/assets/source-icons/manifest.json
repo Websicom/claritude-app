@@ -1,0 +1,152 @@
+{
+  "duckduckgo": {
+    "file": "/assets/source-icons/duckduckgo.svg",
+    "source": "https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/duckduckgo.svg",
+    "license": "CC0-1.0"
+  },
+  "ecosia": {
+    "file": "/assets/source-icons/ecosia.svg",
+    "source": "https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/ecosia.svg",
+    "license": "CC0-1.0"
+  },
+  "brave": {
+    "file": "/assets/source-icons/brave.svg",
+    "source": "https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/brave.svg",
+    "license": "CC0-1.0"
+  },
+  "baidu": {
+    "file": "/assets/source-icons/baidu.svg",
+    "source": "https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/baidu.svg",
+    "license": "CC0-1.0"
+  },
+  "facebook": {
+    "file": "/assets/source-icons/facebook.svg",
+    "source": "https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/facebook.svg",
+    "license": "CC0-1.0"
+  },
+  "instagram": {
+    "file": "/assets/source-icons/instagram.svg",
+    "source": "https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/instagram.svg",
+    "license": "CC0-1.0"
+  },
+  "youtube": {
+    "file": "/assets/source-icons/youtube.svg",
+    "source": "https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/youtube.svg",
+    "license": "CC0-1.0"
+  },
+  "tiktok": {
+    "file": "/assets/source-icons/tiktok.svg",
+    "source": "https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/tiktok.svg",
+    "license": "CC0-1.0"
+  },
+  "x": {
+    "file": "/assets/source-icons/x.svg",
+    "source": "https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/x.svg",
+    "license": "CC0-1.0"
+  },
+  "pinterest": {
+    "file": "/assets/source-icons/pinterest.svg",
+    "source": "https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/pinterest.svg",
+    "license": "CC0-1.0"
+  },
+  "reddit": {
+    "file": "/assets/source-icons/reddit.svg",
+    "source": "https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/reddit.svg",
+    "license": "CC0-1.0"
+  },
+  "threads": {
+    "file": "/assets/source-icons/threads.svg",
+    "source": "https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/threads.svg",
+    "license": "CC0-1.0"
+  },
+  "snapchat": {
+    "file": "/assets/source-icons/snapchat.svg",
+    "source": "https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/snapchat.svg",
+    "license": "CC0-1.0"
+  },
+  "bluesky": {
+    "file": "/assets/source-icons/bluesky.svg",
+    "source": "https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/bluesky.svg",
+    "license": "CC0-1.0"
+  },
+  "quora": {
+    "file": "/assets/source-icons/quora.svg",
+    "source": "https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/quora.svg",
+    "license": "CC0-1.0"
+  },
+  "whatsapp": {
+    "file": "/assets/source-icons/whatsapp.svg",
+    "source": "https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/whatsapp.svg",
+    "license": "CC0-1.0"
+  },
+  "telegram": {
+    "file": "/assets/source-icons/telegram.svg",
+    "source": "https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/telegram.svg",
+    "license": "CC0-1.0"
+  },
+  "discord": {
+    "file": "/assets/source-icons/discord.svg",
+    "source": "https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/discord.svg",
+    "license": "CC0-1.0"
+  },
+  "perplexity": {
+    "file": "/assets/source-icons/perplexity.svg",
+    "source": "https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/perplexity.svg",
+    "license": "CC0-1.0"
+  },
+  "gemini": {
+    "file": "/assets/source-icons/gemini.svg",
+    "source": "https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/googlegemini.svg",
+    "license": "CC0-1.0"
+  },
+  "claude": {
+    "file": "/assets/source-icons/claude.svg",
+    "source": "https://github.com/simple-icons/simple-icons/blob/16.33.0/icons/claude.svg",
+    "license": "CC0-1.0"
+  },
+  "yahoo": {
+    "file": "/assets/source-icons/yahoo.svg",
+    "source": "https://github.com/FortAwesome/Font-Awesome/blob/7.x/js-packages/@fortawesome/free-brands-svg-icons/yahoo.js",
+    "license": "CC-BY-4.0"
+  },
+  "linkedin": {
+    "file": "/assets/source-icons/linkedin.svg",
+    "source": "https://github.com/FortAwesome/Font-Awesome/blob/7.x/js-packages/@fortawesome/free-brands-svg-icons/linkedin.js",
+    "license": "CC-BY-4.0"
+  },
+  "google": {
+    "file": "/assets/source-icons/google.svg",
+    "source": "https://github.com/lobehub/lobe-icons/blob/v1.95.1/packages/static-svg/icons/google-color.svg",
+    "license": "MIT"
+  },
+  "bing": {
+    "file": "/assets/source-icons/bing.svg",
+    "source": "https://github.com/lobehub/lobe-icons/blob/v1.95.1/packages/static-svg/icons/bing-color.svg",
+    "license": "MIT"
+  },
+  "yandex": {
+    "file": "/assets/source-icons/yandex.svg",
+    "source": "https://github.com/lobehub/lobe-icons/blob/v1.95.1/packages/static-svg/icons/yandex.svg",
+    "license": "MIT"
+  },
+  "chatgpt": {
+    "file": "/assets/source-icons/chatgpt.svg",
+    "source": "https://github.com/lobehub/lobe-icons/blob/v1.95.1/packages/static-svg/icons/openai.svg",
+    "license": "MIT"
+  },
+  "copilot": {
+    "file": "/assets/source-icons/copilot.svg",
+    "source": "https://github.com/lobehub/lobe-icons/blob/v1.95.1/packages/static-svg/icons/copilot-color.svg",
+    "license": "MIT"
+  },
+  "email": {
+    "file": "/assets/source-icons/email.svg",
+    "source": "Lucide mail",
+    "license": "ISC"
+  },
+  "direct": {
+    "file": "/assets/globe.svg",
+    "source": "Claritude neutral globe",
+    "license": "project asset"
+  }
+}

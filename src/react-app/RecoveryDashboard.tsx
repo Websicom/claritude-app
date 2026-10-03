@@ -100,6 +100,8 @@ type AuditRun = {
   performance_metrics?: {
     desktop?: (string | number)[][];
     mobile?: (string | number)[][];
+    scores?: { desktop?: number; mobile?: number };
+    source?: string;
   };
   catalogue_summary?: {
     catalogueSize: number;
@@ -495,10 +497,6 @@ export function ClaritudeApplication({
               </>
             ) : (
               <>
-                <Link to="/">
-                  <LayoutGrid />
-                  Your properties
-                </Link>
                 <Link
                   className={section === "overview" ? "active" : ""}
                   to={href("overview")}
@@ -1566,14 +1564,13 @@ function PropertyOverview({
       formatVital(vital.name, vital.value),
       fmt(vital.samples || 0),
     ]);
-  const overviewMetrics: (string | number)[][] = [
+  const currentStatus = fixture ? property.demo?.status : monitor?.last_status;
+  const overviewMetrics: ReactNode[][] = [
     [
       "Uptime",
-      fixture
-        ? property.demo?.uptime || "99.92%"
-        : monitor?.last_status === "online"
-          ? "Online"
-          : cap(monitor?.last_status || "Pending"),
+      <span className={`property-uptime-status ${currentStatus === "online" ? "online" : currentStatus === "offline" ? "offline" : "pending"}`}>
+        {currentStatus === "online" ? "Online" : currentStatus === "offline" ? "Offline" : cap(currentStatus || "Pending")}
+      </span>,
       fixture
         ? "35 min estimated downtime"
         : monitor?.last_checked_at
@@ -1619,17 +1616,6 @@ function PropertyOverview({
           />
           {tab === "Overview" ? (
             <>
-          <div className="summary-note">
-            <b>Latest audit:</b> {audit ? fmtDate(audit.created_at) : "not run"}{" "}
-            · <b>Tracking:</b>{" "}
-            {property.tracking_last_received_at
-              ? `receiving data ${relative(property.tracking_last_received_at)}`
-              : "not installed"}{" "}
-            ·{" "}
-            <Link to={`/settings?property=${property.id}`}>
-              2 priority actions
-            </Link>
-          </div>
           <div className="property-overview-metrics-desktop">
             <Metrics values={overviewMetrics} />
           </div>
@@ -2245,6 +2231,7 @@ function AnalyticsView({
   const filters = analyticsPageFiltersFromParams(params);
   const detailPage = params.get("pagePath") || "";
   const detailSource = params.get("sourceDetail") || "";
+  const countryListOpen = params.get("countryList") === "all";
   const listPage = Math.max(1, Number(params.get("listPage") || 1));
   const listPageSize = [20, 100, 200].includes(Number(params.get("pageSize")))
     ? Number(params.get("pageSize"))
@@ -2278,7 +2265,7 @@ function AnalyticsView({
     if (nextTab === "Overview") next.delete("analyticsTab");
     else next.set("analyticsTab", nextTab);
     for (const key of analyticsFilterParamKeys) next.delete(key);
-    ["pagePath", "sourceDetail", "listPage", "pageSize"].forEach((key) => next.delete(key));
+    ["pagePath", "sourceDetail", "countryList", "listPage", "pageSize"].forEach((key) => next.delete(key));
     navigate(`${location.pathname}?${next.toString()}`, { replace: true });
   };
   const changeFilters = (nextFilters: AnalyticsPageFilters) => {
@@ -2396,6 +2383,12 @@ function AnalyticsView({
           <Empty title="Analytics could not be loaded" detail={error} />
           <button className="btn" onClick={() => setReloadToken((value) => value + 1)}>Retry</button>
         </div>
+      ) : countryListOpen ? (
+        <CountryListDetail
+          rows={scoped.countries || []}
+          total={scoped.pageviews || 0}
+          onBack={() => updateAnalyticsParams({ countryList: null })}
+        />
       ) : tab === "Overview" ? (
         <>
           <Metrics values={[
@@ -2445,7 +2438,7 @@ function AnalyticsView({
           <div className="grid analytics-overview-bottom">
             <Panel title="Key events"><AnalyticsValueTable headers={["Event", "Count", "%"]} rows={(scoped.eventBreakdown || []).slice(0, 5).map((row: any) => ({ label: eventLabel(row.name), value: row.count, secondary: scoped.keyEvents ? `${Math.round(row.count / scoped.keyEvents * 100)}%` : "0%" }))} /></Panel>
             <Panel title="Devices"><AnalyticsValueTable headers={["Device", "Share"]} rows={shareRows(scoped.devices, scoped.pageviews, "device")} /></Panel>
-            <Panel title="Countries"><AnalyticsValueTable headers={["Country", "Visitors"]} rows={shareRows(scoped.countries, scoped.pageviews, "country")} /></Panel>
+            <CountriesPanel rows={scoped.countries || []} total={scoped.pageviews || 0} onOpen={() => updateAnalyticsParams({ countryList: "all" })} />
           </div>
         </>
       ) : tab === "Pages" && detailPage ? (
@@ -2500,7 +2493,7 @@ function AnalyticsView({
           {filtersToolbar}
           <div className="grid equal">
             <Panel title="Devices"><AnalyticsValueTable headers={["Device", "Share"]} rows={shareRows(scoped.devices, scoped.pageviews, "device")} /></Panel>
-            <Panel title="Countries"><AnalyticsValueTable headers={["Country", "Visitors"]} rows={shareRows(scoped.countries, scoped.pageviews, "country")} /></Panel>
+            <CountriesPanel rows={scoped.countries || []} total={scoped.pageviews || 0} onOpen={() => updateAnalyticsParams({ countryList: "all" })} />
             <Panel title="Browsers"><AnalyticsValueTable headers={["Browser", "Share"]} rows={shareRows(scoped.browsers, scoped.pageviews, "browser")} /></Panel>
             <Panel title="Screen categories"><AnalyticsValueTable headers={["Width", "Share"]} rows={shareRows(scoped.screens, scoped.pageviews)} /></Panel>
           </div>
@@ -2581,6 +2574,7 @@ function AuditView({
   const requestedTab = auditParams.get("auditTab");
   const requestedPageId = auditParams.get("auditPage");
   const [runs, setRuns] = useState<AuditRun[]>([]),
+    [propertyRuns, setPropertyRuns] = useState<AuditRun[]>([]),
     [tab, setTab] = useState(
       ["Overview", "Findings", "Checks", "History", "Compare"].includes(requestedTab || "")
         ? requestedTab!
@@ -2648,18 +2642,20 @@ function AuditView({
     setRuns([]);
     setRealUserPerformance(null);
     Promise.all([
-      api<AuditRun[]>(session, `/api/properties/${property.id}/audits?${livePeriod}&pageId=${encodeURIComponent(selectedPage.id)}`),
+      api<AuditRun[]>(session, `/api/properties/${property.id}/audits?${livePeriod}`),
       api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}&device=desktop&pathMode=exact&pathValue=${encodeURIComponent(selectedPage.path)}`),
       api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}&device=mobile&pathMode=exact&pathValue=${encodeURIComponent(selectedPage.path)}`),
     ])
       .then(([nextRuns, desktop, mobile]) => {
         if (requestSequence.current !== sequence) return;
-        setRuns(nextRuns);
+        setPropertyRuns(nextRuns);
+        setRuns(nextRuns.filter((run) => run.audit_page_id === selectedPage.id));
         setRealUserPerformance({ desktop, mobile });
       })
       .catch(() => {
         if (requestSequence.current !== sequence) return;
         setRuns([]);
+        setPropertyRuns([]);
         setRealUserPerformance(null);
       });
   }, [property?.id, session, fixture, livePeriod, selectedPage?.id]);
@@ -2676,15 +2672,18 @@ function AuditView({
     !isStalledActiveRun(run) &&
     (!Number.isFinite(latestCompletedCreatedAt) ||
       Date.parse(run.created_at) > latestCompletedCreatedAt);
-  const activeRunId = runs.find(isCurrentActiveRun)?.id;
+  const isFreshActiveRun = (run: AuditRun) => ["queued", "running"].includes(run.status) && !isStalledActiveRun(run);
+  const propertyActiveRun = propertyRuns.find(isFreshActiveRun);
+  const activeRunId = propertyActiveRun?.id;
   useEffect(() => {
     if (!activeRunId || !session || !property || !selectedPage) return;
     const interval = window.setInterval(() => {
       const sequence = ++requestSequence.current;
-      api<AuditRun[]>(session, `/api/properties/${property.id}/audits?${livePeriod}&pageId=${encodeURIComponent(selectedPage.id)}`)
+      api<AuditRun[]>(session, `/api/properties/${property.id}/audits?${livePeriod}`)
         .then((nextRuns) => {
           if (requestSequence.current !== sequence) return;
-          setRuns(nextRuns);
+          setPropertyRuns(nextRuns);
+          setRuns(nextRuns.filter((run) => run.audit_page_id === selectedPage.id));
           const finished = nextRuns.find((run) => run.id === activeRunId);
           if (finished && ["completed", "partial", "failed"].includes(finished.status)) {
             setBusy(false);
@@ -2750,9 +2749,10 @@ function AuditView({
         });
       notify("Audit queued");
       if (session) {
-        const next = await api<AuditRun[]>(session, `/api/properties/${property!.id}/audits?${livePeriod}&pageId=${encodeURIComponent(selectedPage.id)}`);
-        setRuns(next);
-        setBusy(next.some((candidate) => ["queued", "running"].includes(candidate.status)));
+        const next = await api<AuditRun[]>(session, `/api/properties/${property!.id}/audits?${livePeriod}`);
+        setPropertyRuns(next);
+        setRuns(next.filter((candidate) => candidate.audit_page_id === selectedPage.id));
+        setBusy(next.some(isFreshActiveRun));
       }
     } catch (e: any) {
       notify(e.message);
@@ -2830,9 +2830,9 @@ function AuditView({
       title="Audit"
       status={<Period />}
       actions={
-        <button className="primary" onClick={() => void run()} disabled={busy || Boolean(activeRun) || !selectedPage}>
-          <RefreshCw className={busy || activeRun ? "audit-spin" : ""} />
-          {activeRun?.status === "queued" ? "Queued" : activeRun?.status === "running" ? "Running" : busy ? "Queuing…" : "Run audit"}
+        <button className="primary" onClick={() => void run()} disabled={busy || Boolean(propertyActiveRun) || !selectedPage}>
+          <RefreshCw className={busy || propertyActiveRun ? "audit-spin" : ""} />
+          {propertyActiveRun?.status === "queued" ? "Queued" : propertyActiveRun?.status === "running" ? "Running" : busy ? "Queuing…" : "Run audit"}
         </button>
       }
     >
@@ -2912,20 +2912,23 @@ function AuditView({
               />
             </Panel>
             <div>
-              <div className="segmented audit-performance-mode" role="group" aria-label="Performance data source">
-                {(["Lab audit", "Real-user data"] as const).map((mode) => (
-                  <button key={mode} className={performanceMode === mode ? "active" : ""} onClick={() => setPerformanceMode(mode)}>{mode}</button>
-                ))}
+              <div className="audit-performance-toolbar">
+                <div className="segmented audit-performance-mode" role="group" aria-label="Performance data source">
+                  {(["Lab audit", "Real-user data"] as const).map((mode) => (
+                    <button key={mode} className={performanceMode === mode ? "active" : ""} onClick={() => setPerformanceMode(mode)}>{mode}</button>
+                  ))}
+                </div>
+                <span>Lab uses load-based TBT; real-user data uses INP.</span>
               </div>
               {performanceMode === "Lab audit" ? (
                 <>
-                  <Panel title="Desktop performance"><PerformanceTable mobile={false} run={latest} /></Panel>
-                  <Panel title="Mobile performance"><PerformanceTable mobile run={latest} /></Panel>
+                  <Panel title={<span className="performance-panel-title"><Monitor /> Desktop performance</span>}><PerformanceTable mobile={false} run={latest} /></Panel>
+                  <Panel title={<span className="performance-panel-title"><Smartphone /> Mobile performance</span>}><PerformanceTable mobile run={latest} /></Panel>
                 </>
               ) : (
                 <>
-                  <Panel title="Desktop performance"><RealUserPerformanceTable data={realUserPerformance} device="desktop" /></Panel>
-                  <Panel title="Mobile performance"><RealUserPerformanceTable data={realUserPerformance} device="mobile" /></Panel>
+                  <Panel title={<span className="performance-panel-title"><Monitor /> Desktop performance</span>}><RealUserPerformanceTable data={realUserPerformance} device="desktop" /></Panel>
+                  <Panel title={<span className="performance-panel-title"><Smartphone /> Mobile performance</span>}><RealUserPerformanceTable data={realUserPerformance} device="mobile" /></Panel>
                 </>
               )}
             </div>
@@ -4770,7 +4773,7 @@ function Panel({
   actions,
   children,
 }: {
-  title?: string;
+  title?: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
 }) {
@@ -4787,7 +4790,7 @@ function Panel({
     </section>
   );
 }
-function Metrics({ values }: { values: (string | number)[][] }) {
+function Metrics({ values }: { values: ReactNode[][] }) {
   return (
     <div className="metrics">
       {values.map((v, i) => (
@@ -4817,18 +4820,19 @@ function DataTable({
   rows: ReactNode[][];
   className?: string;
 }) {
+  const sorted = useSortableRows(rows, (row, column) => sortableValue(row[column]));
   return (
     <div className="table-wrap">
       <table className={className}>
         <thead>
           <tr>
-            {headers.map((h) => (
-              <th key={h}>{h}</th>
+            {headers.map((h, column) => (
+              <SortableHeader key={h} label={h} column={column} sort={sorted.sort} onSort={sorted.onSort} />
             ))}
           </tr>
         </thead>
         <tbody>
-          {rows.map((r, i) => (
+          {sorted.rows.map((r, i) => (
             <tr key={i}>
               {r.map((x, j) => (
                 <td key={j}>{x}</td>
@@ -4838,6 +4842,42 @@ function DataTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+type TableSort = { column: number; direction: "asc" | "desc" } | null;
+function sortableValue(value: ReactNode): string | number {
+  if (typeof value === "number") return value;
+  if (typeof value === "string") {
+    const numeric = Number(value.replace(/[%,$£€\s]/g, ""));
+    return Number.isFinite(numeric) && /\d/.test(value) ? numeric : value.toLocaleLowerCase();
+  }
+  if (Array.isArray(value)) return value.map(sortableValue).join(" ");
+  if (value && typeof value === "object" && "props" in value)
+    return sortableValue((value as any).props?.children);
+  return String(value ?? "").toLocaleLowerCase();
+}
+function compareTableValues(left: string | number, right: string | number) {
+  return typeof left === "number" && typeof right === "number"
+    ? left - right
+    : String(left).localeCompare(String(right), "en-GB", { numeric: true, sensitivity: "base" });
+}
+function useSortableRows<T>(rows: T[], value: (row: T, column: number) => string | number) {
+  const [sort, setSort] = useState<TableSort>(null);
+  const sortedRows = !sort ? rows : rows.map((row, index) => ({ row, index })).sort((left, right) => {
+      const result = compareTableValues(value(left.row, sort.column), value(right.row, sort.column));
+      return (result || left.index - right.index) * (sort.direction === "asc" ? 1 : -1);
+    }).map(({ row }) => row);
+  const onSort = (column: number) => setSort((current) => current?.column === column
+    ? { column, direction: current.direction === "asc" ? "desc" : "asc" }
+    : { column, direction: "asc" });
+  return { rows: sortedRows, sort, onSort };
+}
+function SortableHeader({ label, column, sort, onSort }: { label: string; column: number; sort: TableSort; onSort: (column: number) => void }) {
+  return (
+    <th aria-sort={sort?.column === column ? (sort.direction === "asc" ? "ascending" : "descending") : "none"}>
+      <button className="table-sort-button" onClick={() => onSort(column)}>{label}</button>
+    </th>
   );
 }
 function KeyValues({ rows }: { rows: [string, ReactNode][] }) {
@@ -5747,15 +5787,16 @@ function AnalyticsTable({
       ]
     : visiblePages;
   const max = Math.max(1, ...rows.map((page) => page.views));
+  const sorted = useSortableRows(rows, (row, column) => column === 0 ? row.page : column === 1 ? row.views : row.events);
   return (
     <>
       <div className="table-wrap">
         <table className="bar-table analytics-pages-table">
           <thead>
-            <tr><th>Page</th><th>Pageviews</th><th>{eventHeader}</th></tr>
+            <tr>{["Page", "Pageviews", eventHeader].map((label, column) => <SortableHeader key={label} label={label} column={column} sort={sorted.sort} onSort={sorted.onSort} />)}</tr>
           </thead>
           <tbody>
-            {rows.map((page) => (
+            {sorted.rows.map((page) => (
               <tr key={page.page}>
                 <InCellBar value={page.views} max={max}>
                   {page.grouped ? (
@@ -5803,15 +5844,16 @@ function AnalyticsTable({
   );
 }
 function AnalyticsSourceTable({ sources, onDetail }: { sources: any[]; onDetail?: (source: string) => void }) {
+  const sorted = useSortableRows(sources, (source, column) => column === 0 ? source.name : column === 1 ? Number(source.pageviews || source.count || 0) : Number(source.events || 0));
   if (!sources.length)
     return <Empty title="No measured sources" detail="Source categories appear after pageviews are received." />;
   const max = Math.max(1, ...sources.map((source) => Number(source.pageviews || source.count || 0)));
   return (
     <div className="table-wrap">
       <table className="bar-table analytics-three-column-table">
-        <thead><tr><th>Source / referrer</th><th>Pageviews</th><th>Events</th></tr></thead>
+        <thead><tr>{["Source / referrer", "Pageviews", "Events"].map((label, column) => <SortableHeader key={label} label={label} column={column} sort={sorted.sort} onSort={sorted.onSort} />)}</tr></thead>
         <tbody>
-          {sources.map((source) => {
+          {sorted.rows.map((source) => {
             const pageviews = Number(source.pageviews || source.count || 0);
             return (
               <tr key={source.name}>
@@ -5904,15 +5946,16 @@ function AnalyticsValueTable({
   headers: string[];
   rows: { label: ReactNode; value: number; secondary?: ReactNode; iconKind?: string; iconValue?: string }[];
 }) {
+  const sorted = useSortableRows(rows, (row, column) => column === 0 ? sortableValue(row.label) : column === 1 ? row.value : sortableValue(row.secondary));
   if (!rows.length)
     return <Empty title="No measured data" detail="This breakdown will populate after compatible events are received." />;
   const max = Math.max(1, ...rows.map((row) => Number(row.value) || 0));
   return (
     <div className="table-wrap">
       <table className={`bar-table analytics-value-table ${headers.length === 3 ? "analytics-three-column-table" : ""}`}>
-        <thead><tr>{headers.map((header) => <th key={header}>{header}</th>)}</tr></thead>
+        <thead><tr>{headers.map((header, column) => <SortableHeader key={header} label={header} column={column} sort={sorted.sort} onSort={sorted.onSort} />)}</tr></thead>
         <tbody>
-          {rows.map((row, index) => (
+          {sorted.rows.map((row, index) => (
             <tr key={`${String(row.label)}-${index}`}>
               <InCellBar value={row.value} max={max}>
                 <span className="dimension-label">
@@ -5927,6 +5970,39 @@ function AnalyticsValueTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+function CountriesPanel({ rows, total, onOpen }: { rows: any[]; total: number; onOpen: () => void }) {
+  const ordered = [...rows].sort((left, right) => Number(right.count || 0) - Number(left.count || 0));
+  const top = ordered.slice(0, 10);
+  return (
+    <Panel title="Countries">
+      <AnalyticsValueTable headers={["Country", "Visitors"]} rows={shareRows(top, total, "country")} />
+      {ordered.length > 10 && <button className="btn countries-more" onClick={onOpen}>Other countries</button>}
+    </Panel>
+  );
+}
+
+function CountryListDetail({ rows, total, onBack }: { rows: any[]; total: number; onBack: () => void }) {
+  const ordered = [...rows].sort((left, right) => Number(right.count || 0) - Number(left.count || 0));
+  const max = Math.max(1, ...ordered.map((row) => Number(row.count || 0)));
+  return (
+    <>
+      <div className="analytics-detail-heading"><button className="btn" onClick={onBack}><ChevronLeft /> Analytics overview</button><h2>All countries</h2></div>
+      <Panel title="Visitors by country">
+        <div className="country-bar-chart" role="img" aria-label="Visitor distribution by country">
+          {ordered.map((row) => (
+            <div className="country-bar-row" key={row.name}>
+              <span><DimensionMark kind="country" value={row.name} /><CountryName code={row.name} /></span>
+              <i style={{ width: `${Math.max(2, Number(row.count || 0) / max * 100)}%` }} />
+              <b>{fmt(Number(row.count || 0))}</b>
+            </div>
+          ))}
+        </div>
+      </Panel>
+      <Panel title="Full country list"><AnalyticsValueTable headers={["Country", "Visitors"]} rows={shareRows(ordered, total, "country")} /></Panel>
+    </>
   );
 }
 
@@ -5972,9 +6048,24 @@ function DimensionMark({ kind, value }: { kind: string; value: string }) {
       ? <span className="dimension-mark browser"><img src={logos[clean]} alt="" /></span>
       : <span className="dimension-mark neutral"><Globe2 /></span>;
   }
-  const short = clean.includes("google") ? "G" : clean.includes("linkedin") ? "in" : clean.includes("instagram") ? "◎" : clean.includes("chrome") ? "●" : clean.includes("safari") ? "●" : clean.includes("edge") ? "e" : clean.includes("firefox") ? "●" : clean.includes("direct") ? "↗" : "↗";
-  const brand = clean.includes("google") ? "google" : clean.includes("linkedin") ? "linkedin" : clean.includes("instagram") ? "instagram" : clean.includes("chrome") ? "chrome" : clean.includes("safari") ? "safari" : clean.includes("edge") ? "edge" : clean.includes("firefox") ? "firefox" : "neutral";
-  return <span className={`dimension-mark ${brand}`} aria-hidden="true">{short}</span>;
+  const sourceIcon = sourceIconPath(clean);
+  return <span className="dimension-mark source" aria-hidden="true"><img src={sourceIcon} alt="" /></span>;
+}
+
+function sourceIconPath(value: string) {
+  const source = value.toLocaleLowerCase();
+  if (/direct|unknown|other|unassigned|none/.test(source)) return "/assets/globe.svg";
+  const matchers: [RegExp, string][] = [
+    [/google(?!.*gemini)/, "google"], [/bing/, "bing"], [/yahoo/, "yahoo"], [/duckduckgo|duck duck go/, "duckduckgo"],
+    [/ecosia/, "ecosia"], [/brave/, "brave"], [/baidu/, "baidu"], [/yandex/, "yandex"], [/facebook|fb\b/, "facebook"],
+    [/instagram/, "instagram"], [/linkedin/, "linkedin"], [/youtube/, "youtube"], [/tiktok|tik tok/, "tiktok"],
+    [/twitter|(^|\s)x($|\s)/, "x"], [/pinterest/, "pinterest"], [/reddit/, "reddit"], [/threads/, "threads"],
+    [/snapchat/, "snapchat"], [/bluesky/, "bluesky"], [/quora/, "quora"], [/whatsapp/, "whatsapp"],
+    [/telegram/, "telegram"], [/discord/, "discord"], [/chatgpt|openai/, "chatgpt"], [/perplexity/, "perplexity"],
+    [/gemini/, "gemini"], [/copilot/, "copilot"], [/claude|anthropic/, "claude"], [/email|newsletter|mail/, "email"],
+  ];
+  const match = matchers.find(([pattern]) => pattern.test(source));
+  return match ? `/assets/source-icons/${match[1]}.svg` : "/assets/globe.svg";
 }
 
 function EventsPanel({
@@ -6214,6 +6305,7 @@ function AuditProgress({ run, onRetry }: { run: AuditRun; onRetry: () => void })
     queued: "Waiting for an audit worker",
     fetching_page: "Collecting the selected page",
     evaluating_checks: "Evaluating available checks",
+    collecting_browser_evidence: "Measuring desktop and mobile performance in a rendered browser",
     collecting_network_evidence: "Checking DNS, robots, sitemaps and optional resources",
     persisting_results: "Saving evidence and scores",
     failed: "Audit failed",
@@ -6233,8 +6325,9 @@ function AuditProgress({ run, onRetry }: { run: AuditRun; onRetry: () => void })
         className={`audit-progress-track ${percent == null ? "indeterminate" : ""}`}
         role="progressbar"
         aria-valuemin={0}
-        aria-valuemax={total || undefined}
-        aria-valuenow={total ? complete : undefined}
+        aria-valuemax={100}
+        aria-valuenow={percent ?? undefined}
+        aria-valuetext={total ? `${complete} of ${total} checks complete` : "Preparing audit checks"}
       >
         <span style={percent == null ? undefined : { width: `${percent}%` }} />
       </div>
@@ -6303,14 +6396,14 @@ function AuditFilterButton({
 function AuditScore({ run }: { run?: AuditRun }) {
   const categoryScores = auditRunCategoryScores(run);
   const complete = isAuditRunComplete(run);
-  const score = complete ? run?.score : undefined;
+  const score = run?.score;
   return (
     <div className="audit-score-row">
       <div
-        className={`audit-score ${complete && (score || 0) >= 80 ? "good" : "warn"} ${complete ? "" : "partial"}`}
+        className={`audit-score ${(score || 0) >= 80 ? "good" : "warn"} ${complete ? "" : "partial"}`}
         style={{ "--score": score || 0 } as any}
       >
-        <span>{complete ? score ?? "—" : run ? "Partial" : "—"}</span>
+        <span>{score ?? "—"}</span>
       </div>
       <div className="audit-six-stats">
         {auditCategories.map((x) => {
@@ -6434,6 +6527,15 @@ function AuditChecksPanel({ pageName, run, results, onOpenCategory }: { pageName
     reviewed: results.filter((result) => result.review_status && result.review_status !== "not_reviewed").length,
   };
   const unable = results.filter((result) => result.outcome === "unable_to_test").length;
+  const categoryRows = auditDetailedCategories.map(([key, label]) => {
+    const rows = results.filter((result) => result.subcategory === key);
+    const passed = rows.filter((result) => result.outcome === "pass").length;
+    const findings = rows.filter((result) => ["fail", "warning"].includes(result.outcome)).length;
+    const info = rows.filter((result) => ["informational", "not_applicable"].includes(result.outcome)).length;
+    const denominator = passed + findings;
+    return { key, label, checks: rows.length, passed, findings, info, passRate: denominator ? Math.round(passed / denominator * 100) : null };
+  });
+  const sorted = useSortableRows(categoryRows, (row, column) => [row.label, row.checks, row.passed, row.findings, row.info, row.passRate ?? -1][column]);
   return (
     <>
       <div className="audit-check-summary">
@@ -6445,19 +6547,13 @@ function AuditChecksPanel({ pageName, run, results, onOpenCategory }: { pageName
         <h2>{pageName} checks</h2>
         <div className="table-wrap">
           <table className="audit-checks-table">
-            <thead><tr><th>Category</th><th>Checks</th><th>Passed</th><th>Findings</th><th>Info / N/A</th><th>Pass rate</th></tr></thead>
+            <thead><tr>{["Category", "Checks", "Passed", "Findings", "Info / N/A", "Pass rate"].map((label, column) => <SortableHeader key={label} label={label} column={column} sort={sorted.sort} onSort={sorted.onSort} />)}</tr></thead>
             <tbody>
-              {auditDetailedCategories.map(([key, label]) => {
-                const rows = results.filter((result) => result.subcategory === key);
-                const passed = rows.filter((result) => result.outcome === "pass").length;
-                const findings = rows.filter((result) => ["fail", "warning"].includes(result.outcome)).length;
-                const info = rows.filter((result) => ["informational", "not_applicable"].includes(result.outcome)).length;
-                const denominator = passed + findings;
-                const passRate = denominator ? Math.round(passed / denominator * 100) : null;
+              {sorted.rows.map(({ key, label, checks, passed, findings, info, passRate }) => {
                 return (
                   <tr key={key}>
                     <td><button className={`audit-category-bar ${passRate == null ? "unknown" : ""}`} style={{ "--pass-rate": passRate || 0 } as any} onClick={() => onOpenCategory(key)}><span>{label}</span></button></td>
-                    <td>{rows.length}</td><td>{passed}</td><td>{findings}</td><td>{info}</td><td>{passRate == null ? "—" : `${passRate}%`}</td>
+                    <td>{checks}</td><td>{passed}</td><td>{findings}</td><td>{info}</td><td>{passRate == null ? "—" : `${passRate}%`}</td>
                   </tr>
                 );
               })}
@@ -6643,7 +6739,7 @@ function PerformanceTable({
     : run?.performance_metrics?.desktop;
   return (
     rows?.length ? (
-      <DataTable headers={["Metric", "Value", "Target"]} rows={rows} />
+      <DataTable headers={["Metric", "Value", "Target"]} rows={rows.map((row) => [row[0], row[1], <PerformanceTarget key={String(row[0])} row={row} />])} />
     ) : (
       <EmptyCompact
         title="Browser lab metrics not implemented"
@@ -6651,6 +6747,17 @@ function PerformanceTable({
       />
     )
   );
+}
+function PerformanceTarget({ row }: { row: (string | number)[] }) {
+  const metric = String(row[0]);
+  const value = Number.parseFloat(String(row[1]).replace(/[^\d.].*$/, ""));
+  const good = metric === "Performance score" ? value >= 90
+    : metric === "LCP" ? value <= 2.5
+      : metric === "TBT" ? value <= 200
+        : metric === "CLS" ? value <= .1
+          : metric === "FCP" ? value <= 1.8
+            : true;
+  return <span className="performance-target">{String(row[2]).replace(/\s*●\s*$/, "")}<i className={good ? "good" : "warning"} aria-label={good ? "Meets target" : "Needs improvement"} /></span>;
 }
 function RealUserPerformanceTable({ data, device }: { data: any; device: "desktop" | "mobile" }) {
   const source = data?.[device];
@@ -7214,7 +7321,7 @@ function eventLabel(value: string) {
 
 function shareRows(values: any[] = [], total = 0, iconKind?: string) {
   return values.map((row) => ({
-    label: iconKind === "country" ? countryLabel(row.name) : cap(String(row.name)),
+    label: iconKind === "country" ? <CountryName code={row.name} /> : cap(String(row.name)),
     value: Number(row.count || 0),
     secondary: total ? `${Math.round(Number(row.count || 0) / total * 100)}%` : "0%",
     iconKind,
@@ -7510,13 +7617,18 @@ function normalisePagePath(value: string) {
 }
 
 function countryLabel(value: string) {
-  const labels: Record<string, string> = {
-    DE: "Germany",
-    GB: "United Kingdom",
-    US: "United States",
-    UNKNOWN: "Unknown",
-  };
-  return labels[value.toUpperCase()] || value;
+  const code = value.toUpperCase() === "UK" ? "GB" : value.toUpperCase();
+  if (code === "UNKNOWN") return "Unknown";
+  if (!/^[A-Z]{2}$/.test(code)) return value;
+  try {
+    return new Intl.DisplayNames(["en-GB"], { type: "region" }).of(code) || value;
+  } catch {
+    return value;
+  }
+}
+function CountryName({ code }: { code: string }) {
+  const short = code.toUpperCase() === "UK" ? "GB" : code.toUpperCase();
+  return <><span className="country-name-desktop">{countryLabel(code)}</span><span className="country-name-mobile">{short === "UNKNOWN" ? "—" : short}</span></>;
 }
 
 function fmt(x: number) {

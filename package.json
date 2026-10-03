@@ -9,6 +9,7 @@
     "deploy": "npm run build && wrangler deploy",
     "check": "tsc --noEmit",
     "test": "vitest run",
+    "assets:sources": "node scripts/prepare-source-icons.mjs",
     "audit:registry": "node scripts/generate-audit-registry.mjs",
     "audit:coverage": "vite-node scripts/report-audit-coverage.ts"
   },
@@ -20,16 +21,20 @@
     "@browser-logos/opera": "^1.1.11",
     "@browser-logos/safari": "^2.1.0",
     "@browser-logos/samsung-internet": "^4.0.6",
+    "@fortawesome/free-brands-svg-icons": "7.3.1",
+    "@lobehub/icons-static-svg": "1.95.1",
     "@supabase/supabase-js": "2.57.4",
     "flag-icons": "^7.5.0",
     "hono": "4.9.8",
     "lucide-react": "0.544.0",
+    "simple-icons": "16.33.0",
     "react": "19.1.1",
     "react-dom": "19.1.1",
     "react-router-dom": "7.9.1",
     "web-vitals": "^5.1.0"
   },
   "devDependencies": {
+    "@cloudflare/puppeteer": "1.4.0",
     "@cloudflare/vite-plugin": "1.13.13",
     "@cloudflare/workers-types": "4.20260702.1",
     "@types/react": "19.1.16",

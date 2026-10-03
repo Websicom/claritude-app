@@ -687,16 +687,9 @@ tbody tr:hover {
   gap: 4px;
   padding: 16px 3px;
 }
-.summary-note {
-  margin: -4px 0 14px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  background: var(--panel);
-  border-radius: 9px;
-}
-.summary-note a {
-  text-decoration: underline;
-}
+.property-uptime-status.online { color: var(--green); }
+.property-uptime-status.offline { color: var(--red); }
+.property-uptime-status.pending { color: var(--muted); }
 .seg {
   display: inline-flex;
   border: 1px solid var(--line);
@@ -1925,6 +1918,19 @@ input[type="checkbox"]:checked:after {
   align-items: center;
   gap: 8px;
 }
+.table-sort-button {
+  all: unset;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+.table-sort-button:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
 .page-link-cell svg {
   width: 13px;
   color: var(--muted);
@@ -2304,6 +2310,14 @@ input[type="checkbox"]:checked:after {
   background: transparent;
   line-height: 1;
 }
+.dimension-mark.source { background: #fff; }
+.dimension-mark.source img { width: 16px; height: 16px; object-fit: contain; }
+.country-name-mobile { display: none; }
+.countries-more { margin-top: 10px; }
+.country-bar-chart { display: grid; gap: 10px; padding: 8px 0; }
+.country-bar-row { display: grid; grid-template-columns: minmax(170px, .55fr) minmax(160px, 1fr) auto; align-items: center; gap: 12px; }
+.country-bar-row > span { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.country-bar-row > i { display: block; height: 12px; border-radius: 999px; background: var(--green); }
 .severity-icon svg {
   display: block;
   width: 17px;
@@ -2332,6 +2346,14 @@ input[type="checkbox"]:checked:after {
   width: max-content;
   margin: 0 0 8px 0;
 }
+.audit-performance-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.audit-performance-toolbar .audit-performance-mode { margin: 0; }
+.audit-performance-toolbar > span { color: var(--muted); font-size: 13px; }
+.performance-panel-title { display: inline-flex; align-items: center; gap: 9px; }
+.performance-panel-title svg { width: 19px; height: 19px; }
+.performance-target { display: inline-flex; align-items: center; gap: 7px; }
+.performance-target i { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+.performance-target i.warning { background: var(--orange); }
 .audit-filter-wrap {
   position: relative;
   width: max-content;
@@ -2376,22 +2398,28 @@ input[type="checkbox"]:checked:after {
   color: var(--muted);
 }
 .audit-progress-track {
+  position: relative;
   height: 7px;
   overflow: hidden;
   border-radius: 999px;
-  background: #ececee;
+  background-color: #ececee;
+  background-image: repeating-linear-gradient(135deg, rgba(128, 128, 140, .18) 0 7px, transparent 7px 14px);
+  background-size: 28px 28px;
+  animation: audit-progress-stripes .8s linear infinite;
 }
 .audit-progress-track > span {
+  position: relative;
+  z-index: 1;
   display: block;
   height: 100%;
   min-width: 3px;
   border-radius: inherit;
   background: var(--green);
-  transition: width .2s ease;
+  transition: width .35s ease;
 }
 .audit-progress-track.indeterminate > span {
-  width: 35%;
-  animation: audit-progress-indeterminate 1.25s ease-in-out infinite;
+  width: 0;
+  min-width: 0;
 }
 .audit-progress.failed {
   border-color: #f3b6bd;
@@ -2401,13 +2429,10 @@ input[type="checkbox"]:checked:after {
   animation: audit-spin .8s linear infinite;
 }
 @keyframes audit-spin { to { transform: rotate(360deg); } }
-@keyframes audit-progress-indeterminate {
-  from { transform: translateX(-110%); }
-  to { transform: translateX(300%); }
-}
+@keyframes audit-progress-stripes { to { background-position: 28px 0; } }
 @media (prefers-reduced-motion: reduce) {
   .audit-spin,
-  .audit-progress-track.indeterminate > span { animation: none; }
+  .audit-progress-track { animation: none; }
   .audit-progress-track > span { transition: none; }
 }
 .audit-review-row,
@@ -3161,9 +3186,6 @@ input[type="checkbox"]:checked:after {
     padding-left: 14px !important;
     padding-right: 5px !important;
   }
-  .summary-note {
-    display: none;
-  }
   .brand {
     justify-content: center;
     padding: 0 8px !important;
@@ -3391,3 +3413,6 @@ input[type="checkbox"]:checked:after {
     min-width: 0;
   }
 }
+  .country-name-desktop { display: none; }
+  .country-name-mobile { display: inline; }
+  .country-bar-row { grid-template-columns: 70px minmax(80px, 1fr) auto; gap: 8px; }

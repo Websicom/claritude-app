@@ -16,6 +16,7 @@
     "producers": [{ "binding": "JOBS", "queue": "claritude-jobs" }],
     "consumers": [{ "queue": "claritude-jobs", "max_batch_size": 5, "max_batch_timeout": 10, "max_retries": 3, "dead_letter_queue": "claritude-jobs-dlq" }]
   },
+  "browser": { "binding": "BROWSER" },
   "vars": {
     "SUPABASE_URL": "https://dfaxmxschvzmlozxjaxf.supabase.co",
     "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_zNc8TQjoFQ-OI2nKbiNOPA_5ukCoCY6",
