@@ -218,6 +218,7 @@ export function ClaritudeApplication({
     [propertyMenu, setPropertyMenu] = useState(false),
     [userMenu, setUserMenu] = useState(false),
     [mobile, setMobile] = useState(false),
+    [alertsSnoozedLocally, setAlertsSnoozedLocally] = useState(false),
     [toast, setToast] = useState(""),
     [addOpen, setAddOpen] = useState(false),
     [workspaceOpen, setWorkspaceOpen] = useState(false),
@@ -302,8 +303,10 @@ export function ClaritudeApplication({
       : section === "settings"
         ? "Property settings"
         : cap(section);
-  const alertsSnoozed = data.profile?.alerts_snoozed_until &&
-    new Date(data.profile.alerts_snoozed_until).valueOf() > Date.now();
+  const alertsSnoozed = alertsSnoozedLocally || Boolean(
+    data.profile?.alerts_snoozed_until &&
+    new Date(data.profile.alerts_snoozed_until).valueOf() > Date.now(),
+  );
   const warning = alertsSnoozed
     ? null
     : fixture
@@ -353,20 +356,24 @@ export function ClaritudeApplication({
     return () => window.removeEventListener("keydown", dismiss);
   }, [workspaceMenu, propertyMenu]);
   async function snoozeAlerts() {
-    if (!session) return;
+    setAlertsSnoozedLocally(true);
+    if (!session) {
+      notify("Alerts snoozed for this session");
+      return;
+    }
     try {
       await api(session, "/api/profile", {
         method: "PATCH",
         body: JSON.stringify({
           full_name: data.profile?.full_name,
           timezone: data.profile?.timezone,
-          alerts_snoozed_until: new Date(Date.now() + 60 * 60_000).toISOString(),
+          alerts_snoozed_until: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
         }),
       });
-      notify("Alerts snoozed for one hour");
+      notify("Alerts snoozed for 24 hours");
       reload();
     } catch (error: any) {
-      notify(error.message);
+      notify(`Alerts snoozed for this session. ${error.message}`);
     }
   }
   return (
@@ -415,7 +422,8 @@ export function ClaritudeApplication({
         </button>
         <div className="page-title">{title}</div>
         <div className="brand">
-          <img src="/assets/claritude-logo.svg" alt="Claritude" />
+          <img className="brand-logo" src="/assets/claritude-logo.svg" alt="Claritude" />
+          <img className="brand-mark" src="/assets/claritude-favicon.svg" alt="Claritude" />
         </div>
       </header>
       {workspaceMenu && (
@@ -446,8 +454,24 @@ export function ClaritudeApplication({
         />
       )}
       <div className="layout">
-        <aside className={mobile ? "open" : ""}>
+        <aside
+          className={mobile ? "open" : ""}
+          onClickCapture={(event) => {
+            if ((event.target as Element).closest("a")) setMobile(false);
+          }}
+        >
           <nav>
+            <button
+              className="mobile-workspace-link"
+              onClick={() => {
+                setMobile(false);
+                setPropertyMenu(false);
+                setWorkspaceMenu(true);
+              }}
+            >
+              <LayoutGrid />
+              Switch workspace
+            </button>
             {workspaceContext ? (
               <>
                 <Link
@@ -1137,7 +1161,7 @@ function WorkspaceOverview({
                   value={p.uptime_monitors?.[0]?.last_status || "pending"}
                 />,
                 measured[p.id]?.availability != null
-                  ? `${Number(measured[p.id].availability).toFixed(2)}%`
+                  ? formatPercentage(Number(measured[p.id].availability))
                   : "Pending",
                 measured[p.id] ? fmt(measured[p.id].pageviews || 0) : "Pending",
                 measured[p.id]
@@ -1913,7 +1937,7 @@ function UptimeView({
                 fixture
                   ? "99.92%"
                   : checkData?.summary?.availability != null
-                    ? `${checkData.summary.availability.toFixed(2)}%`
+                    ? formatPercentage(checkData.summary.availability)
                     : "—",
                 availabilityDelta || "Selected period",
               ],
@@ -4833,6 +4857,17 @@ function SeriesChart({
   timeZone?: string;
 }) {
   const [hover, setHover] = useState<number | null>(null);
+  const wrapper = useRef<HTMLDivElement>(null);
+  const [measuredWidth, setMeasuredWidth] = useState(825);
+  useEffect(() => {
+    if (!wrapper.current || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => {
+      const nextWidth = Math.max(280, Math.round(entry.contentRect.width));
+      setMeasuredWidth((current) => current === nextWidth ? current : nextWidth);
+    });
+    observer.observe(wrapper.current);
+    return () => observer.disconnect();
+  }, [points.length]);
   if (!points.length)
     return (
       <Empty
@@ -4840,7 +4875,7 @@ function SeriesChart({
         detail="This chart populates as measured data is received."
       />
     );
-  const width = 825,
+  const width = measuredWidth,
     height = 190,
     plotLeft = 48,
     plotRight = width - 8,
@@ -4862,7 +4897,7 @@ function SeriesChart({
     ticks = [max, max * 2 / 3, max / 3, 0],
     xLabelIndexes = [...new Set([0, Math.floor((points.length - 1) / 3), Math.floor((points.length - 1) * 2 / 3), points.length - 1])];
   return (
-    <div className="live-chart-wrap" onMouseLeave={() => setHover(null)}>
+    <div className="live-chart-wrap" ref={wrapper} onMouseLeave={() => setHover(null)}>
       <svg
         className="chart live-chart"
         viewBox={`0 0 ${width} ${height}`}
@@ -4905,7 +4940,21 @@ function SeriesChart({
         {ticks.map((tick, index) => <span key={index} style={{ top: `${(index / 3) * 100}%` }}>{formatChartAxis(tick, unit)}</span>)}
       </div>
       <div className="chart-x-axis" aria-hidden="true">
-        {xLabelIndexes.map((index) => coords[index] && <span key={index} style={{ left: `${(coords[index].x / width) * 100}%` }}>{chartDateLabel(coords[index].label, timeZone)}</span>)}
+        {xLabelIndexes.map((index, position) => coords[index] && (
+          <span
+            key={index}
+            style={{
+              left: `${(coords[index].x / width) * 100}%`,
+              transform: position === 0
+                ? "none"
+                : position === xLabelIndexes.length - 1
+                  ? "translateX(-100%)"
+                  : "translateX(-50%)",
+            }}
+          >
+            {chartDateLabel(coords[index].label, timeZone)}
+          </span>
+        ))}
       </div>
       {hover != null && (
         <div
@@ -7085,6 +7134,11 @@ function comparisonText(current: number | undefined, previous: number | undefine
   const change = ((Number(current) - Number(previous)) / Number(previous)) * 100;
   return `${change >= 0 ? "↑" : "↓"} ${change >= 0 ? "+" : ""}${change.toFixed(1)}%`;
 }
+
+function formatPercentage(value: number) {
+  return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(2)}%`;
+}
+
 function metricDelta(
   current: number | null | undefined,
   previous: number | null | undefined,

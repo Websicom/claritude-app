@@ -201,6 +201,10 @@ a {
   width: 82px;
   height: auto;
 }
+.brand-mark,
+.mobile-workspace-link {
+  display: none !important;
+}
 .layout {
   display: grid;
   grid-template-columns: var(--side) 1fr;
@@ -3056,5 +3060,121 @@ input[type="checkbox"]:checked:after {
   }
   .template-grid {
     gap: 8px;
+  }
+}
+
+/* Final mobile rules live after the component rules they override. */
+@media (max-width: 760px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+  .top {
+    grid-template-columns: 58px minmax(0, 1fr) 0 52px;
+  }
+  .brand {
+    justify-content: center;
+    padding: 0 8px !important;
+  }
+  .brand-logo {
+    display: none !important;
+  }
+  .brand-mark {
+    display: block !important;
+    width: 28px !important;
+    height: 28px !important;
+  }
+  .mobile-workspace-link {
+    display: flex !important;
+    margin-bottom: 7px;
+    border-bottom: 1px solid var(--line);
+    border-radius: 0;
+    padding-bottom: 12px;
+    font-weight: 650;
+  }
+  .selector-menu > input {
+    font-size: 16px;
+  }
+  .warning {
+    grid-template-columns: 8px minmax(0, 1fr);
+  }
+  .warning b,
+  .warning .subtle,
+  .warning-actions {
+    min-width: 0;
+  }
+  .warning .subtle {
+    display: block;
+  }
+  .warning-actions {
+    flex-wrap: wrap;
+  }
+  .coverage-note {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+  .audit-progress {
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .audit-progress > *,
+  .audit-progress-copy,
+  .audit-progress-track {
+    width: 100%;
+    min-width: 0;
+  }
+  .audit-progress-copy span,
+  .audit-progress-copy small {
+    overflow-wrap: anywhere;
+  }
+  .audit-progress .btn {
+    width: max-content;
+    max-width: 100%;
+  }
+  .audit-check-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0;
+  }
+  .audit-check-summary > div {
+    min-width: 0;
+    min-height: 72px;
+    border-right: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+  }
+  .audit-check-summary > div:nth-child(even) {
+    border-right: 0;
+  }
+  .audit-check-summary > div:last-child {
+    grid-column: 1 / -1;
+    border-right: 0;
+    border-bottom: 0;
+  }
+  .audit-check-summary small {
+    min-height: 2.9em;
+    overflow-wrap: anywhere;
+  }
+  .analytics-overview-bottom {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .live-chart-wrap {
+    overflow: hidden;
+  }
+  .live-chart {
+    height: 210px;
+  }
+  .chart-y-axis {
+    top: 7%;
+    bottom: 14%;
+    width: 50px;
+    font-size: 10px;
+  }
+  .chart-x-axis {
+    font-size: 10px;
+  }
+  .response-statistics {
+    width: 100%;
   }
 }
