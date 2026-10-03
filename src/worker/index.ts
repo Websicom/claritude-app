@@ -1987,20 +1987,31 @@ async function runAudit(env: Env, id: string) {
       };
     let persisted = 0;
     const persist = async (results: AuditResult[]) => {
-      for (const batch of chunkAuditResults(results.map(decorate), 24)) {
-      const { error: resultError } = await db.from("audit_results").upsert(
-        batch,
-        { onConflict: "audit_run_id,check_id" },
-      );
-      if (resultError) throw resultError;
-      persisted += batch.length;
-      await db
-        .from("audit_runs")
-        .update({
-          progress_completed: persisted,
-          heartbeat_at: new Date().toISOString(),
-        })
-        .eq("id", id);
+      for (const batch of chunkAuditResults(results.map(decorate), 8)) {
+        let failure: string | null = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const { error: resultError } = await db
+              .from("audit_results")
+              .upsert(batch, { onConflict: "audit_run_id,check_id" })
+              .abortSignal(AbortSignal.timeout(15_000));
+            failure = resultError?.message || null;
+          } catch (error) {
+            failure = errorMessage(error);
+          }
+          if (!failure) break;
+        }
+        if (failure) throw new Error(`audit_result_persistence_failed: ${failure}`);
+        persisted += batch.length;
+        const { error: progressError } = await db
+          .from("audit_runs")
+          .update({
+            progress_completed: persisted,
+            heartbeat_at: new Date().toISOString(),
+          })
+          .eq("id", id)
+          .abortSignal(AbortSignal.timeout(10_000));
+        if (progressError) throw progressError;
       }
     };
     await persist(staticResults);
