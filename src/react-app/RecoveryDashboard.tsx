@@ -11,6 +11,7 @@ import {
   Activity,
   BarChart3,
   Bell,
+  BellOff,
   CalendarDays,
   Check,
   CheckCircle2,
@@ -334,6 +335,9 @@ export function ClaritudeApplication({
               detail: scopedNotifications[0].body,
             }
           : null;
+  const importantAlertCount = fixture
+    ? 5
+    : scopedNotifications.filter((notification: any) => !notification.read_at).length || (warning ? 1 : 0);
   function selectProperty(id?: string) {
     setPropertyMenu(false);
     navigate(
@@ -404,6 +408,7 @@ export function ClaritudeApplication({
           className="selector selector-button"
           aria-expanded={propertyMenu}
           onClick={() => {
+            setMobile(false);
             setWorkspaceMenu(false);
             setPropertyMenu((v) => !v);
           }}
@@ -597,25 +602,44 @@ export function ClaritudeApplication({
         </aside>
         <main onClick={() => setMobile(false)}>
           {warning && (
-            <div className="warning">
-              <i className="dot" />
-              <b>{warning.title}</b>
-              <span className="subtle">{warning.detail}</span>
-              <span className="warning-actions">
+            <>
+              <div className="warning warning-desktop">
+                <i className="dot" />
+                <b>{warning.title}</b>
+                <span className="subtle">{warning.detail}</span>
+                <span className="warning-actions">
+                  <Link
+                    className="text-link"
+                    to={property ? `/notifications?property=${property.id}` : "/notifications"}
+                  >
+                    Review notification
+                  </Link>
+                  <button
+                    className="text-link"
+                    onClick={snoozeAlerts}
+                  >
+                    Snooze alerts
+                  </button>
+                </span>
+              </div>
+              <div className="warning warning-mobile-compact">
                 <Link
-                  className="text-link"
+                  className="mobile-important-alerts-link"
                   to={property ? `/notifications?property=${property.id}` : "/notifications"}
                 >
-                  Review notification
+                  <i className="dot" />
+                  <b>{importantAlertCount} new important {importantAlertCount === 1 ? "alert" : "alerts"}</b>
                 </Link>
                 <button
-                  className="text-link"
+                  className="iconbtn mobile-snooze-alerts"
                   onClick={snoozeAlerts}
+                  aria-label="Snooze alerts for 24 hours"
+                  title="Snooze alerts for 24 hours"
                 >
-                  Snooze alerts
+                  <BellOff />
                 </button>
-              </span>
-            </div>
+              </div>
+            </>
           )}
           <Routes>
             <Route
@@ -1543,10 +1567,43 @@ function PropertyOverview({
       formatVital(vital.name, vital.value),
       fmt(vital.samples || 0),
     ]);
+  const overviewMetrics: (string | number)[][] = [
+    [
+      "Uptime",
+      fixture
+        ? property.demo?.uptime || "99.92%"
+        : monitor?.last_status === "online"
+          ? "Online"
+          : cap(monitor?.last_status || "Pending"),
+      fixture
+        ? "35 min estimated downtime"
+        : monitor?.last_checked_at
+          ? `Checked ${relative(monitor.last_checked_at)}`
+          : "Awaiting first check",
+    ],
+    [
+      "Pageviews",
+      fmt(views),
+      fixture ? "↑ 12.4%" : "Measured in this period",
+    ],
+    [
+      "Avg daily visitors",
+      fixture ? fmt(property.demo?.visitors || 474) : "—",
+      fixture
+        ? "Estimated, not unique users"
+        : "Not available without a visitor estimate",
+    ],
+    [
+      "Key events",
+      fmt(analytics?.events || 0),
+      fixture ? "1.3% of pageviews" : "All accepted events",
+    ],
+  ];
   return (
     <Page
       title="Property overview"
       status={<Period />}
+      relocateMobileControls={tab === "Overview"}
       actions={
         <Link className="primary" to={`/audit?property=${property.id}`}>
           <RefreshCw />
@@ -1554,13 +1611,15 @@ function PropertyOverview({
         </Link>
       }
     >
-      <Tabs
-        labels={["Overview", "Activity", "Setup"]}
-        value={tab}
-        onChange={setTab}
-      />
-      {tab === "Overview" ? (
+      {(mobilePageControls) => (
         <>
+          <Tabs
+            labels={["Overview", "Activity", "Setup"]}
+            value={tab}
+            onChange={setTab}
+          />
+          {tab === "Overview" ? (
+            <>
           <div className="summary-note">
             <b>Latest audit:</b> {audit ? fmtDate(audit.created_at) : "not run"}{" "}
             · <b>Tracking:</b>{" "}
@@ -1572,46 +1631,16 @@ function PropertyOverview({
               2 priority actions
             </Link>
           </div>
-          <Metrics
-            values={[
-              [
-                "Uptime",
-                fixture
-                  ? property.demo?.uptime || "99.92%"
-                  : monitor?.last_status === "online"
-                    ? "Online"
-                    : cap(monitor?.last_status || "Pending"),
-                fixture
-                  ? "35 min estimated downtime"
-                  : monitor?.last_checked_at
-                    ? `Checked ${relative(monitor.last_checked_at)}`
-                    : "Awaiting first check",
-              ],
-              [
-                "Pageviews",
-                fmt(views),
-                fixture ? "↑ 12.4%" : "Measured in this period",
-              ],
-              [
-                "Avg daily visitors",
-                fixture ? fmt(property.demo?.visitors || 474) : "—",
-                fixture
-                  ? "Estimated, not unique users"
-                  : "Not available without a visitor estimate",
-              ],
-              [
-                "Key events",
-                fmt(analytics?.events || 0),
-                fixture ? "1.3% of pageviews" : "All accepted events",
-              ],
-            ]}
-          />
+          <div className="property-overview-metrics-desktop">
+            <Metrics values={overviewMetrics} />
+          </div>
           <div className="grid">
             <div>
               <Panel
                 title="Traffic (last 30 days)"
                 actions={<ChartSwitch notify={notify} events />}
               >
+                {mobilePageControls}
                 <SeriesChart
                   points={(analytics?.series || []).map((point: any) => ({
                     label: point.day,
@@ -1620,6 +1649,9 @@ function PropertyOverview({
                   emptyTitle="No measured property traffic yet"
                 />
               </Panel>
+              <div className="property-overview-metrics-mobile">
+                <Metrics values={overviewMetrics} />
+              </div>
               <Panel title="Website health">
                 <div className="health-metrics">
                   <Metric
@@ -1678,13 +1710,15 @@ function PropertyOverview({
               </Panel>
             </div>
           </div>
+            </>
+          ) : tab === "Activity" ? (
+            <Panel title="Recent property activity">
+              <ActivityList property={property} />
+            </Panel>
+          ) : (
+            <SetupPanel property={property} />
+          )}
         </>
-      ) : tab === "Activity" ? (
-        <Panel title="Recent property activity">
-          <ActivityList property={property} />
-        </Panel>
-      ) : (
-        <SetupPanel property={property} />
       )}
     </Page>
   );
@@ -4529,12 +4563,14 @@ function Page({
   title,
   status,
   actions,
+  relocateMobileControls = false,
   children,
 }: {
   title: string;
   status?: ReactNode;
   actions?: ReactNode;
-  children: ReactNode;
+  relocateMobileControls?: boolean;
+  children: ReactNode | ((mobileControls: ReactNode) => ReactNode);
 }) {
   const pageLocation = useLocation(),
     pageNavigate = useNavigate();
@@ -4566,46 +4602,58 @@ function Page({
     URL.revokeObjectURL(url);
     setMenu(false);
   }
+  const renderPageOptions = (className: string) => (
+    <div className={`page-options ${className}`}>
+      <button
+        className="iconbtn"
+        aria-label="Page options"
+        aria-expanded={menu}
+        onClick={() => setMenu((value) => !value)}
+      >
+        <MoreHorizontal />
+      </button>
+      {menu && (
+        <div className="action-menu page-action-menu">
+          <button
+            disabled={!status}
+            title={status ? undefined : "This page does not expose period-filtered data"}
+            onClick={() => { setPeriodOpen(true); setMenu(false); }}
+          >
+            <CalendarDays /> Date range
+          </button>
+          <button disabled title="Comparison is available in Audit history and will be added to analytics after period snapshots are enabled">
+            <BarChart3 /> Compare to previous
+          </button>
+          <button onClick={exportVisibleTable}>
+            <ExternalLink /> Export visible table (CSV)
+          </button>
+          <button onClick={() => { window.print(); setMenu(false); }}>
+            <FileChartColumn /> Print / save as PDF
+          </button>
+          <button onClick={() => { setCompact((value) => !value); setMenu(false); }}>
+            <Settings /> {compact ? "Comfortable display" : "Compact display"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+  const mobileControls = (
+    <div className="property-traffic-mobile-controls">
+      <span className="property-traffic-period">{status}</span>
+      {renderPageOptions("page-options-mobile")}
+    </div>
+  );
+  const controlsRelocated = relocateMobileControls && typeof children === "function";
   return (
     <div className={`content ${compact ? "compact-content" : ""}`}>
-      <div className="title-row">
+      <div className={`title-row ${controlsRelocated ? "title-row-relocated" : ""}`}>
         <h1>{title}</h1>
-        {status}
+        <span className={controlsRelocated ? "page-status page-status-relocated" : "page-status"}>{status}</span>
         <span className="spacer" />
         {actions}
-        <button
-          className="iconbtn"
-          aria-label="Page options"
-          aria-expanded={menu}
-          onClick={() => setMenu((value) => !value)}
-        >
-          <MoreHorizontal />
-        </button>
-        {menu && (
-          <div className="action-menu page-action-menu">
-            <button
-              disabled={!status}
-              title={status ? undefined : "This page does not expose period-filtered data"}
-              onClick={() => { setPeriodOpen(true); setMenu(false); }}
-            >
-              <CalendarDays /> Date range
-            </button>
-            <button disabled title="Comparison is available in Audit history and will be added to analytics after period snapshots are enabled">
-              <BarChart3 /> Compare to previous
-            </button>
-            <button onClick={exportVisibleTable}>
-              <ExternalLink /> Export visible table (CSV)
-            </button>
-            <button onClick={() => { window.print(); setMenu(false); }}>
-              <FileChartColumn /> Print / save as PDF
-            </button>
-            <button onClick={() => { setCompact((value) => !value); setMenu(false); }}>
-              <Settings /> {compact ? "Comfortable display" : "Compact display"}
-            </button>
-          </div>
-        )}
+        {renderPageOptions(controlsRelocated ? "page-options-desktop page-options-relocated" : "page-options-desktop")}
       </div>
-      {children}
+      {typeof children === "function" ? children(mobileControls) : children}
       {periodOpen && (
         <Modal title="Date range" close={() => setPeriodOpen(false)}>
           <div className="form-two">
