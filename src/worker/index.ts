@@ -3828,6 +3828,7 @@ export function buildAnalyticsSummary(
   const dailySessions = new Map<string, Set<string>>();
   const vitals = new Map<string, number[]>();
   const vitalDays = new Map<string, Map<string, number[]>>();
+  const deviceVitals = new Map<string, Map<string, number[]>>();
   const views = new Map<string, {
     path: string;
     activeSeconds: number;
@@ -3840,6 +3841,26 @@ export function buildAnalyticsSummary(
   let pageviews = 0;
   let keyEvents = 0;
   let javascriptErrors = 0;
+  const timeZoneDayCache = new Map<string, string>();
+  const timeZoneFormatter = timeZone === "UTC"
+    ? null
+    : new Intl.DateTimeFormat("en-CA", {
+        timeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
+  const eventDay = (value: string) => {
+    if (timeZone === "UTC") return value.slice(0, 10);
+    const cacheKey = value.slice(0, 13);
+    const cached = timeZoneDayCache.get(cacheKey);
+    if (cached) return cached;
+    const parts = timeZoneFormatter!.formatToParts(new Date(value));
+    const part = (type: string) => parts.find((entry) => entry.type === type)?.value || "";
+    const day = `${part("year")}-${part("month")}-${part("day")}`;
+    timeZoneDayCache.set(cacheKey, day);
+    return day;
+  };
   const bump = (map: Map<string, number>, key: unknown, amount = 1) => {
     const clean = String(key || "Unknown").trim() || "Unknown";
     map.set(clean, (map.get(clean) || 0) + amount);
@@ -3852,7 +3873,7 @@ export function buildAnalyticsSummary(
   for (const event of events) {
     const path = normalizeAnalyticsPath(event.path);
     const page = pageMap.get(path) || { pageviews: 0, events: 0 };
-    const day = dateKeyInTimeZone(event.occurred_at, timeZone);
+    const day = eventDay(event.occurred_at);
     const bucket = days === 1
       ? new Date(Math.floor(new Date(event.occurred_at).valueOf() / 3600000) * 3600000).toISOString()
       : day;
@@ -3918,6 +3939,12 @@ export function buildAnalyticsSummary(
       dailySamples.push(Number(event.value));
       daily.set(day, dailySamples);
       vitalDays.set(name, daily);
+      const device = String(event.device || "Unknown").toLocaleLowerCase();
+      const deviceSamples = deviceVitals.get(device) || new Map<string, number[]>();
+      const metricSamples = deviceSamples.get(name) || [];
+      metricSamples.push(Number(event.value));
+      deviceSamples.set(name, metricSamples);
+      deviceVitals.set(device, deviceSamples);
       if (viewId && views.has(viewId)) views.get(viewId)!.vitals.set(name, Number(event.value));
     }
     if (event.event_type === "pageview" || keyEvent) pageMap.set(path, page);
@@ -3936,6 +3963,23 @@ export function buildAnalyticsSummary(
     samples: values.length,
     percentile: 75,
   }));
+  const performanceByDevice = Object.fromEntries(
+    [...deviceVitals].map(([device, metrics]) => [
+      device,
+      {
+        vitals: [...metrics].map(([name, values]) => ({
+          name,
+          value: Math.round(Number(percentile(values, 0.75)) * 100) / 100,
+          samples: values.length,
+          percentile: 75,
+        })),
+        minimumSamples: 1,
+        method: "p75",
+        collectionStatus: metrics.size ? "available" : "versioned_web_vitals_unavailable",
+        trackerVersion: TRACKER_VERSION,
+      },
+    ]),
+  );
   const fromDay = dateKeyInTimeZone(from, timeZone);
   const toDay = dateKeyInTimeZone(to, timeZone);
   const calendarDays: string[] = [];
@@ -4047,6 +4091,7 @@ export function buildAnalyticsSummary(
       collectionStatus: vitalRows.length ? "available" : "versioned_web_vitals_unavailable",
       trackerVersion: TRACKER_VERSION,
     },
+    performanceByDevice,
   };
 }
 
@@ -4067,6 +4112,7 @@ export type AnalyticsFilters = {
 };
 
 export function filterAnalyticsEvents(events: any[], filters: AnalyticsFilters) {
+  if (!Object.values(filters).some(Boolean)) return events;
   const search = filters.pageSearch?.trim().toLocaleLowerCase();
   const normalizedPathValue = filters.pathValue
     ? normalizeAnalyticsPath(filters.pathValue).toLocaleLowerCase()
@@ -4110,28 +4156,47 @@ export function filterAnalyticsEvents(events: any[], filters: AnalyticsFilters) 
 }
 
 function buildAnalyticsFilterOptions(events: any[]) {
-  const unique = (values: string[]) =>
-    [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const values = {
+    paths: new Set<string>(),
+    devices: new Set<string>(),
+    sources: new Set<string>(),
+    countries: new Set<string>(),
+    browsers: new Set<string>(),
+    eventNames: new Set<string>(),
+    metrics: new Set<string>(),
+    sourceTypes: new Set<string>(),
+    utmSources: new Set<string>(),
+    utmMediums: new Set<string>(),
+    utmCampaigns: new Set<string>(),
+  };
+  for (const event of events) {
+    if (event.event_type === "pageview") values.paths.add(normalizeAnalyticsPath(event.path));
+    values.devices.add(String(event.device || "Unknown"));
+    values.sources.add(analyticsSourceCategory(event));
+    values.countries.add(String(event.country_code || "Unknown"));
+    values.browsers.add(String(event.metadata?.browser || "Unknown"));
+    if (["click", "outbound", "form_success"].includes(event.event_type))
+      values.eventNames.add(String(event.name || event.event_type));
+    if (event.event_type === "web_vital")
+      values.metrics.add(String(event.name || "").toUpperCase());
+    values.sourceTypes.add(analyticsSourceType(event));
+    values.utmSources.add(String(event.metadata?.utm_source || ""));
+    values.utmMediums.add(String(event.metadata?.utm_medium || ""));
+    values.utmCampaigns.add(String(event.metadata?.utm_campaign || ""));
+  }
+  const sorted = (set: Set<string>) => [...set].filter(Boolean).sort((a, b) => a.localeCompare(b));
   return {
-    paths: unique(
-      events
-        .filter((event) => event.event_type === "pageview")
-        .map((event) => normalizeAnalyticsPath(event.path)),
-    ),
-    devices: unique(events.map((event) => String(event.device || "Unknown"))),
-    sources: unique(events.map(analyticsSourceCategory)),
-    countries: unique(events.map((event) => String(event.country_code || "Unknown"))),
-    browsers: unique(events.map((event) => String(event.metadata?.browser || "Unknown"))),
-    eventNames: unique(events
-      .filter((event) => ["click", "outbound", "form_success"].includes(event.event_type))
-      .map((event) => String(event.name || event.event_type))),
-    metrics: unique(events
-      .filter((event) => event.event_type === "web_vital")
-      .map((event) => String(event.name || "").toUpperCase())),
-    sourceTypes: unique(events.map(analyticsSourceType)),
-    utmSources: unique(events.map((event) => String(event.metadata?.utm_source || ""))),
-    utmMediums: unique(events.map((event) => String(event.metadata?.utm_medium || ""))),
-    utmCampaigns: unique(events.map((event) => String(event.metadata?.utm_campaign || ""))),
+    paths: sorted(values.paths),
+    devices: sorted(values.devices),
+    sources: sorted(values.sources),
+    countries: sorted(values.countries),
+    browsers: sorted(values.browsers),
+    eventNames: sorted(values.eventNames),
+    metrics: sorted(values.metrics),
+    sourceTypes: sorted(values.sourceTypes),
+    utmSources: sorted(values.utmSources),
+    utmMediums: sorted(values.utmMediums),
+    utmCampaigns: sorted(values.utmCampaigns),
   };
 }
 
@@ -4171,6 +4236,10 @@ function cleanAnalyticsFilter(value: string | undefined, maximumLength: number) 
 
 export function normalizeAnalyticsPath(value: unknown) {
   const raw = String(value || "/").trim() || "/";
+  if (raw.startsWith("/") && !raw.includes("?") && !raw.includes("#")) {
+    const collapsed = `/${raw.split("/").filter(Boolean).join("/")}`;
+    return collapsed === "/" ? "/" : `${collapsed}/`;
+  }
   try {
     const pathname = new URL(raw, "https://invalid.local").pathname || "/";
     const collapsed = `/${pathname.split("/").filter(Boolean).join("/")}`;

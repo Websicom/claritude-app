@@ -1501,42 +1501,24 @@ function PropertyOverview({
   const livePeriod = periodQuery(overviewLocation.search);
   const [tab, setTab] = useState("Overview"),
     [analytics, setAnalytics] = useState<any>(null),
-    [mobileAnalytics, setMobileAnalytics] = useState<any>(null),
-    [desktopAnalytics, setDesktopAnalytics] = useState<any>(null),
     [audits, setAudits] = useState<AuditRun[]>([]);
   useEffect(() => {
     if (session && property) {
       Promise.all([
         api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}`),
-        api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}&device=mobile`),
-        api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}&device=desktop`),
         api<AuditRun[]>(session, `/api/properties/${property.id}/audits?${livePeriod}`),
       ])
-        .then(([all, mobile, desktop, storedAudits]) => {
+        .then(([all, storedAudits]) => {
           setAnalytics(all);
-          setMobileAnalytics(mobile);
-          setDesktopAnalytics(desktop);
           setAudits(storedAudits);
         })
         .catch(() => {
           setAnalytics(null);
-          setMobileAnalytics(null);
-          setDesktopAnalytics(null);
           setAudits([]);
         });
     } else if (property && fixture) {
       const fixtureSummary = fixtureAnalytics(property);
       setAnalytics(fixtureSummary);
-      setMobileAnalytics({
-        ...fixtureSummary,
-        vitals: fixtureSummary.mobileVitals,
-        performanceScore: fixtureSummary.mobilePerformanceScore,
-      });
-      setDesktopAnalytics({
-        ...fixtureSummary,
-        vitals: fixtureSummary.desktopVitals,
-        performanceScore: fixtureSummary.desktopPerformanceScore,
-      });
       setAudits([fixtureAudit(property)]);
     }
   }, [property?.id, session, fixture, livePeriod]);
@@ -1550,12 +1532,12 @@ function PropertyOverview({
   const monitor = property.uptime_monitors?.[0],
     audit = audits[0] || property.audit_runs?.[0],
     views = analytics?.pageviews || 0,
-    mobileScore =
-      mobileAnalytics?.performanceScore ??
-      webVitalsScore(mobileAnalytics?.vitals),
-    desktopScore =
-      desktopAnalytics?.performanceScore ??
-      webVitalsScore(desktopAnalytics?.vitals),
+    mobileScore = fixture
+      ? analytics?.mobilePerformanceScore
+      : webVitalsScore(analytics?.performanceByDevice?.mobile?.vitals),
+    desktopScore = fixture
+      ? analytics?.desktopPerformanceScore
+      : webVitalsScore(analytics?.performanceByDevice?.desktop?.vitals),
     seoScore =
       audit?.category_scores?.SEO ??
       auditCategoryScore(audit?.audit_results, ["SEO"]),
@@ -2290,7 +2272,7 @@ function AnalyticsView({
         .catch(() => !cancelled && setBaseData(null));
     } else if (fixture) setBaseData(analyticsFixtureSummary());
     return () => { cancelled = true; };
-  }, [fixture, livePeriod, property?.id, session]);
+  }, [fixture, livePeriod, property?.id, reloadToken, session]);
 
   useEffect(() => {
     if (!property) return;
@@ -2644,14 +2626,24 @@ function AuditView({
     setRealUserPerformance(null);
     Promise.all([
       api<AuditRun[]>(session, `/api/properties/${property.id}/audits?${livePeriod}`),
-      api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}&device=desktop&pathMode=exact&pathValue=${encodeURIComponent(selectedPage.path)}`),
-      api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}&device=mobile&pathMode=exact&pathValue=${encodeURIComponent(selectedPage.path)}`),
+      api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}&pathMode=exact&pathValue=${encodeURIComponent(selectedPage.path)}`),
     ])
-      .then(([nextRuns, desktop, mobile]) => {
+      .then(([nextRuns, performance]) => {
         if (requestSequence.current !== sequence) return;
         setPropertyRuns(nextRuns);
         setRuns(nextRuns.filter((run) => run.audit_page_id === selectedPage.id));
-        setRealUserPerformance({ desktop, mobile });
+        setRealUserPerformance({
+          desktop: {
+            from: performance.from,
+            to: performance.to,
+            performance: performance.performanceByDevice?.desktop,
+          },
+          mobile: {
+            from: performance.from,
+            to: performance.to,
+            performance: performance.performanceByDevice?.mobile,
+          },
+        });
       })
       .catch(() => {
         if (requestSequence.current !== sequence) return;

@@ -188,6 +188,26 @@ describe("worker evidence pipelines", () => {
     expect(summary.engagement.medianActiveSeconds).toBe(12);
   });
 
+  it("produces desktop and mobile performance from the same analytics pass", () => {
+    const summary = buildAnalyticsSummary([
+      { event_type: "web_vital", path: "/", name: "LCP", value: 2100, device: "desktop", metadata: { tracker_version: "2.1.4" }, occurred_at: "2026-10-02T09:00:00Z" },
+      { event_type: "web_vital", path: "/", name: "LCP", value: 3400, device: "mobile", metadata: { tracker_version: "2.1.4" }, occurred_at: "2026-10-02T09:00:01Z" },
+      { event_type: "web_vital", path: "/", name: "INP", value: 180, device: "desktop", metadata: { tracker_version: "2.1.4" }, occurred_at: "2026-10-02T09:00:02Z" },
+    ], 1, "2026-10-02T00:00:00Z", "2026-10-02T23:59:59Z", "UTC");
+    expect(summary.performanceByDevice.desktop.vitals).toContainEqual({
+      name: "LCP",
+      value: 2100,
+      samples: 1,
+      percentile: 75,
+    });
+    expect(summary.performanceByDevice.mobile.vitals).toContainEqual({
+      name: "LCP",
+      value: 3400,
+      samples: 1,
+      percentile: 75,
+    });
+  });
+
   it("normalizes paths and combines analytics page filters", () => {
     const events = [
       { event_type: "pageview", path: "/work", device: "desktop", source: "Google", country_code: "GB" },
