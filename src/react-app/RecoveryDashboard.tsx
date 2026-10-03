@@ -1816,7 +1816,7 @@ function UptimeView({
             cause: "Timeout",
           },
         ]
-      : incidentData;
+      : incidentData.filter((incident: any) => incident.property_id === property.id);
   const selectedRangeStart = Date.parse(
     checkData?.range?.from || new Date(Date.now() - 29 * 864e5).toISOString(),
   );
