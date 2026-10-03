@@ -1985,32 +1985,22 @@ app.get("/api/properties/:id/analytics", async (c) => {
     utmCampaign: cleanAnalyticsFilter(c.req.query("utm_campaign"), 100),
   };
   const db = c.get("db");
-  const select = "event_type,path,referrer_host,source,device,country_code,name,value,metadata,occurred_at";
   const span = new Date(window.to).valueOf() - new Date(window.from).valueOf() + 1;
   const previousTo = new Date(new Date(window.from).valueOf() - 1).toISOString();
   const previousFrom = new Date(new Date(window.from).valueOf() - span).toISOString();
-  const [currentResult, previousResult] = await Promise.all([
-    db
-      .from("analytics_events")
-      .select(select)
-      .eq("property_id", c.req.param("id"))
-      .gte("occurred_at", window.from)
-      .lte("occurred_at", window.to)
-      .order("occurred_at", { ascending: true })
-      .limit(50000),
-    db
-      .from("analytics_events")
-      .select(select)
-      .eq("property_id", c.req.param("id"))
-      .gte("occurred_at", previousFrom)
-      .lte("occurred_at", previousTo)
-      .order("occurred_at", { ascending: true })
-      .limit(50000),
-  ]);
-  if (currentResult.error || previousResult.error)
-    return c.json({ error: (currentResult.error || previousResult.error)?.message }, 400);
-  const events = currentResult.data || [];
-  const previousEvents = previousResult.data || [];
+  const useRollups = !hasAnalyticsFilters(filters);
+  let currentResult: AnalyticsWindowData;
+  let previousResult: AnalyticsWindowData;
+  try {
+    [currentResult, previousResult] = await Promise.all([
+      loadAnalyticsWindow(db, c.req.param("id"), window.from, window.to, useRollups),
+      loadAnalyticsWindow(db, c.req.param("id"), previousFrom, previousTo, useRollups),
+    ]);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "analytics_query_failed" }, 400);
+  }
+  const events = currentResult.events;
+  const previousEvents = previousResult.events;
   const filtered = filterAnalyticsEvents(events, filters);
   const filteredPrevious = filterAnalyticsEvents(previousEvents, filters);
   return c.json({
@@ -2020,6 +2010,8 @@ app.get("/api/properties/:id/analytics", async (c) => {
       window.from,
       window.to,
       window.timeZone,
+      currentResult.rollups,
+      currentResult.views,
     ),
     previous: buildAnalyticsSummary(
       filteredPrevious,
@@ -2027,12 +2019,17 @@ app.get("/api/properties/:id/analytics", async (c) => {
       previousFrom,
       previousTo,
       window.timeZone,
+      previousResult.rollups,
+      previousResult.views,
     ),
     // Filtering can reduce the returned set below the query ceiling. Preserve
     // whether the underlying property/date result hit that ceiling so the UI
     // never presents a partial result as complete.
-    truncated: events.length >= 50000,
-    filterOptions: buildAnalyticsFilterOptions(events),
+    truncated: currentResult.truncated,
+    filterOptions: buildAnalyticsFilterOptions([
+      ...events,
+      ...currentResult.rollups.map(analyticsRollupAsEvent),
+    ]),
     appliedFilters: filters,
   });
 });
@@ -2124,16 +2121,7 @@ app.get("/api/properties/:id/report", async (c) => {
       .lte("created_at", window.to)
       .order("created_at", { ascending: false })
       .limit(5),
-    db
-      .from("analytics_events")
-      .select(
-        "event_type,path,referrer_host,source,device,country_code,name,value,metadata,occurred_at",
-      )
-      .eq("property_id", id)
-      .gte("occurred_at", window.from)
-      .lte("occurred_at", window.to)
-      .order("occurred_at", { ascending: true })
-      .limit(50000),
+    loadAnalyticsWindow(db, id, window.from, window.to, true),
   ]);
   if (property.error) return c.json({ error: "property_not_found" }, 404);
   return c.json({
@@ -2145,11 +2133,13 @@ app.get("/api/properties/:id/report", async (c) => {
     incidents: incidents.data,
     audits: audits.data,
     analytics: buildAnalyticsSummary(
-      analytics.data || [],
+      analytics.events,
       window.days,
       window.from,
       window.to,
       window.timeZone,
+      analytics.rollups,
+      analytics.views,
     ),
     limitations: [
       "Visitor totals are aggregate estimates; no persistent visitor identifiers are used.",
@@ -3619,9 +3609,17 @@ async function scheduled(env: Env, cron: string) {
       (data || []).map((m) => env.JOBS.send({ type: "uptime", id: m.id })),
     );
   } else {
-    await db.rpc("aggregate_analytics_day", {
+    const aggregateResult = await db.rpc("aggregate_analytics_day_v2", {
       p_day: new Date(Date.now() - 864e5).toISOString().slice(0, 10),
     });
+    if (aggregateResult.error) throw aggregateResult.error;
+    // The product exposes at most a 90-day analytics window. Keep an extra
+    // 30-day safety margin before pruning source events in bounded batches.
+    const pruneResult = await db.rpc("prune_analytics_raw", {
+      p_before: new Date(Date.now() - 120 * 864e5).toISOString(),
+      p_limit: 50000,
+    });
+    if (pruneResult.error) throw pruneResult.error;
     await runDueReportSchedules(env, db);
   }
 }
@@ -3648,13 +3646,13 @@ async function runDueReportSchedules(env: Env, db: SupabaseClient) {
     try {
       const from = new Date(now.getTime() - (schedule.cadence === "weekly" ? 7 : 30) * 864e5);
       const [events, incidents, audits] = await Promise.all([
-        db
-          .from("analytics_events")
-          .select("event_type,path,referrer_host,source,device,country_code,name,value,metadata,occurred_at")
-          .eq("property_id", schedule.property_id)
-          .gte("occurred_at", from.toISOString())
-          .order("occurred_at")
-          .limit(50000),
+        loadAnalyticsWindow(
+          db,
+          schedule.property_id,
+          from.toISOString(),
+          now.toISOString(),
+          true,
+        ),
         db
           .from("incidents")
           .select("*")
@@ -3674,7 +3672,15 @@ async function runDueReportSchedules(env: Env, db: SupabaseClient) {
         periodStart: from.toISOString().slice(0, 10),
         periodEnd: now.toISOString().slice(0, 10),
         property: schedule.properties,
-        analytics: buildAnalyticsSummary(events.data || [], days),
+        analytics: buildAnalyticsSummary(
+          events.events,
+          days,
+          from.toISOString(),
+          now.toISOString(),
+          "UTC",
+          events.rollups,
+          events.views,
+        ),
         incidents: incidents.data || [],
         audits: audits.data || [],
       };
@@ -3808,12 +3814,174 @@ function browserFromUserAgent(value: string) {
   return value ? "Other" : "Unknown";
 }
 
+type AnalyticsRange = { from: string; to: string };
+type AnalyticsWindowData = {
+  events: any[];
+  rollups: any[];
+  views: any[];
+  truncated: boolean;
+};
+
+const utcDayStart = (value: number) => {
+  const date = new Date(value);
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+};
+
+export function analyticsRollupPlan(
+  from: string,
+  to: string,
+  today = Date.now(),
+) {
+  const fromMs = Date.parse(from);
+  const toMs = Date.parse(to);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || fromMs > toMs)
+    throw new Error("invalid_analytics_window");
+  const fromDay = utcDayStart(fromMs);
+  const rollupFromMs = fromMs === fromDay ? fromDay : fromDay + 864e5;
+  const rollupToMs = Math.min(utcDayStart(toMs + 1), utcDayStart(today));
+  if (rollupFromMs >= rollupToMs) {
+    return {
+      rollupFrom: null,
+      rollupTo: null,
+      expectedDays: [] as string[],
+      rawRanges: [{ from: new Date(fromMs).toISOString(), to: new Date(toMs).toISOString() }],
+    };
+  }
+  const expectedDays: string[] = [];
+  for (let cursor = rollupFromMs; cursor < rollupToMs; cursor += 864e5)
+    expectedDays.push(new Date(cursor).toISOString().slice(0, 10));
+  const rawRanges: AnalyticsRange[] = [];
+  if (fromMs < rollupFromMs)
+    rawRanges.push({ from: new Date(fromMs).toISOString(), to: new Date(rollupFromMs - 1).toISOString() });
+  if (rollupToMs <= toMs)
+    rawRanges.push({ from: new Date(rollupToMs).toISOString(), to: new Date(toMs).toISOString() });
+  return {
+    rollupFrom: new Date(rollupFromMs).toISOString(),
+    rollupTo: new Date(rollupToMs).toISOString(),
+    expectedDays,
+    rawRanges,
+  };
+}
+
+function mergeAnalyticsRanges(ranges: AnalyticsRange[]) {
+  const ordered = ranges
+    .map((range) => ({ ...range, fromMs: Date.parse(range.from), toMs: Date.parse(range.to) }))
+    .filter((range) => Number.isFinite(range.fromMs) && Number.isFinite(range.toMs) && range.fromMs <= range.toMs)
+    .sort((left, right) => left.fromMs - right.fromMs);
+  const merged: Array<AnalyticsRange & { fromMs: number; toMs: number }> = [];
+  for (const range of ordered) {
+    const previous = merged.at(-1);
+    if (previous && range.fromMs <= previous.toMs + 1) {
+      previous.toMs = Math.max(previous.toMs, range.toMs);
+      previous.to = new Date(previous.toMs).toISOString();
+    } else {
+      merged.push({ ...range });
+    }
+  }
+  return merged.map(({ fromMs: _fromMs, toMs: _toMs, ...range }) => range);
+}
+
+async function fetchRawAnalyticsRange(
+  db: SupabaseClient,
+  propertyId: string,
+  range: AnalyticsRange,
+) {
+  const { data, error } = await db.rpc("analytics_raw_window", {
+    p_property_id: propertyId,
+    p_from: range.from,
+    p_to: range.to,
+  });
+  if (error) throw new Error(error.message);
+  const events = Array.isArray(data) ? data : [];
+  return { events, truncated: events.length >= 50000 };
+}
+
+async function loadAnalyticsWindow(
+  db: SupabaseClient,
+  propertyId: string,
+  from: string,
+  to: string,
+  useRollups: boolean,
+): Promise<AnalyticsWindowData> {
+  if (!useRollups) {
+    const raw = await fetchRawAnalyticsRange(db, propertyId, { from, to });
+    return { events: raw.events, rollups: [], views: [], truncated: raw.truncated };
+  }
+  const plan = analyticsRollupPlan(from, to);
+  if (!plan.rollupFrom || !plan.rollupTo) {
+    const raw = await fetchRawAnalyticsRange(db, propertyId, plan.rawRanges[0]);
+    return { events: raw.events, rollups: [], views: [], truncated: raw.truncated };
+  }
+  const { data, error } = await db.rpc("analytics_rollup_window", {
+    p_property_id: propertyId,
+    p_from: plan.rollupFrom,
+    p_to: plan.rollupTo,
+  });
+  if (error) throw new Error(error.message);
+  const payload = data && typeof data === "object" ? data as Record<string, any> : {};
+  const coveredDays = new Set(
+    (Array.isArray(payload.coveredDays) ? payload.coveredDays : []).map(String),
+  );
+  const missingRanges = plan.expectedDays
+    .filter((day) => !coveredDays.has(day))
+    .map((day) => ({
+      from: `${day}T00:00:00.000Z`,
+      to: new Date(Date.parse(`${day}T00:00:00.000Z`) + 864e5 - 1).toISOString(),
+    }));
+  const rawResults = await Promise.all(
+    mergeAnalyticsRanges([...plan.rawRanges, ...missingRanges])
+      .map((range) => fetchRawAnalyticsRange(db, propertyId, range)),
+  );
+  const rollups = (Array.isArray(payload.events) ? payload.events : [])
+    .filter((row: any) => coveredDays.has(String(row.bucket_start || "").slice(0, 10)));
+  const views = (Array.isArray(payload.views) ? payload.views : [])
+    .filter((row: any) => coveredDays.has(String(row.day || "")));
+  return {
+    events: rawResults.flatMap((result) => result.events),
+    rollups,
+    views,
+    truncated: rawResults.some((result) => result.truncated),
+  };
+}
+
+function hasAnalyticsFilters(filters: AnalyticsFilters) {
+  return Object.values(filters).some(Boolean);
+}
+
+function analyticsRollupAsEvent(row: any) {
+  return {
+    event_type: row.event_type,
+    path: row.path,
+    referrer_host: row.referrer_host || null,
+    source: row.source || null,
+    device: row.device || null,
+    country_code: row.country_code || null,
+    name: row.name || null,
+    value: row.value_sum == null ? null : Number(row.value_sum),
+    metadata: {
+      browser: row.browser || undefined,
+      screen: row.screen || undefined,
+      utm_source: row.utm_source || undefined,
+      utm_medium: row.utm_medium || undefined,
+      utm_campaign: row.utm_campaign || undefined,
+      tracker_version: row.tracker_version || undefined,
+    },
+    occurred_at: row.bucket_start,
+    _aggregateCount: Math.max(0, Number(row.event_count || 0)),
+    _aggregateValues: Array.isArray(row.values_json)
+      ? row.values_json.map(Number).filter(Number.isFinite)
+      : [],
+  };
+}
+
 export function buildAnalyticsSummary(
   events: any[],
   days: number,
   from = new Date(Date.now() - days * 864e5).toISOString(),
   to = new Date().toISOString(),
   timeZone = "UTC",
+  rollups: any[] = [],
+  historicalViews: any[] = [],
 ) {
   const pageMap = new Map<string, { pageviews: number; events: number }>();
   const seriesMap = new Map<string, { pageviews: number; events: number; sessions: Set<string> }>();
@@ -3870,7 +4038,45 @@ export function buildAnalyticsSummary(
     sourceMap.set(name, current);
     return current;
   };
-  for (const event of events) {
+  for (const row of historicalViews) {
+    if (!SUPPORTED_TRACKER_VERSIONS.has(row.tracker_version)) continue;
+    const occurredAt = String(row.occurred_at || `${row.day}T00:00:00.000Z`);
+    const day = eventDay(occurredAt);
+    const bucket = days === 1
+      ? new Date(Math.floor(new Date(occurredAt).valueOf() / 3600000) * 3600000).toISOString()
+      : day;
+    const sessionId = String(row.session_id || "");
+    if (sessionId) {
+      sessions.add(sessionId);
+      const daySessions = dailySessions.get(day) || new Set<string>();
+      daySessions.add(sessionId);
+      dailySessions.set(day, daySessions);
+      const point = seriesMap.get(bucket) || { pageviews: 0, events: 0, sessions: new Set<string>() };
+      point.sessions.add(sessionId);
+      seriesMap.set(bucket, point);
+    }
+    const viewVitals = new Map<string, number>();
+    if (row.vitals && typeof row.vitals === "object") {
+      for (const [name, values] of Object.entries(row.vitals)) {
+        const samples = Array.isArray(values) ? values.map(Number).filter(Number.isFinite) : [];
+        if (samples.length) viewVitals.set(name.toUpperCase(), samples.at(-1)!);
+      }
+    }
+    views.set(`${row.day}:${row.view_key}`, {
+      path: normalizeAnalyticsPath(row.path),
+      activeSeconds: Number(row.active_seconds || 0),
+      maxScroll: Number(row.max_scroll || 0),
+      keyEvents: Number(row.key_events || 0),
+      jsErrors: Number(row.javascript_errors || 0),
+      visibleSections: new Set(Array.isArray(row.visible_sections) ? row.visible_sections.map(String) : []),
+      vitals: viewVitals,
+    });
+  }
+  let totalEvents = 0;
+  const observations = [...rollups.map(analyticsRollupAsEvent), ...events];
+  for (const event of observations) {
+    const amount = event._aggregateCount == null ? 1 : Math.max(0, Number(event._aggregateCount || 0));
+    totalEvents += amount;
     const path = normalizeAnalyticsPath(event.path);
     const page = pageMap.get(path) || { pageviews: 0, events: 0 };
     const day = eventDay(event.occurred_at);
@@ -3880,17 +4086,17 @@ export function buildAnalyticsSummary(
     const point = seriesMap.get(bucket) || { pageviews: 0, events: 0, sessions: new Set<string>() };
     const viewId = typeof event.metadata?.view_id === "string" ? event.metadata.view_id : "";
     if (event.event_type === "pageview") {
-      pageviews += 1;
-      page.pageviews += 1;
-      point.pageviews += 1;
+      pageviews += amount;
+      page.pageviews += amount;
+      point.pageviews += amount;
       const source = analyticsSourceCategory(event);
-      sourceEntry(source).pageviews += 1;
-      bump(countryMap, event.country_code || "Unknown");
-      bump(deviceMap, event.device || "Unknown");
-      bump(browserMap, event.metadata?.browser || "Unknown");
-      bump(screenMap, analyticsScreenCategory(event.metadata?.screen));
+      sourceEntry(source).pageviews += amount;
+      bump(countryMap, event.country_code || "Unknown", amount);
+      bump(deviceMap, event.device || "Unknown", amount);
+      bump(browserMap, event.metadata?.browser || "Unknown", amount);
+      bump(screenMap, analyticsScreenCategory(event.metadata?.screen), amount);
       if (event.metadata?.utm_campaign)
-        bump(campaignMap, event.metadata.utm_campaign);
+        bump(campaignMap, event.metadata.utm_campaign, amount);
       if (event.metadata?.session) {
         sessions.add(event.metadata.session);
         point.sessions.add(event.metadata.session);
@@ -3912,11 +4118,11 @@ export function buildAnalyticsSummary(
     }
     const keyEvent = ["click", "outbound", "form_success"].includes(event.event_type);
     if (keyEvent) {
-      keyEvents += 1;
-      page.events += 1;
-      point.events += 1;
-      bump(eventMap, event.name || event.event_type);
-      sourceEntry(analyticsSourceCategory(event)).events += 1;
+      keyEvents += amount;
+      page.events += amount;
+      point.events += amount;
+      bump(eventMap, event.name || event.event_type, amount);
+      sourceEntry(analyticsSourceCategory(event)).events += amount;
       if (viewId && views.has(viewId)) views.get(viewId)!.keyEvents += 1;
     }
     if (event.event_type === "active_time" && Number.isFinite(event.value) && viewId && views.has(viewId))
@@ -3924,28 +4130,34 @@ export function buildAnalyticsSummary(
     if (event.event_type === "scroll" && Number.isFinite(event.value) && viewId && views.has(viewId))
       views.get(viewId)!.maxScroll = Math.max(views.get(viewId)!.maxScroll, Number(event.value));
     if (event.event_type === "js_error") {
-      javascriptErrors += 1;
+      javascriptErrors += amount;
       if (viewId && views.has(viewId)) views.get(viewId)!.jsErrors += 1;
     }
     if (event.event_type === "visible_section" && event.name && viewId && views.has(viewId))
       views.get(viewId)!.visibleSections.add(String(event.name));
-    if (event.event_type === "web_vital" && event.name && Number.isFinite(event.value) && SUPPORTED_TRACKER_VERSIONS.has(event.metadata?.tracker_version)) {
+    const aggregateValues = Array.isArray(event._aggregateValues)
+      ? event._aggregateValues.map(Number).filter(Number.isFinite)
+      : [];
+    const vitalValues = aggregateValues.length
+      ? aggregateValues
+      : Number.isFinite(event.value) ? [Number(event.value)] : [];
+    if (event.event_type === "web_vital" && event.name && vitalValues.length && SUPPORTED_TRACKER_VERSIONS.has(event.metadata?.tracker_version)) {
       const name = String(event.name).toUpperCase();
       const samples = vitals.get(name) || [];
-      samples.push(Number(event.value));
+      samples.push(...vitalValues);
       vitals.set(name, samples);
       const daily = vitalDays.get(name) || new Map<string, number[]>();
       const dailySamples = daily.get(day) || [];
-      dailySamples.push(Number(event.value));
+      dailySamples.push(...vitalValues);
       daily.set(day, dailySamples);
       vitalDays.set(name, daily);
       const device = String(event.device || "Unknown").toLocaleLowerCase();
       const deviceSamples = deviceVitals.get(device) || new Map<string, number[]>();
       const metricSamples = deviceSamples.get(name) || [];
-      metricSamples.push(Number(event.value));
+      metricSamples.push(...vitalValues);
       deviceSamples.set(name, metricSamples);
       deviceVitals.set(device, deviceSamples);
-      if (viewId && views.has(viewId)) views.get(viewId)!.vitals.set(name, Number(event.value));
+      if (viewId && views.has(viewId)) views.get(viewId)!.vitals.set(name, vitalValues.at(-1)!);
     }
     if (event.event_type === "pageview" || keyEvent) pageMap.set(path, page);
     seriesMap.set(bucket, point);
@@ -4036,7 +4248,7 @@ export function buildAnalyticsSummary(
     to,
     timeZone,
     pageviews,
-    events: events.length,
+    events: totalEvents,
     keyEvents,
     sessions: sessions.size,
     averageDailyVisitors: sessions.size

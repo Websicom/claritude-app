@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  analyticsRollupPlan,
   buildAnalyticsSummary,
   auditCheckHasExecutableLogic,
   canonicalPropertyHost,
@@ -186,6 +187,57 @@ describe("worker evidence pipelines", () => {
     expect(summary.engagement.eligiblePageviews).toBe(1);
     expect(summary.engagement.medianScrollDepth).toBe(90);
     expect(summary.engagement.medianActiveSeconds).toBe(12);
+  });
+
+  it("merges historical rollups with the same analytics result as raw events", () => {
+    const raw = [
+      { event_type: "pageview", path: "/", source: "Google", device: "desktop", country_code: "GB", metadata: { browser: "Chrome", screen: "large", session: "tab-1", view_id: "view-1", tracker_version: "2.1.0" }, occurred_at: "2026-10-02T00:00:00Z" },
+      { event_type: "scroll", path: "/", value: 75, metadata: { view_id: "view-1", tracker_version: "2.1.0" }, occurred_at: "2026-10-02T00:00:10Z" },
+      { event_type: "web_vital", path: "/", name: "LCP", value: 2100, device: "desktop", metadata: { view_id: "view-1", tracker_version: "2.1.0" }, occurred_at: "2026-10-02T00:00:12Z" },
+      { event_type: "web_vital", path: "/", name: "INP", value: 180, device: "desktop", metadata: { view_id: "view-1", tracker_version: "2.1.0" }, occurred_at: "2026-10-02T00:00:13Z" },
+      { event_type: "web_vital", path: "/", name: "CLS", value: 0.08, device: "desktop", metadata: { view_id: "view-1", tracker_version: "2.1.0" }, occurred_at: "2026-10-02T00:00:14Z" },
+      { event_type: "pageview", path: "/services/", source: "Direct", device: "mobile", country_code: "US", metadata: { session: "tab-2", view_id: "view-2", tracker_version: "2.1.0" }, occurred_at: "2026-10-02T00:01:00Z" },
+      { event_type: "click", path: "/services/", name: "contact-click", device: "mobile", country_code: "US", metadata: { view_id: "view-2", tracker_version: "2.1.0" }, occurred_at: "2026-10-02T00:01:05Z" },
+      { event_type: "outbound", path: "/services/", name: "example.org", device: "mobile", country_code: "US", metadata: { view_id: "view-2", tracker_version: "2.1.0" }, occurred_at: "2026-10-02T00:01:08Z" },
+    ];
+    const rollups = raw.map((event) => ({
+      event_type: event.event_type,
+      path: event.path,
+      name: event.name || "",
+      device: event.device || "",
+      source: event.source || "",
+      country_code: event.country_code || "",
+      browser: event.metadata.browser || "",
+      screen: event.metadata.screen || "",
+      tracker_version: event.metadata.tracker_version || "",
+      bucket_start: "2026-10-02T00:00:00Z",
+      event_count: 1,
+      value_sum: event.value ?? null,
+      values_json: event.event_type === "web_vital" ? [event.value] : [],
+    }));
+    const views = [
+      { day: "2026-10-02", view_key: "view-1", occurred_at: "2026-10-02T00:00:00Z", path: "/", tracker_version: "2.1.0", session_id: "tab-1", active_seconds: 0, max_scroll: 75, key_events: 0, javascript_errors: 0, visible_sections: [], vitals: { LCP: [2100], INP: [180], CLS: [0.08] } },
+      { day: "2026-10-02", view_key: "view-2", occurred_at: "2026-10-02T00:01:00Z", path: "/services/", tracker_version: "2.1.0", session_id: "tab-2", active_seconds: 0, max_scroll: 0, key_events: 2, javascript_errors: 0, visible_sections: [], vitals: {} },
+    ];
+    const args = [1, "2026-10-02T00:00:00Z", "2026-10-02T23:59:59.999Z", "UTC"] as const;
+    expect(buildAnalyticsSummary([], ...args, rollups, views)).toEqual(
+      buildAnalyticsSummary(raw, ...args),
+    );
+  });
+
+  it("uses rollups only for complete UTC days and leaves boundary ranges raw", () => {
+    const plan = analyticsRollupPlan(
+      "2026-09-03T23:00:00.000Z",
+      "2026-10-03T22:59:59.999Z",
+      Date.parse("2026-10-03T20:00:00.000Z"),
+    );
+    expect(plan.rollupFrom).toBe("2026-09-04T00:00:00.000Z");
+    expect(plan.rollupTo).toBe("2026-10-03T00:00:00.000Z");
+    expect(plan.expectedDays).toHaveLength(29);
+    expect(plan.rawRanges).toEqual([
+      { from: "2026-09-03T23:00:00.000Z", to: "2026-09-03T23:59:59.999Z" },
+      { from: "2026-10-03T00:00:00.000Z", to: "2026-10-03T22:59:59.999Z" },
+    ]);
   });
 
   it("produces desktop and mobile performance from the same analytics pass", () => {
