@@ -25,11 +25,11 @@ describe("worker evidence pipelines", () => {
   });
 
   it("uses bounded audit result batches for observable progress", () => {
-    expect(chunkAuditResults(Array.from({ length: 67 }, (_, index) => index), 32))
+    expect(chunkAuditResults(Array.from({ length: 131 }, (_, index) => index), 64))
       .toEqual([
-        Array.from({ length: 32 }, (_, index) => index),
-        Array.from({ length: 32 }, (_, index) => index + 32),
-        [64, 65, 66],
+        Array.from({ length: 64 }, (_, index) => index),
+        Array.from({ length: 64 }, (_, index) => index + 64),
+        [128, 129, 130],
       ]);
   });
 

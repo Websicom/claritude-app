@@ -1992,7 +1992,7 @@ async function runAudit(env: Env, id: string) {
       };
     let persisted = 0;
     const persist = async (results: AuditResult[]) => {
-      for (const batch of chunkAuditResults(results.map(decorate), 32)) {
+      for (const batch of chunkAuditResults(results.map(decorate), 64)) {
         let failure: string | null = null;
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
