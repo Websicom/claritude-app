@@ -24,12 +24,12 @@ describe("worker evidence pipelines", () => {
     expect(TRACKER_SOURCE).toContain("/Chrome\\//.test");
   });
 
-  it("uses small audit result batches for observable progress", () => {
-    expect(chunkAuditResults(Array.from({ length: 21 }, (_, index) => index), 8))
+  it("uses bounded audit result batches for observable progress", () => {
+    expect(chunkAuditResults(Array.from({ length: 67 }, (_, index) => index), 32))
       .toEqual([
-        [0, 1, 2, 3, 4, 5, 6, 7],
-        [8, 9, 10, 11, 12, 13, 14, 15],
-        [16, 17, 18, 19, 20],
+        Array.from({ length: 32 }, (_, index) => index),
+        Array.from({ length: 32 }, (_, index) => index + 32),
+        [64, 65, 66],
       ]);
   });
 

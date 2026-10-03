@@ -1992,7 +1992,7 @@ async function runAudit(env: Env, id: string) {
       };
     let persisted = 0;
     const persist = async (results: AuditResult[]) => {
-      for (const batch of chunkAuditResults(results.map(decorate), 8)) {
+      for (const batch of chunkAuditResults(results.map(decorate), 32)) {
         let failure: string | null = null;
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
@@ -2251,6 +2251,10 @@ async function collectAuditNetworkEvidence(
 ): Promise<AuditNetworkEvidence> {
   const finalUrl = new URL(response.url || pageUrl);
   const origin = finalUrl.origin;
+  // The selected page trace has already validated every redirect host. Reuse
+  // that result for same-host evidence requests, while still validating any
+  // new host introduced by a canonical or sitemap URL.
+  const validatedHosts = new Set([finalUrl.hostname.toLowerCase()]);
   const canonicalHref =
     html.match(/<link[^>]+rel=["'][^"']*canonical[^"']*["'][^>]+href=["']([^"']+)/i)?.[1] ||
     html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*canonical/i)?.[1] ||
@@ -2260,7 +2264,7 @@ async function collectAuditNetworkEvidence(
       const result = await safeFetchTrace(value, {
         headers: { "user-agent": "Claritude-Audit/1.0 (+https://claritude.io)" },
         signal: AbortSignal.timeout(12_000),
-      });
+      }, validatedHosts);
       return {
         url: value,
         status: result.response.status,
@@ -3510,12 +3514,20 @@ async function assertPublicResolution(hostname: string) {
 async function safeFetch(value: string, init: RequestInit = {}) {
   return (await safeFetchTrace(value, init)).response;
 }
-async function safeFetchTrace(value: string, init: RequestInit = {}) {
+async function safeFetchTrace(
+  value: string,
+  init: RequestInit = {},
+  validatedHosts?: Set<string>,
+) {
   let url = validPublicUrl(value);
   if (!url) throw new Error("Target must be a public HTTP or HTTPS URL");
   const redirects: { url: string; status: number; location: string }[] = [];
   for (let i = 0; i < 5; i++) {
-    await assertPublicResolution(url.hostname);
+    const hostname = url.hostname.toLowerCase();
+    if (!validatedHosts?.has(hostname)) {
+      await assertPublicResolution(url.hostname);
+      validatedHosts?.add(hostname);
+    }
     const response = await fetch(url, {
       ...init,
       redirect: "manual",
