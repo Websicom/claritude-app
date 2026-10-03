@@ -2536,8 +2536,14 @@ function AuditView({
   const latestCompletedCreatedAt = Date.parse(
     runs.find((run) => ["completed", "partial"].includes(run.status))?.created_at || "",
   );
+  const isStalledActiveRun = (run: AuditRun) => {
+    if (!["queued", "running"].includes(run.status)) return false;
+    const heartbeat = Date.parse(run.heartbeat_at || run.created_at);
+    return Number.isFinite(heartbeat) && Date.now() - heartbeat > 2 * 60_000;
+  };
   const isCurrentActiveRun = (run: AuditRun) =>
     ["queued", "running"].includes(run.status) &&
+    !isStalledActiveRun(run) &&
     (!Number.isFinite(latestCompletedCreatedAt) ||
       Date.parse(run.created_at) > latestCompletedCreatedAt);
   const activeRunId = runs.find(isCurrentActiveRun)?.id;
@@ -2678,7 +2684,9 @@ function AuditView({
     setOpenCategories(new Set([category]));
     updateAuditLocation({ auditTab: "Findings" });
   }
-  const failedRun = !activeRun && runs[0]?.status === "failed" ? runs[0] : undefined;
+  const failedRun = !activeRun
+    ? runs.find((run) => run.status === "failed" || isStalledActiveRun(run))
+    : undefined;
   return (
     <Page
       title="Audit"
