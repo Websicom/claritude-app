@@ -56,6 +56,12 @@ type AuditNetworkEvidence = {
   dnsRecords: { query: string; type: string; ttl: number; data: string }[];
   dnsErrors: string[];
   dnsAuthenticated: boolean | null;
+  checkedLinks: AuditResourceEvidence[];
+  checkedResources: AuditResourceEvidence[];
+  apexHttp: AuditResourceEvidence;
+  apexHttps: AuditResourceEvidence;
+  wwwHttp: AuditResourceEvidence;
+  wwwHttps: AuditResourceEvidence;
 };
 
 const LIMITS = {
@@ -148,6 +154,37 @@ const CONTEXT_AUDIT_CHECK_IDS = new Set([
   "ai_readiness.optional.resources.selected.page.referenced.in.checked.llms.txt.links",
   "ai_readiness.optional.resources.llms.full.txt.file.reachable",
   "ai_readiness.optional.resources.llms.full.txt.returned.as.readable.text",
+  "seo.links.and.navigation.checked.links.returning.http.404.detected",
+  "seo.links.and.navigation.checked.links.returning.http.410.detected",
+  "seo.links.and.navigation.checked.links.returning.server.errors.detected",
+  "seo.links.and.navigation.checked.links.failing.dns.resolution.detected",
+  "seo.links.and.navigation.checked.links.failing.https.connections.detected",
+  "seo.links.and.navigation.checked.links.timing.out.detected",
+  "seo.links.and.navigation.checked.links.blocked.by.access.restrictions.detected",
+  "seo.links.and.navigation.checked.links.encountering.rate.limits.detected",
+  "seo.links.and.navigation.checked.links.containing.redirect.loops.detected",
+  "seo.links.and.navigation.checked.links.exceeding.the.redirect.limit.detected",
+  "seo.links.and.navigation.checked.links.redirecting.to.broken.destinations.detected",
+  "seo.links.and.navigation.redirecting.internal.links.detected",
+  "seo.links.and.navigation.redirecting.external.links.detected",
+  "accessibility.images.and.media.caption.track.resources.reachable",
+  "security.security.and.browser.protections.http.version.redirects.to.https",
+  "security.security.and.browser.protections.https.connection.succeeds",
+  "security.security.and.browser.protections.http.image.and.media.references.detected",
+  "security.security.and.browser.protections.observed.cookies.have.secure.attributes",
+  "security.security.and.browser.protections.observed.cookies.have.httponly.attributes",
+  "security.security.and.browser.protections.observed.cookies.have.samesite.attributes",
+  "infrastructure.server.and.http.information.response.cookie.attributes.recorded",
+  "infrastructure.dns.and.domain.configuration.apex.and.www.http.redirect.behaviour.compared",
+  "seo.structured.data.checked.structured.data.image.urls.reachable",
+  "seo.social.sharing.and.site.identity.open.graph.image.reachable",
+  "seo.social.sharing.and.site.identity.declared.favicon.reachable",
+  "seo.social.sharing.and.site.identity.declared.apple.touch.icon.reachable",
+  "seo.social.sharing.and.site.identity.linked.web.app.manifest.reachable",
+  "seo.social.sharing.and.site.identity.web.app.manifest.contains.valid.json",
+  "ai_readiness.optional.resources.linked.markdown.alternative.for.the.selected.page.detected",
+  "ai_readiness.optional.resources.declared.markdown.alternative.reachable",
+  "ai_readiness.optional.resources.declared.markdown.alternative.contains.readable.content",
 ]);
 const IMPLEMENTED_AUDIT_CHECKS = ACTIVE_AUDIT_CHECKS.filter(
   (check) => auditCheckHasExecutableLogic(check.id),
@@ -2130,6 +2167,40 @@ type BrowserLabResult = {
   repeatedDownloads: number;
   preloads: number;
   unusedPreloads: number;
+  renderedTextLength: number;
+  mainTextLength: number;
+  javascriptLinks: number;
+  imageCount: number;
+  failedImages: number;
+  distortedImages: number;
+  oversizedImages: number;
+  belowFoldImagesWithoutLazyLoading: number;
+  lcpImageLazy: boolean;
+  missingRequiredAria: number;
+  invalidAriaNames: number;
+  invalidAriaValues: number;
+  invalidRoles: number;
+  ariaRoleConflicts: number;
+  missingAriaParents: number;
+  missingAriaChildren: number;
+  focusableInAriaHidden: number;
+  unfocusableScrollableRegions: number;
+  lowContrastText: number;
+  smallTouchTargets: number;
+  tableAssociationIssues: number;
+  emptyTableHeaders: number;
+  viewportMetaCount: number;
+  viewportDeviceWidth: boolean;
+  viewportRestrictsZoom: boolean;
+  horizontalOverflow: boolean;
+  overflowingElements: number;
+  overflowingImages: number;
+  overflowingTables: number;
+  fixedContentOverlaps: number;
+  smallTextElements: number;
+  visibleMainHeading: boolean;
+  unnamedPrimaryNavigation: number;
+  securityPolicyViolations: number;
 };
 
 function labMetricScore(value: number, good: number, poor: number) {
@@ -2146,8 +2217,12 @@ async function collectBrowserLab(env: Env, url: string) {
       const failed = new Set<string>();
       let consoleErrors = 0;
       let uncaughtExceptions = 0;
+      let securityPolicyViolations = 0;
       page.on("requestfailed", (request) => failed.add(request.url()));
-      page.on("console", (message) => { if (message.type() === "error") consoleErrors += 1; });
+      page.on("console", (message) => {
+        if (message.type() === "error") consoleErrors += 1;
+        if (/content security policy|refused to (?:load|execute|connect|frame)/i.test(message.text())) securityPolicyViolations += 1;
+      });
       page.on("pageerror", () => { uncaughtExceptions += 1; });
       await page.setViewport(strategy === "mobile"
         ? { width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true }
@@ -2171,6 +2246,7 @@ async function collectBrowserLab(env: Env, url: string) {
               hadRecentInput: entry.hadRecentInput,
               sources: entry.sources?.length || 0,
               element: entry.element ? `${entry.element.tagName?.toLowerCase() || "element"}${entry.element.id ? `#${entry.element.id}` : ""}${entry.element.className && typeof entry.element.className === "string" ? `.${entry.element.className.trim().split(/\s+/).slice(0, 2).join(".")}` : ""}` : null,
+              lazy: entry.element?.getAttribute?.("loading") === "lazy",
               renderTime: entry.renderTime,
               loadTime: entry.loadTime,
             }))));
@@ -2190,6 +2266,58 @@ async function collectBrowserLab(env: Env, url: string) {
         const counts = new Map<string, number>();
         resources.forEach((entry) => counts.set(entry.name, (counts.get(entry.name) || 0) + 1));
         const bytes = (entry: any) => Number(entry.transferSize || entry.encodedBodySize || 0);
+        const visible = (element: Element) => {
+          const style = getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity || 1) > 0 && rect.width > 0 && rect.height > 0;
+        };
+        const focusableSelector = 'a[href],button,input,select,textarea,[tabindex]:not([tabindex="-1"])';
+        const images = Array.from(document.images);
+        const imageMetrics = images.map((image) => {
+          const rect = image.getBoundingClientRect();
+          const naturalRatio = image.naturalWidth && image.naturalHeight ? image.naturalWidth / image.naturalHeight : 0;
+          const displayRatio = rect.width && rect.height ? rect.width / rect.height : 0;
+          return {
+            failed: image.complete && image.naturalWidth === 0,
+            distorted: Boolean(naturalRatio && displayRatio && Math.abs(naturalRatio - displayRatio) / naturalRatio > .05),
+            oversized: Boolean(image.naturalWidth && rect.width && image.naturalWidth > rect.width * Math.max(2, devicePixelRatio)),
+            belowFoldWithoutLazy: rect.top > innerHeight && image.loading !== "lazy",
+            overflowing: rect.right > Math.max(document.documentElement.clientWidth, innerWidth) + 1 || rect.left < -1,
+          };
+        });
+        const allowedAria = new Set(["aria-activedescendant","aria-atomic","aria-autocomplete","aria-braillelabel","aria-brailleroledescription","aria-busy","aria-checked","aria-colcount","aria-colindex","aria-colindextext","aria-colspan","aria-controls","aria-current","aria-describedby","aria-description","aria-details","aria-disabled","aria-dropeffect","aria-errormessage","aria-expanded","aria-flowto","aria-grabbed","aria-haspopup","aria-hidden","aria-invalid","aria-keyshortcuts","aria-label","aria-labelledby","aria-level","aria-live","aria-modal","aria-multiline","aria-multiselectable","aria-orientation","aria-owns","aria-placeholder","aria-posinset","aria-pressed","aria-readonly","aria-relevant","aria-required","aria-roledescription","aria-rowcount","aria-rowindex","aria-rowindextext","aria-rowspan","aria-selected","aria-setsize","aria-sort","aria-valuemax","aria-valuemin","aria-valuenow","aria-valuetext"]);
+        const validRoles = new Set(["alert","alertdialog","application","article","banner","button","cell","checkbox","columnheader","combobox","complementary","contentinfo","definition","dialog","directory","document","feed","figure","form","grid","gridcell","group","heading","img","link","list","listbox","listitem","log","main","marquee","math","menu","menubar","menuitem","menuitemcheckbox","menuitemradio","navigation","none","note","option","presentation","progressbar","radio","radiogroup","region","row","rowgroup","rowheader","scrollbar","search","searchbox","separator","slider","spinbutton","status","switch","tab","table","tablist","tabpanel","term","textbox","timer","toolbar","tooltip","tree","treegrid","treeitem"]);
+        const ariaElements = Array.from(document.querySelectorAll("*"));
+        const invalidAriaNames = ariaElements.reduce((total, element) => total + Array.from(element.attributes).filter((attribute) => attribute.name.startsWith("aria-") && !allowedAria.has(attribute.name)).length, 0);
+        const invalidAriaValues = document.querySelectorAll('[aria-hidden]:not([aria-hidden="true"]):not([aria-hidden="false"]),[aria-expanded]:not([aria-expanded="true"]):not([aria-expanded="false"]),[aria-selected]:not([aria-selected="true"]):not([aria-selected="false"])').length;
+        const roleElements = Array.from(document.querySelectorAll("[role]"));
+        const invalidRoles = roleElements.filter((element) => !validRoles.has((element.getAttribute("role") || "").split(/\s+/)[0])).length;
+        const missingRequiredAria = roleElements.filter((element) => {
+          const role = element.getAttribute("role");
+          if (["checkbox","radio","switch"].includes(role || "")) return !element.hasAttribute("aria-checked");
+          if (["slider","spinbutton"].includes(role || "")) return !element.hasAttribute("aria-valuenow");
+          if (role === "combobox") return !element.hasAttribute("aria-expanded");
+          return false;
+        }).length;
+        const focusableInAriaHidden = Array.from(document.querySelectorAll('[aria-hidden="true"]')).reduce((total, element) => total + element.querySelectorAll(focusableSelector).length, 0);
+        const scrollable = ariaElements.filter((element) => { const node = element as HTMLElement; const style = getComputedStyle(node); return /(auto|scroll)/.test(`${style.overflow}${style.overflowX}${style.overflowY}`) && (node.scrollHeight > node.clientHeight + 1 || node.scrollWidth > node.clientWidth + 1); });
+        const textElements = ariaElements.filter((element) => element.children.length === 0 && (element.textContent || "").trim() && visible(element));
+        const rgb = (value: string) => (value.match(/[\d.]+/g) || []).slice(0, 3).map(Number);
+        const luminance = (colour: number[]) => { const values = colour.map((part) => { const channel = part / 255; return channel <= .03928 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4; }); return .2126 * (values[0] || 0) + .7152 * (values[1] || 0) + .0722 * (values[2] || 0); };
+        const lowContrastText = textElements.filter((element) => { const style = getComputedStyle(element); const foreground = rgb(style.color); const background = rgb(style.backgroundColor); if (foreground.length < 3 || background.length < 3 || /rgba\([^)]*,\s*0\s*\)/.test(style.backgroundColor)) return false; const high = Math.max(luminance(foreground), luminance(background)); const low = Math.min(luminance(foreground), luminance(background)); return (high + .05) / (low + .05) < (parseFloat(style.fontSize) >= 24 ? 3 : 4.5); }).length;
+        const interactive = Array.from(document.querySelectorAll(focusableSelector)).filter(visible);
+        const smallTouchTargets = interactive.filter((element) => { const rect = element.getBoundingClientRect(); return rect.width < 44 || rect.height < 44; }).length;
+        const tables = Array.from(document.querySelectorAll("table"));
+        const tableAssociationIssues = tables.reduce((total, table) => total + Array.from(table.querySelectorAll("td")).filter((cell) => !cell.closest("table")?.querySelector("th") && !cell.hasAttribute("headers")).length, 0);
+        const emptyTableHeaders = document.querySelectorAll("th:empty").length;
+        const viewportContent = document.querySelector<HTMLMetaElement>('meta[name="viewport"]')?.content || "";
+        const viewportWidth = Math.max(document.documentElement.clientWidth, innerWidth);
+        const overflowing = ariaElements.filter((element) => { if (!visible(element)) return false; const rect = element.getBoundingClientRect(); return rect.right > viewportWidth + 1 || rect.left < -1; });
+        const fixedElements = ariaElements.filter((element) => visible(element) && getComputedStyle(element).position === "fixed");
+        const main = document.querySelector("main,[role=main]");
+        const mainRect = main?.getBoundingClientRect();
+        const fixedContentOverlaps = mainRect ? fixedElements.filter((element) => { const rect = element.getBoundingClientRect(); return rect.left < mainRect.right && rect.right > mainRect.left && rect.top < mainRect.bottom && rect.bottom > mainRect.top; }).length : 0;
+        const securityPolicyViolations = performance.getEntriesByType("resource").filter((entry) => entry.name.startsWith("data:") === false && !entry.name).length;
         return {
           fcp: Number(fcp?.startTime || 0),
           lcp: Number(lcp?.renderTime || lcp?.loadTime || lcp?.startTime || 0),
@@ -2211,6 +2339,40 @@ async function collectBrowserLab(env: Env, url: string) {
           repeatedDownloads: [...counts.values()].filter((count) => count > 1).reduce((sum, count) => sum + count - 1, 0),
           preloads: preloads.length,
           unusedPreloads: preloads.filter((preload) => !resourceUrls.has(preload)).length,
+          renderedTextLength: (document.body?.innerText || "").trim().length,
+          mainTextLength: (main?.textContent || "").trim().length,
+          javascriptLinks: document.querySelectorAll('a[href^="javascript:"]').length,
+          imageCount: images.length,
+          failedImages: imageMetrics.filter((item) => item.failed).length,
+          distortedImages: imageMetrics.filter((item) => item.distorted).length,
+          oversizedImages: imageMetrics.filter((item) => item.oversized).length,
+          belowFoldImagesWithoutLazyLoading: imageMetrics.filter((item) => item.belowFoldWithoutLazy).length,
+          lcpImageLazy: Boolean(lcp?.element?.startsWith("img") && lcp?.lazy),
+          missingRequiredAria,
+          invalidAriaNames,
+          invalidAriaValues,
+          invalidRoles,
+          ariaRoleConflicts: roleElements.filter((element) => /^(presentation|none)$/.test(element.getAttribute("role") || "") && (element.matches(focusableSelector) || element.hasAttribute("aria-label"))).length,
+          missingAriaParents: document.querySelectorAll('[role="option"]:not([data-claritude-parent])').length ? Array.from(document.querySelectorAll('[role="option"]')).filter((element) => !element.closest('[role="listbox"]')).length : 0,
+          missingAriaChildren: Array.from(document.querySelectorAll('[role="listbox"]')).filter((element) => !element.querySelector('[role="option"]')).length,
+          focusableInAriaHidden,
+          unfocusableScrollableRegions: scrollable.filter((element) => !element.matches(focusableSelector) && !element.hasAttribute("tabindex")).length,
+          lowContrastText,
+          smallTouchTargets,
+          tableAssociationIssues,
+          emptyTableHeaders,
+          viewportMetaCount: document.querySelectorAll('meta[name="viewport"]').length,
+          viewportDeviceWidth: /width\s*=\s*device-width/i.test(viewportContent),
+          viewportRestrictsZoom: /user-scalable\s*=\s*no|maximum-scale\s*=\s*1(?:\.0+)?(?:,|$)/i.test(viewportContent),
+          horizontalOverflow: document.documentElement.scrollWidth > viewportWidth + 1,
+          overflowingElements: overflowing.length,
+          overflowingImages: imageMetrics.filter((item) => item.overflowing).length,
+          overflowingTables: tables.filter((table) => table.getBoundingClientRect().right > viewportWidth + 1).length,
+          fixedContentOverlaps,
+          smallTextElements: textElements.filter((element) => parseFloat(getComputedStyle(element).fontSize) < 12).length,
+          visibleMainHeading: Array.from(document.querySelectorAll("h1")).some(visible),
+          unnamedPrimaryNavigation: Array.from(document.querySelectorAll("nav,[role=navigation]")).filter((element) => !element.getAttribute("aria-label") && !element.getAttribute("aria-labelledby")).length,
+          securityPolicyViolations,
         };
       });
       const [jsCoverage, cssCoverage] = await Promise.all([
@@ -2230,6 +2392,7 @@ async function collectBrowserLab(env: Env, url: string) {
         failedRequests: failed.size,
         consoleErrors,
         uncaughtExceptions,
+        securityPolicyViolations,
       };
     };
     const desktop = await collect("desktop");
@@ -2289,6 +2452,72 @@ function browserLabAuditResults(snapshot: AuditRegistrySnapshot[], lab: { deskto
   });
 }
 
+function browserRenderedAuditResults(
+  snapshot: AuditRegistrySnapshot[],
+  lab: { desktop: BrowserLabResult; mobile: BrowserLabResult },
+  sourceHtml: string,
+): AuditResult[] {
+  const originalTextLength = stripText(sourceHtml).length;
+  const max = (key: keyof BrowserLabResult) => Math.max(Number(lab.desktop[key] || 0), Number(lab.mobile[key] || 0));
+  const any = (key: keyof BrowserLabResult) => Boolean(lab.desktop[key] || lab.mobile[key]);
+  const evidence = (extra: Record<string, unknown> = {}) => ({
+    desktop: lab.desktop,
+    mobile: lab.mobile,
+    measuredBy: "Cloudflare Browser Run",
+    ...extra,
+  });
+  const measured = (checkId: string): [CheckOutcome, Record<string, unknown>] | null => {
+    if (checkId.includes("content.added.only.after.javascript")) {
+      const rendered = Math.max(lab.desktop.renderedTextLength, lab.mobile.renderedTextLength);
+      return [rendered > originalTextLength * 1.1 + 100 ? "warning" : "pass", evidence({ originalTextLength, renderedTextLength: rendered })];
+    }
+    if (checkId.includes("original.html.and.rendered.text.differences")) {
+      const rendered = Math.max(lab.desktop.renderedTextLength, lab.mobile.renderedTextLength);
+      return [Math.abs(rendered - originalTextLength) > 100 ? "informational" : "pass", evidence({ originalTextLength, renderedTextLength: rendered })];
+    }
+    if (checkId.includes("javascript.link.destinations")) return [max("javascriptLinks") ? "warning" : "pass", evidence({ count: max("javascriptLinks") })];
+    if (checkId.includes("image.resources.fail.to.load")) return [max("failedImages") ? "fail" : "pass", evidence({ failedImages: max("failedImages") })];
+    if (checkId.includes("image.display.dimensions.recorded")) return [max("imageCount") ? "informational" : "not_applicable", evidence({ images: max("imageCount") })];
+    if (checkId.includes("oversized.images.relative")) return [!max("imageCount") ? "not_applicable" : max("oversizedImages") ? "warning" : "pass", evidence({ oversizedImages: max("oversizedImages") })];
+    if (checkId.includes("image.aspect.ratio.distortion")) return [!max("imageCount") ? "not_applicable" : max("distortedImages") ? "warning" : "pass", evidence({ distortedImages: max("distortedImages") })];
+    if (checkId.includes("image.transfer.sizes.measured")) return [!max("imageCount") ? "not_applicable" : "informational", evidence({ transferredBytes: max("imageBytes") })];
+    if (checkId.includes("below.the.fold.image.loading")) return [!max("imageCount") ? "not_applicable" : max("belowFoldImagesWithoutLazyLoading") ? "warning" : "pass", evidence({ eagerBelowFoldImages: max("belowFoldImagesWithoutLazyLoading") })];
+    if (checkId.includes("largest.contentful.paint.image.uses.lazy")) return [!any("lcpElement") || !String(lab.desktop.lcpElement || lab.mobile.lcpElement).startsWith("img") ? "not_applicable" : any("lcpImageLazy") ? "warning" : "pass", evidence({ lazy: any("lcpImageLazy") })];
+    if (checkId.includes("required.aria.attributes.present")) return [max("missingRequiredAria") ? "warning" : "pass", evidence({ violations: max("missingRequiredAria") })];
+    if (checkId.includes("aria.attribute.names.valid")) return [max("invalidAriaNames") ? "warning" : "pass", evidence({ violations: max("invalidAriaNames") })];
+    if (checkId.includes("aria.attribute.values.valid")) return [max("invalidAriaValues") ? "warning" : "pass", evidence({ violations: max("invalidAriaValues") })];
+    if (checkId.includes("aria.roles.valid")) return [max("invalidRoles") ? "warning" : "pass", evidence({ violations: max("invalidRoles") })];
+    if (checkId.includes("aria.attributes.permitted.for.their.roles")) return [max("ariaRoleConflicts") ? "warning" : "pass", evidence({ violations: max("ariaRoleConflicts") })];
+    if (checkId.includes("required.aria.parent.roles")) return [max("missingAriaParents") ? "warning" : "pass", evidence({ violations: max("missingAriaParents") })];
+    if (checkId.includes("required.aria.child.roles")) return [max("missingAriaChildren") ? "warning" : "pass", evidence({ violations: max("missingAriaChildren") })];
+    if (checkId.includes("focusable.elements.inside.aria.hidden")) return [max("focusableInAriaHidden") ? "warning" : "pass", evidence({ violations: max("focusableInAriaHidden") })];
+    if (checkId.includes("scrollable.regions.keyboard.focusable")) return [max("unfocusableScrollableRegions") ? "warning" : "pass", evidence({ violations: max("unfocusableScrollableRegions") })];
+    if (checkId.includes("text.contrast.measured")) return [max("lowContrastText") ? "warning" : "pass", evidence({ lowContrastElements: max("lowContrastText") })];
+    if (checkId.includes("touch.target.size.and.spacing")) return [max("smallTouchTargets") ? "warning" : "pass", evidence({ smallTargets: max("smallTouchTargets") })];
+    if (checkId.includes("table.headers.associated")) return [max("tableAssociationIssues") ? "warning" : "pass", evidence({ violations: max("tableAssociationIssues") })];
+    if (checkId.includes("table.header.cells.contain.text")) return [max("emptyTableHeaders") ? "warning" : "pass", evidence({ emptyHeaders: max("emptyTableHeaders") })];
+    if (checkId.includes("viewport.settings.restrict.zoom")) return [any("viewportRestrictsZoom") ? "warning" : "pass", evidence({ restricted: any("viewportRestrictsZoom") })];
+    if (checkId.includes("multiple.viewport.declarations")) return [max("viewportMetaCount") > 1 ? "warning" : "pass", evidence({ count: max("viewportMetaCount") })];
+    if (checkId.includes("viewport.width.configured")) return [lab.mobile.viewportDeviceWidth ? "pass" : "warning", evidence({ configured: lab.mobile.viewportDeviceWidth })];
+    if (checkId.includes("horizontal.page.overflow")) return [lab.mobile.horizontalOverflow ? "warning" : "pass", evidence({ overflow: lab.mobile.horizontalOverflow })];
+    if (checkId.includes("elements.extend.beyond")) return [lab.mobile.overflowingElements ? "warning" : "pass", evidence({ count: lab.mobile.overflowingElements })];
+    if (checkId.includes("images.exceed.their.containing")) return [!lab.mobile.imageCount ? "not_applicable" : lab.mobile.overflowingImages ? "warning" : "pass", evidence({ count: lab.mobile.overflowingImages })];
+    if (checkId.includes("tables.overflow.their.containing")) return [lab.mobile.overflowingTables ? "warning" : "pass", evidence({ count: lab.mobile.overflowingTables })];
+    if (checkId.includes("fixed.elements.geometrically.overlap")) return [lab.mobile.fixedContentOverlaps ? "warning" : "pass", evidence({ count: lab.mobile.fixedContentOverlaps })];
+    if (checkId.includes("text.sizes.measured.at.tested.mobile")) return [lab.mobile.smallTextElements ? "warning" : "pass", evidence({ below12px: lab.mobile.smallTextElements })];
+    if (checkId.includes("desktop.and.mobile.content.differences")) return [Math.abs(lab.desktop.renderedTextLength - lab.mobile.renderedTextLength) > 100 ? "informational" : "pass", evidence({ desktopTextLength: lab.desktop.renderedTextLength, mobileTextLength: lab.mobile.renderedTextLength })];
+    if (checkId.includes("main.heading.visible.at.tested")) return [lab.mobile.visibleMainHeading && lab.desktop.visibleMainHeading ? "pass" : "warning", evidence({ desktop: lab.desktop.visibleMainHeading, mobile: lab.mobile.visibleMainHeading })];
+    if (checkId.includes("primary.navigation.controls.have.accessible.names")) return [max("unnamedPrimaryNavigation") ? "warning" : "pass", evidence({ unnamed: max("unnamedPrimaryNavigation") })];
+    if (checkId.includes("browser.reported.security.policy.violations")) return [max("securityPolicyViolations") ? "warning" : "pass", evidence({ violationsObserved: max("securityPolicyViolations") })];
+    if (checkId.includes("main.content.extractable.after.javascript")) return [Math.max(lab.desktop.mainTextLength, lab.mobile.mainTextLength) >= 100 ? "pass" : "warning", evidence({ mainTextLength: Math.max(lab.desktop.mainTextLength, lab.mobile.mainTextLength) })];
+    return null;
+  };
+  return snapshot.flatMap((check) => {
+    const result = measured(check.id);
+    return result ? [{ check_id: check.id, outcome: result[0], evidence: result[1], duration_ms: 0 }] : [];
+  });
+}
+
 async function runAudit(env: Env, id: string) {
   const db = admin(env);
   const started = Date.now();
@@ -2331,10 +2560,14 @@ async function runAudit(env: Env, id: string) {
     const responseMs = Date.now() - fetchStarted;
     const snapshot = run.registry_snapshot as AuditRegistrySnapshot[];
     const html = await limitedText(res, 2_000_000);
+    let staticResults = evaluateSourceChecks(snapshot, res, html, responseMs)
+      .filter((result) => !CONTEXT_AUDIT_CHECK_IDS.has(result.check_id));
+    let measuredProgress = staticResults.filter((result) => result.outcome !== "unable_to_test").length;
     let browserLab: { desktop: BrowserLabResult; mobile: BrowserLabResult } | null = null;
-    if (snapshot.some((check) => check.primaryCategory === "performance")) {
+    if (snapshot.some((check) => check.primaryCategory === "performance" || ["rendered_browser", "lab"].includes(registry(check.id)?.executionMethod || ""))) {
       await updateRun({
         execution_stage: "collecting_browser_evidence",
+        progress_completed: measuredProgress,
         heartbeat_at: new Date().toISOString(),
       });
       try {
@@ -2345,20 +2578,23 @@ async function runAudit(env: Env, id: string) {
         await updateRun({ heartbeat_at: new Date().toISOString() });
       }
     }
-    await updateRun({
-        execution_stage: "evaluating_checks",
-        heartbeat_at: new Date().toISOString(),
-      });
-    let staticResults = evaluateSourceChecks(snapshot, res, html, responseMs)
-      .filter((result) => !CONTEXT_AUDIT_CHECK_IDS.has(result.check_id));
     if (browserLab) {
-      const replacements = new Map(browserLabAuditResults(snapshot, browserLab).map((result) => [result.check_id, result]));
+      const replacements = new Map([
+        ...browserLabAuditResults(snapshot, browserLab),
+        ...browserRenderedAuditResults(snapshot, browserLab, html),
+      ].map((result) => [result.check_id, result]));
       staticResults = staticResults.map((result) => replacements.get(result.check_id) || result);
     }
+    measuredProgress = staticResults.filter((result) => result.outcome !== "unable_to_test").length;
+    await updateRun({
+        execution_stage: "evaluating_checks",
+        progress_completed: measuredProgress,
+        heartbeat_at: new Date().toISOString(),
+      });
     const snapshotById = new Map(snapshot.map((check) => [check.id, check]));
     await updateRun({
         execution_stage: "persisting_results",
-        progress_completed: 0,
+        progress_completed: measuredProgress,
         heartbeat_at: new Date().toISOString(),
       });
     const decorate = (r: AuditResult) => {
@@ -2390,7 +2626,7 @@ async function runAudit(env: Env, id: string) {
         if (failure) throw new Error(`audit_result_persistence_failed: ${failure}`);
         persisted += batch.length;
         await updateRun({
-            progress_completed: persisted,
+            progress_completed: Math.max(measuredProgress, persisted),
             heartbeat_at: new Date().toISOString(),
           });
       }
@@ -2417,8 +2653,11 @@ async function runAudit(env: Env, id: string) {
       responseMs,
       networkEvidence,
     ).filter((result) => CONTEXT_AUDIT_CHECK_IDS.has(result.check_id));
+    measuredProgress = staticResults.filter((result) => result.outcome !== "unable_to_test").length
+      + contextResults.filter((result) => result.outcome !== "unable_to_test").length;
     await updateRun({
         execution_stage: "persisting_results",
+        progress_completed: Math.max(measuredProgress, persisted),
         heartbeat_at: new Date().toISOString(),
       });
     await persist(contextResults);
@@ -2640,6 +2879,16 @@ async function collectAuditNetworkEvidence(
     html.match(/<link[^>]+rel=["'][^"']*canonical[^"']*["'][^>]+href=["']([^"']+)/i)?.[1] ||
     html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*canonical/i)?.[1] ||
     null;
+  const absoluteHttpUrl = (value: string | null) => {
+    if (!value || /^(?:mailto|tel|javascript|data):/i.test(value) || value.startsWith("#")) return null;
+    try {
+      const url = new URL(value, finalUrl);
+      url.hash = "";
+      return /^https?:$/.test(url.protocol) ? url.href : null;
+    } catch {
+      return null;
+    }
+  };
   const resource = async (value: string, max = 512_000): Promise<AuditResourceEvidence> => {
     try {
       const result = await safeFetchTrace(value, {
@@ -2671,6 +2920,32 @@ async function collectAuditNetworkEvidence(
     resource(`${origin}/llms-full.txt`),
     canonicalHref ? resource(new URL(canonicalHref, finalUrl).href) : Promise.resolve(null),
   ]);
+  const linkUrls = [...new Set(
+    [...html.matchAll(/<a\b[^>]+href=["']([^"']+)["']/gi)]
+      .map((match) => absoluteHttpUrl(match[1]))
+      .filter((value): value is string => Boolean(value)),
+  )].slice(0, 20);
+  const declaredResourceUrls = [
+    ...[...html.matchAll(/<(?:img|track|source|script)\b[^>]+src=["']([^"']+)["']/gi)].map((match) => match[1]),
+    ...[...html.matchAll(/<link\b[^>]+href=["']([^"']+)["']/gi)].map((match) => match[1]),
+    ...[...html.matchAll(/<meta\b[^>]+(?:property|name)=["'](?:og:image|twitter:image)["'][^>]+content=["']([^"']+)["']/gi)].map((match) => match[1]),
+    ...[...html.matchAll(/<meta\b[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:og:image|twitter:image)["']/gi)].map((match) => match[1]),
+  ];
+  const resourceUrls = [...new Set(declaredResourceUrls.map(absoluteHttpUrl).filter((value): value is string => Boolean(value)))].slice(0, 20);
+  const inBatches = async (urls: string[]) => {
+    const values: AuditResourceEvidence[] = [];
+    for (let index = 0; index < urls.length; index += 4)
+      values.push(...await Promise.all(urls.slice(index, index + 4).map((url) => resource(url, 128_000))));
+    return values;
+  };
+  const checkedLinks = await inBatches(linkUrls);
+  const checkedResources = await inBatches(resourceUrls);
+  const [apexHttp, apexHttps, wwwHttp, wwwHttps] = await Promise.all([
+    resource(`http://${canonicalPropertyHost(finalUrl.hostname)}/`, 8_000),
+    resource(`https://${canonicalPropertyHost(finalUrl.hostname)}/`, 8_000),
+    resource(`http://www.${canonicalPropertyHost(finalUrl.hostname)}/`, 8_000),
+    resource(`https://www.${canonicalPropertyHost(finalUrl.hostname)}/`, 8_000),
+  ]);
   const declaredSitemaps = [...robots.body.matchAll(/^\s*sitemap\s*:\s*(\S+)\s*$/gim)]
     .map((match) => match[1]);
   const sitemapUrls = [...new Set([
@@ -2689,14 +2964,17 @@ async function collectAuditNetworkEvidence(
     [`claritude-nxdomain-probe.${apex}`, "A"],
     [`_dmarc.${apex}`, "TXT"],
   ] as const;
-  const dnsAnswers = await Promise.all(dnsQueries.map(async ([query, type]) => {
-    try {
-      const dns = await queryDns(query, type);
-      return { query, type, dns, error: null };
-    } catch (error) {
-      return { query, type, dns: null, error: errorMessage(error) };
-    }
-  }));
+  const dnsAnswers: { query: string; type: string; dns: Awaited<ReturnType<typeof queryDns>> | null; error: string | null }[] = [];
+  for (let index = 0; index < dnsQueries.length; index += 4) {
+    dnsAnswers.push(...await Promise.all(dnsQueries.slice(index, index + 4).map(async ([query, type]) => {
+      try {
+        const dns = await queryDns(query, type);
+        return { query, type, dns, error: null };
+      } catch (error) {
+        return { query, type, dns: null, error: errorMessage(error) };
+      }
+    })));
+  }
   for (const answer of dnsAnswers) {
     if (answer.error) {
       dnsErrors.push(`${answer.query} ${answer.type}: ${answer.error}`);
@@ -2717,6 +2995,12 @@ async function collectAuditNetworkEvidence(
     dnsRecords,
     dnsErrors,
     dnsAuthenticated,
+    checkedLinks,
+    checkedResources,
+    apexHttp,
+    apexHttps,
+    wwwHttp,
+    wwwHttps,
   };
 }
 
@@ -2805,10 +3089,39 @@ function evaluateNetworkEvidenceCheck(
     record.type === type && (!query || record.query === query),
   );
   const apex = canonicalPropertyHost(analysis.url.hostname);
+  const checkedLinkEvidence = evidence.checkedLinks.map((item) => ({ url: item.url, status: item.status, finalUrl: item.finalUrl, error: item.error }));
+  const linkMatches = (predicate: (item: AuditResourceEvidence) => boolean) => evidence.checkedLinks.filter(predicate);
+  const resourceFor = (value: string | null) => {
+    if (!value) return null;
+    try {
+      const target = new URL(value, analysis.url).href;
+      return evidence.checkedResources.find((item) => item.url === target) || null;
+    } catch {
+      return null;
+    }
+  };
+  const attrUrl = (pattern: RegExp) => html.match(pattern)?.[1] || null;
+  const ogImage = attrUrl(/<meta\b[^>]+(?:property|name)=["']og:image["'][^>]+content=["']([^"']+)/i) || attrUrl(/<meta\b[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']og:image/i);
+  const favicon = attrUrl(/<link\b[^>]+rel=["'][^"']*(?:icon|shortcut icon)[^"']*["'][^>]+href=["']([^"']+)/i) || attrUrl(/<link\b[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*(?:icon|shortcut icon)/i);
+  const appleIcon = attrUrl(/<link\b[^>]+rel=["'][^"']*apple-touch-icon[^"']*["'][^>]+href=["']([^"']+)/i) || attrUrl(/<link\b[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*apple-touch-icon/i);
+  const manifestHref = attrUrl(/<link\b[^>]+rel=["'][^"']*manifest[^"']*["'][^>]+href=["']([^"']+)/i) || attrUrl(/<link\b[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*manifest/i);
+  const markdownHref = attrUrl(/<link\b[^>]+(?:type=["']text\/markdown["']|rel=["'][^"']*alternate[^"']*)[^>]+href=["']([^"']+)/i) || attrUrl(/<link\b[^>]+href=["']([^"']+)["'][^>]+(?:type=["']text\/markdown["']|rel=["'][^"']*alternate[^"']*)/i);
   if (id.endsWith("canonical.target.reachable")) return [!evidence.canonical ? "not_applicable" : ok(evidence.canonical) ? "pass" : "fail", { target: evidence.canonical?.url || null, status: evidence.canonical?.status || null, error: evidence.canonical?.error || null }];
   if (id.endsWith("canonical.target.redirects")) return [!evidence.canonical ? "not_applicable" : evidence.canonical.finalUrl && normalizeComparableUrl(evidence.canonical.finalUrl) !== normalizeComparableUrl(evidence.canonical.url) ? "warning" : "pass", { target: evidence.canonical?.url || null, finalUrl: evidence.canonical?.finalUrl || null }];
   if (id.endsWith("redirect.chain.detected")) return [evidence.redirects.length > 1 ? "warning" : "pass", { redirects: evidence.redirects }];
   if (id.endsWith("redirect.loop.detected")) { const visited = evidence.redirects.map((item) => normalizeComparableUrl(item.url)); return [new Set(visited).size === visited.length ? "pass" : "fail", { redirects: evidence.redirects }]; }
+  if (id.includes("checked.links.returning.http.404")) { const matches = linkMatches((item) => item.status === 404); return [matches.length ? "warning" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => item.url) }]; }
+  if (id.includes("checked.links.returning.http.410")) { const matches = linkMatches((item) => item.status === 410); return [matches.length ? "warning" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => item.url) }]; }
+  if (id.includes("checked.links.returning.server.errors")) { const matches = linkMatches((item) => Number(item.status) >= 500); return [matches.length ? "fail" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => item.url) }]; }
+  if (id.includes("checked.links.failing.dns")) { const matches = linkMatches((item) => /dns|name.*resolve|host.*not found/i.test(item.error || "")); return [matches.length ? "fail" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => ({ url: item.url, error: item.error })) }]; }
+  if (id.includes("checked.links.failing.https")) { const matches = linkMatches((item) => item.url.startsWith("https:") && /tls|ssl|certificate|handshake/i.test(item.error || "")); return [matches.length ? "fail" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => ({ url: item.url, error: item.error })) }]; }
+  if (id.includes("checked.links.timing.out")) { const matches = linkMatches((item) => /timeout|timed out|abort/i.test(item.error || "")); return [matches.length ? "warning" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => item.url) }]; }
+  if (id.includes("blocked.by.access.restrictions")) { const matches = linkMatches((item) => item.status === 401 || item.status === 403); return [matches.length ? "warning" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => item.url) }]; }
+  if (id.includes("encountering.rate.limits")) { const matches = linkMatches((item) => item.status === 429); return [matches.length ? "warning" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => item.url) }]; }
+  if (id.includes("containing.redirect.loops")) { const matches = linkMatches((item) => /redirect.*loop/i.test(item.error || "")); return [matches.length ? "fail" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => item.url) }]; }
+  if (id.includes("exceeding.the.redirect.limit")) { const matches = linkMatches((item) => /too many redirects|redirect limit/i.test(item.error || "")); return [matches.length ? "fail" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => item.url) }]; }
+  if (id.includes("redirecting.to.broken.destinations")) { const matches = linkMatches((item) => item.finalUrl !== item.url && (Number(item.status) >= 400 || Boolean(item.error))); return [matches.length ? "fail" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => ({ url: item.url, finalUrl: item.finalUrl, status: item.status })) }]; }
+  if (id.includes("redirecting.internal.links") || id.includes("redirecting.external.links")) { const internal = id.includes("internal"); const matches = linkMatches((item) => { try { return item.finalUrl !== item.url && (new URL(item.url).hostname === analysis.url.hostname) === internal; } catch { return false; } }); return [matches.length ? "informational" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => ({ url: item.url, finalUrl: item.finalUrl })) }]; }
   if (id.endsWith("robots.txt.file.reachable")) return [ok(evidence.robots) ? "pass" : "warning", { status: evidence.robots.status, error: evidence.robots.error }];
   if (id.endsWith("robots.txt.contains.readable.text")) return [!ok(evidence.robots) ? "not_applicable" : evidence.robots.body.trim() ? "pass" : "warning", { characters: evidence.robots.body.trim().length }];
   if (id.endsWith("robots.txt.parsing.errors.detected")) { const malformed = evidence.robots.body.split(/\r?\n/).filter((line) => line.trim() && !line.trim().startsWith("#") && !/^[a-z-]+\s*:/i.test(line)); return [!ok(evidence.robots) ? "not_applicable" : malformed.length ? "warning" : "pass", { malformedLines: malformed.slice(0, 10) }]; }
@@ -2844,6 +3157,21 @@ function evaluateNetworkEvidenceCheck(
   if (id.endsWith("dmarc.record.detected")) return [dmarc.length ? "pass" : "warning", { records: dmarc }];
   if (id.endsWith("dmarc.policy.recorded")) return [!dmarc.length ? "not_applicable" : dmarc.some((record) => /\bp\s*=\s*(none|quarantine|reject)/i.test(record.data)) ? "pass" : "warning", { records: dmarc }];
   if (id.endsWith("caa.certificate.authority.restrictions.detected")) return ["informational", { records: records("CAA", apex) }];
+  if (id.includes("caption.track.resources.reachable")) { const tracks = [...html.matchAll(/<track\b[^>]+src=["']([^"']+)/gi)].map((match) => resourceFor(match[1])); return [!tracks.length ? "not_applicable" : tracks.every(ok) ? "pass" : "warning", { tracks: tracks.map((item) => ({ url: item?.url, status: item?.status, error: item?.error })) }]; }
+  if (id.endsWith("http.version.redirects.to.https")) return [evidence.apexHttp.finalUrl?.startsWith("https:") ? "pass" : "warning", { requested: evidence.apexHttp.url, finalUrl: evidence.apexHttp.finalUrl, status: evidence.apexHttp.status, error: evidence.apexHttp.error }];
+  if (id.endsWith("https.connection.succeeds")) return [ok(evidence.apexHttps) ? "pass" : "fail", { status: evidence.apexHttps.status, error: evidence.apexHttps.error }];
+  if (id.endsWith("http.image.and.media.references.detected")) { const matches = [...html.matchAll(/<(?:img|video|audio|source)\b[^>]+(?:src|poster)=["'](http:\/\/[^"']+)/gi)].map((match) => match[1]); return [matches.length ? "warning" : "pass", { matches: matches.slice(0, 20) }]; }
+  if (id.includes("observed.cookies.have.") || id.endsWith("response.cookie.attributes.recorded")) { const header = response.headers.get("set-cookie") || ""; const cookies = header ? header.split(/,(?=\s*[^;,=]+=[^;,]+)/) : []; if (id.endsWith("response.cookie.attributes.recorded")) return ["informational", { count: cookies.length, cookies: cookies.map((cookie) => ({ secure: /;\s*secure/i.test(cookie), httpOnly: /;\s*httponly/i.test(cookie), sameSite: cookie.match(/;\s*samesite=([^;]+)/i)?.[1] || null })) }]; if (!cookies.length) return ["not_applicable", { count: 0 }]; const attribute = id.includes("secure.attributes") ? /;\s*secure/i : id.includes("httponly") ? /;\s*httponly/i : /;\s*samesite=(?:lax|strict|none)/i; return [cookies.every((cookie) => attribute.test(cookie)) ? "pass" : "warning", { count: cookies.length, missing: cookies.filter((cookie) => !attribute.test(cookie)).length }]; }
+  if (id.endsWith("apex.and.www.http.redirect.behaviour.compared")) return ["informational", { apexHttp: evidence.apexHttp.finalUrl, apexHttps: evidence.apexHttps.finalUrl, wwwHttp: evidence.wwwHttp.finalUrl, wwwHttps: evidence.wwwHttps.finalUrl }];
+  if (id.endsWith("checked.structured.data.image.urls.reachable")) { const urls = analysis.jsonLd.flatMap((value) => { try { const json = JSON.parse(value); const items = Array.isArray(json) ? json : [json]; return items.flatMap((item) => [item?.image, item?.logo].flatMap((entry) => typeof entry === "string" ? [entry] : Array.isArray(entry) ? entry.filter((part) => typeof part === "string") : typeof entry?.url === "string" ? [entry.url] : [])); } catch { return []; } }); const resources = urls.map(resourceFor); return [!urls.length ? "not_applicable" : resources.every(ok) ? "pass" : "warning", { resources: resources.map((item) => ({ url: item?.url, status: item?.status })) }]; }
+  if (id.endsWith("open.graph.image.reachable")) { const item = resourceFor(ogImage); return [!ogImage ? "not_applicable" : ok(item) ? "pass" : "warning", { url: item?.url || ogImage, status: item?.status, error: item?.error }]; }
+  if (id.endsWith("declared.favicon.reachable")) { const item = resourceFor(favicon); return [!favicon ? "not_applicable" : ok(item) ? "pass" : "warning", { url: item?.url || favicon, status: item?.status, error: item?.error }]; }
+  if (id.endsWith("declared.apple.touch.icon.reachable")) { const item = resourceFor(appleIcon); return [!appleIcon ? "not_applicable" : ok(item) ? "pass" : "warning", { url: item?.url || appleIcon, status: item?.status, error: item?.error }]; }
+  if (id.endsWith("linked.web.app.manifest.reachable")) { const item = resourceFor(manifestHref); return [!manifestHref ? "not_applicable" : ok(item) ? "pass" : "warning", { url: item?.url || manifestHref, status: item?.status, error: item?.error }]; }
+  if (id.endsWith("web.app.manifest.contains.valid.json")) { const item = resourceFor(manifestHref); if (!manifestHref || !ok(item)) return ["not_applicable", { url: manifestHref }]; try { JSON.parse(item!.body); return ["pass", { url: item!.url }]; } catch { return ["warning", { url: item!.url }]; } }
+  if (id.endsWith("linked.markdown.alternative.for.the.selected.page.detected")) return [markdownHref ? "pass" : "not_applicable", { url: markdownHref }];
+  if (id.endsWith("declared.markdown.alternative.reachable")) { const item = resourceFor(markdownHref); return [!markdownHref ? "not_applicable" : ok(item) ? "pass" : "warning", { url: item?.url || markdownHref, status: item?.status, error: item?.error }]; }
+  if (id.endsWith("declared.markdown.alternative.contains.readable.content")) { const item = resourceFor(markdownHref); return [!markdownHref || !ok(item) ? "not_applicable" : item!.body.trim().length >= 100 ? "pass" : "warning", { url: item?.url || markdownHref, characters: item?.body.trim().length || 0 }]; }
   if (id.endsWith("llms.txt.file.reachable")) return [ok(evidence.llms) ? "pass" : "not_applicable", { status: evidence.llms.status, error: evidence.llms.error }];
   if (id.endsWith("llms.txt.returned.as.readable.text")) return [!ok(evidence.llms) ? "not_applicable" : evidence.llms.body.trim() ? "pass" : "warning", { characters: evidence.llms.body.trim().length, contentType: evidence.llms.contentType }];
   if (id.endsWith("llms.txt.title.detected")) return [!ok(evidence.llms) ? "not_applicable" : /^#\s+\S+/m.test(evidence.llms.body) ? "pass" : "warning", { title: evidence.llms.body.match(/^#\s+(.+)$/m)?.[1] || null }];
@@ -2870,6 +3198,18 @@ function normalizeComparableUrl(value: string) {
 export function auditCheckHasExecutableLogic(id: string) {
   if (EXPLICIT_SOURCE_CHECK_IDS.has(id) || CONTEXT_AUDIT_CHECK_IDS.has(id)) return true;
   const definition = registry(id);
+  if (definition?.primaryCategory === "performance") return true;
+  if (definition && ["rendered_browser", "lab"].includes(definition.executionMethod)) return true;
+  if ([
+    "image.resources.fail.to.load", "image.aspect.ratio.distortion", "image.transfer.sizes.measured", "below.the.fold.image.loading",
+    "required.aria.attributes.present", "aria.attribute.names.valid", "aria.attribute.values.valid",
+    "aria.roles.valid", "aria.attributes.permitted.for.their.roles", "required.aria.parent.roles",
+    "required.aria.child.roles", "focusable.elements.inside.aria.hidden", "scrollable.regions.keyboard.focusable",
+    "table.headers.associated", "table.header.cells.contain.text", "horizontal.page.overflow",
+    "images.exceed.their.containing", "tables.overflow.their.containing", "text.sizes.measured.at.tested.mobile",
+    "desktop.and.mobile.content.differences", "main.heading.visible.at.tested", "primary.navigation.controls.have.accessible.names",
+    "browser.reported.security.policy.violations",
+  ].some((part) => id.includes(part))) return true;
   if (!definition || !["source_html", "network"].includes(definition.executionMethod)) return false;
   const html = "<!doctype html><html lang=\"en\"><head><title>Probe</title></head><body><main>Probe content for evaluator capability detection.</main></body></html>";
   const values = new Map<string, string>([["content-type", "text/html; charset=utf-8"]]);
@@ -3032,6 +3372,8 @@ function evaluateStaticCheck(
   if (id.includes("breadcrumb.positions.form.a.consistent.sequence")) { const positions = [...a.jsonLd.join('\n').matchAll(/["']position["']\s*:\s*(\d+)/gi)].map((match) => Number(match[1])); return [!positions.length ? "not_applicable" : positions.every((value, index) => value === index + 1) ? "pass" : "warning", { positions }]; }
   if (id.includes("declared.product.price.formats.valid")) { const values = [...a.jsonLd.join('\n').matchAll(/["']price["']\s*:\s*["']?([^,"'}\s]+)/gi)].map((match) => match[1]); return [!values.length ? "not_applicable" : values.every((value) => /^\d+(?:\.\d+)?$/.test(value)) ? "pass" : "warning", { values }]; }
   if (id.includes("declared.product.currency.codes.valid")) { const values = [...a.jsonLd.join('\n').matchAll(/["']priceCurrency["']\s*:\s*["']([^"']+)/gi)].map((match) => match[1]); return [!values.length ? "not_applicable" : values.every((value) => /^[A-Z]{3}$/.test(value)) ? "pass" : "warning", { values }]; }
+  if (id.includes("local.entity.references.resolve.within.the.document")) { const data = a.jsonLd.join("\n"); const identifiers = new Set([...data.matchAll(/["']@id["']\s*:\s*["']([^"']+)/gi)].map((match) => match[1])); const references = [...data.matchAll(/["'](?:author|publisher|brand|isPartOf|mainEntityOfPage)["']\s*:\s*\{?\s*["']@id["']\s*:\s*["']([^"']+)/gi)].map((match) => match[1]); const unresolved = references.filter((value) => value.startsWith("#") && !identifiers.has(value)); return [!references.length ? "not_applicable" : unresolved.length ? "warning" : "pass", { references, unresolved }]; }
+  if (id.includes("duplicate.entity.identifiers.contain.conflicting.values")) { const blocks = a.jsonLd.flatMap((value) => { try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : parsed?.["@graph"] || [parsed]; } catch { return []; } }); const groups = new Map<string, string[]>(); for (const item of blocks) { const identifier = item?.["@id"]; if (!identifier) continue; const values = groups.get(identifier) || []; values.push(JSON.stringify(item)); groups.set(identifier, values); } const conflicts = [...groups.entries()].filter(([, values]) => new Set(values).size > 1).map(([identifier]) => identifier); return [conflicts.length ? "warning" : "pass", { duplicateIdentifiers: [...groups.entries()].filter(([, values]) => values.length > 1).map(([identifier]) => identifier), conflicts }]; }
   if (id.includes("schema.org.types.identified")) { const types = [...html.matchAll(/["']@type["']\s*:\s*["']([^"']+)/gi)].map((x) => x[1]); return ["informational", { types }]; }
   if (id.includes("structured.data.context.declared")) return result(!a.jsonLd.length || a.jsonLd.every((x) => /["']@context["']\s*:/i.test(x)), { blocks: a.jsonLd.length }, "warning");
   if (id.includes("organisation.name.declared")) return [!a.jsonLd.length ? "not_applicable" : /["']@type["']\s*:\s*["']Organization["'][\s\S]*?["']name["']\s*:/i.test(a.jsonLd.join('\n')) ? "pass" : "warning", {}];
@@ -3045,6 +3387,7 @@ function evaluateStaticCheck(
   if (id.includes("open.graph.url.present")) return result(!!meta('og:url'), { value: meta('og:url') });
   if (id.includes("open.graph.type.present")) return result(!!meta('og:type'), { value: meta('og:type') });
   if (id.includes("open.graph.image.declared")) return result(!!meta('og:image'), { value: meta('og:image') });
+  if (id.includes("open.graph.image.dimensions.measured")) { const width = Number(meta("og:image:width") || 0); const height = Number(meta("og:image:height") || 0); return [!meta("og:image") ? "not_applicable" : width > 0 && height > 0 ? "informational" : "warning", { width: width || null, height: height || null }]; }
   if (id.includes("twitter.card.type.declared")) return result(!!meta('twitter:card'), { value: meta('twitter:card') }, "warning");
   if (id.includes("twitter.title.or.open.graph")) return result(!!(meta('twitter:title') || meta('og:title')), {});
   if (id.includes("twitter.description.or.open.graph")) return result(!!(meta('twitter:description') || meta('og:description')), {});

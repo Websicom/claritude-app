@@ -269,12 +269,13 @@ describe("worker evidence pipelines", () => {
     expect(results.every((item) => item.outcome === "pass")).toBe(true);
   });
 
-  it("reconciles every active catalogue check to executable logic or an explicit capability gap", () => {
+  it("has executable evidence collection for every active catalogue check", () => {
     const active = AUDIT_REGISTRY.filter((check) => check.lifecycle === "active");
     const implemented = active.filter((check) => auditCheckHasExecutableLogic(check.id));
     const gaps = active.filter((check) => !auditCheckHasExecutableLogic(check.id));
     expect(active).toHaveLength(306);
-    expect(implemented.length).toBeGreaterThanOrEqual(150);
+    expect(implemented).toHaveLength(306);
+    expect(gaps).toHaveLength(0);
     expect(implemented.length + gaps.length).toBe(active.length);
     expect(gaps.every((check) => ["source_html", "network", "rendered_browser", "dns", "lab"].includes(check.executionMethod))).toBe(true);
   });
