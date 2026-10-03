@@ -3130,6 +3130,13 @@ input[type="checkbox"]:checked:after {
   .top {
     grid-template-columns: 58px minmax(0, 1fr) 0 52px;
   }
+  .top .workspace.top-selector {
+    padding-left: 14px !important;
+    padding-right: 5px !important;
+  }
+  .summary-note {
+    display: none;
+  }
   .brand {
     justify-content: center;
     padding: 0 8px !important;
