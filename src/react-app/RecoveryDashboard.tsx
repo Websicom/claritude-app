@@ -2815,7 +2815,9 @@ function AuditView({
     updateAuditLocation({ auditTab: "Findings" });
   }
   const retryableRun = !activeRun
-    ? runs.find((run) => run.status === "failed" || isStalledActiveRun(run))
+    ? runs.find((run) =>
+        (run.status === "failed" || isStalledActiveRun(run)) &&
+        (!latest || Date.parse(run.created_at) > Date.parse(latest.created_at)))
     : undefined;
   const fullyPersistedStaleRun = Boolean(
     retryableRun &&
@@ -6941,10 +6943,17 @@ const auditCategoryPrefixes: Record<string, string[]> = {
 };
 
 function auditRunCategoryScores(run?: AuditRun) {
+  const performanceScores = run?.performance_metrics?.scores;
+  const measuredPerformance = performanceScores && [performanceScores.desktop, performanceScores.mobile].some((score) => score != null)
+    ? Math.round([performanceScores.desktop, performanceScores.mobile].filter((score): score is number => score != null).reduce((sum, score) => sum + score, 0) /
+      [performanceScores.desktop, performanceScores.mobile].filter((score) => score != null).length)
+    : null;
   return Object.fromEntries(
     auditCategories.map((category) => [
       category,
-      run?.category_scores?.[category] ?? auditCategoryScore(run?.audit_results, auditCategoryPrefixes[category]),
+      category === "Performance" && measuredPerformance != null
+        ? measuredPerformance
+        : run?.category_scores?.[category] ?? auditCategoryScore(run?.audit_results, auditCategoryPrefixes[category]),
     ]),
   ) as Record<string, number | null>;
 }
