@@ -2881,16 +2881,6 @@ async function collectAuditNetworkEvidence(
     html.match(/<link[^>]+rel=["'][^"']*canonical[^"']*["'][^>]+href=["']([^"']+)/i)?.[1] ||
     html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*canonical/i)?.[1] ||
     null;
-  const absoluteHttpUrl = (value: string | null) => {
-    if (!value || /^(?:mailto|tel|javascript|data):/i.test(value) || value.startsWith("#")) return null;
-    try {
-      const url = new URL(value, finalUrl);
-      url.hash = "";
-      return /^https?:$/.test(url.protocol) ? url.href : null;
-    } catch {
-      return null;
-    }
-  };
   const resource = async (value: string, max = 512_000): Promise<AuditResourceEvidence> => {
     try {
       const result = await safeFetchTrace(value, {
@@ -2922,35 +2912,29 @@ async function collectAuditNetworkEvidence(
     resource(`${origin}/llms-full.txt`),
     canonicalHref ? resource(new URL(canonicalHref, finalUrl).href) : Promise.resolve(null),
   ]);
-  const linkUrls = [...new Set(
-    [...html.matchAll(/<a\b[^>]+href=["']([^"']+)["']/gi)]
-      .map((match) => absoluteHttpUrl(match[1]))
-      .filter((value): value is string => Boolean(value)),
-  )].slice(0, 6);
-  const declaredResourceUrls = [
-    ...[...html.matchAll(/<(?:img|track|source|script)\b[^>]+src=["']([^"']+)["']/gi)].map((match) => match[1]),
-    ...[...html.matchAll(/<link\b[^>]+href=["']([^"']+)["']/gi)].map((match) => match[1]),
-    ...[...html.matchAll(/<meta\b[^>]+(?:property|name)=["'](?:og:image|twitter:image)["'][^>]+content=["']([^"']+)["']/gi)].map((match) => match[1]),
-    ...[...html.matchAll(/<meta\b[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:og:image|twitter:image)["']/gi)].map((match) => match[1]),
-  ];
-  const resourceUrls = [...new Set(declaredResourceUrls.map(absoluteHttpUrl).filter((value): value is string => Boolean(value)))].slice(0, 8);
-  const inBatches = async (urls: string[]) => {
-    const values: AuditResourceEvidence[] = [];
-    for (let index = 0; index < urls.length; index += 2) {
-      values.push(...await Promise.all(urls.slice(index, index + 2).map((url) => resource(url, 128_000))));
-      await heartbeat?.();
-    }
-    return values;
+  const unchecked = (value: string): AuditResourceEvidence => ({
+    url: value,
+    status: null,
+    finalUrl: null,
+    body: "",
+    contentType: null,
+    error: "not sampled by the selected-page audit",
+  });
+  const selectedEvidence: AuditResourceEvidence = {
+    url: pageUrl,
+    status: response.status,
+    finalUrl: response.url,
+    body: "",
+    contentType: response.headers.get("content-type"),
+    error: null,
   };
-  const checkedLinks = await inBatches(linkUrls);
-  const checkedResources = await inBatches(resourceUrls);
-  const originVariants = await inBatches([
-    `http://${canonicalPropertyHost(finalUrl.hostname)}/`,
-    `https://${canonicalPropertyHost(finalUrl.hostname)}/`,
-    `http://www.${canonicalPropertyHost(finalUrl.hostname)}/`,
-    `https://www.${canonicalPropertyHost(finalUrl.hostname)}/`,
-  ]);
-  const [apexHttp, apexHttps, wwwHttp, wwwHttps] = originVariants;
+  const apexHost = canonicalPropertyHost(finalUrl.hostname);
+  const apexHttp = finalUrl.protocol === "http:" && finalUrl.hostname === apexHost ? selectedEvidence : unchecked(`http://${apexHost}/`);
+  const apexHttps = finalUrl.protocol === "https:" && finalUrl.hostname === apexHost ? selectedEvidence : unchecked(`https://${apexHost}/`);
+  const wwwHttp = finalUrl.protocol === "http:" && finalUrl.hostname === `www.${apexHost}` ? selectedEvidence : unchecked(`http://www.${apexHost}/`);
+  const wwwHttps = finalUrl.protocol === "https:" && finalUrl.hostname === `www.${apexHost}` ? selectedEvidence : unchecked(`https://www.${apexHost}/`);
+  const checkedLinks: AuditResourceEvidence[] = [];
+  const checkedResources: AuditResourceEvidence[] = [];
   const declaredSitemaps = [...robots.body.matchAll(/^\s*sitemap\s*:\s*(\S+)\s*$/gim)]
     .map((match) => match[1]);
   const sitemapUrls = [...new Set([
@@ -3112,6 +3096,8 @@ function evaluateNetworkEvidenceCheck(
   const appleIcon = attrUrl(/<link\b[^>]+rel=["'][^"']*apple-touch-icon[^"']*["'][^>]+href=["']([^"']+)/i) || attrUrl(/<link\b[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*apple-touch-icon/i);
   const manifestHref = attrUrl(/<link\b[^>]+rel=["'][^"']*manifest[^"']*["'][^>]+href=["']([^"']+)/i) || attrUrl(/<link\b[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*manifest/i);
   const markdownHref = attrUrl(/<link\b[^>]+(?:type=["']text\/markdown["']|rel=["'][^"']*alternate[^"']*)[^>]+href=["']([^"']+)/i) || attrUrl(/<link\b[^>]+href=["']([^"']+)["'][^>]+(?:type=["']text\/markdown["']|rel=["'][^"']*alternate[^"']*)/i);
+  if (!evidence.checkedLinks.length && (id.includes("checked.links.") || id.includes("redirecting.internal.links") || id.includes("redirecting.external.links")))
+    return ["not_applicable", { checked: 0, reason: "Destination crawling is not part of the bounded selected-page audit" }];
   if (id.endsWith("canonical.target.reachable")) return [!evidence.canonical ? "not_applicable" : ok(evidence.canonical) ? "pass" : "fail", { target: evidence.canonical?.url || null, status: evidence.canonical?.status || null, error: evidence.canonical?.error || null }];
   if (id.endsWith("canonical.target.redirects")) return [!evidence.canonical ? "not_applicable" : evidence.canonical.finalUrl && normalizeComparableUrl(evidence.canonical.finalUrl) !== normalizeComparableUrl(evidence.canonical.url) ? "warning" : "pass", { target: evidence.canonical?.url || null, finalUrl: evidence.canonical?.finalUrl || null }];
   if (id.endsWith("redirect.chain.detected")) return [evidence.redirects.length > 1 ? "warning" : "pass", { redirects: evidence.redirects }];
@@ -3163,20 +3149,20 @@ function evaluateNetworkEvidenceCheck(
   if (id.endsWith("dmarc.record.detected")) return [dmarc.length ? "pass" : "warning", { records: dmarc }];
   if (id.endsWith("dmarc.policy.recorded")) return [!dmarc.length ? "not_applicable" : dmarc.some((record) => /\bp\s*=\s*(none|quarantine|reject)/i.test(record.data)) ? "pass" : "warning", { records: dmarc }];
   if (id.endsWith("caa.certificate.authority.restrictions.detected")) return ["informational", { records: records("CAA", apex) }];
-  if (id.includes("caption.track.resources.reachable")) { const tracks = [...html.matchAll(/<track\b[^>]+src=["']([^"']+)/gi)].map((match) => resourceFor(match[1])); return [!tracks.length ? "not_applicable" : tracks.every(ok) ? "pass" : "warning", { tracks: tracks.map((item) => ({ url: item?.url, status: item?.status, error: item?.error })) }]; }
-  if (id.endsWith("http.version.redirects.to.https")) return [evidence.apexHttp.finalUrl?.startsWith("https:") ? "pass" : "warning", { requested: evidence.apexHttp.url, finalUrl: evidence.apexHttp.finalUrl, status: evidence.apexHttp.status, error: evidence.apexHttp.error }];
-  if (id.endsWith("https.connection.succeeds")) return [ok(evidence.apexHttps) ? "pass" : "fail", { status: evidence.apexHttps.status, error: evidence.apexHttps.error }];
+  if (id.includes("caption.track.resources.reachable")) { const declared = [...html.matchAll(/<track\b[^>]+src=["']([^"']+)/gi)].map((match) => match[1]); const tracks = declared.map(resourceFor); return [!declared.length || !evidence.checkedResources.length ? "not_applicable" : tracks.every(ok) ? "pass" : "warning", { declared, tracks: tracks.map((item) => ({ url: item?.url, status: item?.status, error: item?.error })) }]; }
+  if (id.endsWith("http.version.redirects.to.https")) return [evidence.apexHttp.status == null ? "not_applicable" : evidence.apexHttp.finalUrl?.startsWith("https:") ? "pass" : "warning", { requested: evidence.apexHttp.url, finalUrl: evidence.apexHttp.finalUrl, status: evidence.apexHttp.status, error: evidence.apexHttp.error }];
+  if (id.endsWith("https.connection.succeeds")) return [evidence.apexHttps.status == null ? "not_applicable" : ok(evidence.apexHttps) ? "pass" : "fail", { status: evidence.apexHttps.status, error: evidence.apexHttps.error }];
   if (id.endsWith("http.image.and.media.references.detected")) { const matches = [...html.matchAll(/<(?:img|video|audio|source)\b[^>]+(?:src|poster)=["'](http:\/\/[^"']+)/gi)].map((match) => match[1]); return [matches.length ? "warning" : "pass", { matches: matches.slice(0, 20) }]; }
   if (id.includes("observed.cookies.have.") || id.endsWith("response.cookie.attributes.recorded")) { const header = response.headers.get("set-cookie") || ""; const cookies = header ? header.split(/,(?=\s*[^;,=]+=[^;,]+)/) : []; if (id.endsWith("response.cookie.attributes.recorded")) return ["informational", { count: cookies.length, cookies: cookies.map((cookie) => ({ secure: /;\s*secure/i.test(cookie), httpOnly: /;\s*httponly/i.test(cookie), sameSite: cookie.match(/;\s*samesite=([^;]+)/i)?.[1] || null })) }]; if (!cookies.length) return ["not_applicable", { count: 0 }]; const attribute = id.includes("secure.attributes") ? /;\s*secure/i : id.includes("httponly") ? /;\s*httponly/i : /;\s*samesite=(?:lax|strict|none)/i; return [cookies.every((cookie) => attribute.test(cookie)) ? "pass" : "warning", { count: cookies.length, missing: cookies.filter((cookie) => !attribute.test(cookie)).length }]; }
-  if (id.endsWith("apex.and.www.http.redirect.behaviour.compared")) return ["informational", { apexHttp: evidence.apexHttp.finalUrl, apexHttps: evidence.apexHttps.finalUrl, wwwHttp: evidence.wwwHttp.finalUrl, wwwHttps: evidence.wwwHttps.finalUrl }];
-  if (id.endsWith("checked.structured.data.image.urls.reachable")) { const urls = analysis.jsonLd.flatMap((value) => { try { const json = JSON.parse(value); const items = Array.isArray(json) ? json : [json]; return items.flatMap((item) => [item?.image, item?.logo].flatMap((entry) => typeof entry === "string" ? [entry] : Array.isArray(entry) ? entry.filter((part) => typeof part === "string") : typeof entry?.url === "string" ? [entry.url] : [])); } catch { return []; } }); const resources = urls.map(resourceFor); return [!urls.length ? "not_applicable" : resources.every(ok) ? "pass" : "warning", { resources: resources.map((item) => ({ url: item?.url, status: item?.status })) }]; }
-  if (id.endsWith("open.graph.image.reachable")) { const item = resourceFor(ogImage); return [!ogImage ? "not_applicable" : ok(item) ? "pass" : "warning", { url: item?.url || ogImage, status: item?.status, error: item?.error }]; }
-  if (id.endsWith("declared.favicon.reachable")) { const item = resourceFor(favicon); return [!favicon ? "not_applicable" : ok(item) ? "pass" : "warning", { url: item?.url || favicon, status: item?.status, error: item?.error }]; }
-  if (id.endsWith("declared.apple.touch.icon.reachable")) { const item = resourceFor(appleIcon); return [!appleIcon ? "not_applicable" : ok(item) ? "pass" : "warning", { url: item?.url || appleIcon, status: item?.status, error: item?.error }]; }
-  if (id.endsWith("linked.web.app.manifest.reachable")) { const item = resourceFor(manifestHref); return [!manifestHref ? "not_applicable" : ok(item) ? "pass" : "warning", { url: item?.url || manifestHref, status: item?.status, error: item?.error }]; }
+  if (id.endsWith("apex.and.www.http.redirect.behaviour.compared")) return [evidence.apexHttp.status != null && evidence.apexHttps.status != null && evidence.wwwHttp.status != null && evidence.wwwHttps.status != null ? "informational" : "not_applicable", { apexHttp: evidence.apexHttp.finalUrl, apexHttps: evidence.apexHttps.finalUrl, wwwHttp: evidence.wwwHttp.finalUrl, wwwHttps: evidence.wwwHttps.finalUrl }];
+  if (id.endsWith("checked.structured.data.image.urls.reachable")) { const urls = analysis.jsonLd.flatMap((value) => { try { const json = JSON.parse(value); const items = Array.isArray(json) ? json : [json]; return items.flatMap((item) => [item?.image, item?.logo].flatMap((entry) => typeof entry === "string" ? [entry] : Array.isArray(entry) ? entry.filter((part) => typeof part === "string") : typeof entry?.url === "string" ? [entry.url] : [])); } catch { return []; } }); const resources = urls.map(resourceFor); return [!urls.length || !evidence.checkedResources.length ? "not_applicable" : resources.every(ok) ? "pass" : "warning", { declared: urls, resources: resources.map((item) => ({ url: item?.url, status: item?.status })) }]; }
+  if (id.endsWith("open.graph.image.reachable")) { const item = resourceFor(ogImage); return [!ogImage || !item ? "not_applicable" : ok(item) ? "pass" : "warning", { url: item?.url || ogImage, status: item?.status, error: item?.error }]; }
+  if (id.endsWith("declared.favicon.reachable")) { const item = resourceFor(favicon); return [!favicon || !item ? "not_applicable" : ok(item) ? "pass" : "warning", { url: item?.url || favicon, status: item?.status, error: item?.error }]; }
+  if (id.endsWith("declared.apple.touch.icon.reachable")) { const item = resourceFor(appleIcon); return [!appleIcon || !item ? "not_applicable" : ok(item) ? "pass" : "warning", { url: item?.url || appleIcon, status: item?.status, error: item?.error }]; }
+  if (id.endsWith("linked.web.app.manifest.reachable")) { const item = resourceFor(manifestHref); return [!manifestHref || !item ? "not_applicable" : ok(item) ? "pass" : "warning", { url: item?.url || manifestHref, status: item?.status, error: item?.error }]; }
   if (id.endsWith("web.app.manifest.contains.valid.json")) { const item = resourceFor(manifestHref); if (!manifestHref || !ok(item)) return ["not_applicable", { url: manifestHref }]; try { JSON.parse(item!.body); return ["pass", { url: item!.url }]; } catch { return ["warning", { url: item!.url }]; } }
   if (id.endsWith("linked.markdown.alternative.for.the.selected.page.detected")) return [markdownHref ? "pass" : "not_applicable", { url: markdownHref }];
-  if (id.endsWith("declared.markdown.alternative.reachable")) { const item = resourceFor(markdownHref); return [!markdownHref ? "not_applicable" : ok(item) ? "pass" : "warning", { url: item?.url || markdownHref, status: item?.status, error: item?.error }]; }
+  if (id.endsWith("declared.markdown.alternative.reachable")) { const item = resourceFor(markdownHref); return [!markdownHref || !item ? "not_applicable" : ok(item) ? "pass" : "warning", { url: item?.url || markdownHref, status: item?.status, error: item?.error }]; }
   if (id.endsWith("declared.markdown.alternative.contains.readable.content")) { const item = resourceFor(markdownHref); return [!markdownHref || !ok(item) ? "not_applicable" : item!.body.trim().length >= 100 ? "pass" : "warning", { url: item?.url || markdownHref, characters: item?.body.trim().length || 0 }]; }
   if (id.endsWith("llms.txt.file.reachable")) return [ok(evidence.llms) ? "pass" : "not_applicable", { status: evidence.llms.status, error: evidence.llms.error }];
   if (id.endsWith("llms.txt.returned.as.readable.text")) return [!ok(evidence.llms) ? "not_applicable" : evidence.llms.body.trim() ? "pass" : "warning", { characters: evidence.llms.body.trim().length, contentType: evidence.llms.contentType }];
