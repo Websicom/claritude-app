@@ -326,7 +326,7 @@ export function ClaritudeApplication({
         }
       : property && !property.tracking_last_received_at
         ? {
-            title: "Analytics is not receiving data",
+            title: "Tracking script not installed",
             detail: "Install the tracking snippet or run the guided test.",
           }
         : scopedNotifications[0]
@@ -604,27 +604,26 @@ export function ClaritudeApplication({
           {warning && (
             <>
               <div className="warning warning-desktop">
-                <i className="dot" />
-                <b>{warning.title}</b>
-                <span className="subtle">{warning.detail}</span>
-                <span className="warning-actions">
-                  <Link
-                    className="text-link"
-                    to={property ? `/notifications?property=${property.id}` : "/notifications"}
-                  >
-                    Review notification
-                  </Link>
-                  <button
-                    className="text-link"
-                    onClick={snoozeAlerts}
-                  >
-                    Snooze alerts
-                  </button>
-                </span>
+                <Link
+                  className="important-alerts-link"
+                  to={property ? `/notifications?property=${property.id}` : "/notifications"}
+                >
+                  <i className="dot" />
+                  <b>{importantAlertCount} new important {importantAlertCount === 1 ? "alert" : "alerts"}</b>
+                </Link>
+                <span className="desktop-alert-title">{warning.title}</span>
+                <button
+                  className="iconbtn snooze-alerts"
+                  onClick={snoozeAlerts}
+                  aria-label="Snooze alerts for 24 hours"
+                  title="Snooze alerts for 24 hours"
+                >
+                  <BellOff />
+                </button>
               </div>
               <div className="warning warning-mobile-compact">
                 <Link
-                  className="mobile-important-alerts-link"
+                  className="important-alerts-link mobile-important-alerts-link"
                   to={property ? `/notifications?property=${property.id}` : "/notifications"}
                 >
                   <i className="dot" />
