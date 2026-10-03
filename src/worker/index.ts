@@ -2893,7 +2893,7 @@ async function collectAuditNetworkEvidence(
     try {
       const result = await safeFetchTrace(value, {
         headers: { "user-agent": "Claritude-Audit/1.0 (+https://claritude.io)" },
-        signal: AbortSignal.timeout(12_000),
+        signal: AbortSignal.timeout(4_000),
       }, validatedHosts);
       return {
         url: value,
@@ -2924,28 +2924,29 @@ async function collectAuditNetworkEvidence(
     [...html.matchAll(/<a\b[^>]+href=["']([^"']+)["']/gi)]
       .map((match) => absoluteHttpUrl(match[1]))
       .filter((value): value is string => Boolean(value)),
-  )].slice(0, 20);
+  )].slice(0, 8);
   const declaredResourceUrls = [
     ...[...html.matchAll(/<(?:img|track|source|script)\b[^>]+src=["']([^"']+)["']/gi)].map((match) => match[1]),
     ...[...html.matchAll(/<link\b[^>]+href=["']([^"']+)["']/gi)].map((match) => match[1]),
     ...[...html.matchAll(/<meta\b[^>]+(?:property|name)=["'](?:og:image|twitter:image)["'][^>]+content=["']([^"']+)["']/gi)].map((match) => match[1]),
     ...[...html.matchAll(/<meta\b[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:og:image|twitter:image)["']/gi)].map((match) => match[1]),
   ];
-  const resourceUrls = [...new Set(declaredResourceUrls.map(absoluteHttpUrl).filter((value): value is string => Boolean(value)))].slice(0, 20);
+  const resourceUrls = [...new Set(declaredResourceUrls.map(absoluteHttpUrl).filter((value): value is string => Boolean(value)))].slice(0, 12);
   const inBatches = async (urls: string[]) => {
     const values: AuditResourceEvidence[] = [];
-    for (let index = 0; index < urls.length; index += 4)
-      values.push(...await Promise.all(urls.slice(index, index + 4).map((url) => resource(url, 128_000))));
+    for (let index = 0; index < urls.length; index += 2)
+      values.push(...await Promise.all(urls.slice(index, index + 2).map((url) => resource(url, 128_000))));
     return values;
   };
   const checkedLinks = await inBatches(linkUrls);
   const checkedResources = await inBatches(resourceUrls);
-  const [apexHttp, apexHttps, wwwHttp, wwwHttps] = await Promise.all([
-    resource(`http://${canonicalPropertyHost(finalUrl.hostname)}/`, 8_000),
-    resource(`https://${canonicalPropertyHost(finalUrl.hostname)}/`, 8_000),
-    resource(`http://www.${canonicalPropertyHost(finalUrl.hostname)}/`, 8_000),
-    resource(`https://www.${canonicalPropertyHost(finalUrl.hostname)}/`, 8_000),
+  const originVariants = await inBatches([
+    `http://${canonicalPropertyHost(finalUrl.hostname)}/`,
+    `https://${canonicalPropertyHost(finalUrl.hostname)}/`,
+    `http://www.${canonicalPropertyHost(finalUrl.hostname)}/`,
+    `https://www.${canonicalPropertyHost(finalUrl.hostname)}/`,
   ]);
+  const [apexHttp, apexHttps, wwwHttp, wwwHttps] = originVariants;
   const declaredSitemaps = [...robots.body.matchAll(/^\s*sitemap\s*:\s*(\S+)\s*$/gim)]
     .map((match) => match[1]);
   const sitemapUrls = [...new Set([
@@ -2965,8 +2966,8 @@ async function collectAuditNetworkEvidence(
     [`_dmarc.${apex}`, "TXT"],
   ] as const;
   const dnsAnswers: { query: string; type: string; dns: Awaited<ReturnType<typeof queryDns>> | null; error: string | null }[] = [];
-  for (let index = 0; index < dnsQueries.length; index += 4) {
-    dnsAnswers.push(...await Promise.all(dnsQueries.slice(index, index + 4).map(async ([query, type]) => {
+  for (let index = 0; index < dnsQueries.length; index += 2) {
+    dnsAnswers.push(...await Promise.all(dnsQueries.slice(index, index + 2).map(async ([query, type]) => {
       try {
         const dns = await queryDns(query, type);
         return { query, type, dns, error: null };
@@ -3009,7 +3010,7 @@ async function queryDns(query: string, type: string) {
     `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(query)}&type=${type}`,
     {
       headers: { accept: "application/dns-json" },
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(3000),
     },
   );
   if (!response.ok) throw new Error(`resolver returned HTTP ${response.status}`);
