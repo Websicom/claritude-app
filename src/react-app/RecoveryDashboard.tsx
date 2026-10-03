@@ -315,7 +315,7 @@ export function ClaritudeApplication({
           ? "HTTP 503 confirmed 6 minutes ago. The property is currently unavailable."
           : "Critical and warning checks remain unresolved since the latest scan.",
       }
-    : property?.verification_status !== "verified"
+    : property && property.verification_status !== "verified"
       ? {
           title: "Property verification is incomplete",
           detail:
