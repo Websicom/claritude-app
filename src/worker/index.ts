@@ -1942,6 +1942,23 @@ async function runAudit(env: Env, id: string) {
     .select()
     .maybeSingle();
   if (!run) return;
+  const updateRun = async (values: Record<string, unknown>) => {
+    let failure: string | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const { error } = await db
+          .from("audit_runs")
+          .update(values)
+          .eq("id", id)
+          .abortSignal(AbortSignal.timeout(10_000));
+        failure = error?.message || null;
+      } catch (error) {
+        failure = errorMessage(error);
+      }
+      if (!failure) return;
+    }
+    throw new Error(`audit_run_update_failed: ${failure}`);
+  };
   try {
     const fetchStarted = Date.now();
     const trace = await safeFetchTrace(run.page_url, {
@@ -1951,24 +1968,18 @@ async function runAudit(env: Env, id: string) {
     const responseMs = Date.now() - fetchStarted;
     const snapshot = run.registry_snapshot as AuditRegistrySnapshot[];
     const html = await limitedText(res, 2_000_000);
-    await db
-      .from("audit_runs")
-      .update({
+    await updateRun({
         execution_stage: "evaluating_checks",
         heartbeat_at: new Date().toISOString(),
-      })
-      .eq("id", id);
+      });
     const staticResults = evaluateSourceChecks(snapshot, res, html, responseMs)
       .filter((result) => !CONTEXT_AUDIT_CHECK_IDS.has(result.check_id));
     const snapshotById = new Map(snapshot.map((check) => [check.id, check]));
-    await db
-      .from("audit_runs")
-      .update({
+    await updateRun({
         execution_stage: "persisting_results",
         progress_completed: 0,
         heartbeat_at: new Date().toISOString(),
-      })
-      .eq("id", id);
+      });
     const decorate = (r: AuditResult) => {
         const check = snapshotById.get(r.check_id);
         return {
@@ -1997,25 +2008,17 @@ async function runAudit(env: Env, id: string) {
         }
         if (failure) throw new Error(`audit_result_persistence_failed: ${failure}`);
         persisted += batch.length;
-        const { error: progressError } = await db
-          .from("audit_runs")
-          .update({
+        await updateRun({
             progress_completed: persisted,
             heartbeat_at: new Date().toISOString(),
-          })
-          .eq("id", id)
-          .abortSignal(AbortSignal.timeout(10_000));
-        if (progressError) throw progressError;
+          });
       }
     };
     await persist(staticResults);
-    await db
-      .from("audit_runs")
-      .update({
+    await updateRun({
         execution_stage: "collecting_network_evidence",
         heartbeat_at: new Date().toISOString(),
-      })
-      .eq("id", id);
+      });
     // Do not overlap the external evidence crawl with Supabase persistence.
     // Cloudflare Workers enforce a small outgoing-connection budget; starting
     // both at once can leave a database write queued behind slow site fetches,
@@ -2033,19 +2036,14 @@ async function runAudit(env: Env, id: string) {
       responseMs,
       networkEvidence,
     ).filter((result) => CONTEXT_AUDIT_CHECK_IDS.has(result.check_id));
-    await db
-      .from("audit_runs")
-      .update({
+    await updateRun({
         execution_stage: "persisting_results",
         heartbeat_at: new Date().toISOString(),
-      })
-      .eq("id", id);
+      });
     await persist(contextResults);
     const results = [...staticResults, ...contextResults];
     const { score, coverage } = scoreAuditResults(snapshot, results);
-    await db
-      .from("audit_runs")
-      .update({
+    await updateRun({
         status: results.some((r) => r.outcome === "unable_to_test")
           ? "partial"
           : "completed",
@@ -2057,8 +2055,7 @@ async function runAudit(env: Env, id: string) {
         heartbeat_at: new Date().toISOString(),
         completed_at: new Date().toISOString(),
         duration_ms: Date.now() - started,
-      })
-      .eq("id", id);
+      });
     await createPropertyNotification(env, run.property_id, {
       category: "audit_issues",
       title: "Audit completed",
@@ -2073,17 +2070,14 @@ async function runAudit(env: Env, id: string) {
         coverage,
       });
   } catch (e) {
-    await db
-      .from("audit_runs")
-      .update({
+    await updateRun({
         status: "failed",
         execution_stage: "failed",
         heartbeat_at: new Date().toISOString(),
         error: errorMessage(e),
         completed_at: new Date().toISOString(),
         duration_ms: Date.now() - started,
-      })
-      .eq("id", id);
+      }).catch(() => undefined);
   }
 }
 
