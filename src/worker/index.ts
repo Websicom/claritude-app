@@ -985,6 +985,79 @@ app.post("/api/properties/:id/verify", async (c) => {
   }
 });
 
+const AUDIT_HEARTBEAT_DEADLINE_MS = 2 * 60_000;
+const AUDIT_RUN_DEADLINE_MS = 5 * 60_000;
+
+export function isFreshAuditRun(run: { heartbeat_at?: string | null; created_at: string }, now = Date.now()) {
+  const heartbeatAt = Date.parse(run.heartbeat_at || run.created_at);
+  const createdAt = Date.parse(run.created_at);
+  return (!Number.isFinite(createdAt) || now - createdAt <= AUDIT_RUN_DEADLINE_MS) &&
+    (!Number.isFinite(heartbeatAt) || now - heartbeatAt <= AUDIT_HEARTBEAT_DEADLINE_MS);
+}
+
+async function reconcileStaleAuditRuns(env: Env, propertyId: string) {
+  const db = admin(env);
+  const { data: activeRuns, error } = await db
+    .from("audit_runs")
+    .select("id,status,heartbeat_at,created_at,progress_completed,progress_total,registry_snapshot")
+    .eq("property_id", propertyId)
+    .in("status", ["queued", "running"])
+    .order("created_at", { ascending: false })
+    .limit(10);
+  if (error) throw new Error(`audit_run_reconciliation_failed: ${error.message}`);
+
+  const now = Date.now();
+  const freshActiveRun = (activeRuns || []).find((candidate) => isFreshAuditRun(candidate, now));
+  const staleRuns = (activeRuns || []).filter((candidate) => !isFreshAuditRun(candidate, now));
+  for (const candidate of staleRuns) {
+    const total = Number(candidate.progress_total || 0);
+    const { data: persistedResults, error: resultError } = await db
+      .from("audit_results")
+      .select("check_id,outcome")
+      .eq("audit_run_id", candidate.id)
+      .limit(Math.max(total + 1, 1));
+    const persisted = persistedResults?.length || 0;
+    if (resultError || !total || persisted < total) {
+      const { error: failError } = await db
+        .from("audit_runs")
+        .update({
+          status: "failed",
+          execution_stage: "failed",
+          progress_completed: persisted,
+          error: "Audit worker stopped before all check evidence was saved. A replacement run may now be queued.",
+          completed_at: new Date().toISOString(),
+        })
+        .eq("id", candidate.id)
+        .in("status", ["queued", "running"]);
+      if (failError) throw new Error(`audit_run_reconciliation_failed: ${failError.message}`);
+      continue;
+    }
+
+    const snapshot = Array.isArray(candidate.registry_snapshot)
+      ? candidate.registry_snapshot as AuditRegistrySnapshot[]
+      : [];
+    const { score, coverage } = scoreAuditResults(snapshot, persistedResults || []);
+    const status = (persistedResults || []).some((result) => result.outcome === "unable_to_test")
+      ? "partial"
+      : "completed";
+    const { error: salvageError } = await db
+      .from("audit_runs")
+      .update({
+        status,
+        score,
+        coverage,
+        execution_stage: "completed",
+        progress_completed: total,
+        completed_at: candidate.heartbeat_at || new Date().toISOString(),
+        error: null,
+      })
+      .eq("id", candidate.id)
+      .in("status", ["queued", "running"]);
+    if (salvageError) throw new Error(`audit_run_reconciliation_failed: ${salvageError.message}`);
+  }
+  return freshActiveRun || null;
+}
+
 app.post("/api/audits", async (c) => {
   const b = await c.req.json<{
     propertyId: string;
@@ -1008,72 +1081,9 @@ app.post("/api/audits", async (c) => {
   const target = validPublicUrl(new URL(auditPage.path, property.url).href);
   if (!target || !sameSiteHost(target.hostname, new URL(property.url).hostname))
     return c.json({ error: "page_must_belong_to_property" }, 400);
-  const { data: activeRuns } = await db
-    .from("audit_runs")
-    .select("id,status,heartbeat_at,created_at,progress_completed,progress_total,registry_snapshot")
-    .eq("property_id", property.id)
-    .in("status", ["queued", "running"])
-    .order("created_at", { ascending: false })
-    .limit(20);
-  const freshActiveRun = (activeRuns || []).find((candidate) => {
-    const lastHeartbeat = Date.parse(candidate.heartbeat_at || candidate.created_at);
-    const createdAt = Date.parse(candidate.created_at);
-    const withinHardDeadline = !Number.isFinite(createdAt) || Date.now() - createdAt <= 5 * 60_000;
-    return withinHardDeadline && (!Number.isFinite(lastHeartbeat) || Date.now() - lastHeartbeat <= 2 * 60_000);
-  });
+  const freshActiveRun = await reconcileStaleAuditRuns(c.env, property.id);
   if (freshActiveRun)
     return c.json({ error: "audit_already_active", run: freshActiveRun }, 409);
-  const staleRuns = activeRuns || [];
-  const failedStaleRunIds: string[] = [];
-  for (const candidate of staleRuns) {
-    const total = Number(candidate.progress_total || 0);
-    const persisted = Number(candidate.progress_completed || 0);
-    if (!total || persisted < total) {
-      failedStaleRunIds.push(candidate.id);
-      continue;
-    }
-    const { data: persistedResults, error: resultError } = await db
-      .from("audit_results")
-      .select("check_id,outcome")
-      .eq("audit_run_id", candidate.id)
-      .limit(total + 1);
-    if (resultError || (persistedResults || []).length < total) {
-      failedStaleRunIds.push(candidate.id);
-      continue;
-    }
-    const snapshot = Array.isArray(candidate.registry_snapshot)
-      ? candidate.registry_snapshot as AuditRegistrySnapshot[]
-      : [];
-    const { score, coverage } = scoreAuditResults(snapshot, persistedResults || []);
-    const salvagedStatus = (persistedResults || []).some((result) => result.outcome === "unable_to_test")
-      ? "partial"
-      : "completed";
-    const { error: salvageError } = await db
-      .from("audit_runs")
-      .update({
-        status: salvagedStatus,
-        score,
-        coverage,
-        execution_stage: "completed",
-        completed_at: candidate.heartbeat_at || new Date().toISOString(),
-        error: null,
-      })
-      .eq("id", candidate.id)
-      .in("status", ["queued", "running"]);
-    if (salvageError) failedStaleRunIds.push(candidate.id);
-  }
-  if (failedStaleRunIds.length) {
-    await db
-      .from("audit_runs")
-      .update({
-        status: "failed",
-        execution_stage: "failed",
-        error: "Audit worker stopped reporting progress. A replacement run may now be queued.",
-        completed_at: new Date().toISOString(),
-      })
-      .in("id", failedStaleRunIds)
-      .in("status", ["queued", "running"]);
-  }
   const dayStart = `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`;
   const { count: runsToday } = await db
     .from("audit_runs")
@@ -1186,6 +1196,13 @@ app.get("/api/properties/:id/audits", async (c) => {
   const window = requestedWindow(c);
   if (!window) return c.json({ error: "invalid_date_range" }, 400);
   const db = c.get("db");
+  const { data: visibleProperty } = await db
+    .from("properties")
+    .select("id")
+    .eq("id", c.req.param("id"))
+    .maybeSingle();
+  if (!visibleProperty) return c.json({ error: "property_not_found" }, 404);
+  await reconcileStaleAuditRuns(c.env, visibleProperty.id);
   const pageId = c.req.query("pageId");
   if (pageId) {
     const { data: page } = await db
@@ -2574,10 +2591,8 @@ async function runAudit(env: Env, id: string) {
       });
       try {
         browserLab = await collectBrowserLab(env, run.page_url);
-        await updateRun({ heartbeat_at: new Date().toISOString() });
       } catch (error) {
         console.error("browser lab collection failed", id, errorMessage(error));
-        await updateRun({ heartbeat_at: new Date().toISOString() });
       }
     }
     if (browserLab) {
@@ -2594,11 +2609,6 @@ async function runAudit(env: Env, id: string) {
         heartbeat_at: new Date().toISOString(),
       });
     const snapshotById = new Map(snapshot.map((check) => [check.id, check]));
-    await updateRun({
-        execution_stage: "persisting_results",
-        progress_completed: measuredProgress,
-        heartbeat_at: new Date().toISOString(),
-      });
     const decorate = (r: AuditResult) => {
         const check = snapshotById.get(r.check_id);
         return {
@@ -2609,7 +2619,6 @@ async function runAudit(env: Env, id: string) {
           title_snapshot: check?.title || r.check_id,
         };
       };
-    let persisted = 0;
     const persist = async (results: AuditResult[]) => {
       for (const batch of chunkAuditResults(results.map(decorate), 64)) {
         let failure: string | null = null;
@@ -2626,14 +2635,8 @@ async function runAudit(env: Env, id: string) {
           if (!failure) break;
         }
         if (failure) throw new Error(`audit_result_persistence_failed: ${failure}`);
-        persisted += batch.length;
-        await updateRun({
-            progress_completed: Math.max(measuredProgress, persisted),
-            heartbeat_at: new Date().toISOString(),
-          });
       }
     };
-    await persist(staticResults);
     await updateRun({
         execution_stage: "collecting_network_evidence",
         heartbeat_at: new Date().toISOString(),
@@ -2647,7 +2650,6 @@ async function runAudit(env: Env, id: string) {
       res,
       html,
       trace.redirects,
-      () => updateRun({ heartbeat_at: new Date().toISOString() }),
     );
     const contextResults = evaluateSourceChecks(
       snapshot,
@@ -2656,15 +2658,19 @@ async function runAudit(env: Env, id: string) {
       responseMs,
       networkEvidence,
     ).filter((result) => CONTEXT_AUDIT_CHECK_IDS.has(result.check_id));
-    measuredProgress = staticResults.filter((result) => result.outcome !== "unable_to_test").length
-      + contextResults.filter((result) => result.outcome !== "unable_to_test").length;
     await updateRun({
         execution_stage: "persisting_results",
-        progress_completed: Math.max(measuredProgress, persisted),
+        // Keep the final network-context group pending until all evidence has
+        // been durably written. This prevents a terminated worker presenting
+        // 306/306 while only the first 288 rows exist.
+        progress_completed: staticResults.filter((result) => result.outcome !== "unable_to_test").length,
         heartbeat_at: new Date().toISOString(),
       });
-    await persist(contextResults);
     const results = [...staticResults, ...contextResults];
+    // Persist one combined result set. Five bounded writes replace the prior
+    // six writes plus six per-batch heartbeat updates, keeping the queue
+    // consumer comfortably below Cloudflare's outbound subrequest budget.
+    await persist(results);
     const { score, coverage } = scoreAuditResults(snapshot, results);
     await updateRun({
         status: results.some((r) => r.outcome === "unable_to_test")

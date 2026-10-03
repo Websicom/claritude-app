@@ -8,6 +8,7 @@ import {
   editableWorkspaceRole,
   evaluateSourceChecks,
   filterAnalyticsEvents,
+  isFreshAuditRun,
   isPrivateHost,
   normalizeAnalyticsPath,
   normalizePropertyRelations,
@@ -41,13 +42,29 @@ describe("worker evidence pipelines", () => {
     expect(TRACKER_SOURCE).toContain("/Chrome\\//.test");
   });
 
-  it("uses bounded audit result batches for observable progress", () => {
+  it("uses bounded audit result batches", () => {
     expect(chunkAuditResults(Array.from({ length: 131 }, (_, index) => index), 64))
       .toEqual([
         Array.from({ length: 64 }, (_, index) => index),
         Array.from({ length: 64 }, (_, index) => index + 64),
         [128, 129, 130],
       ]);
+  });
+
+  it("expires audit runs on a stale heartbeat or the hard runtime deadline", () => {
+    const now = Date.parse("2026-10-03T18:30:00Z");
+    expect(isFreshAuditRun({
+      created_at: "2026-10-03T18:27:00Z",
+      heartbeat_at: "2026-10-03T18:29:00Z",
+    }, now)).toBe(true);
+    expect(isFreshAuditRun({
+      created_at: "2026-10-03T18:27:00Z",
+      heartbeat_at: "2026-10-03T18:27:30Z",
+    }, now)).toBe(false);
+    expect(isFreshAuditRun({
+      created_at: "2026-10-03T18:24:59Z",
+      heartbeat_at: "2026-10-03T18:29:59Z",
+    }, now)).toBe(false);
   });
 
   it("normalizes property hosts consistently for duplicate protection", () => {
@@ -209,11 +226,11 @@ describe("worker evidence pipelines", () => {
     expect(summary.performance.minimumSamples).toBe(1);
   });
 
-  it("persists audit results in visible bounded progress batches", () => {
-    const chunks = chunkAuditResults(Array.from({ length: 306 }, (_, index) => index), 24);
-    expect(chunks).toHaveLength(13);
-    expect(chunks[0]).toHaveLength(24);
-    expect(chunks.at(-1)).toHaveLength(18);
+  it("fits a full audit into five bounded persistence requests", () => {
+    const chunks = chunkAuditResults(Array.from({ length: 306 }, (_, index) => index), 64);
+    expect(chunks).toHaveLength(5);
+    expect(chunks[0]).toHaveLength(64);
+    expect(chunks.at(-1)).toHaveLength(50);
     expect(chunks.flat()).toHaveLength(306);
   });
 
