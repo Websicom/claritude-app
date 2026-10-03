@@ -151,8 +151,8 @@ const IMPLEMENTED_AUDIT_CHECKS = ACTIVE_AUDIT_CHECKS.filter(
 );
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
-const TRACKER_VERSION = "2.1.2";
-const SUPPORTED_TRACKER_VERSIONS = new Set(["2.0.0", "2.1.0", "2.1.1", TRACKER_VERSION]);
+const TRACKER_VERSION = "2.1.3";
+const SUPPORTED_TRACKER_VERSIONS = new Set(["2.0.0", "2.1.0", "2.1.1", "2.1.2", TRACKER_VERSION]);
 app.use("*", secureHeaders({ crossOriginResourcePolicy: false }));
 app.use("*", async (c, next) => {
   await next();
@@ -3926,7 +3926,8 @@ function renderReportEmail(snapshot: any) {
 }
 
 const TRACKER_SOURCE = `(()=>{
-  const s=document.currentScript,p=s&&s.dataset.property,endpoint=s&&new URL('/collect',s.src).href,base=s&&new URL('/',s.src).href;
+  let s=document.currentScript;if(!s){const scripts=document.getElementsByTagName('script');for(let i=scripts.length-1;i>=0;i--){const candidate=scripts[i],src=candidate.getAttribute('src')||'';if(candidate.getAttribute('data-property')&&/(?:\\/c|\\/tracker)\\.js(?:[?#]|$)/.test(src)){s=candidate;break}}}
+  const p=s&&s.getAttribute('data-property'),endpoint=s&&new URL('/collect',s.src).href,base=s&&new URL('/',s.src).href;
   if(!p||!endpoint||window.__claritude)return;window.__claritude=1;
   const uuid=()=>{try{return crypto.randomUUID()}catch(uuidError){const b=new Uint8Array(16);try{crypto.getRandomValues(b)}catch(randomError){for(let i=0;i<b.length;i++)b[i]=Math.floor(Math.random()*256)}b[6]=b[6]&15|64;b[8]=b[8]&63|128;return Array.prototype.map.call(b,(x,i)=>(i===4||i===6||i===8||i===10?'-':'')+x.toString(16).padStart(2,'0')).join('')}};
   let q=[],timer,retryTimer,retryDelay=1000,sending=false,lastUrl=location.href,view=uuid(),generation=0,active=0,reportedActive=0,lastActivity=Date.now(),errorCount=0,vitalsReady=null;
