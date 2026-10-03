@@ -2509,6 +2509,16 @@ input[type="checkbox"]:checked:after {
   background: #fff6f6;
   color: var(--red);
 }
+.success-note {
+  padding: 10px 12px;
+  border: 1px solid #9fdbc2;
+  border-radius: 8px;
+  background: #f0fbf6;
+  color: #087a50;
+}
+.test-alert-button {
+  margin-top: 18px;
+}
 .sev-critical {
   color: var(--red);
 }
@@ -2572,8 +2582,8 @@ input[type="checkbox"]:checked:after {
 .live-chart {
   display: block;
   width: 100%;
-  height: auto;
-  aspect-ratio: 825 / 190;
+  height: 220px;
+  aspect-ratio: auto;
 }
 .analytics-detail-heading {
   display: flex;
@@ -2635,6 +2645,37 @@ input[type="checkbox"]:checked:after {
 .chart-x-label {
   font-size: 9px;
 }
+.chart-y-axis {
+  position: absolute;
+  top: 7.4%;
+  bottom: 14.7%;
+  left: 2px;
+  width: 44px;
+  color: #7b8190;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.chart-y-axis span {
+  position: absolute;
+  left: 0;
+  transform: translateY(-50%);
+  white-space: nowrap;
+}
+.chart-x-axis {
+  position: absolute;
+  inset: auto 0 2px 0;
+  height: 18px;
+  color: #7b8190;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.chart-x-axis span {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
 .series-fill {
   fill: rgba(0, 201, 137, 0.12);
 }
@@ -2666,8 +2707,77 @@ input[type="checkbox"]:checked:after {
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
   transform: translateX(-50%);
   pointer-events: none;
+  max-width: min(240px, calc(100vw - 32px));
 }
 .chart-tooltip small {
+  color: var(--muted);
+}
+.response-statistics {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.response-statistics > span + span {
+  padding-left: 14px;
+  border-left: 1px solid var(--line);
+}
+.response-statistics b {
+  color: var(--ink);
+}
+.daily-scope-note {
+  margin: 0 0 9px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.daily-uptime-wrap {
+  position: relative;
+  padding-top: 3px;
+}
+.checkstrip button.incident {
+  background: var(--red);
+}
+.checkstrip button.partial {
+  background: repeating-linear-gradient(135deg, #1f8b4c 0 6px, #b8dec8 6px 12px);
+}
+.checkstrip button:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+.daily-uptime-tooltip {
+  --tooltip-x: 50%;
+  position: absolute;
+  z-index: 40;
+  left: clamp(130px, var(--tooltip-x), calc(100% - 130px));
+  bottom: calc(100% + 10px);
+  width: min(300px, calc(100vw - 28px));
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: #111;
+  color: #fff;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.24);
+  transform: translateX(-50%);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.daily-uptime-tooltip small {
+  color: #d4d4d8;
+}
+.daily-incident-detail {
+  display: grid;
+  gap: 2px;
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid #ffffff33;
+}
+.online-label.offline {
+  color: var(--red);
+}
+.online-label.pending,
+.online-label.paused {
   color: var(--muted);
 }
 .title-row,
@@ -2839,6 +2949,23 @@ input[type="checkbox"]:checked:after {
   }
 }
 @media (max-width: 760px) {
+  .live-chart {
+    height: 190px;
+  }
+  .response-statistics {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+  }
+  .response-statistics > span + span {
+    padding-left: 0;
+    border-left: 0;
+  }
+  .daily-uptime-tooltip {
+    position: fixed;
+    left: 50%;
+    bottom: 18px;
+  }
   .property-menu,
   .workspace-menu {
     left: 8px;

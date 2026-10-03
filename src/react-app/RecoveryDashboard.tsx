@@ -48,6 +48,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  type CSSProperties,
   type FormEvent,
   type ReactNode,
   useEffect,
@@ -64,6 +65,7 @@ import {
   useNavigate,
 } from "react-router-dom";
 import { apiRequest as api } from "./api";
+import { estimateIncidentDowntime } from "../shared/uptime";
 
 type Monitor = {
   id: string;
@@ -272,7 +274,7 @@ export function ClaritudeApplication({
     ? allProperties.filter((item) => item.workspace_id === workspace.id)
     : allProperties;
   const workspaceContext =
-    loc.pathname === "/" || loc.pathname === "/notifications";
+    loc.pathname === "/" || (loc.pathname === "/notifications" && !property);
   const section = loc.pathname.split("/")[1] || "workspace";
   const notify: Notify = (message) => {
     if (toastTimer.current != null) window.clearTimeout(toastTimer.current);
@@ -290,6 +292,9 @@ export function ClaritudeApplication({
   );
   const href = (path: string, id = property?.id) =>
     `/${path}${id ? `?property=${id}` : ""}`;
+  const scopedNotifications = property
+    ? data.notifications.filter((notification: any) => notification.property_id === property.id)
+    : data.notifications;
   const title = workspaceContext
     ? "Overview"
     : section === "account"
@@ -321,10 +326,10 @@ export function ClaritudeApplication({
             title: "Analytics is not receiving data",
             detail: "Install the tracking snippet or run the guided test.",
           }
-        : data.notifications[0]
+        : scopedNotifications[0]
           ? {
-              title: data.notifications[0].title,
-              detail: data.notifications[0].body,
+              title: scopedNotifications[0].title,
+              detail: scopedNotifications[0].body,
             }
           : null;
   function selectProperty(id?: string) {
@@ -550,17 +555,17 @@ export function ClaritudeApplication({
               <Link
                 className="iconbtn notif-btn"
                 aria-label="Notifications"
-                to="/notifications"
+                to={property ? `/notifications?property=${property.id}` : "/notifications"}
               >
                 <Bell />
                 {(fixture
                   ? 5
-                  : data.notifications.filter((notification: any) => !notification.read_at).length
+                  : scopedNotifications.filter((notification: any) => !notification.read_at).length
                 ) > 0 && (
                   <i className="notif-count">
                     {fixture
                       ? 5
-                      : data.notifications.filter((notification: any) => !notification.read_at).length}
+                      : scopedNotifications.filter((notification: any) => !notification.read_at).length}
                   </i>
                 )}
               </Link>
@@ -576,7 +581,7 @@ export function ClaritudeApplication({
               <span className="warning-actions">
                 <Link
                   className="text-link"
-                  to={workspaceContext ? "/notifications" : href("audit")}
+                  to={property ? `/notifications?property=${property.id}` : "/notifications"}
                 >
                   Review notification
                 </Link>
@@ -613,6 +618,8 @@ export function ClaritudeApplication({
                   fixture={fixture}
                   reload={reload}
                   notify={notify}
+                  properties={allProperties}
+                  propertyId={property?.id}
                 />
               }
             />
@@ -1281,30 +1288,40 @@ function Notifications({
   fixture,
   reload,
   notify,
+  properties,
+  propertyId,
 }: {
   session: Session | null;
   data: Bootstrap;
   fixture: boolean;
   reload: () => void;
   notify: Notify;
+  properties: Property[];
+  propertyId?: string;
 }) {
+  const notificationLocation = useLocation();
+  const notificationNavigate = useNavigate();
   const [scope, setScope] = useState("All"),
-    [status, setStatus] = useState("All statuses");
+    [status, setStatus] = useState("All statuses"),
+    [selectedProperty, setSelectedProperty] = useState(propertyId || "");
+  useEffect(() => setSelectedProperty(propertyId || ""), [propertyId]);
   const fixtureItems = fixture
     ? [
         { id: "f1", title: "Monitor alert", body: "North Commerce returned HTTP 503 and is currently unavailable.", category: "monitoring", created_at: new Date().toISOString(), read_at: null },
         { id: "f2", title: "Audit issues", body: "Five unresolved audit findings need review.", category: "audits", created_at: new Date().toISOString(), read_at: null },
       ]
     : [];
-  const source = fixture ? fixtureItems : data.notifications;
+  const source = (fixture ? fixtureItems : data.notifications).filter((notification: any) =>
+    !selectedProperty || notification.property_id === selectedProperty,
+  );
   const items = source.filter((notification: any) => {
     const category = String(notification.category || "account").toLowerCase();
     const scopeMatch =
       scope === "All" ||
       (scope === "Unread" && !notification.read_at) ||
-      (scope === "Monitoring" && category === "monitoring") ||
-      (scope === "Audits" && category === "audits") ||
-      (scope === "Analytics" && category === "analytics") ||
+      (scope === "Monitoring" && ["monitoring", "monitor_incidents", "recoveries"].includes(category)) ||
+      (scope === "Audits" && ["audits", "audit_issues"].includes(category)) ||
+      (scope === "Analytics" && ["analytics", "tracking_problems"].includes(category)) ||
       (scope === "Account" && category === "account");
     const statusMatch =
       status === "All statuses" ||
@@ -1325,7 +1342,10 @@ function Notifications({
   async function markAllRead() {
     if (!session) return;
     try {
-      const result = await api<{ updated: number }>(session, "/api/notifications/read-all", { method: "POST" });
+      const result = await api<{ updated: number }>(session, "/api/notifications/read-all", {
+        method: "POST",
+        body: JSON.stringify({ propertyId: selectedProperty || null }),
+      });
       reload();
       notify(`${result.updated} notifications marked as read`);
     } catch (error: any) {
@@ -1363,8 +1383,19 @@ function Notifications({
           <Filter />
           <label>
             Property
-            <select>
-              <option>All properties</option>
+            <select
+              value={selectedProperty}
+              onChange={(event) => {
+                const nextProperty = event.target.value;
+                setSelectedProperty(nextProperty);
+                const next = new URLSearchParams(notificationLocation.search);
+                if (nextProperty) next.set("property", nextProperty);
+                else next.delete("property");
+                notificationNavigate(`${notificationLocation.pathname}${next.size ? `?${next}` : ""}`);
+              }}
+            >
+              <option value="">All properties</option>
+              {properties.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
           </label>
           <label>
@@ -1385,7 +1416,9 @@ function Notifications({
                 <b>{notification.title}</b>
                 <small>
                   {notification.body}{" "}
-                  <i className="notification-property-tag">{cap(notification.category || "account")}</i>
+                  <i className="notification-property-tag">
+                    {properties.find((item) => item.id === notification.property_id)?.name || cap(notification.category || "account")}
+                  </i>
                 </small>
                 <small>{relative(notification.created_at)}</small>
               </span>
@@ -1649,7 +1682,8 @@ function UptimeView({
   notify: Notify;
 }) {
   const uptimeLocation = useLocation();
-  const livePeriod = periodQuery(uptimeLocation.search);
+  const reportTimeZone = property?.settings?.timezone || "Europe/London";
+  const livePeriod = `${periodQuery(uptimeLocation.search)}&time_zone=${encodeURIComponent(reportTimeZone)}`;
   const [tab, setTab] = useState("Overview"),
     [busy, setBusy] = useState(false),
     [maintenance, setMaintenance] = useState<any[]>([]),
@@ -1664,6 +1698,7 @@ function UptimeView({
     [maintenanceHours, setMaintenanceHours] = useState(1),
     [incidentData, setIncidentData] = useState<any[]>(incidents),
     [checkData, setCheckData] = useState<any>(null),
+    [uptimeError, setUptimeError] = useState(""),
     [chartMenuOpen, setChartMenuOpen] = useState(false),
     [showPreviousChecks, setShowPreviousChecks] = useState(true);
   const loadMaintenance = () => {
@@ -1694,10 +1729,12 @@ function UptimeView({
         .then(([checks, storedIncidents]) => {
           setCheckData(checks);
           setIncidentData(storedIncidents);
+          setUptimeError("");
         })
-        .catch(() => {
+        .catch((error: any) => {
           setCheckData(null);
           setIncidentData([]);
+          setUptimeError(error.message || "Uptime data could not be loaded");
         });
     else if (fixture) {
       const fixtureStart = new Date("2026-09-01T09:00:00.000Z").valueOf();
@@ -1709,12 +1746,46 @@ function UptimeView({
       }));
       setCheckData({
         checks,
-        summary: { availability: 99.92, averageResponseMs: 246, medianResponseMs: 231, p95ResponseMs: 341 },
+        summary: { total: 60, successful: 59, availability: 99.92, averageResponseMs: 246, medianResponseMs: 231, highestResponseMs: 357 },
         previous: {
           checks: checks.map((check) => ({ ...check, response_ms: Math.round(check.response_ms * 1.18) })),
-          summary: { availability: 99.9, averageResponseMs: 300, medianResponseMs: 284, p95ResponseMs: 710 },
+          summary: { availability: 99.9, averageResponseMs: 300, medianResponseMs: 284, highestResponseMs: 710 },
         },
-        days: Array.from({ length: 30 }, (_, i) => ({ day: `2026-09-${String(i + 1).padStart(2, "0")}`, total: 288, successful: i === 22 ? 284 : 288 })),
+        days: Array.from({ length: 30 }, (_, i) => {
+          const day = `2026-09-${String(i + 1).padStart(2, "0")}`;
+          const incident = i === 13
+            ? {
+                id: "fixture-timeout",
+                cause: "Timeout incident",
+                opened_at: "2026-09-14T01:20:00.000Z",
+                resolved_at: "2026-09-14T01:35:00.000Z",
+                deliveries: [
+                  { kind: "uptime_down", status: "sent" },
+                  { kind: "uptime_recovered", status: "sent" },
+                ],
+              }
+            : i === 25
+              ? {
+                  id: "fixture-http-500",
+                  cause: "HTTP 500 incident",
+                  opened_at: "2026-09-26T01:20:00.000Z",
+                  resolved_at: "2026-09-26T01:40:00.000Z",
+                  deliveries: [
+                    { kind: "uptime_down", status: "sent" },
+                    { kind: "uptime_recovered", status: "sent" },
+                  ],
+                }
+              : null;
+          return {
+            day,
+            total: 288,
+            successful: incident ? 284 : 288,
+            status: incident ? "incident" : "available",
+            statusCode: incident ? 500 : 200,
+            incidents: incident ? [incident] : [],
+          };
+        }),
+        dailyScope: { timeZone: "Europe/London" },
       });
     }
   }, [property?.id, property?.uptime_monitors?.[0]?.last_checked_at, session, fixture, livePeriod]);
@@ -1746,11 +1817,18 @@ function UptimeView({
           },
         ]
       : incidentData;
-  const resolvedIncidents = relevant.filter((incident) => incident.resolved_at);
-  const downtimeMs = resolvedIncidents.reduce(
-    (total, incident) =>
-      total + Math.max(0, new Date(incident.resolved_at).valueOf() - new Date(incident.opened_at).valueOf()),
-    0,
+  const selectedRangeStart = Date.parse(
+    checkData?.range?.from || new Date(Date.now() - 29 * 864e5).toISOString(),
+  );
+  const selectedRangeEnd = Date.parse(checkData?.range?.to || new Date().toISOString());
+  const resolvedIncidents = relevant.filter((incident) => {
+    const resolvedAt = Date.parse(incident.resolved_at || "");
+    return Number.isFinite(resolvedAt) && resolvedAt >= selectedRangeStart && resolvedAt <= selectedRangeEnd;
+  });
+  const incidentSummary = estimateIncidentDowntime(
+    relevant,
+    checkData?.range?.from || new Date(Date.now() - 29 * 864e5).toISOString(),
+    checkData?.range?.to || new Date().toISOString(),
   );
   const latestCheck = checkData?.checks?.at(-1);
   const availabilityDelta = metricDelta(
@@ -1764,6 +1842,9 @@ function UptimeView({
     "percent",
     true,
   );
+  const observedStatus = latestCheck
+    ? latestCheck.success ? "online" : "offline"
+    : monitor?.last_status || "pending";
   async function check() {
     if (!monitor) return;
     setBusy(true);
@@ -1797,7 +1878,10 @@ function UptimeView({
       title="Uptime"
       status={
         <>
-          <span className="online-label"><i className="status-dot online" /> Online</span>
+          <span className={`online-label ${observedStatus}`}>
+            <i className={`status-dot ${observedStatus === "online" ? "online" : observedStatus === "offline" ? "down" : "paused"}`} />
+            {observedStatus === "online" ? "Online" : observedStatus === "offline" ? "Offline" : cap(observedStatus)}
+          </span>
           <Period />
         </>
       }
@@ -1819,6 +1903,7 @@ function UptimeView({
         value={tab}
         onChange={setTab}
       />
+      {uptimeError && <div className="error-box">Uptime data failed to load: {uptimeError}</div>}
       {tab === "Overview" ? (
         <>
           <Metrics
@@ -1839,11 +1924,21 @@ function UptimeView({
                   : "—",
                 responseDelta || "Successful checks",
               ],
-              ["Resolved incidents", resolvedIncidents.length, `${relevant.length - resolvedIncidents.length} open`],
+              [
+                "Resolved incidents",
+                uptimeError ? "Unavailable" : resolvedIncidents.length,
+                uptimeError ? "Request failed" : `${relevant.length - resolvedIncidents.length} ongoing in range`,
+              ],
               [
                 "Estimated downtime",
-                downtimeMs ? formatDuration(downtimeMs) : "0 min",
-                "Confirmed incident duration",
+                uptimeError ? "Unavailable" : relevant.length ? formatDuration(incidentSummary.milliseconds) : checkData?.summary?.total ? "0 min" : "—",
+                uptimeError
+                  ? "Request failed"
+                  : !checkData?.summary?.total
+                    ? "No monitoring data in this range"
+                    : relevant.length
+                      ? "Estimated from monitoring observations; overlaps counted once"
+                      : "No recorded incidents during monitored coverage",
               ],
             ]}
           />
@@ -1851,9 +1946,13 @@ function UptimeView({
             title="Response time"
             actions={
               <>
-                <span className="subtle">
-                  Median {checkData?.summary?.medianResponseMs ?? "—"} ms · P95{" "}
-                  {checkData?.summary?.p95ResponseMs ?? "—"} ms
+                <span className="response-statistics">
+                  <span tabIndex={0} title="Middle successful, unsuppressed response in the selected range. Even-sized samples average the two middle values.">
+                    Median <b>{checkData?.summary?.medianResponseMs ?? "—"} ms</b>
+                  </span>
+                  <span tabIndex={0} title="Highest successful, unsuppressed measured response in the selected range. Timeouts and missing values are excluded.">
+                    Highest <b>{checkData?.summary?.highestResponseMs ?? "—"} ms</b>
+                  </span>
                 </span>
                 <span className="chart-menu-wrap">
                   <button className="iconbtn" aria-label="Response chart options" aria-expanded={chartMenuOpen} onClick={() => setChartMenuOpen((value) => !value)}>
@@ -1866,7 +1965,7 @@ function UptimeView({
                       </button>
                       <button onClick={() => {
                         downloadSeriesCsv(
-                          (checkData?.checks || []).map((entry: any) => ({ label: entry.checked_at, value: entry.response_ms || 0 })),
+                          (checkData?.checks || []).filter((entry: any) => entry.success && typeof entry.response_ms === "number").map((entry: any) => ({ label: entry.checked_at, value: entry.response_ms })),
                           "uptime-response-time.csv",
                           "Response time (ms)",
                         );
@@ -1879,18 +1978,19 @@ function UptimeView({
             }
           >
             <SeriesChart
-              points={(checkData?.checks || []).map((x: any) => ({
-                label: fmtDate(x.checked_at),
-                value: x.response_ms || 0,
+              points={(checkData?.checks || []).filter((x: any) => x.success && typeof x.response_ms === "number").map((x: any) => ({
+                label: x.checked_at,
+                value: x.response_ms,
               }))}
               previousPoints={showPreviousChecks
-                ? (checkData?.previous?.checks || []).map((x: any) => ({
-                    label: fmtDate(x.checked_at),
-                    value: x.response_ms || 0,
+                ? (checkData?.previous?.checks || []).filter((x: any) => x.success && typeof x.response_ms === "number").map((x: any) => ({
+                    label: x.checked_at,
+                    value: x.response_ms,
                   }))
                 : []}
               unit="ms"
               label="Response time"
+              timeZone={reportTimeZone}
               emptyTitle="No uptime checks recorded"
             />
           </Panel>
@@ -1903,35 +2003,8 @@ function UptimeView({
               </span>
             }
           >
-            <div className="checkstrip">
-              {(checkData?.days?.length
-                ? checkData.days
-                : Array.from({ length: 30 }, (_, i) => ({
-                    day: String(i),
-                    total: 0,
-                    successful: 0,
-                  }))).map((day: any, i: number) => (
-                <button
-                  key={i}
-                  className={
-                    day.total
-                      ? day.successful < day.total
-                        ? "warn"
-                        : "available"
-                      : day.suppressed
-                        ? "suppressed"
-                        : "missing"
-                  }
-                  title={
-                    day.total
-                      ? `${day.day}: ${day.successful}/${day.total} checks available`
-                    : day.suppressed
-                      ? `${day.day}: checks suppressed during maintenance`
-                      : `${day.day}: no checks recorded`
-                  }
-                />
-              ))}
-            </div>
+            <p className="daily-scope-note">Last 30 calendar days · {checkData?.dailyScope?.timeZone || reportTimeZone}</p>
+            <DailyUptimeStrip days={checkData?.days || []} timeZone={checkData?.dailyScope?.timeZone || reportTimeZone} />
           </Panel>
           <div className="grid three">
             <Panel title="Latest check">
@@ -2684,9 +2757,17 @@ function AuditView({
     setOpenCategories(new Set([category]));
     updateAuditLocation({ auditTab: "Findings" });
   }
-  const failedRun = !activeRun
+  const retryableRun = !activeRun
     ? runs.find((run) => run.status === "failed" || isStalledActiveRun(run))
     : undefined;
+  const fullyPersistedStaleRun = Boolean(
+    retryableRun &&
+    latest &&
+    isStalledActiveRun(retryableRun) &&
+    retryableRun.progress_total &&
+    (retryableRun.progress_completed || 0) >= retryableRun.progress_total,
+  );
+  const failedRun = fullyPersistedStaleRun ? undefined : retryableRun;
   return (
     <Page
       title="Audit"
@@ -4785,12 +4866,12 @@ function SeriesChart({
       <svg
         className="chart live-chart"
         viewBox={`0 0 ${width} ${height}`}
-        preserveAspectRatio="xMidYMid meet"
+        preserveAspectRatio="none"
         aria-label={label}
       >
         {ticks.map((tick, index) => {
           const y = plotTop + index * (plotBottom - plotTop) / 3;
-          return <g key={index}><line className="chart-grid" x1={plotLeft} x2={plotRight} y1={y} y2={y} /><text className="chart-axis-label" x="2" y={y + 4}>{formatChartAxis(tick, unit)}</text></g>;
+          return <line key={index} className="chart-grid" x1={plotLeft} x2={plotRight} y1={y} y2={y} />;
         })}
         <polygon
           className="series-fill"
@@ -4798,7 +4879,6 @@ function SeriesChart({
         />
         {previousPolyline && <polyline className="compare" points={previousPolyline} />}
         <polyline className="series" points={polyline} />
-        {xLabelIndexes.map((index) => coords[index] && <text className="chart-axis-label chart-x-label" x={coords[index].x} y={height - 5} textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"} key={`label-${index}`}>{chartDateLabel(coords[index].label, timeZone)}</text>)}
         {coords.map((point, index) => (
           <g key={`${point.label}-${index}`}>
             <rect
@@ -4821,18 +4901,127 @@ function SeriesChart({
           </g>
         ))}
       </svg>
+      <div className="chart-y-axis" aria-hidden="true">
+        {ticks.map((tick, index) => <span key={index} style={{ top: `${(index / 3) * 100}%` }}>{formatChartAxis(tick, unit)}</span>)}
+      </div>
+      <div className="chart-x-axis" aria-hidden="true">
+        {xLabelIndexes.map((index) => coords[index] && <span key={index} style={{ left: `${(coords[index].x / width) * 100}%` }}>{chartDateLabel(coords[index].label, timeZone)}</span>)}
+      </div>
       {hover != null && (
         <div
           className="chart-tooltip"
           style={{ left: `${Math.min(86, Math.max(4, (coords[hover].x / width) * 100))}%` }}
         >
-          <b>{formatChartTooltip(coords[hover].value, unit)}</b>
-          <small>{chartDateLabel(coords[hover].label, timeZone)}</small>
+          <b>{chartDateLabel(coords[hover].label, timeZone)}</b>
+          <small>{formatChartTooltip(coords[hover].value, unit)}</small>
           {previousCoords[hover] && <small>Previous: {formatChartTooltip(previousCoords[hover].value, unit)}</small>}
         </div>
       )}
     </div>
   );
+}
+
+function DailyUptimeStrip({ days, timeZone }: { days: any[]; timeZone: string }) {
+  const [active, setActive] = useState<number | null>(null);
+  const wrapper = useRef<HTMLDivElement>(null);
+  const values = days.length === 30
+    ? days
+    : Array.from({ length: 30 }, (_, index) => ({ day: String(index + 1), status: "missing", total: 0, successful: 0, incidents: [] }));
+  useEffect(() => {
+    if (active == null) return;
+    const dismiss = (event: PointerEvent) => {
+      if (!wrapper.current?.contains(event.target as Node)) setActive(null);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setActive(null);
+    };
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [active]);
+  const selected = active == null ? null : values[active];
+  return (
+    <div className="daily-uptime-wrap" ref={wrapper} onMouseLeave={() => setActive(null)}>
+      <div className="checkstrip" role="list" aria-label="Daily uptime for the last 30 calendar days">
+        {values.map((day: any, index: number) => (
+          <button
+            key={`${day.day}-${index}`}
+            type="button"
+            className={day.status || "missing"}
+            aria-label={`${day.day}: ${dailyStatusLabel(day)}`}
+            aria-expanded={active === index}
+            onMouseEnter={() => setActive(index)}
+            onFocus={() => setActive(index)}
+            onClick={() => setActive((current) => current === index ? null : index)}
+          />
+        ))}
+      </div>
+      {selected && (
+        <div
+          className="daily-uptime-tooltip"
+          role="tooltip"
+          style={{ "--tooltip-x": `${((active! + 0.5) / values.length) * 100}%` } as CSSProperties}
+        >
+          <b>{formatDailyDate(selected.day, timeZone)}</b>
+          {selected.status === "available" && <span>Available · {selected.statusCode ? `HTTP ${selected.statusCode}` : "Successful response"}</span>}
+          {selected.status === "partial" && <span>Partially monitored · {selected.successful}/{selected.total} successful observations</span>}
+          {selected.status === "missing" && <span>No monitoring evidence</span>}
+          {selected.status === "suppressed" && <span>Checks suppressed by maintenance</span>}
+          {selected.status === "incident" && !selected.incidents?.length && <span>Confirmed downtime recorded</span>}
+          {selected.total > 0 && selected.status !== "partial" && <small>{selected.successful}/{selected.total} observed checks available</small>}
+          {(selected.incidents || []).map((incident: any) => (
+            <span className="daily-incident-detail" key={incident.id}>
+              <b>{incident.cause || "Monitor incident"}</b>
+              <span>{formatUptimeTimestamp(incident.opened_at, timeZone)}</span>
+              <span>
+                {formatDuration((incident.resolved_at ? Date.parse(incident.resolved_at) : Date.now()) - Date.parse(incident.opened_at))}
+                {incident.resolved_at ? " · Resolved" : " · Ongoing"}
+              </span>
+              {incident.resolved_at && <span>Recovered {formatUptimeTimestamp(incident.resolved_at, timeZone)}</span>}
+              {deliveryEvidence(incident, "uptime_down")}
+              {deliveryEvidence(incident, "uptime_recovered")}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function dailyStatusLabel(day: any) {
+  if (day.status === "incident") return "confirmed downtime";
+  if (day.status === "available") return `available${day.statusCode ? `, HTTP ${day.statusCode}` : ""}`;
+  if (day.status === "partial") return "partial monitoring coverage";
+  if (day.status === "suppressed") return "monitoring suppressed for maintenance";
+  return "no monitoring evidence";
+}
+
+function deliveryEvidence(incident: any, kind: string) {
+  const deliveries = (incident.deliveries || []).filter((delivery: any) => delivery.kind === kind);
+  if (!deliveries.length) return null;
+  const label = kind === "uptime_down" ? "Downtime" : "Recovery";
+  const submitted = deliveries.filter((delivery: any) => delivery.status === "sent").length;
+  const failed = deliveries.filter((delivery: any) => delivery.status === "failed").length;
+  return <small>{label} notification: {submitted ? `${submitted} submitted to email provider` : "not submitted"}{failed ? ` · ${failed} failed` : ""}</small>;
+}
+
+function formatDailyDate(value: string, timeZone: string) {
+  const date = new Date(`${value}T12:00:00Z`);
+  return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", timeZone }).format(date);
+}
+
+function formatUptimeTimestamp(value: string, timeZone: string) {
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone,
+    timeZoneName: "short",
+  }).format(new Date(value));
 }
 function Empty({ title, detail }: { title: string; detail: string }) {
   return (
@@ -4970,32 +5159,53 @@ function AlertPanel({
   notify: Notify;
 }) {
   const [email, setEmail] = useState(""),
-    [testing, setTesting] = useState(false);
+    [saving, setSaving] = useState(false),
+    [testOpen, setTestOpen] = useState(false),
+    [testEmail, setTestEmail] = useState(""),
+    [testing, setTesting] = useState(false),
+    [testState, setTestState] = useState("");
   const [recipients, setRecipients] = useState<any[]>(
     fixture ? [{ email: "alerts@websi.co.uk", enabled: true }] : [],
   );
+  const loadRecipients = () => session
+    ? api<any[]>(session, `/api/properties/${property.id}/alert-recipients`).then(setRecipients)
+    : Promise.resolve();
   useEffect(() => {
-    if (session)
-      api<any[]>(session, `/api/properties/${property.id}/alert-recipients`)
-        .then(setRecipients)
-        .catch(() => setRecipients([]));
+    void loadRecipients().catch(() => setRecipients([]));
   }, [session, property.id]);
   async function addRecipient() {
-    if (!email) return;
+    const normalized = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+      notify("Enter a valid email address");
+      return;
+    }
+    setSaving(true);
     try {
-      const recipient = session
+      session
         ? await api<any>(
             session,
             `/api/properties/${property.id}/alert-recipients`,
-            { method: "POST", body: JSON.stringify({ email }) },
+            { method: "POST", body: JSON.stringify({ email: normalized }) },
           )
-        : { email, enabled: true };
-      setRecipients((current) => [
-        ...current.filter((x) => x.email !== recipient.email),
-        recipient,
-      ]);
+        : { email: normalized, enabled: true };
+      await loadRecipients();
       setEmail("");
       notify("Alert recipient saved");
+    } catch (error: any) {
+      notify(error.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function toggleRecipient(recipient: any) {
+    if (!session || !recipient.id) return;
+    try {
+      await api(session, `/api/properties/${property.id}/alert-recipients/${recipient.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled: !recipient.enabled }),
+      });
+      await loadRecipients();
+      notify(`Alert recipient ${recipient.enabled ? "disabled" : "enabled"}`);
     } catch (error: any) {
       notify(error.message);
     }
@@ -5012,7 +5222,32 @@ function AlertPanel({
       notify(error.message);
     }
   }
+  async function sendTestAlert() {
+    const normalized = testEmail.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+      setTestState("Enter a valid email address.");
+      return;
+    }
+    if (!session) return;
+    setTesting(true);
+    setTestState("Submitting to the email provider…");
+    try {
+      const result = await api<{ submitted: boolean; delivered: boolean; providerId?: string }>(
+        session,
+        `/api/properties/${property.id}/test-alert`,
+        { method: "POST", body: JSON.stringify({ email: normalized }) },
+      );
+      setTestState(result.submitted
+        ? "Submitted to the email provider. Delivery is not confirmed until provider delivery evidence is available."
+        : "The provider did not accept this test alert.");
+    } catch (error: any) {
+      setTestState(error.message || "The test alert could not be sent.");
+    } finally {
+      setTesting(false);
+    }
+  }
   return (
+    <>
     <div className="grid equal">
       <Panel title="Recipients">
         <DataTable
@@ -5021,9 +5256,12 @@ function AlertPanel({
             recipient.email,
             recipient.enabled ? "On" : "Off",
             recipient.enabled ? "On" : "Off",
-            <button className="btn" onClick={() => void removeRecipient(recipient)}>
-              Remove
-            </button>,
+            <span className="row-actions">
+              <button className="btn" onClick={() => void toggleRecipient(recipient)}>
+                {recipient.enabled ? "Disable" : "Enable"}
+              </button>
+              <button className="btn" onClick={() => void removeRecipient(recipient)}>Remove</button>
+            </span>,
           ])}
         />
         <div className="inline-form">
@@ -5033,9 +5271,9 @@ function AlertPanel({
             onChange={(event) => setEmail(event.target.value)}
             placeholder="alerts@example.com"
           />
-          <button className="btn" onClick={addRecipient} disabled={!email}>
+          <button className="btn" onClick={addRecipient} disabled={!email || saving}>
             <Plus />
-            Add recipient
+            {saving ? "Saving…" : "Add recipient"}
           </button>
         </div>
       </Panel>
@@ -5049,29 +5287,36 @@ function AlertPanel({
           ]}
         />
         <button
-          className="btn"
-          disabled={testing || !recipients.length || !session}
-          onClick={async () => {
-            if (!session) return;
-            setTesting(true);
-            try {
-              const result = await api<{ delivered: number }>(
-                session,
-                `/api/properties/${property.id}/test-alert`,
-                { method: "POST" },
-              );
-              notify(`Test alert delivered to ${result.delivered} recipient${result.delivered === 1 ? "" : "s"}`);
-            } catch (error: any) {
-              notify(error.message);
-            } finally {
-              setTesting(false);
-            }
-          }}
+          className="btn test-alert-button"
+          onClick={() => { setTestOpen(true); setTestState(""); setTestEmail(""); }}
         >
-          {testing ? "Sending…" : "Send test alert"}
+          Send test alert
         </button>
       </Panel>
     </div>
+    {testOpen && (
+      <Modal title="Send test alert" close={() => !testing && setTestOpen(false)}>
+        <p className="subtle">Send a sample uptime incident alert for <b>{property.name}</b>. This will not create an incident, change uptime statistics or save the address as a recipient.</p>
+        <label className="field">
+          Email address
+          <input
+            type="email"
+            autoFocus
+            value={testEmail}
+            onChange={(event) => { setTestEmail(event.target.value); setTestState(""); }}
+            placeholder="you@example.com"
+          />
+        </label>
+        {testState && <p className={testState.startsWith("Submitted") ? "success-note" : "error-note"}>{testState}</p>}
+        <div className="dialog-actions">
+          <button className="btn" disabled={testing} onClick={() => setTestOpen(false)}>Cancel</button>
+          <button className="primary" disabled={testing || !testEmail.trim() || !session} onClick={() => void sendTestAlert()}>
+            {testing ? "Sending…" : "Send test alert"}
+          </button>
+        </div>
+      </Modal>
+    )}
+    </>
   );
 }
 function MonitorPanel({

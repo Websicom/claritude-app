@@ -15,10 +15,27 @@ import {
   uptimeDueHorizon,
   validPublicUrl,
   workspaceDeletionError,
+  renderUptimeAlertEmail,
 } from "./index";
 import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 
 describe("worker evidence pipelines", () => {
+  it("renders test alerts from the shared uptime template without implying delivery", () => {
+    const html = renderUptimeAlertEmail({
+      property: { id: "property-1", name: "Controlled property", url: "https://example.com" },
+      incident: { opened_at: "2026-10-03T10:00:00Z", cause: "HTTP 500" },
+      kind: "down",
+      appOrigin: "https://app.claritude.io",
+      test: true,
+    });
+    expect(html).toContain("TEST ALERT");
+    expect(html).toContain("Controlled property");
+    expect(html).toContain("https://example.com");
+    expect(html).toContain("HTTP 500");
+    expect(html).toContain("/uptime?property=property-1");
+    expect(html).toContain("did not create an incident");
+  });
+
   it("emits a tracker script that browsers can parse", () => {
     expect(() => new Function(TRACKER_SOURCE)).not.toThrow();
     expect(TRACKER_SOURCE).toContain("/Chrome\\//.test");

@@ -9,6 +9,7 @@ import {
   scoreAuditResults,
   type AuditRegistrySnapshot,
 } from "../shared/audit-runtime";
+import { summarizeUptimeChecks } from "../shared/uptime";
 
 type Env = {
   SUPABASE_URL: string;
@@ -970,7 +971,7 @@ app.post("/api/audits", async (c) => {
     return c.json({ error: "page_must_belong_to_property" }, 400);
   const { data: activeRuns } = await db
     .from("audit_runs")
-    .select("id,status,heartbeat_at,created_at")
+    .select("id,status,heartbeat_at,created_at,progress_completed,progress_total,registry_snapshot")
     .eq("property_id", property.id)
     .eq("audit_page_id", auditPage.id)
     .in("status", ["queued", "running"])
@@ -982,8 +983,46 @@ app.post("/api/audits", async (c) => {
   });
   if (freshActiveRun)
     return c.json({ error: "audit_already_active", run: freshActiveRun }, 409);
-  const staleRunIds = (activeRuns || []).map((candidate) => candidate.id);
-  if (staleRunIds.length) {
+  const staleRuns = activeRuns || [];
+  const failedStaleRunIds: string[] = [];
+  for (const candidate of staleRuns) {
+    const total = Number(candidate.progress_total || 0);
+    const persisted = Number(candidate.progress_completed || 0);
+    if (!total || persisted < total) {
+      failedStaleRunIds.push(candidate.id);
+      continue;
+    }
+    const { data: persistedResults, error: resultError } = await db
+      .from("audit_results")
+      .select("check_id,outcome")
+      .eq("audit_run_id", candidate.id)
+      .limit(total + 1);
+    if (resultError || (persistedResults || []).length < total) {
+      failedStaleRunIds.push(candidate.id);
+      continue;
+    }
+    const snapshot = Array.isArray(candidate.registry_snapshot)
+      ? candidate.registry_snapshot as AuditRegistrySnapshot[]
+      : [];
+    const { score, coverage } = scoreAuditResults(snapshot, persistedResults || []);
+    const salvagedStatus = (persistedResults || []).some((result) => result.outcome === "unable_to_test")
+      ? "partial"
+      : "completed";
+    const { error: salvageError } = await db
+      .from("audit_runs")
+      .update({
+        status: salvagedStatus,
+        score,
+        coverage,
+        execution_stage: "completed",
+        completed_at: candidate.heartbeat_at || new Date().toISOString(),
+        error: null,
+      })
+      .eq("id", candidate.id)
+      .in("status", ["queued", "running"]);
+    if (salvageError) failedStaleRunIds.push(candidate.id);
+  }
+  if (failedStaleRunIds.length) {
     await db
       .from("audit_runs")
       .update({
@@ -992,7 +1031,7 @@ app.post("/api/audits", async (c) => {
         error: "Audit worker stopped reporting progress. A replacement run may now be queued.",
         completed_at: new Date().toISOString(),
       })
-      .in("id", staleRunIds)
+      .in("id", failedStaleRunIds)
       .in("status", ["queued", "running"]);
   }
   const dayStart = `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`;
@@ -1298,7 +1337,12 @@ app.get("/api/monitors/:id/checks", async (c) => {
   const previousTo = new Date(new Date(window.from).valueOf() - 1);
   const previousFrom = new Date(previousTo.valueOf() - duration + 1);
   const fields = "id,checked_at,success,status_code,response_ms,error_code,suppressed_by_maintenance";
-  const [currentResult, previousResult] = await Promise.all([
+  const now = new Date();
+  const currentLocalDay = localDateKey(now, window.timeZone);
+  const dailyStartKey = shiftDateKey(currentLocalDay, -29);
+  const dailyFrom = zonedDateBoundary(dailyStartKey, window.timeZone, false).toISOString();
+  const dailyTo = zonedDateBoundary(currentLocalDay, window.timeZone, true).toISOString();
+  const [currentResult, previousResult, dailyResult, monitorResult] = await Promise.all([
     c.get("db")
       .from("uptime_checks")
       .select(fields)
@@ -1315,52 +1359,103 @@ app.get("/api/monitors/:id/checks", async (c) => {
       .lte("checked_at", previousTo.toISOString())
       .order("checked_at", { ascending: true })
       .limit(10000),
+    c.get("db")
+      .from("uptime_checks")
+      .select(fields)
+      .eq("monitor_id", c.req.param("id"))
+      .gte("checked_at", dailyFrom)
+      .lt("checked_at", dailyTo)
+      .order("checked_at", { ascending: true })
+      .limit(10000),
+    c.get("db")
+      .from("uptime_monitors")
+      .select("id,property_id,interval_minutes,created_at")
+      .eq("id", c.req.param("id"))
+      .single(),
   ]);
   if (currentResult.error) return c.json({ error: currentResult.error.message }, 400);
   if (previousResult.error) return c.json({ error: previousResult.error.message }, 400);
+  if (dailyResult.error) return c.json({ error: dailyResult.error.message }, 400);
+  if (monitorResult.error || !monitorResult.data)
+    return c.json({ error: "monitor_not_found" }, 404);
   const checks = currentResult.data || [];
   const previousChecks = previousResult.data || [];
-  const summarize = (rows: typeof checks) => {
-    const eligible = rows.filter((x) => !x.suppressed_by_maintenance);
-    const successful = eligible.filter((x) => x.success);
-    const responseValues = successful
-      .map((x) => x.response_ms)
-      .filter((x): x is number => typeof x === "number")
-      .sort((a, b) => a - b);
-    const percentile = (p: number) =>
-      responseValues.length
-        ? responseValues[Math.min(responseValues.length - 1, Math.floor((responseValues.length - 1) * p))]
-        : null;
-    return {
-      total: eligible.length,
-      successful: successful.length,
-      suppressed: rows.length - eligible.length,
-      availability: eligible.length ? (successful.length / eligible.length) * 100 : null,
-      averageResponseMs: responseValues.length
-        ? Math.round(responseValues.reduce((a, b) => a + b, 0) / responseValues.length)
-        : null,
-      medianResponseMs: percentile(0.5),
-      p95ResponseMs: percentile(0.95),
-    };
-  };
-  const byDay = new Map<string, { total: number; successful: number; suppressed: number }>();
-  for (let cursor = new Date(`${window.from.slice(0, 10)}T00:00:00.000Z`); cursor <= new Date(window.to); cursor = new Date(cursor.valueOf() + 864e5))
-    byDay.set(cursor.toISOString().slice(0, 10), { total: 0, successful: 0, suppressed: 0 });
-  for (const check of checks) {
-    const day = check.checked_at.slice(0, 10);
-    const current = byDay.get(day) || { total: 0, successful: 0, suppressed: 0 };
+  const dailyChecks = dailyResult.data || [];
+  const { data: dailyIncidents, error: dailyIncidentError } = await c.get("db")
+    .from("incidents")
+    .select("id,opened_at,resolved_at,cause")
+    .eq("monitor_id", c.req.param("id"))
+    .lt("opened_at", dailyTo)
+    .or(`resolved_at.is.null,resolved_at.gte.${dailyFrom}`)
+    .order("opened_at", { ascending: true });
+  if (dailyIncidentError) return c.json({ error: dailyIncidentError.message }, 400);
+  const incidentIds = (dailyIncidents || []).map((incident) => incident.id);
+  const deliveries = incidentIds.length
+    ? await admin(c.env)
+        .from("notification_deliveries")
+        .select("kind,status,payload,provider_id,error,created_at")
+        .in("kind", ["uptime_down", "uptime_recovered"])
+        .contains("payload", { property_id: monitorResult.data.property_id })
+        .limit(1000)
+    : { data: [], error: null };
+  const deliveryRows = (deliveries.data || []).filter((delivery: any) =>
+    incidentIds.includes(String(delivery.payload?.id || "")),
+  );
+  const byDay = new Map<string, any>();
+  for (let index = 0; index < 30; index += 1)
+    byDay.set(shiftDateKey(dailyStartKey, index), { total: 0, successful: 0, suppressed: 0, checks: [], incidents: [] });
+  for (const check of dailyChecks) {
+    const day = localDateKey(new Date(check.checked_at), window.timeZone);
+    const current = byDay.get(day);
+    if (!current) continue;
     if (check.suppressed_by_maintenance) current.suppressed += 1;
     else {
       current.total += 1;
       if (check.success) current.successful += 1;
     }
+    current.checks.push(check);
     byDay.set(day, current);
   }
+  for (const incident of dailyIncidents || []) {
+    const startKey = localDateKey(new Date(Math.max(Date.parse(incident.opened_at), Date.parse(dailyFrom))), window.timeZone);
+    const incidentEnd = incident.resolved_at ? Date.parse(incident.resolved_at) : Date.now();
+    const endKey = localDateKey(new Date(Math.min(incidentEnd, Date.parse(dailyTo) - 1)), window.timeZone);
+    for (const [day, value] of byDay) {
+      if (day < startKey || day > endKey) continue;
+      value.incidents.push({
+        ...incident,
+        deliveries: deliveryRows.filter((delivery: any) => delivery.payload?.id === incident.id),
+      });
+    }
+  }
+  const intervalMinutes = Number(monitorResult.data.interval_minutes || 5);
+  const monitorCreated = Date.parse(monitorResult.data.created_at);
+  const dailyDays = [...byDay].map(([day, value]) => {
+    const dayStart = zonedDateBoundary(day, window.timeZone, false).valueOf();
+    const dayEnd = Math.min(zonedDateBoundary(day, window.timeZone, true).valueOf(), Date.now());
+    const coveredStart = Math.max(dayStart, monitorCreated);
+    const expected = dayEnd > coveredStart ? Math.max(1, Math.floor((dayEnd - coveredStart) / (intervalMinutes * 60_000))) : 0;
+    const partial = value.total + value.suppressed > 0 && expected > 0 && value.total + value.suppressed < expected * 0.8;
+    const latestObserved = [...value.checks].reverse().find((check: any) => !check.suppressed_by_maintenance);
+    return {
+      day,
+      total: value.total,
+      successful: value.successful,
+      suppressed: value.suppressed,
+      expected,
+      partial,
+      status: value.incidents.length ? "incident" : value.total ? (partial ? "partial" : "available") : value.suppressed ? "suppressed" : "missing",
+      statusCode: latestObserved?.status_code ?? null,
+      incidents: value.incidents,
+    };
+  });
   return c.json({
     checks,
-    summary: summarize(checks),
-    previous: { checks: previousChecks, summary: summarize(previousChecks) },
-    days: [...byDay].map(([day, value]) => ({ day, ...value })),
+    summary: summarizeUptimeChecks(checks),
+    previous: { checks: previousChecks, summary: summarizeUptimeChecks(previousChecks) },
+    range: { from: window.from, to: window.to, timeZone: window.timeZone },
+    days: dailyDays,
+    dailyScope: { from: dailyFrom, to: dailyTo, timeZone: window.timeZone, days: 30 },
   });
 });
 
@@ -1459,6 +1554,20 @@ app.post("/api/properties/:id/alert-recipients", async (c) => {
   return error ? c.json({ error: error.message }, 400) : c.json(data, 201);
 });
 
+app.patch("/api/properties/:id/alert-recipients/:recipientId", async (c) => {
+  const body = await c.req.json<{ enabled?: boolean }>();
+  if (typeof body.enabled !== "boolean")
+    return c.json({ error: "enabled_boolean_required" }, 400);
+  const { data, error } = await c.get("db")
+    .from("alert_recipients")
+    .update({ enabled: body.enabled })
+    .eq("property_id", c.req.param("id"))
+    .eq("id", c.req.param("recipientId"))
+    .select()
+    .single();
+  return error ? c.json({ error: error.message }, 400) : c.json(data);
+});
+
 app.delete("/api/properties/:id/alert-recipients/:recipientId", async (c) => {
   const { error } = await c
     .get("db")
@@ -1472,23 +1581,45 @@ app.delete("/api/properties/:id/alert-recipients/:recipientId", async (c) => {
 app.post("/api/properties/:id/test-alert", async (c) => {
   const db = c.get("db");
   const propertyId = c.req.param("id");
+  const body = await c.req.json<{ email?: string }>();
+  const email = body.email?.trim().toLowerCase();
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+    return c.json({ error: "valid_email_required" }, 400);
   const { data: property } = await db
     .from("properties")
-    .select("id,name,workspace_id")
+    .select("id,name,url,workspace_id")
     .eq("id", propertyId)
     .single();
   if (!property) return c.json({ error: "property_not_found" }, 404);
   if (!(await canManageWorkspace(db, c.get("userId"), property.workspace_id)))
     return c.json({ error: "property_manage_access_required" }, 403);
-  const { data: recipients } = await db
-    .from("alert_recipients")
-    .select("email")
-    .eq("property_id", propertyId)
-    .eq("enabled", true);
-  if (!recipients?.length) return c.json({ error: "alert_recipient_required" }, 409);
   if (!c.env.RESEND_API_KEY || !c.env.RESEND_FROM)
     return c.json({ error: "email_delivery_not_configured" }, 503);
-  const key = `test:${propertyId}:${crypto.randomUUID()}`;
+  const fiveMinutesAgo = new Date(Date.now() - 5 * 60_000).toISOString();
+  const { count: recentTests } = await admin(c.env)
+    .from("activity_log")
+    .select("id", { count: "exact", head: true })
+    .eq("actor_id", c.get("userId"))
+    .eq("property_id", propertyId)
+    .eq("action", "uptime.test_alert_sent")
+    .gte("created_at", fiveMinutesAgo);
+  if ((recentTests || 0) >= 3)
+    return c.json({ error: "test_alert_rate_limit", retryAfterSeconds: 300 }, 429);
+  const key = `test:${propertyId}:${c.get("userId")}:${crypto.randomUUID()}`;
+  const sampleIncident = {
+    id: `test-${crypto.randomUUID()}`,
+    property_id: propertyId,
+    opened_at: new Date().toISOString(),
+    resolved_at: null,
+    cause: "HTTP 503 sample incident",
+  };
+  const { data: claimed } = await admin(c.env).rpc("claim_notification", {
+    p_key: key,
+    p_kind: "uptime_test",
+    p_recipient: email,
+    p_payload: { ...sampleIncident, test: true, requested_by: c.get("userId") },
+  });
+  if (!claimed) return c.json({ error: "test_alert_already_submitted" }, 409);
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -1498,17 +1629,34 @@ app.post("/api/properties/:id/test-alert", async (c) => {
     },
     body: JSON.stringify({
       from: c.env.RESEND_FROM,
-      to: recipients.map((recipient) => recipient.email),
-      subject: `Claritude test alert · ${property.name}`,
-      html: `<h1>Claritude test alert</h1><p>Email delivery is configured for ${escapeHtml(property.name)}.</p>`,
+      to: [email],
+      subject: `[TEST] Claritude uptime alert · ${property.name}`,
+      html: renderUptimeAlertEmail({
+        property,
+        incident: sampleIncident,
+        kind: "down",
+        appOrigin: c.env.APP_ORIGIN,
+        test: true,
+      }),
     }),
   });
-  if (!response.ok)
-    return c.json({ error: `email_delivery_failed:${(await response.text()).slice(0, 240)}` }, 502);
+  const providerBody = response.ok ? await response.json().catch(() => ({})) : null;
+  const providerId = String((providerBody as any)?.id || response.headers.get("x-message-id") || "") || null;
+  await admin(c.env)
+    .from("notification_deliveries")
+    .update({
+      status: response.ok ? "sent" : "failed",
+      provider_id: providerId,
+      error: response.ok ? null : (await response.text()).slice(0, 1000),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("dedupe_key", key);
+  if (!response.ok) return c.json({ error: "email_provider_rejected_request" }, 502);
   await recordActivity(c.env, c.get("userId"), "uptime.test_alert_sent", propertyId, {
-    recipients: recipients.length,
+    recipient: email,
+    providerId,
   });
-  return c.json({ delivered: recipients.length });
+  return c.json({ submitted: true, delivered: false, providerId });
 });
 
 app.get("/api/properties/:id/events", async (c) => {
@@ -1690,13 +1838,16 @@ app.patch("/api/notifications/:id/read", async (c) => {
 });
 
 app.post("/api/notifications/read-all", async (c) => {
-  const { data, error } = await c
-    .get("db")
+  const body: { propertyId?: string | null } = await c.req
+    .json<{ propertyId?: string | null }>()
+    .catch(() => ({}));
+  let query = c.get("db")
     .from("notifications")
     .update({ read_at: new Date().toISOString() })
     .eq("user_id", c.get("userId"))
-    .is("read_at", null)
-    .select("id");
+    .is("read_at", null);
+  if (body.propertyId) query = query.eq("property_id", body.propertyId);
+  const { data, error } = await query.select("id");
   return error ? c.json({ error: error.message }, 400) : c.json({ updated: data?.length || 0 });
 });
 
@@ -2790,7 +2941,7 @@ async function sendAlert(
 ) {
   const { data: property } = await db
     .from("properties")
-    .select("id,name,workspaces(account_id)")
+    .select("id,name,url,workspaces(account_id)")
     .eq("id", incident.property_id)
     .single();
   await createPropertyNotification(env, incident.property_id, {
@@ -2829,9 +2980,14 @@ async function sendAlert(
         to: [r.email],
         subject:
           kind === "down"
-            ? "Claritude downtime alert"
-            : "Claritude recovery notice",
-        html: `<h1>${kind === "down" ? "Website unavailable" : "Website recovered"}</h1><p>${kind === "down" ? "Claritude opened an incident after the configured failure threshold." : "Claritude confirmed a successful response and closed the incident."}</p>`,
+            ? `Claritude downtime alert · ${property?.name || "Property"}`
+            : `Claritude recovery notice · ${property?.name || "Property"}`,
+        html: renderUptimeAlertEmail({
+          property: property || { id: incident.property_id, name: "Property", url: "" },
+          incident,
+          kind,
+          appOrigin: env.APP_ORIGIN,
+        }),
       }),
     });
     await db
@@ -2843,6 +2999,40 @@ async function sendAlert(
       })
       .eq("dedupe_key", key);
   }
+}
+
+export function renderUptimeAlertEmail({
+  property,
+  incident,
+  kind,
+  appOrigin,
+  test = false,
+}: {
+  property: { id: string; name: string; url?: string | null };
+  incident: { opened_at: string; resolved_at?: string | null; cause?: string | null };
+  kind: "down" | "recovered";
+  appOrigin: string;
+  test?: boolean;
+}) {
+  const heading = kind === "down" ? "Website unavailable" : "Website recovered";
+  const detail = kind === "down"
+    ? "Claritude opened an incident after the configured failure threshold."
+    : "Claritude confirmed a successful response and closed the incident.";
+  const dashboardUrl = `${appOrigin.replace(/\/$/, "")}/uptime?property=${encodeURIComponent(property.id)}`;
+  return `<!doctype html><html><body style="font-family:Arial,sans-serif;color:#171717;line-height:1.5">
+    ${test ? '<p style="font-weight:700;color:#b45309">TEST ALERT — sample incident data only</p>' : ""}
+    <h1>${escapeHtml(test ? `Test: ${heading}` : heading)}</h1>
+    <p>${escapeHtml(detail)}</p>
+    <table role="presentation" style="border-collapse:collapse"><tbody>
+      <tr><td style="padding:4px 16px 4px 0;color:#666">Property</td><td><b>${escapeHtml(property.name)}</b></td></tr>
+      <tr><td style="padding:4px 16px 4px 0;color:#666">URL</td><td>${escapeHtml(property.url || "Not supplied")}</td></tr>
+      <tr><td style="padding:4px 16px 4px 0;color:#666">Incident</td><td>${escapeHtml(incident.cause || "Monitor failure")}</td></tr>
+      <tr><td style="padding:4px 16px 4px 0;color:#666">Started</td><td>${escapeHtml(incident.opened_at)}</td></tr>
+      ${incident.resolved_at ? `<tr><td style="padding:4px 16px 4px 0;color:#666">Recovered</td><td>${escapeHtml(incident.resolved_at)}</td></tr>` : ""}
+    </tbody></table>
+    <p><a href="${escapeHtml(dashboardUrl)}">Open Claritude uptime</a></p>
+    ${test ? '<p style="color:#666">This test did not create an incident or change uptime statistics.</p>' : ""}
+  </body></html>`;
 }
 
 async function scheduled(env: Env, cron: string) {
@@ -3657,6 +3847,22 @@ function validTimeZone(value: string) {
   } catch {
     return false;
   }
+}
+
+function localDateKey(date: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const part = (type: string) => parts.find((entry) => entry.type === type)?.value || "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function shiftDateKey(value: string, days: number) {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
 }
 
 function zonedDateBoundary(value: string, timeZone: string, end: boolean) {
