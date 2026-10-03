@@ -1,9 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   filterProperties,
   filterWorkspaceMemberships,
+  isPrimaryAuditPage,
+  prepareAvatarImage,
   propertyFaviconSources,
+  squareImageCrop,
 } from "./RecoveryDashboard";
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("top selector searches", () => {
   const workspaces = [
@@ -36,5 +41,36 @@ describe("top selector searches", () => {
       "https://www.example.com/favicon.ico",
     ]);
     expect(propertyFaviconSources("not a url")).toEqual([]);
+  });
+
+  it("protects the homepage and center-crops avatar source images", () => {
+    expect(isPrimaryAuditPage({ path: "/" })).toBe(true);
+    expect(isPrimaryAuditPage({ path: "/about/" })).toBe(false);
+    expect(squareImageCrop(1200, 800)).toEqual({ x: 200, y: 0, size: 800 });
+    expect(squareImageCrop(600, 900)).toEqual({ x: 0, y: 150, size: 600 });
+  });
+
+  it("resizes and compresses avatar uploads to a 256px WebP square", async () => {
+    const drawImage = vi.fn();
+    const close = vi.fn();
+    const canvas = {
+      width: 0,
+      height: 0,
+      getContext: vi.fn(() => ({ drawImage })),
+      toBlob: vi.fn((callback: BlobCallback, type?: string) => {
+        callback(new Blob(["compressed-avatar"], { type }));
+      }),
+    };
+    vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 1200, height: 800, close })));
+    vi.stubGlobal("document", { createElement: vi.fn(() => canvas) });
+
+    const result = await prepareAvatarImage({} as File);
+
+    expect(canvas.width).toBe(256);
+    expect(canvas.height).toBe(256);
+    expect(drawImage).toHaveBeenCalledWith(expect.anything(), 200, 0, 800, 800, 0, 0, 256, 256);
+    expect(canvas.toBlob).toHaveBeenCalledWith(expect.any(Function), "image/webp", 0.82);
+    expect(result.type).toBe("image/webp");
+    expect(close).toHaveBeenCalledOnce();
   });
 });

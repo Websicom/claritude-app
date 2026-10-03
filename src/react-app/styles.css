@@ -136,6 +136,9 @@ a {
   max-width: 100%;
   object-fit: contain;
 }
+.avatar img {
+  object-fit: cover;
+}
 .badge {
   font-size: 10px;
   border: 1px solid var(--line);

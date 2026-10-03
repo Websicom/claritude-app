@@ -1360,6 +1360,7 @@ app.delete("/api/properties/:id/audit-pages/:pageId", async (c) => {
     .maybeSingle();
   if (pageError) return c.json({ error: pageError.message }, 400);
   if (!page) return c.json({ error: "audit_page_not_found" }, 404);
+  if (isProtectedAuditPagePath(page.path)) return c.json({ error: "homepage_audit_page_cannot_be_deleted" }, 400);
   if (!(await canManageWorkspace(db, c.get("userId"), (page.properties as any)?.workspace_id)))
     return c.json({ error: "property_manage_access_required" }, 403);
   const service = admin(c.env);
@@ -4650,6 +4651,10 @@ export function cleanPath(v: unknown) {
   } catch {
     return null;
   }
+}
+
+export function isProtectedAuditPagePath(path: unknown) {
+  return cleanPath(path) === "/";
 }
 function cleanHost(v: unknown) {
   try {

@@ -11,6 +11,7 @@ import {
   filterAnalyticsEvents,
   isFreshAuditRun,
   isPrivateHost,
+  isProtectedAuditPagePath,
   normalizeAnalyticsPath,
   normalizePropertyRelations,
   TRACKER_SOURCE,
@@ -412,6 +413,8 @@ describe("worker evidence pipelines", () => {
     expect(cleanPath("about/team")).toBe("/about/team/");
     expect(cleanPath("https://example.com/contact?source=test")).toBe("/contact/");
     expect(cleanPath("/")).toBe("/");
+    expect(isProtectedAuditPagePath("/")).toBe(true);
+    expect(isProtectedAuditPagePath("/about/")).toBe(false);
   });
 
   it("protects owner roles and destructive workspace invariants", () => {

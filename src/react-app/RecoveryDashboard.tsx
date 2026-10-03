@@ -120,6 +120,41 @@ type AuditPage = {
   name: string;
   path: string;
 };
+
+export function isPrimaryAuditPage(page: Pick<AuditPage, "path">) {
+  return page.path === "/";
+}
+
+export function squareImageCrop(width: number, height: number) {
+  const size = Math.min(width, height);
+  return {
+    x: Math.max(0, (width - size) / 2),
+    y: Math.max(0, (height - size) / 2),
+    size,
+  };
+}
+
+export async function prepareAvatarImage(file: File) {
+  const image = await createImageBitmap(file);
+  try {
+    const crop = squareImageCrop(image.width, image.height);
+    const canvas = document.createElement("canvas");
+    canvas.width = 256;
+    canvas.height = 256;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("This browser cannot resize images");
+    context.drawImage(image, crop.x, crop.y, crop.size, crop.size, 0, 0, 256, 256);
+    return await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (blob) => blob ? resolve(blob) : reject(new Error("The selected image could not be compressed")),
+        "image/webp",
+        0.82,
+      );
+    });
+  } finally {
+    image.close();
+  }
+}
 type Property = {
   id: string;
   workspace_id?: string;
@@ -2887,14 +2922,16 @@ function AuditView({
                 >
                   <Globe2 /> <span>{page.name}</span> {selectedPage?.id === page.id && <Check />}
                 </button>
-                <button
-                  className="audit-page-delete"
-                  aria-label={`Delete ${page.name} and its audit data`}
-                  title="Delete page"
-                  onClick={() => setPageToDelete(page)}
-                >
-                  <Trash2 />
-                </button>
+                {!isPrimaryAuditPage(page) && (
+                  <button
+                    className="audit-page-delete"
+                    aria-label={`Delete ${page.name} and its audit data`}
+                    title="Delete page"
+                    onClick={() => setPageToDelete(page)}
+                  >
+                    <Trash2 />
+                  </button>
+                )}
               </div>
             ))}
             <button onClick={() => { setPageMenu(false); setAddPage(true); }}><Plus /> Add page</button>
@@ -3880,13 +3917,14 @@ function AccountView({
   async function uploadAvatar(file?: File) {
     if (!file || !session) return;
     if (!file.type.startsWith("image/")) return notify("Choose an image file");
-    if (file.size > 2 * 1024 * 1024) return notify("Avatar images must be 2 MB or smaller");
+    if (file.size > 10 * 1024 * 1024) return notify("Avatar source images must be 10 MB or smaller");
     setAvatarBusy(true);
     try {
+      const avatar = await prepareAvatarImage(file);
       await api(session, "/api/profile/avatar", {
         method: "PUT",
-        headers: { "content-type": file.type },
-        body: file,
+        headers: { "content-type": avatar.type },
+        body: avatar,
       });
       notify("Profile image updated");
       reload();
