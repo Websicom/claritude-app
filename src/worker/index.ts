@@ -968,20 +968,22 @@ app.post("/api/audits", async (c) => {
   const target = validPublicUrl(new URL(auditPage.path, property.url).href);
   if (!target || !sameSiteHost(target.hostname, new URL(property.url).hostname))
     return c.json({ error: "page_must_belong_to_property" }, 400);
-  const { data: activeRun } = await db
+  const { data: activeRuns } = await db
     .from("audit_runs")
     .select("id,status,heartbeat_at,created_at")
     .eq("property_id", property.id)
     .eq("audit_page_id", auditPage.id)
     .in("status", ["queued", "running"])
     .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (activeRun) {
-    const lastHeartbeat = Date.parse(activeRun.heartbeat_at || activeRun.created_at);
-    const isStalled = Number.isFinite(lastHeartbeat) && Date.now() - lastHeartbeat > 2 * 60_000;
-    if (!isStalled)
-      return c.json({ error: "audit_already_active", run: activeRun }, 409);
+    .limit(20);
+  const freshActiveRun = (activeRuns || []).find((candidate) => {
+    const lastHeartbeat = Date.parse(candidate.heartbeat_at || candidate.created_at);
+    return !Number.isFinite(lastHeartbeat) || Date.now() - lastHeartbeat <= 2 * 60_000;
+  });
+  if (freshActiveRun)
+    return c.json({ error: "audit_already_active", run: freshActiveRun }, 409);
+  const staleRunIds = (activeRuns || []).map((candidate) => candidate.id);
+  if (staleRunIds.length) {
     await db
       .from("audit_runs")
       .update({
@@ -990,7 +992,7 @@ app.post("/api/audits", async (c) => {
         error: "Audit worker stopped reporting progress. A replacement run may now be queued.",
         completed_at: new Date().toISOString(),
       })
-      .eq("id", activeRun.id)
+      .in("id", staleRunIds)
       .in("status", ["queued", "running"]);
   }
   const dayStart = `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`;

@@ -2533,7 +2533,14 @@ function AuditView({
         setRealUserPerformance(null);
       });
   }, [property?.id, session, fixture, livePeriod, selectedPage?.id]);
-  const activeRunId = runs.find((run) => ["queued", "running"].includes(run.status))?.id;
+  const latestCompletedCreatedAt = Date.parse(
+    runs.find((run) => ["completed", "partial"].includes(run.status))?.created_at || "",
+  );
+  const isCurrentActiveRun = (run: AuditRun) =>
+    ["queued", "running"].includes(run.status) &&
+    (!Number.isFinite(latestCompletedCreatedAt) ||
+      Date.parse(run.created_at) > latestCompletedCreatedAt);
+  const activeRunId = runs.find(isCurrentActiveRun)?.id;
   useEffect(() => {
     if (!activeRunId || !session || !property || !selectedPage) return;
     const interval = window.setInterval(() => {
@@ -2581,7 +2588,7 @@ function AuditView({
         detail="Audit results are property-specific."
       />
     );
-  const activeRun = runs.find((run) => ["queued", "running"].includes(run.status)),
+  const activeRun = runs.find(isCurrentActiveRun),
     latest = runs.find((run) => ["completed", "partial"].includes(run.status)),
     results = latest?.audit_results || [],
     completedCategoryCount = Object.values(auditRunCategoryScores(latest)).filter((score) => score != null).length,
