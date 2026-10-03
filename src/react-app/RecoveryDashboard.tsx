@@ -39,7 +39,6 @@ import {
   Search,
   Settings,
   ShieldAlert,
-  SquareCheckBig,
   Smartphone,
   Tablet,
   TriangleAlert,
@@ -1056,7 +1055,7 @@ function WorkspaceOverview({
         onChange={setTab}
       />
       {tab === "Properties" ? (
-        <>
+        <div className="workspace-properties-layout">
           <Metrics
             values={[
               [
@@ -1236,7 +1235,7 @@ function WorkspaceOverview({
           >
             <SeriesChart points={workspaceSeries} emptyTitle="No measured workspace traffic yet" />
           </Panel>
-        </>
+        </div>
       ) : tab === "Traffic" ? (
         <Panel
           title="Workspace traffic"
@@ -1661,6 +1660,7 @@ function PropertyOverview({
               <Panel title="Top pages">
                 {analytics?.pages?.length ? (
                   <DataTable
+                    className="property-top-pages-table"
                     headers={["Page", "Views"]}
                     rows={analytics.pages
                       .slice(0, 5)
@@ -4764,13 +4764,15 @@ function Metric({ label, value }: { label: string; value: string }) {
 function DataTable({
   headers,
   rows,
+  className,
 }: {
   headers: string[];
   rows: ReactNode[][];
+  className?: string;
 }) {
   return (
     <div className="table-wrap">
-      <table>
+      <table className={className}>
         <thead>
           <tr>
             {headers.map((h) => (
@@ -6229,7 +6231,7 @@ function AuditFilterButton({
     security: <ShieldAlert />,
     warning: <TriangleAlert />,
     advisory: <Eye />,
-    pass: <SquareCheckBig />,
+    pass: <CheckCircle2 />,
   };
   return (
     <div className="audit-filter-wrap" ref={wrapper}>
@@ -6316,7 +6318,7 @@ function auditGroupIcon(group: string) {
   if (group === "security") return <ShieldAlert />;
   if (group === "warning") return <TriangleAlert />;
   if (group === "advisory") return <Eye />;
-  if (group === "pass") return <SquareCheckBig />;
+  if (group === "pass") return <CheckCircle2 />;
   return <OctagonAlert />;
 }
 
