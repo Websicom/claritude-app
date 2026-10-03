@@ -11,6 +11,7 @@ import {
   isPrivateHost,
   normalizeAnalyticsPath,
   normalizePropertyRelations,
+  TRACKER_SOURCE,
   uptimeDueHorizon,
   validPublicUrl,
   workspaceDeletionError,
@@ -18,6 +19,11 @@ import {
 import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 
 describe("worker evidence pipelines", () => {
+  it("emits a tracker script that browsers can parse", () => {
+    expect(() => new Function(TRACKER_SOURCE)).not.toThrow();
+    expect(TRACKER_SOURCE).toContain("/Chrome\\//.test");
+  });
+
   it("normalizes property hosts consistently for duplicate protection", () => {
     expect(canonicalPropertyHost("WWW.EdgeTier.COM.")).toBe("edgetier.com");
     expect(canonicalPropertyHost("edgetier.com")).toBe("edgetier.com");
