@@ -1092,6 +1092,21 @@ tbody tr:hover {
 .profile-identity h2 {
   margin: 0;
 }
+.profile-avatar-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+.avatar-upload-button {
+  cursor: pointer;
+}
+.avatar-upload-button input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
 .profile-avatar {
   width: 42px;
   height: 42px;
@@ -2971,6 +2986,42 @@ input[type="checkbox"]:checked:after {
 .audit-page-menu {
   top: 48px;
   left: 0;
+  min-width: 220px;
+}
+.audit-page-option {
+  display: flex;
+  align-items: center;
+  border-radius: 7px;
+}
+.audit-page-option:hover,
+.audit-page-option.selected {
+  background: var(--soft);
+}
+.audit-page-menu .audit-page-select {
+  min-width: 0;
+  flex: 1;
+  background: transparent;
+}
+.audit-page-select span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.audit-page-menu .audit-page-delete {
+  width: 30px;
+  flex: 0 0 30px;
+  justify-content: center;
+  padding: 7px;
+  color: var(--muted);
+  background: transparent;
+  opacity: 0;
+}
+.audit-page-option:hover .audit-page-delete,
+.audit-page-delete:focus-visible {
+  opacity: 1;
+}
+.audit-page-menu .audit-page-delete:hover {
+  color: var(--red);
+  background: #fff0f1;
 }
 .audit-filter-actions {
   top: 42px;

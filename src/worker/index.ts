@@ -70,6 +70,24 @@ const LIMITS = {
   analyticsEventsPerPropertyPerDay: 50_000,
 } as const;
 
+export function validAvatarBytes(contentType: string, bytes: Uint8Array) {
+  const startsWith = (...signature: number[]) =>
+    signature.every((value, index) => bytes[index] === value);
+  if (contentType === "image/png")
+    return startsWith(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a);
+  if (contentType === "image/jpeg") return startsWith(0xff, 0xd8, 0xff);
+  if (contentType === "image/gif") {
+    const header = String.fromCharCode(...bytes.slice(0, 6));
+    return header === "GIF87a" || header === "GIF89a";
+  }
+  if (contentType === "image/webp") {
+    const riff = String.fromCharCode(...bytes.slice(0, 4));
+    const webp = String.fromCharCode(...bytes.slice(8, 12));
+    return riff === "RIFF" && webp === "WEBP";
+  }
+  return false;
+}
+
 export function editableWorkspaceRole(value: unknown): "member" | "viewer" | null {
   return value === "member" || value === "viewer" ? value : null;
 }
@@ -237,6 +255,46 @@ app.get("/vendor/web-vitals.js", (c) => {
   c.header("cross-origin-resource-policy", "cross-origin");
   c.header("access-control-allow-origin", "*");
   return c.body(WEB_VITALS_SOURCE);
+});
+
+app.get("/favicons/:trackingId", async (c) => {
+  const trackingId = c.req.param("trackingId");
+  if (!/^cl_[a-zA-Z0-9_-]{12,64}$/.test(trackingId)) return c.body(null, 404);
+  const { data: property } = await admin(c.env)
+    .from("properties")
+    .select("url")
+    .eq("tracking_id", trackingId)
+    .maybeSingle();
+  if (!property?.url) return c.body(null, 404);
+
+  try {
+    const page = await safeFetch(property.url, {
+      headers: { "user-agent": "Claritude Favicon/1.0" },
+      signal: AbortSignal.timeout(6000),
+    });
+    const html = page.ok ? await limitedText(page, 256_000) : "";
+    const declared = html.match(/<link\b[^>]+rel=["'][^"']*(?:icon|shortcut icon)[^"']*["'][^>]+href=["']([^"']+)/i)?.[1]
+      || html.match(/<link\b[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*(?:icon|shortcut icon)/i)?.[1];
+    const iconUrl = new URL(declared || "/favicon.ico", page.url || property.url).href;
+    const icon = await safeFetch(iconUrl, {
+      headers: { "user-agent": "Claritude Favicon/1.0", accept: "image/*" },
+      signal: AbortSignal.timeout(6000),
+    });
+    const contentType = icon.headers.get("content-type") || "";
+    const contentLength = Number(icon.headers.get("content-length") || 0);
+    if (!icon.ok || !contentType.startsWith("image/") || contentLength > 1_048_576)
+      return c.body(null, 404);
+    const bytes = await icon.arrayBuffer();
+    if (bytes.byteLength > 1_048_576) return c.body(null, 404);
+    return new Response(bytes, {
+      headers: {
+        "content-type": contentType,
+        "cache-control": "public, max-age=3600, stale-while-revalidate=86400",
+      },
+    });
+  } catch {
+    return c.body(null, 404);
+  }
 });
 
 app.post("/collect", async (c) => {
@@ -641,6 +699,46 @@ app.patch("/api/profile", async (c) => {
     .get("db")
     .from("profiles")
     .update(update)
+    .select()
+    .single();
+  return error ? c.json({ error: error.message }, 400) : c.json(data);
+});
+
+app.put("/api/profile/avatar", async (c) => {
+  const contentType = (c.req.header("content-type") || "").split(";")[0].toLowerCase();
+  const allowed = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+  if (!allowed.has(contentType)) return c.json({ error: "unsupported_avatar_type" }, 415);
+  const contentLength = Number(c.req.header("content-length") || 0);
+  if (contentLength > 2 * 1024 * 1024) return c.json({ error: "avatar_too_large" }, 413);
+  const bytes = new Uint8Array(await c.req.arrayBuffer());
+  if (!bytes.byteLength || bytes.byteLength > 2 * 1024 * 1024)
+    return c.json({ error: "avatar_too_large" }, 413);
+  if (!validAvatarBytes(contentType, bytes)) return c.json({ error: "invalid_avatar_image" }, 400);
+  const path = `${c.get("userId")}/avatar`;
+  const storage = admin(c.env).storage.from("avatars");
+  const { error: uploadError } = await storage.upload(path, bytes, {
+    contentType,
+    cacheControl: "3600",
+    upsert: true,
+  });
+  if (uploadError) return c.json({ error: uploadError.message }, 400);
+  const publicUrl = `${storage.getPublicUrl(path).data.publicUrl}?v=${Date.now()}`;
+  const { data, error } = await c.get("db")
+    .from("profiles")
+    .update({ avatar_url: publicUrl, updated_at: new Date().toISOString() })
+    .select()
+    .single();
+  return error ? c.json({ error: error.message }, 400) : c.json(data);
+});
+
+app.delete("/api/profile/avatar", async (c) => {
+  const path = `${c.get("userId")}/avatar`;
+  const storage = admin(c.env).storage.from("avatars");
+  const { error: removeError } = await storage.remove([path]);
+  if (removeError) return c.json({ error: removeError.message }, 400);
+  const { data, error } = await c.get("db")
+    .from("profiles")
+    .update({ avatar_url: null, updated_at: new Date().toISOString() })
     .select()
     .single();
   return error ? c.json({ error: error.message }, 400) : c.json(data);
@@ -1190,6 +1288,32 @@ app.post("/api/properties/:id/audit-pages", async (c) => {
     path,
   });
   return c.json(data, 201);
+});
+
+app.delete("/api/properties/:id/audit-pages/:pageId", async (c) => {
+  const db = c.get("db");
+  const propertyId = c.req.param("id");
+  const pageId = c.req.param("pageId");
+  const { data: page, error: pageError } = await db
+    .from("property_audit_pages")
+    .select("id,name,path,properties(workspace_id)")
+    .eq("id", pageId)
+    .eq("property_id", propertyId)
+    .maybeSingle();
+  if (pageError) return c.json({ error: pageError.message }, 400);
+  if (!page) return c.json({ error: "audit_page_not_found" }, 404);
+  if (!(await canManageWorkspace(db, c.get("userId"), (page.properties as any)?.workspace_id)))
+    return c.json({ error: "property_manage_access_required" }, 403);
+  const service = admin(c.env);
+  const { error: runError } = await service.from("audit_runs").delete().eq("audit_page_id", pageId);
+  if (runError) return c.json({ error: runError.message }, 400);
+  const { error } = await db.from("property_audit_pages").delete().eq("id", pageId);
+  if (error) return c.json({ error: error.message }, 400);
+  await recordActivity(c.env, c.get("userId"), "audit.page_deleted", propertyId, {
+    name: page.name,
+    path: page.path,
+  });
+  return c.body(null, 204);
 });
 
 app.get("/api/properties/:id/audits", async (c) => {

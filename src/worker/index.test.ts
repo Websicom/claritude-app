@@ -15,6 +15,7 @@ import {
   normalizePropertyRelations,
   TRACKER_SOURCE,
   uptimeDueHorizon,
+  validAvatarBytes,
   validPublicUrl,
   workspaceDeletionError,
   renderUptimeAlertEmail,
@@ -420,5 +421,13 @@ describe("worker evidence pipelines", () => {
     expect(workspaceDeletionError(1, 0)).toBe("account_requires_one_workspace");
     expect(workspaceDeletionError(2, 1)).toBe("workspace_must_be_empty_before_deletion");
     expect(workspaceDeletionError(2, 0)).toBeNull();
+  });
+
+  it("accepts avatar bytes only when their signature matches the declared image type", () => {
+    expect(validAvatarBytes("image/png", new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBe(true);
+    expect(validAvatarBytes("image/jpeg", new Uint8Array([0xff, 0xd8, 0xff, 0xe0]))).toBe(true);
+    expect(validAvatarBytes("image/gif", new TextEncoder().encode("GIF89a"))).toBe(true);
+    expect(validAvatarBytes("image/webp", new TextEncoder().encode("RIFF0000WEBP"))).toBe(true);
+    expect(validAvatarBytes("image/png", new TextEncoder().encode("<script>"))).toBe(false);
   });
 });

@@ -42,7 +42,9 @@ import {
   ShieldAlert,
   Smartphone,
   Tablet,
+  Trash2,
   TriangleAlert,
+  Upload,
   Users,
   Eye,
   X,
@@ -132,6 +134,25 @@ type Property = {
   settings?: Record<string, any>;
   demo?: DemoMetrics;
 };
+
+function PropertyFavicon({ property }: { property: Property }) {
+  const [failed, setFailed] = useState(false);
+  const source = property.tracking_id?.startsWith("fixture_")
+    ? property.id === "fixture-property" ? "/assets/websi-mark.svg" : ""
+    : property.tracking_id ? `/favicons/${encodeURIComponent(property.tracking_id)}` : "";
+
+  useEffect(() => setFailed(false), [source]);
+  if (!source || failed) return <span aria-hidden="true">{property.name[0]?.toUpperCase()}</span>;
+  return <img src={source} alt="" onError={() => setFailed(true)} />;
+}
+
+function ProfileAvatar({ profile, name, className = "" }: { profile: any; name?: string; className?: string }) {
+  return (
+    <span className={`avatar ${className}`.trim()}>
+      {profile?.avatar_url ? <img src={profile.avatar_url} alt="" /> : (name || profile?.full_name || "C")[0]}
+    </span>
+  );
+}
 type Bootstrap = {
   profile: any;
   accounts: any[];
@@ -417,7 +438,7 @@ export function ClaritudeApplication({
         >
           <span className="favicon">
             {property ? (
-              <img src="/assets/websi-mark.svg" alt="" />
+              <PropertyFavicon property={property} />
             ) : (
               <Globe2 />
             )}
@@ -565,9 +586,7 @@ export function ClaritudeApplication({
             )}
             <div className="user">
               <Link className="user-identity" to={href("account")}>
-                <span className="avatar user-avatar">
-                  {(data.profile?.full_name || "C")[0]}
-                </span>
+                <ProfileAvatar profile={data.profile} className="user-avatar" />
                 <b>{data.profile?.full_name || "Claritude user"}</b>
               </Link>
               <span className="spacer" />
@@ -939,11 +958,7 @@ function PropertyMenu({
               onClick={() => select(p.id)}
             >
               <span className="favicon project-icon">
-                {p.id === "fixture-property" ? (
-                  <img src="/assets/websi-mark.svg" alt="" />
-                ) : (
-                  p.name[0]
-                )}
+                <PropertyFavicon property={p} />
               </span>
               <span>
                 <b>{p.name}</b>
@@ -1166,11 +1181,7 @@ function WorkspaceOverview({
                   to={`/overview?property=${p.id}`}
                 >
                   <span className="favicon project-icon">
-                    {p.id === "fixture-property" ? (
-                      <img src="/assets/websi-mark.svg" alt="" />
-                    ) : (
-                      p.name[0]
-                    )}
+                    <PropertyFavicon property={p} />
                   </span>
                   <span>
                     <b>{p.name}</b>
@@ -1919,13 +1930,7 @@ function UptimeView({
       }
     >
       <Tabs
-        labels={[
-          "Overview",
-          "Incidents",
-          "Maintenance",
-          "Alerts",
-          "Monitor settings",
-        ]}
+        labels={["Overview", "Incidents", "Maintenance"]}
         value={tab}
         onChange={setTab}
       />
@@ -2088,12 +2093,12 @@ function UptimeView({
                   ["Execution", "Distributed queue worker"],
                 ]}
               />
-              <button
+              <Link
                 className="btn panel-action"
-                onClick={() => setTab("Monitor settings")}
+                to={`/settings?property=${property.id}&settingsTab=Uptime`}
               >
                 Open settings
-              </button>
+              </Link>
             </Panel>
           </div>
         </>
@@ -2121,21 +2126,7 @@ function UptimeView({
             />
           )}
         </Panel>
-      ) : tab === "Alerts" ? (
-        <AlertPanel
-          session={session}
-          property={property}
-          fixture={fixture}
-          notify={notify}
-        />
-      ) : (
-        <MonitorPanel
-          session={session}
-          monitor={monitor}
-          reload={reload}
-          notify={notify}
-        />
-      )}{" "}
+      ) : null}{" "}
       {dialog && (
         <SimpleDialog
           title="Schedule maintenance"
@@ -2567,6 +2558,7 @@ function AuditView({
     [filter, setFilter] = useState("All"),
     [pageMenu, setPageMenu] = useState(false),
     [addPage, setAddPage] = useState(false),
+    [pageToDelete, setPageToDelete] = useState<AuditPage | null>(null),
     [performanceMode, setPerformanceMode] = useState<"Lab audit" | "Real-user data">("Lab audit"),
     [realUserPerformance, setRealUserPerformance] = useState<any>(null),
     [auditPages, setAuditPages] = useState<AuditPage[]>([]),
@@ -2787,6 +2779,26 @@ function AuditView({
       setPageSaveState("idle");
     }
   }
+  async function deleteAuditPage(page: AuditPage) {
+    try {
+      if (session)
+        await api(session, `/api/properties/${property!.id}/audit-pages/${page.id}`, {
+          method: "DELETE",
+        });
+      const next = auditPages.filter((candidate) => candidate.id !== page.id);
+      setAuditPages(next);
+      if (selectedPage?.id === page.id) {
+        const replacement = next[0] || null;
+        setSelectedPage(replacement);
+        updateAuditLocation({ auditPage: replacement?.id || null });
+      }
+      setPageToDelete(null);
+      setPageMenu(false);
+      notify("Audit page and its data deleted");
+    } catch (error: any) {
+      notify(error.message);
+    }
+  }
   async function updateReview(resultId: string | number, status: string) {
     if (!session) return;
     try {
@@ -2841,18 +2853,27 @@ function AuditView({
         {pageMenu && (
           <div className="action-menu audit-page-menu">
             {auditPages.map((page) => (
-              <button
-                key={page.path}
-                className={selectedPage?.id === page.id ? "selected" : ""}
-                onClick={() => {
-                  setSelectedPage(page);
-                  setPageMenu(false);
-                  setFilter("All");
-                  updateAuditLocation({ auditPage: page.id });
-                }}
-              >
-                <Globe2 /> {page.name} {selectedPage?.id === page.id && <Check />}
-              </button>
+              <div className={`audit-page-option ${selectedPage?.id === page.id ? "selected" : ""}`} key={page.id}>
+                <button
+                  className="audit-page-select"
+                  onClick={() => {
+                    setSelectedPage(page);
+                    setPageMenu(false);
+                    setFilter("All");
+                    updateAuditLocation({ auditPage: page.id });
+                  }}
+                >
+                  <Globe2 /> <span>{page.name}</span> {selectedPage?.id === page.id && <Check />}
+                </button>
+                <button
+                  className="audit-page-delete"
+                  aria-label={`Delete ${page.name} and its audit data`}
+                  title="Delete page"
+                  onClick={() => setPageToDelete(page)}
+                >
+                  <Trash2 />
+                </button>
+              </div>
             ))}
             <button onClick={() => { setPageMenu(false); setAddPage(true); }}><Plus /> Add page</button>
           </div>
@@ -2866,6 +2887,17 @@ function AuditView({
           onChange={(nextTab) => { setTab(nextTab); updateAuditLocation({ auditTab: nextTab }); }}
         />
       </div>
+      {pageToDelete && (
+        <SimpleDialog
+          title="Delete audit page"
+          close={() => setPageToDelete(null)}
+          action="Delete page"
+          danger
+          onSave={() => void deleteAuditPage(pageToDelete)}
+        >
+          <p>Delete <b>{pageToDelete.name}</b> from this audit and permanently remove all audit runs and findings saved for it?</p>
+        </SimpleDialog>
+      )}
       {(activeRun || failedRun) && <AuditProgress run={(activeRun || failedRun)!} onRetry={() => void run()} />}
       {partial && (
         <div className="coverage-note partial">
@@ -3533,12 +3565,20 @@ function PropertySettingsView({
           </Panel>
         </>
       ) : tab === "Uptime" ? (
-        <MonitorPanel
-          session={session}
-          monitor={property.uptime_monitors?.[0]}
-          reload={reload}
-          notify={notify}
-        />
+        <>
+          <MonitorPanel
+            session={session}
+            monitor={property.uptime_monitors?.[0]}
+            reload={reload}
+            notify={notify}
+          />
+          <AlertPanel
+            session={session}
+            property={property}
+            fixture={false}
+            notify={notify}
+          />
+        </>
       ) : tab === "Events" ? (
         <EventsPanel
           session={session}
@@ -3751,6 +3791,7 @@ function AccountView({
 }) {
   const [tab, setTab] = useState("Profile"),
     [name, setName] = useState(data.profile?.full_name || ""),
+    [avatarBusy, setAvatarBusy] = useState(false),
     [timezone, setTimezone] = useState(
       data.profile?.timezone || "Europe/London",
     ),
@@ -3814,6 +3855,38 @@ function AccountView({
       notify(e.message);
     }
   }
+  async function uploadAvatar(file?: File) {
+    if (!file || !session) return;
+    if (!file.type.startsWith("image/")) return notify("Choose an image file");
+    if (file.size > 2 * 1024 * 1024) return notify("Avatar images must be 2 MB or smaller");
+    setAvatarBusy(true);
+    try {
+      await api(session, "/api/profile/avatar", {
+        method: "PUT",
+        headers: { "content-type": file.type },
+        body: file,
+      });
+      notify("Profile image updated");
+      reload();
+    } catch (error: any) {
+      notify(error.message);
+    } finally {
+      setAvatarBusy(false);
+    }
+  }
+  async function deleteAvatar() {
+    if (!session) return;
+    setAvatarBusy(true);
+    try {
+      await api(session, "/api/profile/avatar", { method: "DELETE" });
+      notify("Profile image removed");
+      reload();
+    } catch (error: any) {
+      notify(error.message);
+    } finally {
+      setAvatarBusy(false);
+    }
+  }
   async function refreshUsers() {
     if (!session) return;
     setUsersError("");
@@ -3846,10 +3919,29 @@ function AccountView({
       {tab === "Profile" ? (
         <Panel title="Personal profile">
           <div className="profile-identity">
-            <span className="avatar profile-avatar">{(name || "C")[0]}</span>
+            <ProfileAvatar profile={data.profile} name={name} className="profile-avatar" />
             <span>
               <h2>{name || "Claritude user"}</h2>
               <small>Personal profile</small>
+            </span>
+            <span className="profile-avatar-actions">
+              <label className="btn avatar-upload-button">
+                <Upload /> {avatarBusy ? "Uploading…" : "Upload image"}
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  disabled={avatarBusy}
+                  onChange={(event) => {
+                    void uploadAvatar(event.target.files?.[0]);
+                    event.target.value = "";
+                  }}
+                />
+              </label>
+              {data.profile?.avatar_url && (
+                <button className="btn" disabled={avatarBusy} onClick={() => void deleteAvatar()}>
+                  <Trash2 /> Remove
+                </button>
+              )}
             </span>
           </div>
           <label className="field">
