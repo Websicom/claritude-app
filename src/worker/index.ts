@@ -2645,6 +2645,7 @@ async function runAudit(env: Env, id: string) {
       res,
       html,
       trace.redirects,
+      () => updateRun({ heartbeat_at: new Date().toISOString() }),
     );
     const contextResults = evaluateSourceChecks(
       snapshot,
@@ -2868,6 +2869,7 @@ async function collectAuditNetworkEvidence(
   response: Response,
   html: string,
   redirects: { url: string; status: number; location: string }[],
+  heartbeat?: () => Promise<void>,
 ): Promise<AuditNetworkEvidence> {
   const finalUrl = new URL(response.url || pageUrl);
   const origin = finalUrl.origin;
@@ -2893,7 +2895,7 @@ async function collectAuditNetworkEvidence(
     try {
       const result = await safeFetchTrace(value, {
         headers: { "user-agent": "Claritude-Audit/1.0 (+https://claritude.io)" },
-        signal: AbortSignal.timeout(4_000),
+        signal: AbortSignal.timeout(3_500),
       }, validatedHosts);
       return {
         url: value,
@@ -2924,18 +2926,20 @@ async function collectAuditNetworkEvidence(
     [...html.matchAll(/<a\b[^>]+href=["']([^"']+)["']/gi)]
       .map((match) => absoluteHttpUrl(match[1]))
       .filter((value): value is string => Boolean(value)),
-  )].slice(0, 8);
+  )].slice(0, 6);
   const declaredResourceUrls = [
     ...[...html.matchAll(/<(?:img|track|source|script)\b[^>]+src=["']([^"']+)["']/gi)].map((match) => match[1]),
     ...[...html.matchAll(/<link\b[^>]+href=["']([^"']+)["']/gi)].map((match) => match[1]),
     ...[...html.matchAll(/<meta\b[^>]+(?:property|name)=["'](?:og:image|twitter:image)["'][^>]+content=["']([^"']+)["']/gi)].map((match) => match[1]),
     ...[...html.matchAll(/<meta\b[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:og:image|twitter:image)["']/gi)].map((match) => match[1]),
   ];
-  const resourceUrls = [...new Set(declaredResourceUrls.map(absoluteHttpUrl).filter((value): value is string => Boolean(value)))].slice(0, 12);
+  const resourceUrls = [...new Set(declaredResourceUrls.map(absoluteHttpUrl).filter((value): value is string => Boolean(value)))].slice(0, 8);
   const inBatches = async (urls: string[]) => {
     const values: AuditResourceEvidence[] = [];
-    for (let index = 0; index < urls.length; index += 2)
+    for (let index = 0; index < urls.length; index += 2) {
       values.push(...await Promise.all(urls.slice(index, index + 2).map((url) => resource(url, 128_000))));
+      await heartbeat?.();
+    }
     return values;
   };
   const checkedLinks = await inBatches(linkUrls);
@@ -2975,6 +2979,7 @@ async function collectAuditNetworkEvidence(
         return { query, type, dns: null, error: errorMessage(error) };
       }
     })));
+    await heartbeat?.();
   }
   for (const answer of dnsAnswers) {
     if (answer.error) {
@@ -3010,7 +3015,7 @@ async function queryDns(query: string, type: string) {
     `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(query)}&type=${type}`,
     {
       headers: { accept: "application/dns-json" },
-      signal: AbortSignal.timeout(3000),
+      signal: AbortSignal.timeout(2500),
     },
   );
   if (!response.ok) throw new Error(`resolver returned HTTP ${response.status}`);
@@ -4301,6 +4306,7 @@ async function safeFetchTrace(
       return { response, redirects };
     const location = response.headers.get("location") || "";
     redirects.push({ url: url.href, status: response.status, location });
+    await response.body?.cancel().catch(() => undefined);
     const next = validPublicUrl(
       new URL(location, url).href,
     );
