@@ -146,10 +146,18 @@ function PropertyFavicon({ property }: { property: Property }) {
   return <img src={source} alt="" onError={() => setFailed(true)} />;
 }
 
+function profileAvatarUrl(profile: any) {
+  const preferences = profile?.notification_preferences;
+  if (preferences && Object.prototype.hasOwnProperty.call(preferences, "_avatar_url"))
+    return preferences._avatar_url || "";
+  return profile?.avatar_url || "";
+}
+
 function ProfileAvatar({ profile, name, className = "" }: { profile: any; name?: string; className?: string }) {
+  const avatarUrl = profileAvatarUrl(profile);
   return (
     <span className={`avatar ${className}`.trim()}>
-      {profile?.avatar_url ? <img src={profile.avatar_url} alt="" /> : (name || profile?.full_name || "C")[0]}
+      {avatarUrl ? <img src={avatarUrl} alt="" /> : (name || profile?.full_name || "C")[0]}
     </span>
   );
 }
@@ -3937,7 +3945,7 @@ function AccountView({
                   }}
                 />
               </label>
-              {data.profile?.avatar_url && (
+              {profileAvatarUrl(data.profile) && (
                 <button className="btn" disabled={avatarBusy} onClick={() => void deleteAvatar()}>
                   <Trash2 /> Remove
                 </button>

@@ -267,34 +267,44 @@ app.get("/favicons/:trackingId", async (c) => {
     .maybeSingle();
   if (!property?.url) return c.body(null, 404);
 
+  const candidates = [new URL("/favicon.ico", property.url).href];
   try {
     const page = await safeFetch(property.url, {
       headers: { "user-agent": "Claritude Favicon/1.0" },
       signal: AbortSignal.timeout(6000),
     });
-    const html = page.ok ? await limitedText(page, 256_000) : "";
+    const html = page.ok ? await limitedText(page, 512_000) : "";
     const declared = html.match(/<link\b[^>]+rel=["'][^"']*(?:icon|shortcut icon)[^"']*["'][^>]+href=["']([^"']+)/i)?.[1]
-      || html.match(/<link\b[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*(?:icon|shortcut icon)/i)?.[1];
-    const iconUrl = new URL(declared || "/favicon.ico", page.url || property.url).href;
-    const icon = await safeFetch(iconUrl, {
-      headers: { "user-agent": "Claritude Favicon/1.0", accept: "image/*" },
-      signal: AbortSignal.timeout(6000),
-    });
-    const contentType = icon.headers.get("content-type") || "";
-    const contentLength = Number(icon.headers.get("content-length") || 0);
-    if (!icon.ok || !contentType.startsWith("image/") || contentLength > 1_048_576)
-      return c.body(null, 404);
-    const bytes = await icon.arrayBuffer();
-    if (bytes.byteLength > 1_048_576) return c.body(null, 404);
-    return new Response(bytes, {
-      headers: {
-        "content-type": contentType,
-        "cache-control": "public, max-age=3600, stale-while-revalidate=86400",
-      },
-    });
+      || html.match(/<link\b[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*(?:icon|shortcut icon)/i)?.[1]
+      || html.match(/<link\b[^>]+rel=["'][^"']*apple-touch-icon[^"']*["'][^>]+href=["']([^"']+)/i)?.[1];
+    if (declared) candidates.unshift(new URL(declared, page.url || property.url).href);
   } catch {
-    return c.body(null, 404);
+    // The conventional root icon and managed fallback still work when a large
+    // or protected homepage cannot be parsed.
   }
+  candidates.push(`https://www.google.com/s2/favicons?domain_url=${encodeURIComponent(property.url)}&sz=64`);
+  for (const candidate of candidates) {
+    try {
+      const icon = await safeFetch(candidate, {
+        headers: { "user-agent": "Claritude Favicon/1.0", accept: "image/*" },
+        signal: AbortSignal.timeout(6000),
+      });
+      const contentType = icon.headers.get("content-type") || "";
+      const contentLength = Number(icon.headers.get("content-length") || 0);
+      if (!icon.ok || !contentType.startsWith("image/") || contentLength > 1_048_576) continue;
+      const bytes = await icon.arrayBuffer();
+      if (!bytes.byteLength || bytes.byteLength > 1_048_576) continue;
+      return new Response(bytes, {
+        headers: {
+          "content-type": contentType,
+          "cache-control": "public, max-age=86400, stale-while-revalidate=604800",
+        },
+      });
+    } catch {
+      // Try the next favicon source.
+    }
+  }
+  return c.body(null, 404);
 });
 
 app.post("/collect", async (c) => {
@@ -680,6 +690,19 @@ app.patch("/api/profile", async (c) => {
   const snoozedUntil = body.alerts_snoozed_until
     ? validDateRange(body.alerts_snoozed_until, 31 * 864e5)
     : null;
+  let notificationPreferences: Record<string, unknown> | undefined;
+  if (body.notification_preferences) {
+    const { data: current } = await c.get("db")
+      .from("profiles")
+      .select("notification_preferences")
+      .single();
+    notificationPreferences = {
+      ...sanitizeNotificationPreferences(body.notification_preferences),
+      ...(current?.notification_preferences && Object.prototype.hasOwnProperty.call(current.notification_preferences, "_avatar_url")
+        ? { _avatar_url: current.notification_preferences._avatar_url }
+        : {}),
+    };
+  }
   const update = {
     ...(body.full_name !== undefined
       ? { full_name: body.full_name.trim().slice(0, 100) || null }
@@ -687,8 +710,8 @@ app.patch("/api/profile", async (c) => {
     ...(body.timezone !== undefined
       ? { timezone: body.timezone.trim().slice(0, 80) || "Europe/London" }
       : {}),
-    ...(body.notification_preferences
-      ? { notification_preferences: sanitizeNotificationPreferences(body.notification_preferences) }
+    ...(notificationPreferences
+      ? { notification_preferences: notificationPreferences }
       : {}),
     ...(body.alerts_snoozed_until !== undefined
       ? { alerts_snoozed_until: snoozedUntil }
@@ -715,7 +738,18 @@ app.put("/api/profile/avatar", async (c) => {
     return c.json({ error: "avatar_too_large" }, 413);
   if (!validAvatarBytes(contentType, bytes)) return c.json({ error: "invalid_avatar_image" }, 400);
   const path = `${c.get("userId")}/avatar`;
-  const storage = admin(c.env).storage.from("avatars");
+  const service = admin(c.env);
+  const { error: bucketError } = await service.storage.getBucket("avatars");
+  if (bucketError) {
+    const { error: createError } = await service.storage.createBucket("avatars", {
+      public: true,
+      fileSizeLimit: 2 * 1024 * 1024,
+      allowedMimeTypes: ["image/png", "image/jpeg", "image/webp", "image/gif"],
+    });
+    if (createError && !/already exists|duplicate/i.test(createError.message))
+      return c.json({ error: createError.message }, 400);
+  }
+  const storage = service.storage.from("avatars");
   const { error: uploadError } = await storage.upload(path, bytes, {
     contentType,
     cacheControl: "3600",
@@ -723,9 +757,19 @@ app.put("/api/profile/avatar", async (c) => {
   });
   if (uploadError) return c.json({ error: uploadError.message }, 400);
   const publicUrl = `${storage.getPublicUrl(path).data.publicUrl}?v=${Date.now()}`;
+  const { data: current } = await c.get("db")
+    .from("profiles")
+    .select("notification_preferences")
+    .single();
   const { data, error } = await c.get("db")
     .from("profiles")
-    .update({ avatar_url: publicUrl, updated_at: new Date().toISOString() })
+    .update({
+      notification_preferences: {
+        ...(current?.notification_preferences || {}),
+        _avatar_url: publicUrl,
+      },
+      updated_at: new Date().toISOString(),
+    })
     .select()
     .single();
   return error ? c.json({ error: error.message }, 400) : c.json(data);
@@ -735,10 +779,21 @@ app.delete("/api/profile/avatar", async (c) => {
   const path = `${c.get("userId")}/avatar`;
   const storage = admin(c.env).storage.from("avatars");
   const { error: removeError } = await storage.remove([path]);
-  if (removeError) return c.json({ error: removeError.message }, 400);
+  if (removeError && !/bucket not found|not found/i.test(removeError.message))
+    return c.json({ error: removeError.message }, 400);
+  const { data: current } = await c.get("db")
+    .from("profiles")
+    .select("notification_preferences")
+    .single();
   const { data, error } = await c.get("db")
     .from("profiles")
-    .update({ avatar_url: null, updated_at: new Date().toISOString() })
+    .update({
+      notification_preferences: {
+        ...(current?.notification_preferences || {}),
+        _avatar_url: null,
+      },
+      updated_at: new Date().toISOString(),
+    })
     .select()
     .single();
   return error ? c.json({ error: error.message }, 400) : c.json(data);

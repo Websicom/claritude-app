@@ -3023,6 +3023,11 @@ input[type="checkbox"]:checked:after {
   color: var(--red);
   background: #fff0f1;
 }
+@media (hover: none), (max-width: 760px) {
+  .audit-page-menu .audit-page-delete {
+    opacity: 1;
+  }
+}
 .audit-filter-actions {
   top: 42px;
   right: 0;
