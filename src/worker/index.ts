@@ -1958,12 +1958,6 @@ async function runAudit(env: Env, id: string) {
         heartbeat_at: new Date().toISOString(),
       })
       .eq("id", id);
-    const networkEvidencePromise = collectAuditNetworkEvidence(
-      run.page_url,
-      res,
-      html,
-      trace.redirects,
-    );
     const staticResults = evaluateSourceChecks(snapshot, res, html, responseMs)
       .filter((result) => !CONTEXT_AUDIT_CHECK_IDS.has(result.check_id));
     const snapshotById = new Map(snapshot.map((check) => [check.id, check]));
@@ -2022,7 +2016,16 @@ async function runAudit(env: Env, id: string) {
         heartbeat_at: new Date().toISOString(),
       })
       .eq("id", id);
-    const networkEvidence = await networkEvidencePromise;
+    // Do not overlap the external evidence crawl with Supabase persistence.
+    // Cloudflare Workers enforce a small outgoing-connection budget; starting
+    // both at once can leave a database write queued behind slow site fetches,
+    // which previously made an otherwise healthy audit appear stuck.
+    const networkEvidence = await collectAuditNetworkEvidence(
+      run.page_url,
+      res,
+      html,
+      trace.redirects,
+    );
     const contextResults = evaluateSourceChecks(
       snapshot,
       res,
