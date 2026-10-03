@@ -3413,6 +3413,52 @@ input[type="checkbox"]:checked:after {
     min-width: 0;
   }
 }
+
+/* Keep final mobile overrides after their base component rules. */
+@media (max-width: 760px) {
+  .engagement-url-table {
+    width: 100%;
+    min-width: 0;
+    table-layout: fixed;
+    font-size: 13px;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+  .engagement-url-table .bar-cell {
+    min-width: 0;
+  }
+  .engagement-url-table .dimension-label {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+  .engagement-url-table .dimension-label b {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    font-size: 13px;
+    line-height: 1.35;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .audit-score span,
+  .audit-score.partial span {
+    font-size: 28px;
+  }
+  .audit-compare-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .audit-compare-summary > div {
+    min-width: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .audit-compare-summary > div:nth-child(even) {
+    border-right: 0;
+  }
+  .audit-compare-summary > div:nth-last-child(-n + 2) {
+    border-bottom: 0;
+  }
   .country-name-desktop { display: none; }
   .country-name-mobile { display: inline; }
   .country-bar-row { grid-template-columns: 70px minmax(80px, 1fr) auto; gap: 8px; }
+}

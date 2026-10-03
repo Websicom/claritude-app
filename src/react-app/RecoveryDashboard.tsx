@@ -1598,7 +1598,8 @@ function PropertyOverview({
   return (
     <Page
       title="Property overview"
-      status={<Period />}
+      status={tab === "Overview" ? <Period /> : undefined}
+      showOptions={tab === "Overview"}
       relocateMobileControls={tab === "Overview"}
       actions={
         <Link className="primary" to={`/audit?property=${property.id}`}>
@@ -2509,7 +2510,7 @@ function AnalyticsView({
           {filtersToolbar}
           <div className="grid equal">
             <Panel title="Scroll depth"><AnalyticsValueTable headers={["Depth", "Pageviews"]} rows={(engagement.scrollDepth || []).map((row: any) => ({ label: `${row.depth}% reached`, value: row.pageviews }))} /></Panel>
-            <Panel title="Most engaging pages"><AnalyticsValueTable headers={["Page", "Engaged views"]} rows={(engagement.pages || []).map((row: any) => ({ label: row.path, value: row.engagedViews }))} /></Panel>
+            <Panel title="Most engaging pages"><AnalyticsValueTable className="engagement-url-table" headers={["Page", "Engaged views"]} rows={(engagement.pages || []).map((row: any) => ({ label: row.path, value: row.engagedViews }))} /></Panel>
           </div>
           <Panel title="Additional aggregate insights">
             <KeyValues rows={[
@@ -2832,7 +2833,6 @@ function AuditView({
   return (
     <Page
       title="Audit"
-      status={<Period />}
       actions={
         <button className="primary" onClick={() => void run()} disabled={busy || Boolean(propertyActiveRun) || !selectedPage}>
           <RefreshCw className={busy || propertyActiveRun ? "audit-spin" : ""} />
@@ -4569,12 +4569,14 @@ function Page({
   title,
   status,
   actions,
+  showOptions = true,
   relocateMobileControls = false,
   children,
 }: {
   title: string;
   status?: ReactNode;
   actions?: ReactNode;
+  showOptions?: boolean;
   relocateMobileControls?: boolean;
   children: ReactNode | ((mobileControls: ReactNode) => ReactNode);
 }) {
@@ -4620,13 +4622,11 @@ function Page({
       </button>
       {menu && (
         <div className="action-menu page-action-menu">
-          <button
-            disabled={!status}
-            title={status ? undefined : "This page does not expose period-filtered data"}
-            onClick={() => { setPeriodOpen(true); setMenu(false); }}
-          >
-            <CalendarDays /> Date range
-          </button>
+          {status && (
+            <button onClick={() => { setPeriodOpen(true); setMenu(false); }}>
+              <CalendarDays /> Date range
+            </button>
+          )}
           <button disabled title="Comparison is available in Audit history and will be added to analytics after period snapshots are enabled">
             <BarChart3 /> Compare to previous
           </button>
@@ -4646,7 +4646,7 @@ function Page({
   const mobileControls = (
     <div className="property-traffic-mobile-controls">
       <span className="property-traffic-period">{status}</span>
-      {renderPageOptions("page-options-mobile")}
+      {showOptions && renderPageOptions("page-options-mobile")}
     </div>
   );
   const controlsRelocated = relocateMobileControls && typeof children === "function";
@@ -4657,7 +4657,7 @@ function Page({
         <span className={controlsRelocated ? "page-status page-status-relocated" : "page-status"}>{status}</span>
         <span className="spacer" />
         {actions}
-        {renderPageOptions(controlsRelocated ? "page-options-desktop page-options-relocated" : "page-options-desktop")}
+        {showOptions && renderPageOptions(controlsRelocated ? "page-options-desktop page-options-relocated" : "page-options-desktop")}
       </div>
       {typeof children === "function" ? children(mobileControls) : children}
       {periodOpen && (
@@ -5946,9 +5946,11 @@ function AnalyticsSourceDetail({ data, source, property, onBack }: { data: any; 
 function AnalyticsValueTable({
   headers,
   rows,
+  className = "",
 }: {
   headers: string[];
   rows: { label: ReactNode; value: number; secondary?: ReactNode; iconKind?: string; iconValue?: string }[];
+  className?: string;
 }) {
   const sorted = useSortableRows(rows, (row, column) => column === 0 ? sortableValue(row.label) : column === 1 ? row.value : sortableValue(row.secondary));
   if (!rows.length)
@@ -5956,7 +5958,7 @@ function AnalyticsValueTable({
   const max = Math.max(1, ...rows.map((row) => Number(row.value) || 0));
   return (
     <div className="table-wrap">
-      <table className={`bar-table analytics-value-table ${headers.length === 3 ? "analytics-three-column-table" : ""}`}>
+      <table className={`bar-table analytics-value-table ${headers.length === 3 ? "analytics-three-column-table" : ""} ${className}`.trim()}>
         <thead><tr>{headers.map((header, column) => <SortableHeader key={header} label={header} column={column} sort={sorted.sort} onSort={sorted.onSort} />)}</tr></thead>
         <tbody>
           {sorted.rows.map((row, index) => (
