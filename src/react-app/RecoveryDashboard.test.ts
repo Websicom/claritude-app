@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   filterProperties,
   filterWorkspaceMemberships,
+  propertyFaviconSources,
 } from "./RecoveryDashboard";
 
 describe("top selector searches", () => {
@@ -26,5 +27,14 @@ describe("top selector searches", () => {
     expect(filterProperties(properties, " EDGE ")).toEqual([properties[0]]);
     expect(filterProperties(properties, "EXAMPLE")).toEqual([properties[1]]);
     expect(filterProperties(properties, "")).toEqual(properties);
+  });
+
+  it("loads property favicons directly with independent provider fallbacks", () => {
+    expect(propertyFaviconSources("https://www.example.com/path")).toEqual([
+      "https://www.google.com/s2/favicons?domain_url=https%3A%2F%2Fwww.example.com&sz=64",
+      "https://icons.duckduckgo.com/ip3/www.example.com.ico",
+      "https://www.example.com/favicon.ico",
+    ]);
+    expect(propertyFaviconSources("not a url")).toEqual([]);
   });
 });

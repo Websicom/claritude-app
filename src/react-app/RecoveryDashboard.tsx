@@ -136,14 +136,28 @@ type Property = {
 };
 
 function PropertyFavicon({ property }: { property: Property }) {
-  const [failed, setFailed] = useState(false);
-  const source = property.tracking_id?.startsWith("fixture_")
-    ? property.id === "fixture-property" ? "/assets/websi-mark.svg" : ""
-    : property.tracking_id ? `/favicons/${encodeURIComponent(property.tracking_id)}` : "";
+  const [sourceIndex, setSourceIndex] = useState(0);
+  const sources = property.tracking_id?.startsWith("fixture_")
+    ? property.id === "fixture-property" ? ["/assets/websi-mark.svg"] : []
+    : propertyFaviconSources(property.url);
 
-  useEffect(() => setFailed(false), [source]);
-  if (!source || failed) return <span aria-hidden="true">{property.name[0]?.toUpperCase()}</span>;
-  return <img src={source} alt="" onError={() => setFailed(true)} />;
+  useEffect(() => setSourceIndex(0), [property.id, property.url]);
+  const source = sources[sourceIndex];
+  if (!source) return <span aria-hidden="true">{property.name[0]?.toUpperCase()}</span>;
+  return <img src={source} alt="" referrerPolicy="no-referrer" onError={() => setSourceIndex((index) => index + 1)} />;
+}
+
+export function propertyFaviconSources(value: string) {
+  try {
+    const url = new URL(value);
+    return [
+      `https://www.google.com/s2/favicons?domain_url=${encodeURIComponent(url.origin)}&sz=64`,
+      `https://icons.duckduckgo.com/ip3/${encodeURIComponent(url.hostname)}.ico`,
+      new URL("/favicon.ico", url).href,
+    ];
+  } catch {
+    return [];
+  }
 }
 
 function profileAvatarUrl(profile: any) {

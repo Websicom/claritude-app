@@ -722,6 +722,7 @@ app.patch("/api/profile", async (c) => {
     .get("db")
     .from("profiles")
     .update(update)
+    .eq("id", c.get("userId"))
     .select()
     .single();
   return error ? c.json({ error: error.message }, 400) : c.json(data);
@@ -770,6 +771,7 @@ app.put("/api/profile/avatar", async (c) => {
       },
       updated_at: new Date().toISOString(),
     })
+    .eq("id", c.get("userId"))
     .select()
     .single();
   return error ? c.json({ error: error.message }, 400) : c.json(data);
@@ -794,6 +796,7 @@ app.delete("/api/profile/avatar", async (c) => {
       },
       updated_at: new Date().toISOString(),
     })
+    .eq("id", c.get("userId"))
     .select()
     .single();
   return error ? c.json({ error: error.message }, 400) : c.json(data);

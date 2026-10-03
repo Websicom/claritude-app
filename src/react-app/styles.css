@@ -3009,24 +3009,15 @@ input[type="checkbox"]:checked:after {
 .audit-page-menu .audit-page-delete {
   width: 30px;
   flex: 0 0 30px;
+  display: flex;
   justify-content: center;
   padding: 7px;
-  color: var(--muted);
-  background: transparent;
-  opacity: 0;
-}
-.audit-page-option:hover .audit-page-delete,
-.audit-page-delete:focus-visible {
-  opacity: 1;
+  color: var(--red);
+  background: #fff5f5;
 }
 .audit-page-menu .audit-page-delete:hover {
   color: var(--red);
   background: #fff0f1;
-}
-@media (hover: none), (max-width: 760px) {
-  .audit-page-menu .audit-page-delete {
-    opacity: 1;
-  }
 }
 .audit-filter-actions {
   top: 42px;
