@@ -2665,7 +2665,9 @@ function AuditView({
   const isStalledActiveRun = (run: AuditRun) => {
     if (!["queued", "running"].includes(run.status)) return false;
     const heartbeat = Date.parse(run.heartbeat_at || run.created_at);
-    return Number.isFinite(heartbeat) && Date.now() - heartbeat > 2 * 60_000;
+    const createdAt = Date.parse(run.created_at);
+    return (Number.isFinite(heartbeat) && Date.now() - heartbeat > 2 * 60_000) ||
+      (Number.isFinite(createdAt) && Date.now() - createdAt > 5 * 60_000);
   };
   const isCurrentActiveRun = (run: AuditRun) =>
     ["queued", "running"].includes(run.status) &&
@@ -6302,7 +6304,11 @@ function AuditProgress({ run, onRetry }: { run: AuditRun; onRetry: () => void })
   const complete = Math.min(run.progress_completed || 0, total || Number.MAX_SAFE_INTEGER);
   const percent = total ? Math.round((complete / total) * 100) : null;
   const heartbeat = Date.parse(run.heartbeat_at || run.created_at);
-  const stalled = ["queued", "running"].includes(run.status) && Number.isFinite(heartbeat) && Date.now() - heartbeat > 2 * 60_000;
+  const createdAt = Date.parse(run.created_at);
+  const stalled = ["queued", "running"].includes(run.status) && (
+    Number.isFinite(heartbeat) && Date.now() - heartbeat > 2 * 60_000 ||
+    Number.isFinite(createdAt) && Date.now() - createdAt > 5 * 60_000
+  );
   const stageLabels: Record<string, string> = {
     queued: "Waiting for an audit worker",
     fetching_page: "Collecting the selected page",

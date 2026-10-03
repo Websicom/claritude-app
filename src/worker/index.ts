@@ -1017,7 +1017,9 @@ app.post("/api/audits", async (c) => {
     .limit(20);
   const freshActiveRun = (activeRuns || []).find((candidate) => {
     const lastHeartbeat = Date.parse(candidate.heartbeat_at || candidate.created_at);
-    return !Number.isFinite(lastHeartbeat) || Date.now() - lastHeartbeat <= 2 * 60_000;
+    const createdAt = Date.parse(candidate.created_at);
+    const withinHardDeadline = !Number.isFinite(createdAt) || Date.now() - createdAt <= 5 * 60_000;
+    return withinHardDeadline && (!Number.isFinite(lastHeartbeat) || Date.now() - lastHeartbeat <= 2 * 60_000);
   });
   if (freshActiveRun)
     return c.json({ error: "audit_already_active", run: freshActiveRun }, 409);
