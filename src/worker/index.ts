@@ -64,7 +64,7 @@ const LIMITS = {
   analyticsEventsPerPropertyPerDay: 50_000,
 } as const;
 
-const PAID_VERIFICATION_SOURCE_RUN_ID = "2f8ccefe-2840-44e5-9d11-df3e7ba27d77";
+const PAID_VERIFICATION_SOURCE_RUN_ID = "260cd4fa-c329-4b2c-b60f-35ca437d7446";
 
 export function validAvatarBytes(contentType: string, bytes: Uint8Array) {
   const startsWith = (...signature: number[]) =>
@@ -2439,7 +2439,7 @@ async function collectBrowserLab(env: Env, url: string) {
                 locator: Array.isArray(node.target) ? node.target.join(" ") : String(node.target || ""),
                 html: node.html,
                 source: "accessibility",
-                viewport: strategy,
+                viewport,
                 values: { failureSummary: node.failureSummary, impact: node.impact || violation.impact || null },
               })),
             })),
@@ -2451,7 +2451,7 @@ async function collectBrowserLab(env: Env, url: string) {
                 locator: Array.isArray(node.target) ? node.target.join(" ") : String(node.target || ""),
                 html: node.html,
                 source: "accessibility",
-                viewport: strategy,
+                viewport,
                 values: { failureSummary: node.failureSummary, impact: node.impact || rule.impact || null },
               })),
             })),
@@ -3466,6 +3466,13 @@ async function logPaidVerificationAudit(env: Env) {
     checkId: row.check_id,
     reason: typeof row.evidence?.reason === "string" ? row.evidence.reason : "No reason recorded",
     errors: row.evidence?.errors || null,
+    inconclusive: Array.isArray(row.evidence?.inconclusive) ? row.evidence.inconclusive.map((item: Record<string, unknown>) => ({
+      requestedUrl: item.requestedUrl,
+      finalUrl: item.finalUrl,
+      state: item.state,
+      status: item.status,
+      error: item.error,
+    })) : null,
   }));
   const accessibility = rows.filter((row) => row.check_id.startsWith("accessibility.")).map((row) => ({
     checkId: row.check_id,

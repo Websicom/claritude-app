@@ -66,7 +66,23 @@ type AuditEvaluator = (check: AuditCheck, evidence: AuditEvidenceBundle) => Omit
 
 const sourceElements = (evidence: AuditEvidenceBundle, tagName: string) => evidence.source.elements.filter((element) => element.tagName === tagName);
 const attr = (element: SourceDomEvidence["elements"][number], name: string) => element.attributes.find((item) => item.name.toLowerCase() === name.toLowerCase())?.value ?? null;
-const occurrence = (element: SourceDomEvidence["elements"][number], values?: Record<string, unknown>): AuditOccurrence => ({ locator: element.locator, html: element.html, source: "html", values });
+const occurrence = (element: SourceDomEvidence["elements"][number], values?: Record<string, unknown>): AuditOccurrence => {
+  const maxHtmlBytes = 1_000;
+  if (element.html.length <= maxHtmlBytes)
+    return { locator: element.locator, html: element.html, source: "html", values };
+  const openingTag = element.html.match(/^<[^>]+>/)?.[0] || `<${element.tagName}>`;
+  return {
+    locator: element.locator,
+    html: `${openingTag}…</${element.tagName}>`,
+    source: "html",
+    values: {
+      ...values,
+      textSample: element.text.slice(0, 300),
+      htmlTruncated: true,
+      originalHtmlBytes: element.html.length,
+    },
+  };
+};
 const result = (outcome: AuditOutcome, evidence: Record<string, unknown>, reason?: string) => ({ outcome, evidence, ...(reason ? { reason } : {}) });
 const unable = (reason: string, evidence: Record<string, unknown> = {}) => result("unable_to_test", { ...evidence, reason }, reason);
 const optionalMissing = (feature: string) => result("advisory", { present: false, feature }, `${feature} is optional and was not detected`);

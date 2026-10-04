@@ -291,6 +291,20 @@ describe("audit v2 evidence architecture", () => {
     expect(JSON.stringify(evaluated.evidence).length).toBeLessThan(300);
   });
 
+  it("retains explanatory provenance without storing a large container subtree", () => {
+    const evidence = bundle(`<html><body><main id="content">${"Long main content ".repeat(10_000)}</main></body></html>`);
+    const evaluated = evaluateAuditCheck("seo.content.structure.and.headings.main.content.landmark.present", evidence);
+    expect(evaluated.outcome).toBe("passed");
+    expect(evaluated.evidence).toMatchObject({
+      occurrences: [{
+        locator: "#content",
+        html: '<main id="content">…</main>',
+        values: { htmlTruncated: true },
+      }],
+    });
+    expect(JSON.stringify(evaluated.evidence).length).toBeLessThan(1_000);
+  });
+
   it("fails required metadata when it is missing and uses not-applicable only for a dependent check", () => {
     const evidence = bundle("<html><head></head><body></body></html>");
     expect(evaluateAuditCheck("seo.page.metadata.canonical.url.declared", evidence).outcome).toBe("failed");
