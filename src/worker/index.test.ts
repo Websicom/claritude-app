@@ -19,6 +19,7 @@ import {
   validAvatarBytes,
   validPublicUrl,
   withAuditDeadline,
+  closeBrowserWithDeadline,
   workspaceDeletionError,
   renderUptimeAlertEmail,
 } from "./index";
@@ -65,6 +66,12 @@ describe("worker evidence pipelines", () => {
       () => { cleanedUp = true; },
     )).rejects.toThrow("collector timed out");
     expect(cleanedUp).toBe(true);
+  });
+
+  it("does not let stalled BrowserLab cleanup block the audit", async () => {
+    const startedAt = Date.now();
+    await closeBrowserWithDeadline(() => new Promise<never>(() => undefined), 5);
+    expect(Date.now() - startedAt).toBeLessThan(250);
   });
 
   it("expires audit runs on a stale heartbeat or the hard runtime deadline", () => {

@@ -2346,6 +2346,17 @@ export async function withAuditDeadline<T>(
   }
 }
 
+export async function closeBrowserWithDeadline(
+  close: () => Promise<unknown>,
+  timeoutMs = 5_000,
+): Promise<void> {
+  await withAuditDeadline(
+    Promise.resolve().then(close),
+    timeoutMs,
+    "BrowserLab close timed out",
+  ).catch(() => undefined);
+}
+
 async function collectBrowserLab(env: Env, url: string) {
   const browser = await puppeteer.launch(env.BROWSER);
   try {
@@ -2682,7 +2693,7 @@ async function collectBrowserLab(env: Env, url: string) {
     });
     return { desktop, mobile };
   } finally {
-    await browser.close().catch(() => undefined);
+    await closeBrowserWithDeadline(() => browser.close());
   }
 }
 
