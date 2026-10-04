@@ -2821,11 +2821,11 @@ function AuditView({
     results = latest?.audit_results || [],
     completedCategoryCount = Object.values(auditRunCategoryScores(latest)).filter((score) => score != null).length,
     partial = Boolean(latest) && !isAuditRunComplete(latest),
-    actionable = results.filter((result: any) => ["fail", "warning"].includes(result.outcome));
+    actionable = results.filter((result: any) => ["failed", "advisory"].includes(result.outcome));
   const resultCounts = {
-    critical: actionable.filter((result: any) => String(result.category) !== "Security" && (["critical", "high"].includes(result.severity) || result.outcome === "fail")).length,
+    critical: actionable.filter((result: any) => String(result.category) !== "Security" && (["critical", "high"].includes(result.severity) || result.outcome === "failed")).length,
     security: actionable.filter((result: any) => result.category === "Security" && ["critical", "high"].includes(result.severity)).length,
-    warnings: actionable.filter((result: any) => !["critical", "high"].includes(result.severity) && result.outcome === "warning").length,
+    warnings: actionable.filter((result: any) => !["critical", "high"].includes(result.severity) && result.outcome === "advisory").length,
   };
   async function run(checkIds?: string[]) {
     if (!selectedPage) return;
@@ -6690,9 +6690,9 @@ const auditDetailedCategories = [
 ] as const;
 
 function auditSeverityGroup(result: any) {
-  if (result.outcome === "pass") return "pass";
-  if (["informational", "not_applicable", "unable_to_test"].includes(result.outcome)) return "advisory";
-  const severe = ["critical", "high"].includes(String(result.severity).toLowerCase()) || result.outcome === "fail";
+  if (result.outcome === "passed") return "pass";
+  if (["advisory", "not_applicable", "unable_to_test"].includes(result.outcome)) return "advisory";
+  const severe = ["critical", "high"].includes(String(result.severity).toLowerCase()) || result.outcome === "failed";
   if (severe && String(result.category) === "Security") return "security";
   if (severe) return "critical";
   return "warning";
@@ -6765,17 +6765,17 @@ function AuditFindingsPanel({
 function AuditChecksPanel({ pageName, run, results, onOpenCategory }: { pageName: string; run?: AuditRun; results: any[]; onOpenCategory: (category: string) => void }) {
   const summary = {
     automated: run?.catalogue_summary?.snapshotChecks ?? results.length,
-    passed: results.filter((result) => result.outcome === "pass").length,
-    findings: results.filter((result) => ["fail", "warning"].includes(result.outcome)).length,
-    informational: results.filter((result) => ["informational", "not_applicable"].includes(result.outcome)).length,
+    passed: results.filter((result) => result.outcome === "passed").length,
+    findings: results.filter((result) => ["failed", "advisory"].includes(result.outcome)).length,
+    informational: results.filter((result) => result.outcome === "not_applicable").length,
     reviewed: results.filter((result) => result.review_status && result.review_status !== "not_reviewed").length,
   };
   const unable = results.filter((result) => result.outcome === "unable_to_test").length;
   const categoryRows = auditDetailedCategories.map(([key, label]) => {
     const rows = results.filter((result) => result.subcategory === key);
-    const passed = rows.filter((result) => result.outcome === "pass").length;
-    const findings = rows.filter((result) => ["fail", "warning"].includes(result.outcome)).length;
-    const info = rows.filter((result) => ["informational", "not_applicable"].includes(result.outcome)).length;
+    const passed = rows.filter((result) => result.outcome === "passed").length;
+    const findings = rows.filter((result) => ["failed", "advisory"].includes(result.outcome)).length;
+    const info = rows.filter((result) => result.outcome === "not_applicable").length;
     const denominator = passed + findings;
     return { key, label, checks: rows.length, passed, findings, info, passRate: denominator ? Math.round(passed / denominator * 100) : null };
   });
@@ -6783,7 +6783,7 @@ function AuditChecksPanel({ pageName, run, results, onOpenCategory }: { pageName
   return (
     <>
       <div className="audit-check-summary">
-        {[["Automated checks", summary.automated], ["Passed", summary.passed], ["Findings", summary.findings], ["Informational / N/A", summary.informational], ["Reviewed", summary.reviewed]].map(([label, value]) => (
+        {[["Automated checks", summary.automated], ["Passed", summary.passed], ["Findings", summary.findings], ["Not applicable", summary.informational], ["Reviewed", summary.reviewed]].map(([label, value]) => (
           <div key={String(label)}><small>{label}</small><b>{value}</b></div>
         ))}
       </div>
@@ -6842,17 +6842,17 @@ function AuditComparePanel({
   const laterResults = later.audit_results || [];
   const previousByCheck = new Map(earlierResults.map((result: any) => [result.check_id, result]));
   const currentByCheck = new Map(laterResults.map((result: any) => [result.check_id, result]));
-  const previousFindings = earlierResults.filter((result: any) => ["fail", "warning"].includes(result.outcome));
-  const currentFindings = laterResults.filter((result: any) => ["fail", "warning"].includes(result.outcome));
+  const previousFindings = earlierResults.filter((result: any) => ["failed", "advisory"].includes(result.outcome));
+  const currentFindings = laterResults.filter((result: any) => ["failed", "advisory"].includes(result.outcome));
   const previousFindingIds = new Set(previousFindings.map(auditFindingIdentity));
   const currentFindingIds = new Set(currentFindings.map(auditFindingIdentity));
   const resolved = previousFindings.filter((result: any) => {
     const current: any = currentByCheck.get(result.check_id);
-    return current && current.outcome !== "unable_to_test" && !["fail", "warning"].includes(current.outcome) && !currentFindingIds.has(auditFindingIdentity(result));
+    return current && current.outcome !== "unable_to_test" && !["failed", "advisory"].includes(current.outcome) && !currentFindingIds.has(auditFindingIdentity(result));
   }).length;
   const added = currentFindings.filter((result: any) => {
     const previous: any = previousByCheck.get(result.check_id);
-    return previous && previous.outcome !== "unable_to_test" && !["fail", "warning"].includes(previous.outcome) && !previousFindingIds.has(auditFindingIdentity(result));
+    return previous && previous.outcome !== "unable_to_test" && !["failed", "advisory"].includes(previous.outcome) && !previousFindingIds.has(auditFindingIdentity(result));
   }).length;
   const unchanged = currentFindings.filter((result: any) => previousFindingIds.has(auditFindingIdentity(result))).length;
   const earlierPerformance = earlier.category_scores?.Performance ?? auditCategoryScore(earlierResults, auditCategoryPrefixes.Performance);
@@ -6931,11 +6931,11 @@ function filterAuditFindings(results: any[], filter: string) {
   if (filter === "All") return results;
   const normalized = filter.toLowerCase();
   if (normalized === "critical")
-    return results.filter((result) => String(result.category) !== "Security" && (["critical", "high"].includes(result.severity) || result.outcome === "fail"));
+    return results.filter((result) => String(result.category) !== "Security" && (["critical", "high"].includes(result.severity) || result.outcome === "failed"));
   if (normalized === "security")
-    return results.filter((result) => String(result.category).toLowerCase() === "security" && (["critical", "high"].includes(result.severity) || result.outcome === "fail"));
+    return results.filter((result) => String(result.category).toLowerCase() === "security" && (["critical", "high"].includes(result.severity) || result.outcome === "failed"));
   if (normalized === "advisory")
-    return results.filter((result) => ["informational", "not_applicable", "unable_to_test"].includes(result.outcome));
+    return results.filter((result) => ["not_applicable", "unable_to_test"].includes(result.outcome));
   return results.filter(
     (result) =>
       String(result.category || "").toLowerCase().includes(normalized) ||
@@ -7252,7 +7252,7 @@ function fixtureAudit(
       const securityCritical = category === "Security" && isFinding;
       const ordinaryCritical = isFinding && !securityCritical && criticals < 12;
       if (ordinaryCritical) criticals += 1;
-      const outcome = isFinding ? (securityCritical || ordinaryCritical ? "fail" : "warning") : isInfo ? "informational" : "pass";
+      const outcome = isFinding ? (securityCritical || ordinaryCritical ? "failed" : "advisory") : isInfo ? "not_applicable" : "passed";
       const checkId = `fixture.${subcategory}.${index + 1}`;
       return {
         id: String(resultId),
@@ -7273,9 +7273,9 @@ function fixtureAudit(
     }),
   );
   if (previous) {
-    const resolvedIndex = generatedResults.findIndex((result) => result.outcome === "pass");
-    generatedResults[0] = { ...generatedResults[0], outcome: "pass", severity: "informational" };
-    generatedResults[resolvedIndex] = { ...generatedResults[resolvedIndex], outcome: "warning", severity: "warning" };
+    const resolvedIndex = generatedResults.findIndex((result) => result.outcome === "passed");
+    generatedResults[0] = { ...generatedResults[0], outcome: "passed", severity: "informational" };
+    generatedResults[resolvedIndex] = { ...generatedResults[resolvedIndex], outcome: "advisory", severity: "warning" };
   }
   const featuredOrder = [
     "Hero image discovered too late",
@@ -7332,7 +7332,7 @@ function fixtureAudit(
       snapshotChecks: 306,
       attemptedChecks: 306,
       successfullyExecutedChecks: 306,
-      passedChecks: auditResults.filter((result) => result.outcome === "pass").length,
+      passedChecks: auditResults.filter((result) => result.outcome === "passed").length,
     },
     registry_snapshot: auditResults.map((result) => ({ id: result.check_id })),
     audit_results: auditResults,
@@ -7395,11 +7395,11 @@ function auditCategoryScore(
     (result) =>
       categoryPrefixes.some((prefix) =>
         String(result.category || "").startsWith(prefix),
-      ) && ["pass", "warning", "fail"].includes(result.outcome),
+      ) && ["passed", "advisory", "failed"].includes(result.outcome),
   );
   if (!executed.length) return null;
   const weighted = executed.map((result) => ({
-    value: result.outcome === "pass" ? 1 : result.outcome === "warning" ? 0.5 : 0,
+    value: result.outcome === "passed" ? 1 : result.outcome === "advisory" ? 0.5 : 0,
     weight: Math.max(0, Number(result.weight ?? 1)),
   }));
   const totalWeight = weighted.reduce((total, item) => total + item.weight, 0);

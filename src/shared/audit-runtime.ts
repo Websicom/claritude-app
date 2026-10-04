@@ -10,6 +10,10 @@ export type AuditRegistrySnapshot = {
   description?: string;
   recommendation?: string;
   sourceReference?: string;
+  evidenceSchema?: string;
+  evidenceRequirement?: string;
+  allowedOutcomes?: string[];
+  groupId?: string;
 };
 
 export type AuditRegistryRow = {
@@ -24,6 +28,10 @@ export type AuditRegistryRow = {
   description?: string;
   recommendation?: string;
   source_reference?: string;
+  evidence_schema?: string;
+  evidence_requirement?: string;
+  allowed_outcomes?: string[];
+  group_id?: string;
 };
 
 export type ScoredAuditResult = {
@@ -46,14 +54,18 @@ export function buildRegistrySnapshot(rows: AuditRegistryRow[], executableIds: R
       description: row.description,
       recommendation: row.recommendation,
       sourceReference: row.source_reference,
+      evidenceSchema: row.evidence_schema,
+      evidenceRequirement: row.evidence_requirement,
+      allowedOutcomes: row.allowed_outcomes,
+      groupId: row.group_id,
     }));
 }
 
 export function scoreAuditResults(snapshot: AuditRegistrySnapshot[], results: ScoredAuditResult[]) {
   const weights = new Map(snapshot.map((check) => [check.id, check.weight]));
-  const scorable = results.filter((result) => ['pass', 'warning', 'fail'].includes(result.outcome));
+  const scorable = results.filter((result) => ['passed', 'advisory', 'failed'].includes(result.outcome));
   const weighted = scorable.map((result) => ({
-    value: result.outcome === 'pass' ? 1 : result.outcome === 'warning' ? 0.5 : 0,
+    value: result.outcome === 'passed' ? 1 : result.outcome === 'advisory' ? 0.5 : 0,
     weight: Math.max(0, weights.get(result.check_id) ?? 1),
   }));
   const totalWeight = weighted.reduce((total, item) => total + item.weight, 0);

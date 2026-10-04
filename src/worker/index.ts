@@ -4,13 +4,40 @@ import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
 import puppeteer from "@cloudflare/puppeteer";
 import WEB_VITALS_SOURCE from "../../node_modules/web-vitals/dist/web-vitals.iife.js?raw";
+import AXE_SOURCE from "../../node_modules/axe-core/axe.min.js?raw";
 import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
+import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
 import {
   buildRegistrySnapshot,
   scoreAuditResults,
   type AuditRegistrySnapshot,
 } from "../shared/audit-runtime";
 import { summarizeUptimeChecks } from "../shared/uptime";
+import {
+  headerMultimap,
+  parseFontFaces,
+  parseSitemapXml,
+  parseSourceDom,
+  type AuditOccurrence,
+  type DnsEvidence,
+  type HttpEvidence,
+  type LinkDeclaration,
+  type ResourceDeclaration,
+} from "../shared/audit-evidence";
+import {
+  collectLinkInventory,
+  collectResourceInventory,
+  inspectDestination,
+  mergeRenderedDeclarations,
+  parseRobotsEvidence,
+} from "../shared/audit-collectors";
+import {
+  evaluateAuditCatalogue,
+  validateAuditEvaluatorRegistry,
+  type AuditEvidenceBundle,
+  type RenderedViewportEvidence,
+  type TypedAuditResult,
+} from "../shared/audit-evaluators";
 
 type Env = {
   SUPABASE_URL: string;
@@ -25,44 +52,7 @@ type Env = {
 };
 type Variables = { db: SupabaseClient; userId: string };
 type Job = { type: "audit" | "uptime"; id: string };
-type CheckOutcome =
-  | "pass"
-  | "warning"
-  | "fail"
-  | "informational"
-  | "not_applicable"
-  | "unable_to_test";
-type AuditResult = {
-  check_id: string;
-  outcome: CheckOutcome;
-  evidence: Record<string, unknown>;
-  duration_ms: number;
-};
-type AuditResourceEvidence = {
-  url: string;
-  status: number | null;
-  finalUrl: string | null;
-  body: string;
-  contentType: string | null;
-  error: string | null;
-};
-type AuditNetworkEvidence = {
-  redirects: { url: string; status: number; location: string }[];
-  canonical: AuditResourceEvidence | null;
-  robots: AuditResourceEvidence;
-  sitemaps: AuditResourceEvidence[];
-  llms: AuditResourceEvidence;
-  llmsFull: AuditResourceEvidence;
-  dnsRecords: { query: string; type: string; ttl: number; data: string }[];
-  dnsErrors: string[];
-  dnsAuthenticated: boolean | null;
-  checkedLinks: AuditResourceEvidence[];
-  checkedResources: AuditResourceEvidence[];
-  apexHttp: AuditResourceEvidence;
-  apexHttps: AuditResourceEvidence;
-  wwwHttp: AuditResourceEvidence;
-  wwwHttps: AuditResourceEvidence;
-};
+type AuditResult = TypedAuditResult;
 
 const LIMITS = {
   propertiesPerAccount: 25,
@@ -102,108 +92,7 @@ const ACTIVE_AUDIT_CHECKS = AUDIT_REGISTRY.filter(
   (check) => check.lifecycle === "active",
 );
 const ACTIVE_AUDIT_IDS = new Set(ACTIVE_AUDIT_CHECKS.map((check) => check.id));
-const EXPLICIT_SOURCE_CHECK_IDS = new Set([
-  "seo.metadata.title.present",
-  "seo.metadata.title.not_empty",
-  "seo.metadata.title.length",
-  "seo.metadata.description.present",
-  "seo.metadata.description.not_empty",
-  "seo.crawling.http_status",
-  "seo.crawling.html_content",
-  "seo.content.h1.present",
-  "seo.content.h1.multiple",
-  "accessibility.document.title",
-  "accessibility.mobile.viewport",
-  "security.https.selected",
-  "security.headers.hsts",
-  "security.headers.csp",
-  "infrastructure.http.content_type",
-  "ai.content.source_extractable",
-]);
-const CONTEXT_AUDIT_CHECK_IDS = new Set([
-  "seo.page.metadata.canonical.target.reachable",
-  "seo.page.metadata.canonical.target.redirects",
-  "seo.crawling.and.indexing.redirect.chain.detected",
-  "seo.crawling.and.indexing.redirect.loop.detected",
-  "seo.crawling.and.indexing.robots.txt.file.reachable",
-  "seo.crawling.and.indexing.robots.txt.contains.readable.text",
-  "seo.crawling.and.indexing.robots.txt.parsing.errors.detected",
-  "seo.crawling.and.indexing.selected.page.allowed.by.googlebot.robots.rules",
-  "seo.crawling.and.indexing.selected.page.allowed.by.bingbot.robots.rules",
-  "seo.crawling.and.indexing.sitemap.url.declared.in.robots.txt",
-  "seo.crawling.and.indexing.conventional.sitemap.locations.checked",
-  "seo.crawling.and.indexing.referenced.xml.sitemap.reachable",
-  "seo.crawling.and.indexing.referenced.sitemap.xml.valid",
-  "seo.crawling.and.indexing.selected.page.found.in.checked.sitemap.files",
-  "seo.crawling.and.indexing.sitemap.lastmod.date.formats.valid",
-  "infrastructure.dns.and.domain.configuration.returned.dns.record.ttls.recorded",
-  "infrastructure.dns.and.domain.configuration.domain.nameservers.recorded",
-  "infrastructure.dns.and.domain.configuration.domain.soa.record.recorded",
-  "infrastructure.dns.and.domain.configuration.dns.resolver.errors.detected",
-  "infrastructure.dns.and.domain.configuration.dnssec.validation.status.reported.by.the.resolver",
-  "infrastructure.dns.and.domain.configuration.spf.record.detected",
-  "infrastructure.dns.and.domain.configuration.multiple.spf.records.detected",
-  "infrastructure.dns.and.domain.configuration.dmarc.record.detected",
-  "infrastructure.dns.and.domain.configuration.dmarc.policy.recorded",
-  "infrastructure.dns.and.domain.configuration.caa.certificate.authority.restrictions.detected",
-  "infrastructure.dns.and.domain.configuration.selected.hostname.resolves.successfully",
-  "infrastructure.dns.and.domain.configuration.ipv4.addresses.recorded",
-  "infrastructure.dns.and.domain.configuration.ipv6.addresses.recorded",
-  "infrastructure.dns.and.domain.configuration.returned.cname.records.recorded",
-  "infrastructure.dns.and.domain.configuration.non.existent.hostname.response.detected",
-  "infrastructure.dns.and.domain.configuration.apex.domain.resolution.checked",
-  "infrastructure.dns.and.domain.configuration.www.hostname.resolution.checked",
-  "infrastructure.dns.and.domain.configuration.mail.exchange.records.detected",
-  "ai_readiness.crawler.permissions.selected.page.allowed.by.oai.searchbot.robots.rules",
-  "ai_readiness.crawler.permissions.selected.page.allowed.by.gptbot.robots.rules",
-  "ai_readiness.crawler.permissions.selected.page.allowed.by.claude.searchbot.robots.rules",
-  "ai_readiness.crawler.permissions.selected.page.allowed.by.claudebot.robots.rules",
-  "ai_readiness.crawler.permissions.explicit.chatgpt.user.robots.rules.detected",
-  "ai_readiness.crawler.permissions.explicit.claude.user.robots.rules.detected",
-  "ai_readiness.crawler.permissions.googlebot.robots.access.for.the.selected.page.checked",
-  "ai_readiness.crawler.permissions.ai.search.and.training.crawler.permissions.differ",
-  "ai_readiness.crawler.permissions.ai.crawler.rules.inherited.from.wildcard.directives.identified",
-  "ai_readiness.optional.resources.llms.txt.file.reachable",
-  "ai_readiness.optional.resources.llms.txt.returned.as.readable.text",
-  "ai_readiness.optional.resources.llms.txt.title.detected",
-  "ai_readiness.optional.resources.llms.txt.summary.detected",
-  "ai_readiness.optional.resources.llms.txt.markdown.links.parse.correctly",
-  "ai_readiness.optional.resources.llms.txt.links.checked.within.the.request.limit",
-  "ai_readiness.optional.resources.selected.page.referenced.in.checked.llms.txt.links",
-  "ai_readiness.optional.resources.llms.full.txt.file.reachable",
-  "ai_readiness.optional.resources.llms.full.txt.returned.as.readable.text",
-  "seo.links.and.navigation.checked.links.returning.http.404.detected",
-  "seo.links.and.navigation.checked.links.returning.http.410.detected",
-  "seo.links.and.navigation.checked.links.returning.server.errors.detected",
-  "seo.links.and.navigation.checked.links.failing.dns.resolution.detected",
-  "seo.links.and.navigation.checked.links.failing.https.connections.detected",
-  "seo.links.and.navigation.checked.links.timing.out.detected",
-  "seo.links.and.navigation.checked.links.blocked.by.access.restrictions.detected",
-  "seo.links.and.navigation.checked.links.encountering.rate.limits.detected",
-  "seo.links.and.navigation.checked.links.containing.redirect.loops.detected",
-  "seo.links.and.navigation.checked.links.exceeding.the.redirect.limit.detected",
-  "seo.links.and.navigation.checked.links.redirecting.to.broken.destinations.detected",
-  "seo.links.and.navigation.redirecting.internal.links.detected",
-  "seo.links.and.navigation.redirecting.external.links.detected",
-  "accessibility.images.and.media.caption.track.resources.reachable",
-  "security.security.and.browser.protections.http.version.redirects.to.https",
-  "security.security.and.browser.protections.https.connection.succeeds",
-  "security.security.and.browser.protections.http.image.and.media.references.detected",
-  "security.security.and.browser.protections.observed.cookies.have.secure.attributes",
-  "security.security.and.browser.protections.observed.cookies.have.httponly.attributes",
-  "security.security.and.browser.protections.observed.cookies.have.samesite.attributes",
-  "infrastructure.server.and.http.information.response.cookie.attributes.recorded",
-  "infrastructure.dns.and.domain.configuration.apex.and.www.http.redirect.behaviour.compared",
-  "seo.structured.data.checked.structured.data.image.urls.reachable",
-  "seo.social.sharing.and.site.identity.open.graph.image.reachable",
-  "seo.social.sharing.and.site.identity.declared.favicon.reachable",
-  "seo.social.sharing.and.site.identity.declared.apple.touch.icon.reachable",
-  "seo.social.sharing.and.site.identity.linked.web.app.manifest.reachable",
-  "seo.social.sharing.and.site.identity.web.app.manifest.contains.valid.json",
-  "ai_readiness.optional.resources.linked.markdown.alternative.for.the.selected.page.detected",
-  "ai_readiness.optional.resources.declared.markdown.alternative.reachable",
-  "ai_readiness.optional.resources.declared.markdown.alternative.contains.readable.content",
-]);
+validateAuditEvaluatorRegistry();
 const IMPLEMENTED_AUDIT_CHECKS = ACTIVE_AUDIT_CHECKS.filter(
   (check) => auditCheckHasExecutableLogic(check.id),
 );
@@ -1255,7 +1144,7 @@ app.post("/api/audits", async (c) => {
     return c.json({ error: "audit_daily_limit_reached" }, 429);
   const { data: registryRows, error: registryError } = await db
     .from("audit_check_definitions")
-    .select("id,title,weight,logic_version,configuration_version,primary_category,subcategory,severity,description,recommendation,source_reference")
+    .select("id,title,weight,logic_version,configuration_version,primary_category,subcategory,severity,description,recommendation,source_reference,evidence_schema,evidence_requirement,allowed_outcomes,group_id")
     .eq("lifecycle", "active")
     .order("id");
   if (registryError)
@@ -1277,7 +1166,7 @@ app.post("/api/audits", async (c) => {
       page_url: target.href,
       status: "queued",
       registry_snapshot: snapshot,
-      scoring_version: "1.0.0",
+      scoring_version: "2.0.0",
       execution_stage: "queued",
       progress_completed: 0,
       progress_total: snapshot.length,
@@ -1444,18 +1333,25 @@ app.get("/api/properties/:id/audits", async (c) => {
           weight: Number(snapshotDefinition?.weight ?? definition?.weight ?? 1),
         };
       });
-      const labEvidence = auditResults.find((result: any) =>
-        result.evidence?.measuredBy === "Cloudflare Browser Run" &&
-        result.evidence?.desktop?.score != null &&
-        result.evidence?.mobile?.score != null,
-      )?.evidence;
+      const performanceRows = [
+        ["LCP", "performance.performance.largest.contentful.paint.measured", "≤ 2.5 s", (value: number) => `${(value / 1000).toFixed(1)} s`],
+        ["TBT", "performance.performance.total.blocking.time.measured", "≤ 200 ms", (value: number) => `${Math.round(value)} ms`],
+        ["CLS", "performance.performance.cumulative.layout.shift.measured", "≤ 0.1", (value: number) => value.toFixed(2)],
+        ["FCP", "performance.performance.first.contentful.paint.measured", "≤ 1.8 s", (value: number) => `${(value / 1000).toFixed(1)} s`],
+      ] as const;
+      const metricRows = (viewport: "desktop" | "mobile") => performanceRows.flatMap(([label, checkId, target, format]) => {
+        const value = auditResults.find((result: any) => result.check_id === checkId)?.evidence?.[viewport]?.value;
+        return Number.isFinite(Number(value)) ? [[label, format(Number(value)), target]] : [];
+      });
+      const desktopMetrics = metricRows("desktop");
+      const mobileMetrics = metricRows("mobile");
       return {
         ...run,
         audit_results: auditResults,
-        performance_metrics: labEvidence ? {
-          desktop: formatLabRows(labEvidence.desktop),
-          mobile: formatLabRows(labEvidence.mobile),
-          scores: { desktop: labEvidence.desktop.score, mobile: labEvidence.mobile.score },
+        performance_metrics: desktopMetrics.length || mobileMetrics.length ? {
+          desktop: desktopMetrics,
+          mobile: mobileMetrics,
+          scores: { desktop: null, mobile: null },
           source: "Cloudflare Browser Run",
         } : undefined,
         catalogue_summary: {
@@ -1469,7 +1365,7 @@ app.get("/api/properties/:id/audits", async (c) => {
             (result: any) => result.outcome !== "unable_to_test",
           ).length,
           passedChecks: auditResults.filter(
-            (result: any) => result.outcome === "pass",
+            (result: any) => result.outcome === "passed",
           ).length,
         },
       };
@@ -2337,6 +2233,8 @@ app.get("/api/properties/:id/report", async (c) => {
 app.notFound((c) => c.env.ASSETS.fetch(c.req.raw));
 
 type BrowserLabResult = {
+  collection: { status: "complete" | "partial" | "failed"; reason?: string };
+  durationMs: number;
   score: number;
   fcp: number;
   lcp: number;
@@ -2397,6 +2295,11 @@ type BrowserLabResult = {
   visibleMainHeading: boolean;
   unnamedPrimaryNavigation: number;
   securityPolicyViolations: number;
+  networkResources: RenderedViewportEvidence["networkResources"];
+  occurrences: Record<string, AuditOccurrence[]>;
+  axe: RenderedViewportEvidence["axe"];
+  links: LinkDeclaration[];
+  resources: ResourceDeclaration[];
 };
 
 function labMetricScore(value: number, good: number, poor: number) {
@@ -2409,17 +2312,38 @@ async function collectBrowserLab(env: Env, url: string) {
   const browser = await puppeteer.launch(env.BROWSER);
   try {
     const collect = async (strategy: "desktop" | "mobile"): Promise<BrowserLabResult> => {
+      const viewportStarted = Date.now();
       const page = await browser.newPage();
       const failed = new Set<string>();
+      const failedOccurrences: AuditOccurrence[] = [];
+      const consoleOccurrences: AuditOccurrence[] = [];
+      const exceptionOccurrences: AuditOccurrence[] = [];
+      const responseMetadata = new Map<string, { status: number; headers: Record<string, string>; resourceType: string }>();
       let consoleErrors = 0;
       let uncaughtExceptions = 0;
       let securityPolicyViolations = 0;
-      page.on("requestfailed", (request) => failed.add(request.url()));
+      page.on("requestfailed", (request) => {
+        failed.add(request.url());
+        failedOccurrences.push({ url: request.url(), source: "network", viewport: strategy, values: { failure: request.failure()?.errorText || "request failed" } });
+      });
+      page.on("response", (response) => {
+        responseMetadata.set(response.url(), {
+          status: response.status(),
+          headers: response.headers(),
+          resourceType: response.request().resourceType(),
+        });
+      });
       page.on("console", (message) => {
-        if (message.type() === "error") consoleErrors += 1;
+        if (message.type() === "error") {
+          consoleErrors += 1;
+          consoleOccurrences.push({ source: "rendered", viewport: strategy, values: { message: message.text() } });
+        }
         if (/content security policy|refused to (?:load|execute|connect|frame)/i.test(message.text())) securityPolicyViolations += 1;
       });
-      page.on("pageerror", () => { uncaughtExceptions += 1; });
+      page.on("pageerror", (error) => {
+        uncaughtExceptions += 1;
+        exceptionOccurrences.push({ source: "rendered", viewport: strategy, values: { message: error.message } });
+      });
       await page.setViewport(strategy === "mobile"
         ? { width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true }
         : { width: 1440, height: 900, deviceScaleFactor: 1, isMobile: false, hasTouch: false });
@@ -2429,8 +2353,39 @@ async function collectBrowserLab(env: Env, url: string) {
         page.coverage.startJSCoverage({ resetOnNavigation: false }).catch(() => undefined),
         page.coverage.startCSSCoverage({ resetOnNavigation: false }).catch(() => undefined),
       ]);
-      await page.goto(url, { waitUntil: "networkidle2", timeout: 55_000 });
-      const measured = await page.evaluate(async () => {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 55_000 });
+      await page.evaluate(async () => {
+        await Promise.race([
+          document.fonts?.ready || Promise.resolve(),
+          new Promise((resolve) => setTimeout(resolve, 2_000)),
+        ]);
+        await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      });
+      let axe: RenderedViewportEvidence["axe"] = null;
+      try {
+        await page.addScriptTag({ content: AXE_SOURCE });
+        axe = await page.evaluate(async (viewport) => {
+          const instance = (window as any).axe;
+          const report = await instance.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "best-practice"] } });
+          return {
+            version: instance.version,
+            violations: report.violations.map((violation: any) => ({
+              id: violation.id,
+              impact: violation.impact || null,
+              nodes: violation.nodes.map((node: any) => ({
+                locator: Array.isArray(node.target) ? node.target.join(" ") : String(node.target || ""),
+                html: node.html,
+                source: "accessibility",
+                viewport: strategy,
+                values: { failureSummary: node.failureSummary, impact: node.impact || violation.impact || null },
+              })),
+            })),
+          };
+        }, strategy);
+      } catch {
+        axe = null;
+      }
+      const measured = await page.evaluate(async (viewport) => {
         const buffered = (type: string) => new Promise<any[]>((resolve) => {
           const values: any[] = [];
           try {
@@ -2514,6 +2469,56 @@ async function collectBrowserLab(env: Env, url: string) {
         const mainRect = main?.getBoundingClientRect();
         const fixedContentOverlaps = mainRect ? fixedElements.filter((element) => { const rect = element.getBoundingClientRect(); return rect.left < mainRect.right && rect.right > mainRect.left && rect.top < mainRect.bottom && rect.bottom > mainRect.top; }).length : 0;
         const securityPolicyViolations = performance.getEntriesByType("resource").filter((entry) => entry.name.startsWith("data:") === false && !entry.name).length;
+        const locator = (element: Element) => {
+          if ((element as HTMLElement).id) return `#${CSS.escape((element as HTMLElement).id)}`;
+          const parts: string[] = [];
+          let current: Element | null = element;
+          while (current && parts.length < 6) {
+            const siblings = current.parentElement ? Array.from(current.parentElement.children).filter((item) => item.tagName === current!.tagName) : [];
+            parts.unshift(`${current.tagName.toLowerCase()}${siblings.length > 1 ? `:nth-of-type(${siblings.indexOf(current) + 1})` : ""}`);
+            current = current.parentElement;
+          }
+          return parts.join(" > ");
+        };
+        const occurrences: Record<string, AuditOccurrence[]> = {
+          h1: Array.from(document.querySelectorAll("h1")).map((element) => ({ locator: locator(element), html: element.outerHTML, source: "rendered", viewport, values: { text: element.textContent?.trim() || "", visible: visible(element) } })),
+          images: images.map((element, index) => {
+            const rect = element.getBoundingClientRect();
+            return { locator: locator(element), html: element.outerHTML, url: element.currentSrc || element.src, source: "rendered", viewport, values: { displayWidth: rect.width, displayHeight: rect.height, naturalWidth: element.naturalWidth, naturalHeight: element.naturalHeight, ...imageMetrics[index] } };
+          }),
+          smallTouchTargets: interactive.filter((element) => { const rect = element.getBoundingClientRect(); return rect.width < 44 || rect.height < 44; }).map((element) => { const rect = element.getBoundingClientRect(); return { locator: locator(element), html: element.outerHTML, source: "rendered", viewport, values: { width: rect.width, height: rect.height } }; }),
+          overflow: overflowing.map((element) => { const rect = element.getBoundingClientRect(); return { locator: locator(element), html: element.outerHTML, source: "rendered", viewport, values: { left: rect.left, right: rect.right, viewportWidth } }; }),
+        };
+        const renderedLinks = Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href],area[href]")).map((element) => {
+          let resolvedUrl: string | null = null;
+          try { const target = new URL(element.getAttribute("href") || "", location.href); resolvedUrl = ["http:", "https:"].includes(target.protocol) ? target.href : null; } catch { resolvedUrl = null; }
+          return {
+            originalUrl: element.getAttribute("href") || "",
+            resolvedUrl,
+            sourceElement: element.tagName.toLowerCase(),
+            locator: locator(element),
+            internal: resolvedUrl ? new URL(resolvedUrl).hostname === location.hostname : null,
+            source: "rendered",
+            accessibleName: (element.getAttribute("aria-label") || element.textContent || element.getAttribute("title") || "").trim(),
+          };
+        });
+        const renderedResources = Array.from(document.querySelectorAll<HTMLElement>("img[src],source[src],script[src],iframe[src],video[src],audio[src],track[src],link[href],meta[property='og:image'][content],meta[name='twitter:image'][content]")).flatMap((element) => {
+          const tag = element.tagName.toLowerCase();
+          const rel = (element.getAttribute("rel") || "").toLowerCase().split(/\s+/);
+          const declarationType = tag === "track" ? "caption"
+            : tag === "link" && rel.includes("manifest") ? "manifest"
+            : tag === "link" && rel.includes("apple-touch-icon") ? "apple-touch-icon"
+            : tag === "link" && (rel.includes("icon") || rel.includes("shortcut")) ? "favicon"
+            : tag === "link" && (element.getAttribute("type") || "").toLowerCase() === "text/markdown" ? "markdown-alternative"
+            : tag === "link" && rel.includes("stylesheet") ? "stylesheet"
+            : tag === "meta" ? "social-image"
+            : tag;
+          const declaredUrl = element.getAttribute(tag === "link" ? "href" : tag === "meta" ? "content" : "src") || "";
+          if (!declaredUrl) return [];
+          let resolvedUrl: string | null = null;
+          try { const target = new URL(declaredUrl, location.href); resolvedUrl = ["http:", "https:"].includes(target.protocol) ? target.href : null; } catch { resolvedUrl = null; }
+          return [{ declaredUrl, resolvedUrl, declarationType, locator: locator(element), source: "rendered" }];
+        });
         return {
           fcp: Number(fcp?.startTime || 0),
           lcp: Number(lcp?.renderTime || lcp?.loadTime || lcp?.startTime || 0),
@@ -2569,8 +2574,18 @@ async function collectBrowserLab(env: Env, url: string) {
           visibleMainHeading: Array.from(document.querySelectorAll("h1")).some(visible),
           unnamedPrimaryNavigation: Array.from(document.querySelectorAll("nav,[role=navigation]")).filter((element) => !element.getAttribute("aria-label") && !element.getAttribute("aria-labelledby")).length,
           securityPolicyViolations,
+          networkResources: resources.map((entry) => ({
+            url: entry.name,
+            resourceType: entry.initiatorType || "other",
+            transferSize: Number(entry.transferSize || 0),
+            encodedBodySize: Number(entry.encodedBodySize || 0),
+            decodedBodySize: Number(entry.decodedBodySize || 0),
+          })),
+          occurrences,
+          links: renderedLinks,
+          resources: renderedResources,
         };
-      });
+      }, strategy);
       const [jsCoverage, cssCoverage] = await Promise.all([
         page.coverage.stopJSCoverage().catch(() => []),
         page.coverage.stopCSSCoverage().catch(() => []),
@@ -2582,6 +2597,8 @@ async function collectBrowserLab(env: Env, url: string) {
       }, 0);
       return {
         ...measured,
+        collection: { status: "complete" },
+        durationMs: Date.now() - viewportStarted,
         score: Math.round(labMetricScore(measured.lcp, 2500, 4000) * .3 + labMetricScore(measured.tbt, 200, 600) * .3 + labMetricScore(measured.cls, .1, .25) * .25 + labMetricScore(measured.fcp, 1800, 3000) * .15),
         unusedJavaScriptBytes: unused(jsCoverage),
         unusedCssBytes: unused(cssCoverage),
@@ -2589,6 +2606,22 @@ async function collectBrowserLab(env: Env, url: string) {
         consoleErrors,
         uncaughtExceptions,
         securityPolicyViolations,
+        networkResources: measured.networkResources.map((resource: any) => ({
+          ...resource,
+          status: responseMetadata.get(resource.url)?.status ?? null,
+          headers: responseMetadata.get(resource.url)?.headers || {},
+          resourceType: responseMetadata.get(resource.url)?.resourceType || resource.resourceType,
+        })),
+        occurrences: {
+          ...measured.occurrences,
+          failedRequests: failedOccurrences,
+          consoleErrors: consoleOccurrences,
+          uncaughtExceptions: exceptionOccurrences,
+          axe: axe?.violations.flatMap((violation) => violation.nodes) || [],
+        },
+        axe,
+        links: measured.links as LinkDeclaration[],
+        resources: measured.resources as ResourceDeclaration[],
       };
     };
     const desktop = await collect("desktop");
@@ -2599,119 +2632,153 @@ async function collectBrowserLab(env: Env, url: string) {
   }
 }
 
-function formatLabRows(metrics: BrowserLabResult) {
-  return [
-    ["Performance score", `${metrics.score}/100`, "≥ 90"],
-    ["LCP", `${(metrics.lcp / 1000).toFixed(1)} s`, "≤ 2.5 s"],
-    ["TBT", `${Math.round(metrics.tbt)} ms`, "≤ 200 ms"],
-    ["CLS", metrics.cls.toFixed(2), "≤ 0.1"],
-    ["FCP", `${(metrics.fcp / 1000).toFixed(1)} s`, "≤ 1.8 s"],
-  ];
+function renderedViewportEvidence(lab: BrowserLabResult): RenderedViewportEvidence {
+  const {
+    collection,
+    durationMs,
+    networkResources,
+    occurrences,
+    axe,
+    links: _links,
+    resources: _resources,
+    ...metrics
+  } = lab;
+  return { collection, durationMs, networkResources, occurrences, axe, metrics };
 }
 
-function browserLabAuditResults(snapshot: AuditRegistrySnapshot[], lab: { desktop: BrowserLabResult; mobile: BrowserLabResult }): AuditResult[] {
-  const worst = (key: keyof BrowserLabResult) => Math.max(Number(lab.desktop[key] || 0), Number(lab.mobile[key] || 0));
-  const outcome = (value: number, good: number, poor: number): CheckOutcome => value <= good ? "pass" : value >= poor ? "fail" : "warning";
-  const bytes = (value: number) => Math.round(value / 1024);
-  return snapshot.filter((check) => check.primaryCategory === "performance").map((check) => {
-    const id = check.id;
-    let value = 0, good = 0, poor = Number.MAX_SAFE_INTEGER;
-    if (id.includes("document.response.time")) [value, good, poor] = [worst("documentResponseMs"), 800, 1800];
-    else if (id.includes("first.contentful.paint")) [value, good, poor] = [worst("fcp"), 1800, 3000];
-    else if (id.includes("largest.contentful.paint.measured")) [value, good, poor] = [worst("lcp"), 2500, 4000];
-    else if (id.includes("cumulative.layout.shift")) [value, good, poor] = [worst("cls"), .1, .25];
-    else if (id.includes("total.blocking.time")) [value, good, poor] = [worst("tbt"), 200, 600];
-    else if (id.includes("total.transferred")) [value, good, poor] = [worst("bytes"), 1_600_000, 3_000_000];
-    else if (id.includes("resource.request.count")) [value, good, poor] = [worst("requests"), 50, 100];
-    else if (id.includes("javascript.transfer")) [value, good, poor] = [worst("scriptBytes"), 600_000, 1_000_000];
-    else if (id.includes("css.transfer")) [value, good, poor] = [worst("cssBytes"), 150_000, 300_000];
-    else if (id.includes("image.transfer")) [value, good, poor] = [worst("imageBytes"), 1_000_000, 2_000_000];
-    else if (id.includes("font.transfer")) [value, good, poor] = [worst("fontBytes"), 200_000, 500_000];
-    else if (id.includes("third.party")) [value, good, poor] = [worst("thirdPartyRequests"), 10, 25];
-    else if (id.includes("render.blocking")) [value, good, poor] = [worst("renderBlocking"), 0, 5];
-    else if (id.includes("long.main.thread")) [value, good, poor] = [worst("longTasks"), 0, 5];
-    else if (id.includes("unused.javascript")) [value, good, poor] = [worst("unusedJavaScriptBytes"), 20_000, 100_000];
-    else if (id.includes("unused.css")) [value, good, poor] = [worst("unusedCssBytes"), 10_000, 50_000];
-    else if (id.includes("discovery.delay")) [value, good, poor] = [worst("lcpDiscoveryDelay"), 500, 1500];
-    else if (id.includes("layout.shift.contributors")) [value, good, poor] = [worst("layoutShiftContributors"), 0, 4];
-    else if (id.includes("failed.network")) [value, good, poor] = [worst("failedRequests"), 0, 2];
-    else if (id.includes("console.errors")) [value, good, poor] = [worst("consoleErrors"), 0, 3];
-    else if (id.includes("uncaught.javascript")) [value, good, poor] = [worst("uncaughtExceptions"), 0, 1];
-    else if (id.includes("repeated.downloads")) [value, good, poor] = [worst("repeatedDownloads"), 0, 3];
-    else if (id.includes("preloaded.resources.unused")) [value, good, poor] = [worst("unusedPreloads"), 0, 2];
-    else if (id.includes("largest.contentful.paint.element"))
-      return { check_id: id, outcome: lab.desktop.lcpElement || lab.mobile.lcpElement ? "informational" : "warning", evidence: { desktop: lab.desktop.lcpElement, mobile: lab.mobile.lcpElement }, duration_ms: 0 };
-    else if (id.includes("resource.preload"))
-      return { check_id: id, outcome: "informational", evidence: { desktop: lab.desktop.preloads, mobile: lab.mobile.preloads }, duration_ms: 0 };
-    else return { check_id: id, outcome: "informational", evidence: { desktop: lab.desktop, mobile: lab.mobile, measuredBy: "Cloudflare Browser Run" }, duration_ms: 0 };
-    return { check_id: id, outcome: outcome(value, good, poor), evidence: { desktop: lab.desktop, mobile: lab.mobile, measuredValue: value, measuredKilobytes: id.includes("transfer") || id.includes("unused") ? bytes(value) : undefined, measuredBy: "Cloudflare Browser Run" }, duration_ms: 0 };
-  });
-}
-
-function browserRenderedAuditResults(
-  snapshot: AuditRegistrySnapshot[],
-  lab: { desktop: BrowserLabResult; mobile: BrowserLabResult },
-  sourceHtml: string,
-): AuditResult[] {
-  const originalTextLength = stripText(sourceHtml).length;
-  const max = (key: keyof BrowserLabResult) => Math.max(Number(lab.desktop[key] || 0), Number(lab.mobile[key] || 0));
-  const any = (key: keyof BrowserLabResult) => Boolean(lab.desktop[key] || lab.mobile[key]);
-  const evidence = (extra: Record<string, unknown> = {}) => ({
-    desktop: lab.desktop,
-    mobile: lab.mobile,
-    measuredBy: "Cloudflare Browser Run",
-    ...extra,
-  });
-  const measured = (checkId: string): [CheckOutcome, Record<string, unknown>] | null => {
-    if (checkId.includes("content.added.only.after.javascript")) {
-      const rendered = Math.max(lab.desktop.renderedTextLength, lab.mobile.renderedTextLength);
-      return [rendered > originalTextLength * 1.1 + 100 ? "warning" : "pass", evidence({ originalTextLength, renderedTextLength: rendered })];
+function structuredDataResourceDeclarations(source: ReturnType<typeof parseSourceDom>): ResourceDeclaration[] {
+  const declarations: ResourceDeclaration[] = [];
+  const imageKeys = new Set(["image", "logo", "thumbnailUrl", "contentUrl"]);
+  const visit = (value: unknown, block: number, pointer = "") => {
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => visit(item, block, `${pointer}/${index}`));
+      return;
     }
-    if (checkId.includes("original.html.and.rendered.text.differences")) {
-      const rendered = Math.max(lab.desktop.renderedTextLength, lab.mobile.renderedTextLength);
-      return [Math.abs(rendered - originalTextLength) > 100 ? "informational" : "pass", evidence({ originalTextLength, renderedTextLength: rendered })];
+    if (!value || typeof value !== "object") return;
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      const next = `${pointer}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`;
+      if (imageKeys.has(key) && typeof nested === "string") {
+        try {
+          declarations.push({ declaredUrl: nested, resolvedUrl: new URL(nested, source.documentUrl).href, declarationType: "structured-data-image", locator: `json-ld:${block}${next}`, source: "html" });
+        } catch {
+          declarations.push({ declaredUrl: nested, resolvedUrl: null, declarationType: "structured-data-image", locator: `json-ld:${block}${next}`, source: "html" });
+        }
+      }
+      visit(nested, block, next);
     }
-    if (checkId.includes("javascript.link.destinations")) return [max("javascriptLinks") ? "warning" : "pass", evidence({ count: max("javascriptLinks") })];
-    if (checkId.includes("image.resources.fail.to.load")) return [max("failedImages") ? "fail" : "pass", evidence({ failedImages: max("failedImages") })];
-    if (checkId.includes("image.display.dimensions.recorded")) return [max("imageCount") ? "informational" : "not_applicable", evidence({ images: max("imageCount") })];
-    if (checkId.includes("oversized.images.relative")) return [!max("imageCount") ? "not_applicable" : max("oversizedImages") ? "warning" : "pass", evidence({ oversizedImages: max("oversizedImages") })];
-    if (checkId.includes("image.aspect.ratio.distortion")) return [!max("imageCount") ? "not_applicable" : max("distortedImages") ? "warning" : "pass", evidence({ distortedImages: max("distortedImages") })];
-    if (checkId.includes("image.transfer.sizes.measured")) return [!max("imageCount") ? "not_applicable" : "informational", evidence({ transferredBytes: max("imageBytes") })];
-    if (checkId.includes("below.the.fold.image.loading")) return [!max("imageCount") ? "not_applicable" : max("belowFoldImagesWithoutLazyLoading") ? "warning" : "pass", evidence({ eagerBelowFoldImages: max("belowFoldImagesWithoutLazyLoading") })];
-    if (checkId.includes("largest.contentful.paint.image.uses.lazy")) return [!any("lcpElement") || !String(lab.desktop.lcpElement || lab.mobile.lcpElement).startsWith("img") ? "not_applicable" : any("lcpImageLazy") ? "warning" : "pass", evidence({ lazy: any("lcpImageLazy") })];
-    if (checkId.includes("required.aria.attributes.present")) return [max("missingRequiredAria") ? "warning" : "pass", evidence({ violations: max("missingRequiredAria") })];
-    if (checkId.includes("aria.attribute.names.valid")) return [max("invalidAriaNames") ? "warning" : "pass", evidence({ violations: max("invalidAriaNames") })];
-    if (checkId.includes("aria.attribute.values.valid")) return [max("invalidAriaValues") ? "warning" : "pass", evidence({ violations: max("invalidAriaValues") })];
-    if (checkId.includes("aria.roles.valid")) return [max("invalidRoles") ? "warning" : "pass", evidence({ violations: max("invalidRoles") })];
-    if (checkId.includes("aria.attributes.permitted.for.their.roles")) return [max("ariaRoleConflicts") ? "warning" : "pass", evidence({ violations: max("ariaRoleConflicts") })];
-    if (checkId.includes("required.aria.parent.roles")) return [max("missingAriaParents") ? "warning" : "pass", evidence({ violations: max("missingAriaParents") })];
-    if (checkId.includes("required.aria.child.roles")) return [max("missingAriaChildren") ? "warning" : "pass", evidence({ violations: max("missingAriaChildren") })];
-    if (checkId.includes("focusable.elements.inside.aria.hidden")) return [max("focusableInAriaHidden") ? "warning" : "pass", evidence({ violations: max("focusableInAriaHidden") })];
-    if (checkId.includes("scrollable.regions.keyboard.focusable")) return [max("unfocusableScrollableRegions") ? "warning" : "pass", evidence({ violations: max("unfocusableScrollableRegions") })];
-    if (checkId.includes("text.contrast.measured")) return [max("lowContrastText") ? "warning" : "pass", evidence({ lowContrastElements: max("lowContrastText") })];
-    if (checkId.includes("touch.target.size.and.spacing")) return [max("smallTouchTargets") ? "warning" : "pass", evidence({ smallTargets: max("smallTouchTargets") })];
-    if (checkId.includes("table.headers.associated")) return [max("tableAssociationIssues") ? "warning" : "pass", evidence({ violations: max("tableAssociationIssues") })];
-    if (checkId.includes("table.header.cells.contain.text")) return [max("emptyTableHeaders") ? "warning" : "pass", evidence({ emptyHeaders: max("emptyTableHeaders") })];
-    if (checkId.includes("viewport.settings.restrict.zoom")) return [any("viewportRestrictsZoom") ? "warning" : "pass", evidence({ restricted: any("viewportRestrictsZoom") })];
-    if (checkId.includes("multiple.viewport.declarations")) return [max("viewportMetaCount") > 1 ? "warning" : "pass", evidence({ count: max("viewportMetaCount") })];
-    if (checkId.includes("viewport.width.configured")) return [lab.mobile.viewportDeviceWidth ? "pass" : "warning", evidence({ configured: lab.mobile.viewportDeviceWidth })];
-    if (checkId.includes("horizontal.page.overflow")) return [lab.mobile.horizontalOverflow ? "warning" : "pass", evidence({ overflow: lab.mobile.horizontalOverflow })];
-    if (checkId.includes("elements.extend.beyond")) return [lab.mobile.overflowingElements ? "warning" : "pass", evidence({ count: lab.mobile.overflowingElements })];
-    if (checkId.includes("images.exceed.their.containing")) return [!lab.mobile.imageCount ? "not_applicable" : lab.mobile.overflowingImages ? "warning" : "pass", evidence({ count: lab.mobile.overflowingImages })];
-    if (checkId.includes("tables.overflow.their.containing")) return [lab.mobile.overflowingTables ? "warning" : "pass", evidence({ count: lab.mobile.overflowingTables })];
-    if (checkId.includes("fixed.elements.geometrically.overlap")) return [lab.mobile.fixedContentOverlaps ? "warning" : "pass", evidence({ count: lab.mobile.fixedContentOverlaps })];
-    if (checkId.includes("text.sizes.measured.at.tested.mobile")) return [lab.mobile.smallTextElements ? "warning" : "pass", evidence({ below12px: lab.mobile.smallTextElements })];
-    if (checkId.includes("desktop.and.mobile.content.differences")) return [Math.abs(lab.desktop.renderedTextLength - lab.mobile.renderedTextLength) > 100 ? "informational" : "pass", evidence({ desktopTextLength: lab.desktop.renderedTextLength, mobileTextLength: lab.mobile.renderedTextLength })];
-    if (checkId.includes("main.heading.visible.at.tested")) return [lab.mobile.visibleMainHeading && lab.desktop.visibleMainHeading ? "pass" : "warning", evidence({ desktop: lab.desktop.visibleMainHeading, mobile: lab.mobile.visibleMainHeading })];
-    if (checkId.includes("primary.navigation.controls.have.accessible.names")) return [max("unnamedPrimaryNavigation") ? "warning" : "pass", evidence({ unnamed: max("unnamedPrimaryNavigation") })];
-    if (checkId.includes("browser.reported.security.policy.violations")) return [max("securityPolicyViolations") ? "warning" : "pass", evidence({ violationsObserved: max("securityPolicyViolations") })];
-    if (checkId.includes("main.content.extractable.after.javascript")) return [Math.max(lab.desktop.mainTextLength, lab.mobile.mainTextLength) >= 100 ? "pass" : "warning", evidence({ mainTextLength: Math.max(lab.desktop.mainTextLength, lab.mobile.mainTextLength) })];
-    return null;
   };
-  return snapshot.flatMap((check) => {
-    const result = measured(check.id);
-    return result ? [{ check_id: check.id, outcome: result[0], evidence: result[1], duration_ms: 0 }] : [];
+  source.structuredData.forEach((block) => visit(block.parsed, block.index));
+  return declarations;
+}
+
+async function collectV2AuditEvidence(
+  env: Env,
+  pageUrl: string,
+  response: Response,
+  html: string,
+  responseMs: number,
+  redirects: { url: string; status: number; location: string }[],
+  requireBrowser: boolean,
+): Promise<{ evidence: AuditEvidenceBundle; telemetry: Record<string, unknown>; sharedEvidence: Array<Record<string, unknown>> }> {
+  const phases: Record<string, number> = {};
+  const collectStarted = Date.now();
+  const sourceStarted = Date.now();
+  const source = parseSourceDom(html, response.url || pageUrl);
+  phases.sourceParseMs = Date.now() - sourceStarted;
+  const http: HttpEvidence = {
+    requestedUrl: pageUrl,
+    finalUrl: response.url || null,
+    status: response.status,
+    redirectTrace: redirects.map((item) => ({ ...item, location: item.location || null })),
+    responseMs,
+    headers: headerMultimap(response.headers),
+    contentType: response.headers.get("content-type"),
+    encodedBytes: Number(response.headers.get("content-length") || 0) || null,
+    decodedBytes: new TextEncoder().encode(html).byteLength,
+    collection: { status: "complete" },
+  };
+  let browserLab: { desktop: BrowserLabResult; mobile: BrowserLabResult } | null = null;
+  const browserStarted = Date.now();
+  if (requireBrowser) {
+    try {
+      browserLab = await collectBrowserLab(env, pageUrl);
+    } catch (error) {
+      console.error("browser evidence collection failed", errorMessage(error));
+    }
+  }
+  phases.browserMs = Date.now() - browserStarted;
+  const rendered = browserLab ? {
+    desktop: renderedViewportEvidence(browserLab.desktop),
+    mobile: renderedViewportEvidence(browserLab.mobile),
+  } : null;
+  const renderedLinks = browserLab ? [...browserLab.desktop.links, ...browserLab.mobile.links] : [];
+  const renderedResources = browserLab ? [...browserLab.desktop.resources, ...browserLab.mobile.resources] : [];
+  const mergedDeclarations = mergeRenderedDeclarations(source, renderedLinks, renderedResources);
+  const linkDeclarations = mergedDeclarations.links;
+  const resourceDeclarations = [...mergedDeclarations.resources, ...structuredDataResourceDeclarations(source)];
+  const networkStarted = Date.now();
+  const [links, resources] = await Promise.all([
+    collectLinkInventory(linkDeclarations, safeFetchTrace),
+    collectResourceInventory(resourceDeclarations, safeFetchTrace),
+  ]);
+  const canonicalElement = source.elements.find((element) => element.tagName === "link" && (element.attributes.find((item) => item.name === "rel")?.value || "").toLowerCase().split(/\s+/).includes("canonical"));
+  const canonicalHref = canonicalElement?.attributes.find((item) => item.name === "href")?.value || null;
+  const canonical = canonicalHref
+    ? await inspectDestination(new URL(canonicalHref, source.documentUrl).href, safeFetchTrace, { includeBody: true })
+    : null;
+  const origin = new URL(source.documentUrl).origin;
+  const robotsDestination = await inspectDestination(`${origin}/robots.txt`, safeFetchTrace, { includeBody: true });
+  const robots = parseRobotsEvidence(robotsDestination, source.documentUrl, ["Googlebot", "Bingbot", "OAI-SearchBot", "GPTBot", "ClaudeBot", "Claude-SearchBot", "ChatGPT-User", "Claude-User"]);
+  const sitemapUrls = [...new Set([...robots.sitemaps, `${origin}/sitemap.xml`])].slice(0, 4);
+  const sitemapDestinations = await Promise.all(sitemapUrls.map((url) => inspectDestination(url, safeFetchTrace, { includeBody: true, bodyBytes: 1_000_000 })));
+  const sitemaps = sitemapDestinations.map((destination) => {
+    const parsed = destination.body && !destination.bodyTruncated
+      ? parseSitemapXml(destination.body, destination.requestedUrl)
+      : { sourceUrl: destination.requestedUrl, destinationState: destination.state, status: destination.status, urls: [], error: destination.bodyTruncated ? "sitemap body limit exceeded" : destination.error || `HTTP ${destination.status ?? "unavailable"}` };
+    return { ...parsed, sourceUrl: destination.requestedUrl, destinationState: destination.state, status: destination.status };
   });
+  const apex = canonicalPropertyHost(new URL(source.documentUrl).hostname);
+  const dnsQueries = [[apex, "A"], [apex, "AAAA"], [apex, "CNAME"], [apex, "MX"], [apex, "TXT"], [apex, "CAA"], [apex, "NS"], [apex, "SOA"], [`www.${apex}`, "A"], [`www.${apex}`, "AAAA"], [`_dmarc.${apex}`, "TXT"]] as const;
+  const dns: DnsEvidence[] = [];
+  for (let index = 0; index < dnsQueries.length; index += 3) {
+    dns.push(...await Promise.all(dnsQueries.slice(index, index + 3).map(async ([hostname, recordType]) => {
+      try {
+        const answer = await queryDns(hostname, recordType);
+        return { queriedHostname: hostname, recordType, responseCode: answer.responseCode, authenticatedData: answer.authenticated, records: answer.records.map((record) => ({ value: record.data, ttl: record.ttl })), error: null };
+      } catch (error) {
+        return { queriedHostname: hostname, recordType, responseCode: null, authenticatedData: null, records: [], error: errorMessage(error) };
+      }
+    })));
+  }
+  phases.networkMs = Date.now() - networkStarted;
+  const fontFaces = resources.results.filter((item) => item.declarations.some((declaration) => declaration.declarationType === "stylesheet") && item.body).flatMap((item) => parseFontFaces(item.body || "", item.finalUrl || item.requestedUrl));
+  const evidence: AuditEvidenceBundle = { http, source, rendered, links, resources, canonical, dns, robots, sitemaps, fontFaces };
+  const approximateEvidenceBytes = new TextEncoder().encode(JSON.stringify({ http, source: { elements: source.elements.length, links: source.links.length, resources: source.resources.length, structuredData: source.structuredData }, rendered, links, resources, dns, robots: { decisions: robots.decisions, sitemaps: robots.sitemaps }, sitemaps })).byteLength;
+  const occurrenceCount = Object.values(rendered?.desktop.occurrences || {}).flat().length + Object.values(rendered?.mobile.occurrences || {}).flat().length;
+  const telemetry = {
+    architectureVersion: "2.0.0",
+    collectionMs: Date.now() - collectStarted,
+    phases,
+    browserDurationMs: (rendered?.desktop.durationMs || 0) + (rendered?.mobile.durationMs || 0),
+    browserSessions: browserLab ? 1 : 0,
+    httpRequests: 1 + links.requests + resources.requests + (canonical ? 1 + canonical.redirectTrace.length : 0) + 1 + robotsDestination.redirectTrace.length + sitemapDestinations.reduce((total, item) => total + 1 + item.redirectTrace.length, 0) + Number(rendered?.desktop.metrics.requests || 0) + Number(rendered?.mobile.metrics.requests || 0),
+    uniqueLinksChecked: links.retained,
+    uniqueResourcesChecked: resources.retained,
+    dnsQueries: dns.length,
+    queueMessagesUsed: 1,
+    approximateEvidenceBytes,
+    occurrencesCollected: occurrenceCount,
+    truncatedOccurrenceSets: Number(links.truncated) + Number(resources.truncated),
+    collectorFailures: [source.collection, rendered?.desktop.collection, rendered?.mobile.collection].filter((state) => state && state.status !== "complete").length + dns.filter((item) => item.error).length + Number(Boolean(robots.parseError)) + sitemaps.filter((item) => item.error).length,
+  };
+  const sharedEvidence = [
+    { evidence_type: "http", schema_version: "2.0.0", summary: { requestedUrl: http.requestedUrl, finalUrl: http.finalUrl, status: http.status, redirects: http.redirectTrace.length, responseMs: http.responseMs, contentType: http.contentType }, byte_size: JSON.stringify(http).length, collection_status: http.collection.status, error: null },
+    { evidence_type: "source", schema_version: "2.0.0", summary: { elements: source.elements.length, links: source.links.length, resources: source.resources.length, structuredDataBlocks: source.structuredData.length, duplicateIds: source.duplicateIds.length }, byte_size: new TextEncoder().encode(html).byteLength, collection_status: source.collection.status, error: source.collection.status === "complete" ? null : source.collection.reason },
+    { evidence_type: "links", schema_version: "2.0.0", summary: { totalDiscovered: links.totalDiscovered, retained: links.retained, truncated: links.truncated }, byte_size: JSON.stringify(links).length, collection_status: links.truncated ? "partial" : "complete", error: links.truncated ? "link safety ceiling reached" : null },
+    { evidence_type: "resources", schema_version: "2.0.0", summary: { totalDiscovered: resources.totalDiscovered, retained: resources.retained, truncated: resources.truncated }, byte_size: JSON.stringify(resources).length, collection_status: resources.truncated ? "partial" : "complete", error: resources.truncated ? "resource safety ceiling reached" : null },
+    { evidence_type: "dns", schema_version: "2.0.0", summary: { queries: dns.length, failures: dns.filter((item) => item.error).length }, byte_size: JSON.stringify(dns).length, collection_status: dns.some((item) => item.error) ? "partial" : "complete", error: null },
+  ];
+  return { evidence, telemetry, sharedEvidence };
 }
 
 async function runAudit(env: Env, id: string) {
@@ -2750,52 +2817,41 @@ async function runAudit(env: Env, id: string) {
   try {
     const fetchStarted = Date.now();
     const trace = await safeFetchTrace(run.page_url, {
-      headers: { "user-agent": "Claritude-Audit/1.0 (+https://claritude.io)" },
+      headers: { "user-agent": "Claritude-Audit/2.0 (+https://claritude.io)" },
     });
     const res = trace.response;
     const responseMs = Date.now() - fetchStarted;
     const snapshot = run.registry_snapshot as AuditRegistrySnapshot[];
     const html = await limitedText(res, 2_000_000);
-    let staticResults = evaluateSourceChecks(snapshot, res, html, responseMs)
-      .filter((result) => !CONTEXT_AUDIT_CHECK_IDS.has(result.check_id));
-    let measuredProgress = staticResults.filter((result) => result.outcome !== "unable_to_test").length;
-    let browserLab: { desktop: BrowserLabResult; mobile: BrowserLabResult } | null = null;
-    if (snapshot.some((check) => check.primaryCategory === "performance" || ["rendered_browser", "lab"].includes(registry(check.id)?.executionMethod || ""))) {
-      await updateRun({
-        execution_stage: "collecting_browser_evidence",
-        progress_completed: measuredProgress,
-        heartbeat_at: new Date().toISOString(),
-      });
-      try {
-        browserLab = await collectBrowserLab(env, run.page_url);
-      } catch (error) {
-        console.error("browser lab collection failed", id, errorMessage(error));
-      }
-    }
-    if (browserLab) {
-      const replacements = new Map([
-        ...browserLabAuditResults(snapshot, browserLab),
-        ...browserRenderedAuditResults(snapshot, browserLab, html),
-      ].map((result) => [result.check_id, result]));
-      staticResults = staticResults.map((result) => replacements.get(result.check_id) || result);
-    }
-    measuredProgress = staticResults.filter((result) => result.outcome !== "unable_to_test").length;
     await updateRun({
-        execution_stage: "evaluating_checks",
-        progress_completed: measuredProgress,
-        heartbeat_at: new Date().toISOString(),
-      });
+      execution_stage: "collecting_shared_evidence",
+      progress_completed: 0,
+      heartbeat_at: new Date().toISOString(),
+    });
+    const requireBrowser = snapshot.some((check) => {
+      const definition = registry(check.id);
+      return check.primaryCategory === "performance" || ["rendered_browser", "lab"].includes(definition?.executionMethod || "");
+    });
+    const collected = await collectV2AuditEvidence(env, run.page_url, res, html, responseMs, trace.redirects, requireBrowser);
+    await updateRun({
+      execution_stage: "evaluating_checks",
+      progress_completed: 0,
+      heartbeat_at: new Date().toISOString(),
+    });
+    const evaluationStarted = Date.now();
+    const results = evaluateAuditCatalogue(snapshot.map((check) => check.id), collected.evidence);
+    const evaluationMs = Date.now() - evaluationStarted;
     const snapshotById = new Map(snapshot.map((check) => [check.id, check]));
     const decorate = (r: AuditResult) => {
-        const check = snapshotById.get(r.check_id);
-        return {
-          ...r,
-          audit_run_id: id,
-          logic_version: check?.logicVersion || "unknown",
-          configuration_version: check?.configurationVersion || 1,
-          title_snapshot: check?.title || r.check_id,
-        };
+      const check = snapshotById.get(r.check_id);
+      return {
+        ...r,
+        audit_run_id: id,
+        logic_version: check?.logicVersion || "unknown",
+        configuration_version: check?.configurationVersion || 1,
+        title_snapshot: check?.title || r.check_id,
       };
+    };
     const persist = async (results: AuditResult[]) => {
       for (const batch of chunkAuditResults(results.map(decorate), 64)) {
         let failure: string | null = null;
@@ -2814,41 +2870,31 @@ async function runAudit(env: Env, id: string) {
         if (failure) throw new Error(`audit_result_persistence_failed: ${failure}`);
       }
     };
+    const persistenceStarted = Date.now();
     await updateRun({
-        execution_stage: "collecting_network_evidence",
-        heartbeat_at: new Date().toISOString(),
-      });
-    // Do not overlap the external evidence crawl with Supabase persistence.
-    // Cloudflare Workers enforce a small outgoing-connection budget; starting
-    // both at once can leave a database write queued behind slow site fetches,
-    // which previously made an otherwise healthy audit appear stuck.
-    const networkEvidence = await collectAuditNetworkEvidence(
-      run.page_url,
-      res,
-      html,
-      trace.redirects,
-    );
-    const contextResults = evaluateSourceChecks(
-      snapshot,
-      res,
-      html,
-      responseMs,
-      networkEvidence,
-    ).filter((result) => CONTEXT_AUDIT_CHECK_IDS.has(result.check_id));
-    await updateRun({
-        execution_stage: "persisting_results",
-        // Keep the final network-context group pending until all evidence has
-        // been durably written. This prevents a terminated worker presenting
-        // 306/306 while only the first 288 rows exist.
-        progress_completed: staticResults.filter((result) => result.outcome !== "unable_to_test").length,
-        heartbeat_at: new Date().toISOString(),
-      });
-    const results = [...staticResults, ...contextResults];
-    // Persist one combined result set. Five bounded writes replace the prior
-    // six writes plus six per-batch heartbeat updates, keeping the queue
-    // consumer comfortably below Cloudflare's outbound subrequest budget.
+      execution_stage: "persisting_results",
+      progress_completed: results.filter((result) => result.outcome !== "unable_to_test").length,
+      heartbeat_at: new Date().toISOString(),
+    });
     await persist(results);
+    const { error: sharedEvidenceError } = await db.from("audit_run_evidence").upsert(
+      collected.sharedEvidence.map((row) => ({ ...row, audit_run_id: id })),
+      { onConflict: "audit_run_id,evidence_type" },
+    );
+    if (sharedEvidenceError) throw new Error(`audit_shared_evidence_persistence_failed: ${sharedEvidenceError.message}`);
+    const persistenceMs = Date.now() - persistenceStarted;
     const { score, coverage } = scoreAuditResults(snapshot, results);
+    const outcomeCounts = Object.fromEntries(["passed", "failed", "advisory", "not_applicable", "unable_to_test"].map((outcome) => [outcome, results.filter((item) => item.outcome === outcome).length]));
+    const telemetry = {
+      ...collected.telemetry,
+      phases: { ...(collected.telemetry.phases as Record<string, number>), evaluationMs, persistenceMs },
+      totalWallTimeMs: Date.now() - started,
+      databaseBytesWrittenEstimate: JSON.stringify(results.map(decorate)).length + JSON.stringify(collected.sharedEvidence).length,
+      occurrencesStored: results.reduce((total, item) => total + (Array.isArray(item.evidence.occurrences) ? item.evidence.occurrences.length : 0), 0),
+      truncatedOccurrenceSets: Number(collected.telemetry.truncatedOccurrenceSets || 0) + results.filter((item) => item.evidence.truncated === true).length,
+      checkOutcomeCounts: outcomeCounts,
+      unableToTestCount: outcomeCounts.unable_to_test,
+    };
     const finalStatus = results.some((r) => r.outcome === "unable_to_test") ? "partial" : "completed";
     await updateRun({
         status: finalStatus,
@@ -2860,6 +2906,8 @@ async function runAudit(env: Env, id: string) {
         heartbeat_at: new Date().toISOString(),
         completed_at: new Date().toISOString(),
         duration_ms: Date.now() - started,
+        telemetry,
+        architecture_version: "2.0.0",
       });
     const notification = auditOutcomeNotification(finalStatus, score, coverage);
     if (notification)
@@ -2918,290 +2966,6 @@ export function chunkAuditResults<T>(values: T[], size = 24) {
   return chunks;
 }
 
-export function evaluateSourceChecks(
-  snapshot: any[],
-  res: Response,
-  html: string,
-  responseMs = 0,
-  networkEvidence?: AuditNetworkEvidence,
-): AuditResult[] {
-  const title = html
-    .match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]
-    ?.replace(/<[^>]+>/g, "")
-    .trim();
-  const desc =
-    html.match(
-      /<meta[^>]+name=["']description["'][^>]+content=["']([^"']*)/i,
-    )?.[1] ||
-    html.match(
-      /<meta[^>]+content=["']([^"']*)["'][^>]+name=["']description["']/i,
-    )?.[1];
-  const h1s = [...html.matchAll(/<h1\b[^>]*>([\s\S]*?)<\/h1>/gi)];
-  const analysis = analyseHtml(html, res.url);
-  const checks: Partial<Record<string, () => [CheckOutcome, Record<string, unknown>]>> =
-    {
-      "seo.metadata.title.present": () => [
-        title ? "pass" : "fail",
-        { title: title || null },
-      ],
-      "seo.metadata.title.not_empty": () => [
-        title ? "pass" : "fail",
-        { length: title?.length || 0 },
-      ],
-      "seo.metadata.title.length": () => [
-        !title ? "not_applicable" : title.length <= 60 ? "pass" : "warning",
-        { length: title?.length || 0, threshold: 60 },
-      ],
-      "seo.metadata.description.present": () => [
-        desc !== undefined ? "pass" : "fail",
-        { present: desc !== undefined },
-      ],
-      "seo.metadata.description.not_empty": () => [
-        desc ? "pass" : desc === undefined ? "not_applicable" : "fail",
-        { length: desc?.length || 0 },
-      ],
-      "seo.crawling.http_status": () => [
-        res.ok ? "pass" : res.status >= 500 ? "fail" : "warning",
-        { status: res.status },
-      ],
-      "seo.crawling.html_content": () => [
-        (res.headers.get("content-type") || "").includes("text/html")
-          ? "pass"
-          : "fail",
-        { contentType: res.headers.get("content-type") },
-      ],
-      "seo.content.h1.present": () => [
-        h1s.length ? "pass" : "fail",
-        { count: h1s.length },
-      ],
-      "seo.content.h1.multiple": () => [
-        h1s.length <= 1 ? "pass" : "warning",
-        { count: h1s.length },
-      ],
-      "accessibility.document.title": () => [
-        title ? "pass" : "fail",
-        { title: title || null },
-      ],
-      "accessibility.mobile.viewport": () => [
-        /<meta[^>]+name=["']viewport["']/i.test(html) ? "pass" : "fail",
-        {},
-      ],
-      "security.https.selected": () => [
-        res.url.startsWith("https://") ? "pass" : "fail",
-        { finalUrl: res.url },
-      ],
-      "security.headers.hsts": () => [
-        res.headers.has("strict-transport-security") ? "pass" : "warning",
-        { value: res.headers.get("strict-transport-security") },
-      ],
-      "security.headers.csp": () => [
-        res.headers.has("content-security-policy") ? "pass" : "warning",
-        { value: res.headers.get("content-security-policy") },
-      ],
-      "infrastructure.http.content_type": () => [
-        "informational",
-        { value: res.headers.get("content-type") },
-      ],
-      "ai.content.source_extractable": () => [
-        /<main\b/i.test(html) && stripText(html).length > 100
-          ? "pass"
-          : "warning",
-        { textLength: stripText(html).length },
-      ],
-    };
-  return snapshot.map((s) => {
-    const t = performance.now();
-    const fn = checks[s.id];
-    const contextResult = networkEvidence
-      ? evaluateNetworkEvidenceCheck(s.id, res, html, analysis, networkEvidence)
-      : null;
-    const generic = fn || contextResult
-      ? null
-      : evaluateStaticCheck(s.id, res, html, analysis, responseMs);
-    const [outcome, evidence] = fn
-      ? fn()
-      : contextResult
-        ? contextResult
-      : generic || [
-          "unable_to_test" as CheckOutcome,
-          { reason: methodReason(registry(s.id)?.executionMethod) },
-        ];
-    return {
-      check_id: s.id,
-      outcome,
-      evidence,
-      duration_ms: Math.max(0, Math.round(performance.now() - t)),
-    };
-  });
-}
-
-function analyseHtml(html: string, baseUrl: string) {
-  const tags = (name: string) => [
-    ...html.matchAll(new RegExp(`<${name}\\b[^>]*>`, "gi")),
-  ].map((match) => match[0]);
-  const attr = (tag: string, name: string) =>
-    tag.match(new RegExp(`\\b${name}\\s*=\\s*["']([^"']*)["']`, "i"))?.[1] ||
-    null;
-  const links = tags("a").map((tag) => ({
-    tag,
-    href: attr(tag, "href"),
-    name:
-      attr(tag, "aria-label") ||
-      stripText(html.slice(html.indexOf(tag) + tag.length, html.indexOf("</a>", html.indexOf(tag)))),
-  }));
-  const images = tags("img").map((tag) => ({
-    tag,
-    src: attr(tag, "src"),
-    alt: attr(tag, "alt"),
-    width: attr(tag, "width"),
-    height: attr(tag, "height"),
-    srcset: attr(tag, "srcset"),
-  }));
-  const ids = [...html.matchAll(/\bid\s*=\s*["']([^"']+)["']/gi)].map((x) => x[1]);
-  const jsonLd = [...html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)].map((x) => x[1]);
-  return {
-    tags,
-    attr,
-    links,
-    images,
-    ids,
-    duplicateIds: [...new Set(ids.filter((id, i) => ids.indexOf(id) !== i))],
-    jsonLd,
-    text: stripText(html),
-    url: new URL(baseUrl),
-  };
-}
-
-async function collectAuditNetworkEvidence(
-  pageUrl: string,
-  response: Response,
-  html: string,
-  redirects: { url: string; status: number; location: string }[],
-  heartbeat?: () => Promise<void>,
-): Promise<AuditNetworkEvidence> {
-  const finalUrl = new URL(response.url || pageUrl);
-  const origin = finalUrl.origin;
-  // The selected page trace has already validated every redirect host. Reuse
-  // that result for same-host evidence requests, while still validating any
-  // new host introduced by a canonical or sitemap URL.
-  const validatedHosts = new Set([finalUrl.hostname.toLowerCase()]);
-  const canonicalHref =
-    html.match(/<link[^>]+rel=["'][^"']*canonical[^"']*["'][^>]+href=["']([^"']+)/i)?.[1] ||
-    html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*canonical/i)?.[1] ||
-    null;
-  const resource = async (value: string, max = 512_000): Promise<AuditResourceEvidence> => {
-    try {
-      const result = await safeFetchTrace(value, {
-        headers: { "user-agent": "Claritude-Audit/1.0 (+https://claritude.io)" },
-        signal: AbortSignal.timeout(3_500),
-      }, validatedHosts);
-      return {
-        url: value,
-        status: result.response.status,
-        finalUrl: result.response.url,
-        body: await limitedText(result.response, max),
-        contentType: result.response.headers.get("content-type"),
-        error: null,
-      };
-    } catch (error) {
-      return {
-        url: value,
-        status: null,
-        finalUrl: null,
-        body: "",
-        contentType: null,
-        error: errorMessage(error),
-      };
-    }
-  };
-  const [robots, llms, llmsFull, canonical] = await Promise.all([
-    resource(`${origin}/robots.txt`),
-    resource(`${origin}/llms.txt`),
-    resource(`${origin}/llms-full.txt`),
-    canonicalHref ? resource(new URL(canonicalHref, finalUrl).href) : Promise.resolve(null),
-  ]);
-  const unchecked = (value: string): AuditResourceEvidence => ({
-    url: value,
-    status: null,
-    finalUrl: null,
-    body: "",
-    contentType: null,
-    error: "not sampled by the selected-page audit",
-  });
-  const selectedEvidence: AuditResourceEvidence = {
-    url: pageUrl,
-    status: response.status,
-    finalUrl: response.url,
-    body: "",
-    contentType: response.headers.get("content-type"),
-    error: null,
-  };
-  const apexHost = canonicalPropertyHost(finalUrl.hostname);
-  const apexHttp = finalUrl.protocol === "http:" && finalUrl.hostname === apexHost ? selectedEvidence : unchecked(`http://${apexHost}/`);
-  const apexHttps = finalUrl.protocol === "https:" && finalUrl.hostname === apexHost ? selectedEvidence : unchecked(`https://${apexHost}/`);
-  const wwwHttp = finalUrl.protocol === "http:" && finalUrl.hostname === `www.${apexHost}` ? selectedEvidence : unchecked(`http://www.${apexHost}/`);
-  const wwwHttps = finalUrl.protocol === "https:" && finalUrl.hostname === `www.${apexHost}` ? selectedEvidence : unchecked(`https://www.${apexHost}/`);
-  const checkedLinks: AuditResourceEvidence[] = [];
-  const checkedResources: AuditResourceEvidence[] = [];
-  const declaredSitemaps = [...robots.body.matchAll(/^\s*sitemap\s*:\s*(\S+)\s*$/gim)]
-    .map((match) => match[1]);
-  const sitemapUrls = [...new Set([
-    ...declaredSitemaps,
-    `${origin}/sitemap.xml`,
-  ])].slice(0, 4);
-  const sitemaps = await Promise.all(sitemapUrls.map((url) => resource(url, 1_000_000)));
-  const dnsRecords: AuditNetworkEvidence["dnsRecords"] = [];
-  const dnsErrors: string[] = [];
-  let dnsAuthenticated: boolean | null = null;
-  const apex = canonicalPropertyHost(finalUrl.hostname);
-  const dnsQueries = [
-    [apex, "A"], [apex, "AAAA"], [apex, "CNAME"], [apex, "MX"],
-    [apex, "TXT"], [apex, "CAA"], [apex, "NS"], [apex, "SOA"],
-    [`www.${apex}`, "A"], [`www.${apex}`, "AAAA"],
-    [`claritude-nxdomain-probe.${apex}`, "A"],
-    [`_dmarc.${apex}`, "TXT"],
-  ] as const;
-  const dnsAnswers: { query: string; type: string; dns: Awaited<ReturnType<typeof queryDns>> | null; error: string | null }[] = [];
-  for (let index = 0; index < dnsQueries.length; index += 2) {
-    dnsAnswers.push(...await Promise.all(dnsQueries.slice(index, index + 2).map(async ([query, type]) => {
-      try {
-        const dns = await queryDns(query, type);
-        return { query, type, dns, error: null };
-      } catch (error) {
-        return { query, type, dns: null, error: errorMessage(error) };
-      }
-    })));
-    await heartbeat?.();
-  }
-  for (const answer of dnsAnswers) {
-    if (answer.error) {
-      dnsErrors.push(`${answer.query} ${answer.type}: ${answer.error}`);
-      continue;
-    }
-    dnsRecords.push(...(answer.dns?.records || []));
-    if (answer.query === apex && answer.type === "A") {
-      dnsAuthenticated = answer.dns?.authenticated ?? null;
-    }
-  }
-  return {
-    redirects,
-    canonical,
-    robots,
-    sitemaps,
-    llms,
-    llmsFull,
-    dnsRecords,
-    dnsErrors,
-    dnsAuthenticated,
-    checkedLinks,
-    checkedResources,
-    apexHttp,
-    apexHttps,
-    wwwHttp,
-    wwwHttps,
-  };
-}
-
 async function queryDns(query: string, type: string) {
   const response = await fetch(
     `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(query)}&type=${type}`,
@@ -3218,6 +2982,7 @@ async function queryDns(query: string, type: string) {
   };
   if (body.Status && body.Status !== 3) throw new Error(`resolver status ${body.Status}`);
   return {
+    responseCode: Number(body.Status || 0),
     authenticated: Boolean(body.AD),
     records: (body.Answer || []).map((answer) => ({
       query,
@@ -3228,389 +2993,9 @@ async function queryDns(query: string, type: string) {
   };
 }
 
-function robotsDecision(text: string, userAgent: string, pathname: string) {
-  const groups: { agents: string[]; rules: { directive: "allow" | "disallow"; path: string }[] }[] = [];
-  let group = { agents: [] as string[], rules: [] as { directive: "allow" | "disallow"; path: string }[] };
-  const flush = () => {
-    if (group.agents.length) groups.push(group);
-    group = { agents: [], rules: [] };
-  };
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.replace(/#.*$/, "").trim();
-    if (!line) continue;
-    const match = line.match(/^([a-z-]+)\s*:\s*(.*)$/i);
-    if (!match) continue;
-    const key = match[1].toLowerCase();
-    const value = match[2].trim();
-    if (key === "user-agent") {
-      if (group.rules.length) flush();
-      group.agents.push(value.toLowerCase());
-    } else if ((key === "allow" || key === "disallow") && group.agents.length) {
-      group.rules.push({ directive: key, path: value });
-    }
-  }
-  flush();
-  const agent = userAgent.toLowerCase();
-  const exact = groups.filter((candidate) => candidate.agents.some((value) => value !== "*" && agent.includes(value)));
-  const wildcard = groups.filter((candidate) => candidate.agents.includes("*"));
-  const selected = exact.length ? exact : wildcard;
-  const matching = selected.flatMap((candidate) => candidate.rules).filter((rule) =>
-    rule.path && pathname.startsWith(rule.path.replace(/\$$/, "")),
-  ).sort((left, right) => right.path.length - left.path.length || (left.directive === "allow" ? -1 : 1));
-  return {
-    allowed: matching[0]?.directive !== "disallow",
-    matchedRule: matching[0] || null,
-    inheritedFromWildcard: !exact.length && wildcard.length > 0,
-    explicitGroup: exact.length > 0,
-  };
-}
-
-function evaluateNetworkEvidenceCheck(
-  id: string,
-  response: Response,
-  html: string,
-  analysis: ReturnType<typeof analyseHtml>,
-  evidence: AuditNetworkEvidence,
-): [CheckOutcome, Record<string, unknown>] | null {
-  if (!CONTEXT_AUDIT_CHECK_IDS.has(id)) return null;
-  const ok = (resource: AuditResourceEvidence | null) =>
-    Boolean(resource?.status && resource.status >= 200 && resource.status < 400 && !resource.error);
-  const urlsInSitemaps = evidence.sitemaps.flatMap((resource) =>
-    [...resource.body.matchAll(/<loc[^>]*>([\s\S]*?)<\/loc>/gi)].map((match) => match[1].trim()),
-  );
-  const selected = normalizeComparableUrl(response.url || analysis.url.href);
-  const sitemapLastmods = evidence.sitemaps.flatMap((resource) =>
-    [...resource.body.matchAll(/<lastmod[^>]*>([\s\S]*?)<\/lastmod>/gi)].map((match) => match[1].trim()),
-  );
-  const markdownLinks = [...evidence.llms.body.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)].map((match) => match[1].trim());
-  const records = (type: string, query?: string) => evidence.dnsRecords.filter((record) =>
-    record.type === type && (!query || record.query === query),
-  );
-  const apex = canonicalPropertyHost(analysis.url.hostname);
-  const checkedLinkEvidence = evidence.checkedLinks.map((item) => ({ url: item.url, status: item.status, finalUrl: item.finalUrl, error: item.error }));
-  const linkMatches = (predicate: (item: AuditResourceEvidence) => boolean) => evidence.checkedLinks.filter(predicate);
-  const resourceFor = (value: string | null) => {
-    if (!value) return null;
-    try {
-      const target = new URL(value, analysis.url).href;
-      return evidence.checkedResources.find((item) => item.url === target) || null;
-    } catch {
-      return null;
-    }
-  };
-  const attrUrl = (pattern: RegExp) => html.match(pattern)?.[1] || null;
-  const ogImage = attrUrl(/<meta\b[^>]+(?:property|name)=["']og:image["'][^>]+content=["']([^"']+)/i) || attrUrl(/<meta\b[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']og:image/i);
-  const favicon = attrUrl(/<link\b[^>]+rel=["'][^"']*(?:icon|shortcut icon)[^"']*["'][^>]+href=["']([^"']+)/i) || attrUrl(/<link\b[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*(?:icon|shortcut icon)/i);
-  const appleIcon = attrUrl(/<link\b[^>]+rel=["'][^"']*apple-touch-icon[^"']*["'][^>]+href=["']([^"']+)/i) || attrUrl(/<link\b[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*apple-touch-icon/i);
-  const manifestHref = attrUrl(/<link\b[^>]+rel=["'][^"']*manifest[^"']*["'][^>]+href=["']([^"']+)/i) || attrUrl(/<link\b[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*manifest/i);
-  const markdownHref = attrUrl(/<link\b[^>]+(?:type=["']text\/markdown["']|rel=["'][^"']*alternate[^"']*)[^>]+href=["']([^"']+)/i) || attrUrl(/<link\b[^>]+href=["']([^"']+)["'][^>]+(?:type=["']text\/markdown["']|rel=["'][^"']*alternate[^"']*)/i);
-  if (!evidence.checkedLinks.length && (id.includes("checked.links.") || id.includes("redirecting.internal.links") || id.includes("redirecting.external.links")))
-    return ["not_applicable", { checked: 0, reason: "Destination crawling is not part of the bounded selected-page audit" }];
-  if (id.endsWith("canonical.target.reachable")) return [!evidence.canonical ? "not_applicable" : ok(evidence.canonical) ? "pass" : "fail", { target: evidence.canonical?.url || null, status: evidence.canonical?.status || null, error: evidence.canonical?.error || null }];
-  if (id.endsWith("canonical.target.redirects")) return [!evidence.canonical ? "not_applicable" : evidence.canonical.finalUrl && normalizeComparableUrl(evidence.canonical.finalUrl) !== normalizeComparableUrl(evidence.canonical.url) ? "warning" : "pass", { target: evidence.canonical?.url || null, finalUrl: evidence.canonical?.finalUrl || null }];
-  if (id.endsWith("redirect.chain.detected")) return [evidence.redirects.length > 1 ? "warning" : "pass", { redirects: evidence.redirects }];
-  if (id.endsWith("redirect.loop.detected")) { const visited = evidence.redirects.map((item) => normalizeComparableUrl(item.url)); return [new Set(visited).size === visited.length ? "pass" : "fail", { redirects: evidence.redirects }]; }
-  if (id.includes("checked.links.returning.http.404")) { const matches = linkMatches((item) => item.status === 404); return [matches.length ? "warning" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => item.url) }]; }
-  if (id.includes("checked.links.returning.http.410")) { const matches = linkMatches((item) => item.status === 410); return [matches.length ? "warning" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => item.url) }]; }
-  if (id.includes("checked.links.returning.server.errors")) { const matches = linkMatches((item) => Number(item.status) >= 500); return [matches.length ? "fail" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => item.url) }]; }
-  if (id.includes("checked.links.failing.dns")) { const matches = linkMatches((item) => /dns|name.*resolve|host.*not found/i.test(item.error || "")); return [matches.length ? "fail" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => ({ url: item.url, error: item.error })) }]; }
-  if (id.includes("checked.links.failing.https")) { const matches = linkMatches((item) => item.url.startsWith("https:") && /tls|ssl|certificate|handshake/i.test(item.error || "")); return [matches.length ? "fail" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => ({ url: item.url, error: item.error })) }]; }
-  if (id.includes("checked.links.timing.out")) { const matches = linkMatches((item) => /timeout|timed out|abort/i.test(item.error || "")); return [matches.length ? "warning" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => item.url) }]; }
-  if (id.includes("blocked.by.access.restrictions")) { const matches = linkMatches((item) => item.status === 401 || item.status === 403); return [matches.length ? "warning" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => item.url) }]; }
-  if (id.includes("encountering.rate.limits")) { const matches = linkMatches((item) => item.status === 429); return [matches.length ? "warning" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => item.url) }]; }
-  if (id.includes("containing.redirect.loops")) { const matches = linkMatches((item) => /redirect.*loop/i.test(item.error || "")); return [matches.length ? "fail" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => item.url) }]; }
-  if (id.includes("exceeding.the.redirect.limit")) { const matches = linkMatches((item) => /too many redirects|redirect limit/i.test(item.error || "")); return [matches.length ? "fail" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => item.url) }]; }
-  if (id.includes("redirecting.to.broken.destinations")) { const matches = linkMatches((item) => item.finalUrl !== item.url && (Number(item.status) >= 400 || Boolean(item.error))); return [matches.length ? "fail" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => ({ url: item.url, finalUrl: item.finalUrl, status: item.status })) }]; }
-  if (id.includes("redirecting.internal.links") || id.includes("redirecting.external.links")) { const internal = id.includes("internal"); const matches = linkMatches((item) => { try { return item.finalUrl !== item.url && (new URL(item.url).hostname === analysis.url.hostname) === internal; } catch { return false; } }); return [matches.length ? "informational" : "pass", { checked: checkedLinkEvidence, matches: matches.map((item) => ({ url: item.url, finalUrl: item.finalUrl })) }]; }
-  if (id.endsWith("robots.txt.file.reachable")) return [ok(evidence.robots) ? "pass" : "warning", { status: evidence.robots.status, error: evidence.robots.error }];
-  if (id.endsWith("robots.txt.contains.readable.text")) return [!ok(evidence.robots) ? "not_applicable" : evidence.robots.body.trim() ? "pass" : "warning", { characters: evidence.robots.body.trim().length }];
-  if (id.endsWith("robots.txt.parsing.errors.detected")) { const malformed = evidence.robots.body.split(/\r?\n/).filter((line) => line.trim() && !line.trim().startsWith("#") && !/^[a-z-]+\s*:/i.test(line)); return [!ok(evidence.robots) ? "not_applicable" : malformed.length ? "warning" : "pass", { malformedLines: malformed.slice(0, 10) }]; }
-  const robotsAgent = id.includes("bingbot") ? "Bingbot" : id.includes("oai.searchbot") ? "OAI-SearchBot" : id.includes("gptbot") ? "GPTBot" : id.includes("claude.searchbot") ? "Claude-SearchBot" : id.includes("claudebot") ? "ClaudeBot" : id.includes("googlebot") ? "Googlebot" : null;
-  if (robotsAgent && id.includes("allowed.by") || robotsAgent && id.includes("robots.access")) { const decision = robotsDecision(evidence.robots.body, robotsAgent!, analysis.url.pathname); return [!ok(evidence.robots) ? "not_applicable" : decision.allowed ? "pass" : "warning", { userAgent: robotsAgent, path: analysis.url.pathname, ...decision }]; }
-  if (id.includes("explicit.chatgpt.user.robots.rules")) { const detected = /^\s*user-agent\s*:\s*chatgpt-user\s*$/im.test(evidence.robots.body); return [!ok(evidence.robots) ? "not_applicable" : "informational", { detected }]; }
-  if (id.includes("explicit.claude.user.robots.rules")) { const detected = /^\s*user-agent\s*:\s*claude-user\s*$/im.test(evidence.robots.body); return [!ok(evidence.robots) ? "not_applicable" : "informational", { detected }]; }
-  if (id.includes("ai.search.and.training.crawler.permissions.differ")) { const search = robotsDecision(evidence.robots.body, "OAI-SearchBot", analysis.url.pathname); const training = robotsDecision(evidence.robots.body, "GPTBot", analysis.url.pathname); return [!ok(evidence.robots) ? "not_applicable" : "informational", { differ: search.allowed !== training.allowed, searchAllowed: search.allowed, trainingAllowed: training.allowed }]; }
-  if (id.includes("ai.crawler.rules.inherited.from.wildcard")) { const agents = ["OAI-SearchBot", "GPTBot", "Claude-SearchBot", "ClaudeBot"]; return [!ok(evidence.robots) ? "not_applicable" : "informational", { inherited: agents.filter((agent) => robotsDecision(evidence.robots.body, agent, analysis.url.pathname).inheritedFromWildcard) }]; }
-  if (id.endsWith("sitemap.url.declared.in.robots.txt")) { const declared = [...evidence.robots.body.matchAll(/^\s*sitemap\s*:\s*(\S+)/gim)].map((match) => match[1]); return [!ok(evidence.robots) ? "not_applicable" : declared.length ? "pass" : "warning", { declared }]; }
-  if (id.endsWith("conventional.sitemap.locations.checked")) return ["informational", { checked: evidence.sitemaps.map((item) => ({ url: item.url, status: item.status, error: item.error })) }];
-  if (id.endsWith("referenced.xml.sitemap.reachable")) return [evidence.sitemaps.length ? evidence.sitemaps.some(ok) ? "pass" : "warning" : "not_applicable", { checked: evidence.sitemaps.map((item) => ({ url: item.url, status: item.status })) }];
-  if (id.endsWith("referenced.sitemap.xml.valid")) { const reachable = evidence.sitemaps.filter(ok); return [!reachable.length ? "not_applicable" : reachable.every((item) => /<(?:urlset|sitemapindex)\b/i.test(item.body)) ? "pass" : "warning", { checked: reachable.map((item) => item.url) }]; }
-  if (id.endsWith("selected.page.found.in.checked.sitemap.files")) return [!evidence.sitemaps.some(ok) ? "not_applicable" : urlsInSitemaps.some((url) => normalizeComparableUrl(url) === selected) ? "pass" : "warning", { selected: response.url, sitemapUrlsChecked: urlsInSitemaps.length }];
-  if (id.endsWith("sitemap.lastmod.date.formats.valid")) return [!sitemapLastmods.length ? "not_applicable" : sitemapLastmods.every((value) => Number.isFinite(Date.parse(value))) ? "pass" : "warning", { values: sitemapLastmods.slice(0, 20) }];
-  if (id.endsWith("returned.dns.record.ttls.recorded")) return [evidence.dnsRecords.length ? "informational" : "unable_to_test", { records: evidence.dnsRecords.map(({ type, ttl }) => ({ type, ttl })), errors: evidence.dnsErrors }];
-  if (id.endsWith("selected.hostname.resolves.successfully")) return [records("A").length || records("AAAA").length ? "pass" : "fail", { a: records("A"), aaaa: records("AAAA") }];
-  if (id.endsWith("ipv4.addresses.recorded")) return ["informational", { records: records("A", apex) }];
-  if (id.endsWith("ipv6.addresses.recorded")) return ["informational", { records: records("AAAA", apex) }];
-  if (id.endsWith("returned.cname.records.recorded")) return ["informational", { records: records("CNAME", apex) }];
-  if (id.endsWith("non.existent.hostname.response.detected")) { const probe = records("A", `claritude-nxdomain-probe.${apex}`); return [probe.length ? "warning" : "pass", { records: probe }]; }
-  if (id.endsWith("apex.domain.resolution.checked")) return [records("A", apex).length || records("AAAA", apex).length ? "pass" : "fail", { a: records("A", apex), aaaa: records("AAAA", apex) }];
-  if (id.endsWith("www.hostname.resolution.checked")) return [records("A", `www.${apex}`).length || records("AAAA", `www.${apex}`).length ? "pass" : "warning", { a: records("A", `www.${apex}`), aaaa: records("AAAA", `www.${apex}`) }];
-  if (id.endsWith("mail.exchange.records.detected")) return [records("MX", apex).length ? "informational" : "not_applicable", { records: records("MX", apex) }];
-  if (id.endsWith("domain.nameservers.recorded")) return [records("NS", apex).length ? "informational" : "warning", { records: records("NS", apex) }];
-  if (id.endsWith("domain.soa.record.recorded")) return [records("SOA", apex).length ? "informational" : "warning", { records: records("SOA", apex) }];
-  if (id.endsWith("dns.resolver.errors.detected")) return [evidence.dnsErrors.length ? "warning" : "pass", { errors: evidence.dnsErrors }];
-  if (id.endsWith("dnssec.validation.status.reported.by.the.resolver")) return ["informational", { authenticatedData: evidence.dnsAuthenticated }];
-  const spf = records("TXT", apex).filter((record) => /v=spf1/i.test(record.data));
-  if (id.endsWith("spf.record.detected")) return [spf.length ? "pass" : "warning", { records: spf }];
-  if (id.endsWith("multiple.spf.records.detected")) return [spf.length <= 1 ? "pass" : "warning", { count: spf.length }];
-  const dmarc = records("TXT", `_dmarc.${apex}`).filter((record) => /v=dmarc1/i.test(record.data));
-  if (id.endsWith("dmarc.record.detected")) return [dmarc.length ? "pass" : "warning", { records: dmarc }];
-  if (id.endsWith("dmarc.policy.recorded")) return [!dmarc.length ? "not_applicable" : dmarc.some((record) => /\bp\s*=\s*(none|quarantine|reject)/i.test(record.data)) ? "pass" : "warning", { records: dmarc }];
-  if (id.endsWith("caa.certificate.authority.restrictions.detected")) return ["informational", { records: records("CAA", apex) }];
-  if (id.includes("caption.track.resources.reachable")) { const declared = [...html.matchAll(/<track\b[^>]+src=["']([^"']+)/gi)].map((match) => match[1]); const tracks = declared.map(resourceFor); return [!declared.length || !evidence.checkedResources.length ? "not_applicable" : tracks.every(ok) ? "pass" : "warning", { declared, tracks: tracks.map((item) => ({ url: item?.url, status: item?.status, error: item?.error })) }]; }
-  if (id.endsWith("http.version.redirects.to.https")) return [evidence.apexHttp.status == null ? "not_applicable" : evidence.apexHttp.finalUrl?.startsWith("https:") ? "pass" : "warning", { requested: evidence.apexHttp.url, finalUrl: evidence.apexHttp.finalUrl, status: evidence.apexHttp.status, error: evidence.apexHttp.error }];
-  if (id.endsWith("https.connection.succeeds")) return [evidence.apexHttps.status == null ? "not_applicable" : ok(evidence.apexHttps) ? "pass" : "fail", { status: evidence.apexHttps.status, error: evidence.apexHttps.error }];
-  if (id.endsWith("http.image.and.media.references.detected")) { const matches = [...html.matchAll(/<(?:img|video|audio|source)\b[^>]+(?:src|poster)=["'](http:\/\/[^"']+)/gi)].map((match) => match[1]); return [matches.length ? "warning" : "pass", { matches: matches.slice(0, 20) }]; }
-  if (id.includes("observed.cookies.have.") || id.endsWith("response.cookie.attributes.recorded")) { const header = response.headers.get("set-cookie") || ""; const cookies = header ? header.split(/,(?=\s*[^;,=]+=[^;,]+)/) : []; if (id.endsWith("response.cookie.attributes.recorded")) return ["informational", { count: cookies.length, cookies: cookies.map((cookie) => ({ secure: /;\s*secure/i.test(cookie), httpOnly: /;\s*httponly/i.test(cookie), sameSite: cookie.match(/;\s*samesite=([^;]+)/i)?.[1] || null })) }]; if (!cookies.length) return ["not_applicable", { count: 0 }]; const attribute = id.includes("secure.attributes") ? /;\s*secure/i : id.includes("httponly") ? /;\s*httponly/i : /;\s*samesite=(?:lax|strict|none)/i; return [cookies.every((cookie) => attribute.test(cookie)) ? "pass" : "warning", { count: cookies.length, missing: cookies.filter((cookie) => !attribute.test(cookie)).length }]; }
-  if (id.endsWith("apex.and.www.http.redirect.behaviour.compared")) return [evidence.apexHttp.status != null && evidence.apexHttps.status != null && evidence.wwwHttp.status != null && evidence.wwwHttps.status != null ? "informational" : "not_applicable", { apexHttp: evidence.apexHttp.finalUrl, apexHttps: evidence.apexHttps.finalUrl, wwwHttp: evidence.wwwHttp.finalUrl, wwwHttps: evidence.wwwHttps.finalUrl }];
-  if (id.endsWith("checked.structured.data.image.urls.reachable")) { const urls = analysis.jsonLd.flatMap((value) => { try { const json = JSON.parse(value); const items = Array.isArray(json) ? json : [json]; return items.flatMap((item) => [item?.image, item?.logo].flatMap((entry) => typeof entry === "string" ? [entry] : Array.isArray(entry) ? entry.filter((part) => typeof part === "string") : typeof entry?.url === "string" ? [entry.url] : [])); } catch { return []; } }); const resources = urls.map(resourceFor); return [!urls.length || !evidence.checkedResources.length ? "not_applicable" : resources.every(ok) ? "pass" : "warning", { declared: urls, resources: resources.map((item) => ({ url: item?.url, status: item?.status })) }]; }
-  if (id.endsWith("open.graph.image.reachable")) { const item = resourceFor(ogImage); return [!ogImage || !item ? "not_applicable" : ok(item) ? "pass" : "warning", { url: item?.url || ogImage, status: item?.status, error: item?.error }]; }
-  if (id.endsWith("declared.favicon.reachable")) { const item = resourceFor(favicon); return [!favicon || !item ? "not_applicable" : ok(item) ? "pass" : "warning", { url: item?.url || favicon, status: item?.status, error: item?.error }]; }
-  if (id.endsWith("declared.apple.touch.icon.reachable")) { const item = resourceFor(appleIcon); return [!appleIcon || !item ? "not_applicable" : ok(item) ? "pass" : "warning", { url: item?.url || appleIcon, status: item?.status, error: item?.error }]; }
-  if (id.endsWith("linked.web.app.manifest.reachable")) { const item = resourceFor(manifestHref); return [!manifestHref || !item ? "not_applicable" : ok(item) ? "pass" : "warning", { url: item?.url || manifestHref, status: item?.status, error: item?.error }]; }
-  if (id.endsWith("web.app.manifest.contains.valid.json")) { const item = resourceFor(manifestHref); if (!manifestHref || !ok(item)) return ["not_applicable", { url: manifestHref }]; try { JSON.parse(item!.body); return ["pass", { url: item!.url }]; } catch { return ["warning", { url: item!.url }]; } }
-  if (id.endsWith("linked.markdown.alternative.for.the.selected.page.detected")) return [markdownHref ? "pass" : "not_applicable", { url: markdownHref }];
-  if (id.endsWith("declared.markdown.alternative.reachable")) { const item = resourceFor(markdownHref); return [!markdownHref || !item ? "not_applicable" : ok(item) ? "pass" : "warning", { url: item?.url || markdownHref, status: item?.status, error: item?.error }]; }
-  if (id.endsWith("declared.markdown.alternative.contains.readable.content")) { const item = resourceFor(markdownHref); return [!markdownHref || !ok(item) ? "not_applicable" : item!.body.trim().length >= 100 ? "pass" : "warning", { url: item?.url || markdownHref, characters: item?.body.trim().length || 0 }]; }
-  if (id.endsWith("llms.txt.file.reachable")) return [ok(evidence.llms) ? "pass" : "not_applicable", { status: evidence.llms.status, error: evidence.llms.error }];
-  if (id.endsWith("llms.txt.returned.as.readable.text")) return [!ok(evidence.llms) ? "not_applicable" : evidence.llms.body.trim() ? "pass" : "warning", { characters: evidence.llms.body.trim().length, contentType: evidence.llms.contentType }];
-  if (id.endsWith("llms.txt.title.detected")) return [!ok(evidence.llms) ? "not_applicable" : /^#\s+\S+/m.test(evidence.llms.body) ? "pass" : "warning", { title: evidence.llms.body.match(/^#\s+(.+)$/m)?.[1] || null }];
-  if (id.endsWith("llms.txt.summary.detected")) return [!ok(evidence.llms) ? "not_applicable" : evidence.llms.body.split(/\r?\n/).some((line) => line.trim() && !line.trim().startsWith("#") && !/^[-*]\s|^\[/.test(line.trim())) ? "pass" : "warning", {}];
-  if (id.endsWith("llms.txt.markdown.links.parse.correctly")) { const invalid = markdownLinks.filter((link) => { try { new URL(link, analysis.url); return false; } catch { return true; } }); return [!ok(evidence.llms) ? "not_applicable" : invalid.length ? "warning" : "pass", { links: markdownLinks.length, invalid }]; }
-  if (id.endsWith("llms.txt.links.checked.within.the.request.limit")) return [!ok(evidence.llms) ? "not_applicable" : "informational", { discovered: markdownLinks.length, requestLimit: 20 }];
-  if (id.endsWith("selected.page.referenced.in.checked.llms.txt.links")) return [!ok(evidence.llms) ? "not_applicable" : markdownLinks.some((link) => normalizeComparableUrl(new URL(link, analysis.url).href) === selected) ? "pass" : "informational", { selected: response.url, links: markdownLinks.length }];
-  if (id.endsWith("llms.full.txt.file.reachable")) return [ok(evidence.llmsFull) ? "pass" : "not_applicable", { status: evidence.llmsFull.status, error: evidence.llmsFull.error }];
-  if (id.endsWith("llms.full.txt.returned.as.readable.text")) return [!ok(evidence.llmsFull) ? "not_applicable" : evidence.llmsFull.body.trim() ? "pass" : "warning", { characters: evidence.llmsFull.body.trim().length, contentType: evidence.llmsFull.contentType }];
-  return null;
-}
-
-function normalizeComparableUrl(value: string) {
-  try {
-    const url = new URL(value);
-    url.hash = "";
-    url.search = "";
-    return `${canonicalPropertyHost(url.hostname)}${url.pathname.replace(/\/+$/, "") || "/"}`.toLowerCase();
-  } catch {
-    return value.toLowerCase();
-  }
-}
-
 export function auditCheckHasExecutableLogic(id: string) {
-  if (EXPLICIT_SOURCE_CHECK_IDS.has(id) || CONTEXT_AUDIT_CHECK_IDS.has(id)) return true;
-  const definition = registry(id);
-  if (definition?.primaryCategory === "performance") return true;
-  if (definition && ["rendered_browser", "lab"].includes(definition.executionMethod)) return true;
-  if ([
-    "image.resources.fail.to.load", "image.aspect.ratio.distortion", "image.transfer.sizes.measured", "below.the.fold.image.loading",
-    "required.aria.attributes.present", "aria.attribute.names.valid", "aria.attribute.values.valid",
-    "aria.roles.valid", "aria.attributes.permitted.for.their.roles", "required.aria.parent.roles",
-    "required.aria.child.roles", "focusable.elements.inside.aria.hidden", "scrollable.regions.keyboard.focusable",
-    "table.headers.associated", "table.header.cells.contain.text", "horizontal.page.overflow",
-    "images.exceed.their.containing", "tables.overflow.their.containing", "text.sizes.measured.at.tested.mobile",
-    "desktop.and.mobile.content.differences", "main.heading.visible.at.tested", "primary.navigation.controls.have.accessible.names",
-    "browser.reported.security.policy.violations",
-  ].some((part) => id.includes(part))) return true;
-  if (!definition || !["source_html", "network"].includes(definition.executionMethod)) return false;
-  const html = "<!doctype html><html lang=\"en\"><head><title>Probe</title></head><body><main>Probe content for evaluator capability detection.</main></body></html>";
-  const values = new Map<string, string>([["content-type", "text/html; charset=utf-8"]]);
-  const response = {
-    status: 200,
-    ok: true,
-    url: "https://audit-capability.invalid/",
-    headers: {
-      get: (name: string) => values.get(name.toLowerCase()) || null,
-      has: (name: string) => values.has(name.toLowerCase()),
-    },
-  } as unknown as Response;
-  return evaluateStaticCheck(
-    id,
-    response,
-    html,
-    analyseHtml(html, "https://audit-capability.invalid/"),
-    1,
-  ) !== null;
-}
-
-function evaluateStaticCheck(
-  id: string,
-  res: Response,
-  html: string,
-  a: ReturnType<typeof analyseHtml>,
-  responseMs: number,
-): [CheckOutcome, Record<string, unknown>] | null {
-  const count = (pattern: RegExp) => {
-    const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
-    return [...html.matchAll(new RegExp(pattern.source, flags))].length;
-  };
-  const present = (pattern: RegExp) => pattern.test(html);
-  const result = (
-    ok: boolean,
-    evidence: Record<string, unknown> = {},
-    bad: CheckOutcome = "fail",
-  ): [CheckOutcome, Record<string, unknown>] => [ok ? "pass" : bad, evidence];
-  const meta = (key: string) =>
-    html.match(new RegExp(`<meta[^>]+(?:name|property)=["']${key}["'][^>]+content=["']([^"']*)`, "i"))?.[1] ||
-    html.match(new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]+(?:name|property)=["']${key}["']`, "i"))?.[1] ||
-    null;
-  const linkRel = (rel: string) =>
-    html.match(new RegExp(`<link[^>]+rel=["'][^"']*${rel}[^"']*["'][^>]+href=["']([^"']+)`, "i"))?.[1] ||
-    html.match(new RegExp(`<link[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*${rel}[^"']*["']`, "i"))?.[1] ||
-    null;
-  const method = registry(id)?.executionMethod;
-  if (!["source_html", "network"].includes(method || "")) return null;
-
-  if (id.includes("multiple.page.titles")) return result(count(/<title\b[^>]*>/gi) <= 1, { count: count(/<title\b[^>]*>/gi) }, "warning");
-  if (id.includes("multiple.meta.descriptions")) return result(count(/<meta[^>]+name=["']description["']/gi) <= 1, { count: count(/<meta[^>]+name=["']description["']/gi) }, "warning");
-  if (id.includes("meta.description.length")) { const value = meta("description") || ""; return [!value ? "not_applicable" : value.length <= 160 ? "pass" : "warning", { length: value.length }]; }
-  if (id.includes("canonical.url.declared")) return result(!!linkRel("canonical"), { value: linkRel("canonical") });
-  if (id.includes("multiple.canonical")) return result(count(/<link[^>]+rel=["'][^"']*canonical/gi) <= 1, { count: count(/<link[^>]+rel=["'][^"']*canonical/gi) }, "warning");
-  if (id.includes("canonical.url.format")) { const value = linkRel("canonical"); if (!value) return ["not_applicable", {}]; try { new URL(value, a.url); return ["pass", { value }]; } catch { return ["fail", { value }]; } }
-  if (id.includes("canonical.points.to.a.different")) { const value = linkRel("canonical"); return [!value ? "not_applicable" : new URL(value, a.url).href === a.url.href ? "pass" : "informational", { selected: a.url.href, canonical: value }]; }
-  if (id.includes("html.language.declared")) return result(/<html[^>]+lang=["'][^"']+/i.test(html), {});
-  if (id.includes("html.language.code.valid")) { const lang = html.match(/<html[^>]+lang=["']([^"']+)/i)?.[1]; return [!lang ? "not_applicable" : /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i.test(lang) ? "pass" : "fail", { lang }]; }
-  if (id.includes("meta.robots.directives")) return ["informational", { value: meta("robots") }];
-  if (id.includes("x.robots.tag")) return ["informational", { value: res.headers.get("x-robots-tag") }];
-  if (id.includes("noindex.directive")) return result(!/\bnoindex\b/i.test(`${meta("robots") || ""} ${res.headers.get("x-robots-tag") || ""}`), {}, "warning");
-  if (id.includes("nofollow.directive")) return result(!/\bnofollow\b/i.test(`${meta("robots") || ""} ${res.headers.get("x-robots-tag") || ""}`), {}, "warning");
-  if (id.includes("conflicting.indexing.directives")) { const directives = `${meta("robots") || ""} ${res.headers.get("x-robots-tag") || ""}`; const conflicting = (/\bindex\b/i.test(directives) && /\bnoindex\b/i.test(directives)) || (/\bfollow\b/i.test(directives) && /\bnofollow\b/i.test(directives)); return result(!conflicting, { directives }, "warning"); }
-  if (id.includes("empty.h1")) return result(!/<h1\b[^>]*>\s*<\/h1>/i.test(html), {}, "warning");
-  if (id.includes("empty.h2.to.h6")) return result(!/<h[2-6]\b[^>]*>\s*<\/h[2-6]>/i.test(html), {}, "warning");
-  if (id.includes("skipped.heading.levels")) { const levels = [...html.matchAll(/<h([1-6])\b/gi)].map((match) => Number(match[1])); const skipped = levels.some((level, index) => index > 0 && level > levels[index - 1] + 1); return result(!skipped, { levels }, "warning"); }
-  if (id.includes("repeated.heading.text")) { const headings = [...html.matchAll(/<h[1-6]\b[^>]*>([\s\S]*?)<\/h[1-6]>/gi)].map((match) => stripText(match[1]).toLowerCase()).filter(Boolean); const repeated = [...new Set(headings.filter((value, index) => headings.indexOf(value) !== index))]; return result(!repeated.length, { repeated }, "warning"); }
-  if (id.includes("main.content.landmark.present")) return result(present(/<main\b|role=["']main["']/i), {});
-  if (id.includes("multiple.main.content")) return result(count(/<main\b|role=["']main["']/gi) <= 1, { count: count(/<main\b|role=["']main["']/gi) }, "warning");
-  if (id.includes("main.content.contains.extractable.text") || id.includes("machine.readable.text")) return result(a.text.length >= 100, { textLength: a.text.length }, "warning");
-  if (id.includes("word.count.measured")) return ["informational", { words: a.text.split(/\s+/).filter(Boolean).length }];
-  if (id.includes("text.present.in.original.html")) return result(a.text.length > 0, { textLength: a.text.length });
-  if (id.includes("lists.use.semantic") || id.includes("lists.available.in.machine")) return ["informational", { orderedLists: count(/<ol\b/gi), unorderedLists: count(/<ul\b/gi) }];
-  if (id.includes("data.tables.contain.header")) { const tables = count(/<table\b/gi), headers = count(/<th\b/gi); return [!tables ? "not_applicable" : headers ? "pass" : "warning", { tables, headers }]; }
-
-  if (id.includes("links.have.non.empty.destinations")) return result(a.links.every((x) => !!x.href?.trim()), { checked: a.links.length }, "warning");
-  if (id.includes("links.have.accessible.names") || id.includes("empty.anchor.text")) return result(a.links.every((x) => !!x.name?.trim()), { checked: a.links.length }, "warning");
-  if (id.includes("placeholder.link")) { const found = a.links.filter((x) => !x.href || ["#", "javascript:void(0)"].includes(x.href)); return result(!found.length, { count: found.length }, "warning"); }
-  if (id.includes("javascript.link")) { const found = a.links.filter((x) => /^javascript:/i.test(x.href || "")); return result(!found.length, { count: found.length }, "warning"); }
-  if (id.includes("internal.links.identified")) { const found = a.links.filter((x) => { try { return new URL(x.href || "", a.url).hostname === a.url.hostname; } catch { return false; } }); return ["informational", { count: found.length }]; }
-  if (id.includes("external.links.identified")) { const found = a.links.filter((x) => { try { return new URL(x.href || "", a.url).hostname !== a.url.hostname; } catch { return false; } }); return ["informational", { count: found.length }]; }
-  if (id.includes("https.page.links.to.http")) { const found = a.links.filter((x) => /^http:\/\//i.test(x.href || "")); return result(!found.length, { count: found.length }, "warning"); }
-  if (id.includes("fragment.links.point")) { const missing = a.links.filter((x) => x.href?.startsWith("#") && !a.ids.includes(x.href.slice(1))); return result(!missing.length, { missing: missing.map((x) => x.href) }, "warning"); }
-  if (id.includes("download.links.identified")) return ["informational", { count: a.links.filter((x) => /\bdownload(?:\s|=|>)/i.test(x.tag)).length }];
-  if (id.includes("telephone.link.formats")) { const values = a.links.filter((x) => x.href?.startsWith("tel:")); return result(values.every((x) => /^tel:\+?[0-9() .-]+$/i.test(x.href || "")), { count: values.length }, "warning"); }
-  if (id.includes("email.link.formats")) { const values = a.links.filter((x) => x.href?.startsWith("mailto:")); return result(values.every((x) => /^mailto:[^@\s]+@[^@\s]+\.[^@\s]+/i.test(x.href || "")), { count: values.length }, "warning"); }
-  if (id.includes("sponsored.link")) return ["informational", { count: a.links.filter((x) => /rel=["'][^"']*sponsored/i.test(x.tag)).length }];
-  if (id.includes("user.generated.content")) return ["informational", { count: a.links.filter((x) => /rel=["'][^"']*ugc/i.test(x.tag)).length }];
-  if (id.includes("checked.and.unchecked.link.totals")) return ["informational", { total: a.links.length, checked: 0, unchecked: a.links.length }];
-  if (id.includes("navigation.landmarks.have.distinguishable.accessible.names")) { const landmarks = [...html.matchAll(/<(?:nav|[^>]+role=["']navigation["'])\b[^>]*>/gi)].map((match) => match[0]); const names = landmarks.map((tag) => a.attr(tag, "aria-label") || a.attr(tag, "aria-labelledby") || "").filter(Boolean); return [landmarks.length < 2 ? "not_applicable" : names.length === landmarks.length && new Set(names).size === names.length ? "pass" : "warning", { landmarks: landmarks.length, names }]; }
-
-  if (id.includes("images.contain.alt")) return result(a.images.every((x) => x.alt !== null), { total: a.images.length, missing: a.images.filter((x) => x.alt === null).length });
-  if (id.includes("empty.alt.attributes")) return ["informational", { count: a.images.filter((x) => x.alt === "").length }];
-  if (id.includes("alt.text.repeats.image.filenames")) { const found = a.images.filter((x) => x.alt && x.src && x.src.split('/').pop()?.split('.')[0].toLowerCase() === x.alt.toLowerCase()); return result(!found.length, { count: found.length }, "warning"); }
-  if (id.includes("image.width.and.height.attributes")) return result(a.images.every((x) => x.width && x.height), { total: a.images.length, complete: a.images.filter((x) => x.width && x.height).length }, "warning");
-  if (id.includes("images.marked.decorative.remain.focusable")) { const found = count(/<(?:a|button)\b[^>]*>[\s\S]{0,500}?<img\b[^>]*alt=["']{2}[^>]*>/gi); return result(!found, { count: found }, "warning"); }
-  if (id.includes("image.intrinsic.dimensions.recorded")) return ["informational", { images: a.images.map((image) => ({ src: image.src, width: image.width, height: image.height })).slice(0, 50) }];
-  if (id.includes("responsive.srcset.declarations")) return ["informational", { count: a.images.filter((x) => x.srcset).length }];
-  if (id.includes("invalid.srcset.descriptors")) { const invalid = a.images.filter((image) => image.srcset && image.srcset.split(",").some((candidate) => { const descriptor = candidate.trim().split(/\s+/)[1]; return descriptor && !/^\d+(?:\.\d+)?[wx]$/.test(descriptor); })); return result(!invalid.length, { count: invalid.length }, "warning"); }
-  if (id.includes("image.formats.recorded")) return ["informational", { formats: [...new Set(a.images.map((x) => x.src?.split('.').pop()?.split('?')[0]).filter(Boolean))] }];
-  if (id.includes("videos.contain.caption")) { const videos = count(/<video\b/gi), captions = count(/<track[^>]+kind=["']captions/i); return [!videos ? "not_applicable" : captions >= videos ? "pass" : "warning", { videos, captions }]; }
-  if (id.includes("autoplaying.media")) { const found = count(/<(?:video|audio)[^>]+autoplay/gi); return result(!found, { count: found }, "warning"); }
-  if (id.includes("iframes.have.accessible.titles")) { const frames = a.tags('iframe'); return result(frames.every((x) => !!a.attr(x, 'title')), { total: frames.length }, "warning"); }
-
-  if (id.includes("buttons.have.accessible.names")) { const buttons = [...html.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/gi)]; const bad = buttons.filter((x) => !stripText(x[2]) && !/aria-label=["'][^"']+/i.test(x[1])); return result(!bad.length, { total: buttons.length, unnamed: bad.length }); }
-  if (id.includes("form.inputs.have.accessible.labels") || id.includes("select.controls.have.accessible.labels") || id.includes("textareas.have.accessible.labels")) { const tag = id.includes('select') ? 'select' : id.includes('textarea') ? 'textarea' : 'input'; const controls = a.tags(tag).filter((x) => !/type=["'](?:hidden|submit|button)["']/i.test(x)); const bad = controls.filter((x) => { const ident = a.attr(x,'id'); return !a.attr(x,'aria-label') && !a.attr(x,'aria-labelledby') && !(ident && new RegExp(`<label[^>]+for=["']${ident}["']`,'i').test(html)); }); return result(!bad.length, { total: controls.length, unlabeled: bad.length }); }
-  if (id.includes("form.labels.reference.existing.controls")) { const references = [...html.matchAll(/<label[^>]+for=["']([^"']+)["']/gi)].map((match) => match[1]); const missing = references.filter((value) => !a.ids.includes(value)); return result(!missing.length, { references: references.length, missing }, "warning"); }
-  if (id.includes("multiple.labels.for.the.same.control")) { const references = [...html.matchAll(/<label[^>]+for=["']([^"']+)["']/gi)].map((match) => match[1]); const repeated = [...new Set(references.filter((value, index) => references.indexOf(value) !== index))]; return result(!repeated.length, { repeated }, "warning"); }
-  if (id.includes("aria.references.point.to.existing.elements")) { const references = [...html.matchAll(/\baria-(?:labelledby|describedby|controls|owns|activedescendant)=["']([^"']+)["']/gi)].flatMap((match) => match[1].trim().split(/\s+/)); const missing = references.filter((value) => !a.ids.includes(value)); return result(!missing.length, { references: references.length, missing: [...new Set(missing)] }, "warning"); }
-  if (id.includes("nested.interactive.controls")) { const nested = count(/<(?:a|button)\b[^>]*>[\s\S]{0,2000}?<(?:a|button|input|select|textarea)\b/gi); return result(!nested, { count: nested }, "warning"); }
-  if (id.includes("definition.lists.have.valid.structure")) { const lists = [...html.matchAll(/<dl\b[^>]*>([\s\S]*?)<\/dl>/gi)]; const invalid = lists.filter((match) => /<(?!\/?(?:dt|dd)\b)[a-z][^>]*>/i.test(match[1].replace(/<(?:dt|dd)\b[^>]*>[\s\S]*?<\/(?:dt|dd)>/gi, ""))); return result(!invalid.length, { lists: lists.length, invalid: invalid.length }, "warning"); }
-  if (id.includes("lists.contain.valid.list.items")) { const lists = [...html.matchAll(/<(?:ul|ol)\b[^>]*>([\s\S]*?)<\/(?:ul|ol)>/gi)]; const invalid = lists.filter((match) => /<(?!\/?li\b)[a-z][^>]*>/i.test(match[1].replace(/<li\b[^>]*>[\s\S]*?<\/li>/gi, ""))); return result(!invalid.length, { lists: lists.length, invalid: invalid.length }, "warning"); }
-  if (id.includes("svg.elements.requiring.accessible.names.have.names")) { const svgs = [...html.matchAll(/<svg\b([^>]*)>([\s\S]*?)<\/svg>/gi)]; const unnamed = svgs.filter((match) => !/aria-label=["'][^"']+|aria-labelledby=["'][^"']+/i.test(match[1]) && !/<title\b[^>]*>\s*[^<]+/i.test(match[2])); return result(!unnamed.length, { total: svgs.length, unnamed: unnamed.length }, "warning"); }
-  if (id.includes("duplicate.ids.used")) return result(!a.duplicateIds.length, { duplicateIds: a.duplicateIds }, "warning");
-  if (id.includes("positive.tabindex")) { const found = count(/tabindex=["'][1-9]\d*["']/gi); return result(!found, { count: found }, "warning"); }
-  if (id.includes("meta.refresh")) { const found = present(/<meta[^>]+http-equiv=["']refresh["']/i); return result(!found, { detected: found }, "warning"); }
-  if (id.includes("viewport.settings.restrict.zoom")) { const value = meta('viewport') || ''; const restricted = /user-scalable\s*=\s*no|maximum-scale\s*=\s*1/i.test(value); return result(!restricted, { value }, "warning"); }
-  if (id.includes("multiple.viewport")) return result(count(/<meta[^>]+name=["']viewport["']/gi) <= 1, { count: count(/<meta[^>]+name=["']viewport["']/gi) }, "warning");
-  if (id.includes("viewport.width.configured")) { const value = meta('viewport') || ''; return result(/width\s*=\s*device-width/i.test(value), { value }); }
-
-  if (id.includes("document.response.time")) return ["informational", { responseMs }];
-  if (id.includes("text.compression")) return result(/gzip|br|deflate/i.test(res.headers.get('content-encoding') || ''), { value: res.headers.get('content-encoding') }, "warning");
-  if (id.includes("static.resource.cache.directives")) return ["informational", { cacheControl: res.headers.get('cache-control') }];
-  if (id.includes("resource.preload.declarations")) return ["informational", { count: count(/<link[^>]+rel=["'][^"']*preload/gi) }];
-  if (id.includes("font.display.declarations")) return ["informational", { declarations: count(/font-display\s*:/gi) }];
-  if (id.includes("total.resource.request.count.measured")) return ["informational", { resources: count(/<(?:script|img|iframe|source)\b[^>]+(?:src|srcset)=|<link\b[^>]+href=/gi) }];
-
-  if (id.includes("strict.transport.security.directives")) return result(/^max-age=\d+/i.test(res.headers.get('strict-transport-security') || ''), { value: res.headers.get('strict-transport-security') }, "warning");
-  if (id.includes("content.security.policy.is.report.only")) return ["informational", { reportOnly: res.headers.has('content-security-policy-report-only') }];
-  if (id.includes("unsafe.inline")) { const value = res.headers.get('content-security-policy') || ''; return [!value ? "not_applicable" : value.includes("'unsafe-inline'") ? "warning" : "pass", { value }]; }
-  if (id.includes("unsafe.eval")) { const value = res.headers.get('content-security-policy') || ''; return [!value ? "not_applicable" : value.includes("'unsafe-eval'") ? "warning" : "pass", { value }]; }
-  if (id.includes("frame.embedding.protection")) return result(res.headers.has('x-frame-options') || /frame-ancestors/i.test(res.headers.get('content-security-policy') || ''), {}, "warning");
-  if (id.includes("x.content.type.options.header.present")) return result(res.headers.has('x-content-type-options'), {});
-  if (id.includes("x.content.type.options.set.to.nosniff")) return result((res.headers.get('x-content-type-options') || '').toLowerCase() === 'nosniff', { value: res.headers.get('x-content-type-options') });
-  if (id.includes("referrer.policy.declared")) return result(res.headers.has('referrer-policy') || !!meta('referrer'), {});
-  if (id.includes("referrer.policy.value.recognised")) { const value = (res.headers.get('referrer-policy') || meta('referrer') || '').trim().toLowerCase(); const valid = new Set(['no-referrer','no-referrer-when-downgrade','origin','origin-when-cross-origin','same-origin','strict-origin','strict-origin-when-cross-origin','unsafe-url']); return [!value ? "not_applicable" : valid.has(value) ? "pass" : "warning", { value }]; }
-  if (id.includes("permissions.policy.header.present")) return result(res.headers.has('permissions-policy'), {}, "warning");
-  if (id.includes("insecure.form.submission")) { const found = count(/<form[^>]+action=["']http:\/\//gi); return result(!found, { count: found }); }
-  if (id.includes("active.mixed.content.requests")) { const found = count(/<(?:script|link|iframe|img|audio|video|source)\b[^>]+(?:src|href)=["']http:\/\//gi); return result(!found, { count: found }, "warning"); }
-  if (id.includes("password.fields.appear.on.an.http.page")) { const fields = count(/<input\b[^>]+type=["']password["']/gi); return [!fields ? "not_applicable" : a.url.protocol === "https:" ? "pass" : "fail", { fields, protocol: a.url.protocol }]; }
-
-  if (id.includes("server.software.header")) return ["informational", { value: res.headers.get('server') }];
-  if (id.includes("technology.disclosure.headers")) return ["informational", { poweredBy: res.headers.get('x-powered-by'), generator: meta('generator') }];
-  if (id.includes("cdn.or.reverse.proxy")) return ["informational", { cfRay: res.headers.get('cf-ray'), via: res.headers.get('via') }];
-  if (id.includes("cache.hit.or.miss")) return ["informational", { cfCacheStatus: res.headers.get('cf-cache-status'), age: res.headers.get('age') }];
-  if (id.includes("character.encoding")) return result(/charset=/i.test(res.headers.get('content-type') || '') || /<meta[^>]+charset=/i.test(html), { contentType: res.headers.get('content-type') }, "warning");
-  if (id.includes("cache.control.directives")) return ["informational", { value: res.headers.get('cache-control') }];
-  if (id.includes("etag.header")) return ["informational", { value: res.headers.get('etag') }];
-  if (id.includes("last.modified.header")) return ["informational", { value: res.headers.get('last-modified') }];
-  if (id.includes("vary.header")) return ["informational", { value: res.headers.get('vary') }];
-  if (id.includes("server.timing")) return ["informational", { value: res.headers.get('server-timing') }];
-
-  if (id.includes("json.ld.blocks.detected")) return ["informational", { count: a.jsonLd.length }];
-  if (id.includes("json.ld.syntax.valid")) { const invalid = a.jsonLd.filter((x) => { try { JSON.parse(x); return false; } catch { return true; } }); return result(!invalid.length, { total: a.jsonLd.length, invalid: invalid.length }); }
-  if (id.includes("structured.data.url.identifiers.use.valid.formats") || id.includes("structured.data.url.properties.use.valid.formats")) { const values = [...a.jsonLd.join('\n').matchAll(/["'](?:@id|url)["']\s*:\s*["']([^"']+)/gi)].map((match) => match[1]); const invalid = values.filter((value) => { try { new URL(value, a.url); return false; } catch { return true; } }); return result(!invalid.length, { values: values.length, invalid }, "warning"); }
-  if (id.includes("structured.data.dates.use.valid.formats")) { const values = [...a.jsonLd.join('\n').matchAll(/["'](?:datePublished|dateModified|startDate|endDate)["']\s*:\s*["']([^"']+)/gi)].map((match) => match[1]); const invalid = values.filter((value) => !Number.isFinite(Date.parse(value))); return result(!invalid.length, { values, invalid }, "warning"); }
-  if (id.includes("structured.data.page.url.matches.the.selected.url")) { const values = [...a.jsonLd.join('\n').matchAll(/["']url["']\s*:\s*["']([^"']+)/gi)].map((match) => match[1]); return [!values.length ? "not_applicable" : values.some((value) => normalizeComparableUrl(new URL(value, a.url).href) === normalizeComparableUrl(a.url.href)) ? "pass" : "warning", { selected: a.url.href, values }]; }
-  if (id.includes("organisation.website.declared")) return [!/Organization["']/i.test(a.jsonLd.join('\n')) ? "not_applicable" : /["']url["']\s*:/i.test(a.jsonLd.join('\n')) ? "pass" : "warning", {}];
-  if (id.includes("breadcrumb.items.have.names.and.positions")) { const data = a.jsonLd.join('\n'); return [!/BreadcrumbList["']/i.test(data) ? "not_applicable" : /["']name["']\s*:/i.test(data) && /["']position["']\s*:/i.test(data) ? "pass" : "warning", {}]; }
-  if (id.includes("breadcrumb.positions.form.a.consistent.sequence")) { const positions = [...a.jsonLd.join('\n').matchAll(/["']position["']\s*:\s*(\d+)/gi)].map((match) => Number(match[1])); return [!positions.length ? "not_applicable" : positions.every((value, index) => value === index + 1) ? "pass" : "warning", { positions }]; }
-  if (id.includes("declared.product.price.formats.valid")) { const values = [...a.jsonLd.join('\n').matchAll(/["']price["']\s*:\s*["']?([^,"'}\s]+)/gi)].map((match) => match[1]); return [!values.length ? "not_applicable" : values.every((value) => /^\d+(?:\.\d+)?$/.test(value)) ? "pass" : "warning", { values }]; }
-  if (id.includes("declared.product.currency.codes.valid")) { const values = [...a.jsonLd.join('\n').matchAll(/["']priceCurrency["']\s*:\s*["']([^"']+)/gi)].map((match) => match[1]); return [!values.length ? "not_applicable" : values.every((value) => /^[A-Z]{3}$/.test(value)) ? "pass" : "warning", { values }]; }
-  if (id.includes("local.entity.references.resolve.within.the.document")) { const data = a.jsonLd.join("\n"); const identifiers = new Set([...data.matchAll(/["']@id["']\s*:\s*["']([^"']+)/gi)].map((match) => match[1])); const references = [...data.matchAll(/["'](?:author|publisher|brand|isPartOf|mainEntityOfPage)["']\s*:\s*\{?\s*["']@id["']\s*:\s*["']([^"']+)/gi)].map((match) => match[1]); const unresolved = references.filter((value) => value.startsWith("#") && !identifiers.has(value)); return [!references.length ? "not_applicable" : unresolved.length ? "warning" : "pass", { references, unresolved }]; }
-  if (id.includes("duplicate.entity.identifiers.contain.conflicting.values")) { const blocks = a.jsonLd.flatMap((value) => { try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : parsed?.["@graph"] || [parsed]; } catch { return []; } }); const groups = new Map<string, string[]>(); for (const item of blocks) { const identifier = item?.["@id"]; if (!identifier) continue; const values = groups.get(identifier) || []; values.push(JSON.stringify(item)); groups.set(identifier, values); } const conflicts = [...groups.entries()].filter(([, values]) => new Set(values).size > 1).map(([identifier]) => identifier); return [conflicts.length ? "warning" : "pass", { duplicateIdentifiers: [...groups.entries()].filter(([, values]) => values.length > 1).map(([identifier]) => identifier), conflicts }]; }
-  if (id.includes("schema.org.types.identified")) { const types = [...html.matchAll(/["']@type["']\s*:\s*["']([^"']+)/gi)].map((x) => x[1]); return ["informational", { types }]; }
-  if (id.includes("structured.data.context.declared")) return result(!a.jsonLd.length || a.jsonLd.every((x) => /["']@context["']\s*:/i.test(x)), { blocks: a.jsonLd.length }, "warning");
-  if (id.includes("organisation.name.declared")) return [!a.jsonLd.length ? "not_applicable" : /["']@type["']\s*:\s*["']Organization["'][\s\S]*?["']name["']\s*:/i.test(a.jsonLd.join('\n')) ? "pass" : "warning", {}];
-  if (id.includes("article.headline.declared")) return [!/Article["']/i.test(a.jsonLd.join('\n')) ? "not_applicable" : /["']headline["']\s*:/i.test(a.jsonLd.join('\n')) ? "pass" : "warning", {}];
-  if (id.includes("article.author.declared") || id.includes("author.attribution")) return [!/Article["']/i.test(a.jsonLd.join('\n')) ? "not_applicable" : /["']author["']\s*:/i.test(a.jsonLd.join('\n')) ? "pass" : "warning", {}];
-  if (id.includes("publication.date.declared")) return [!/Article["']/i.test(a.jsonLd.join('\n')) ? "not_applicable" : /["']datePublished["']\s*:/i.test(a.jsonLd.join('\n')) ? "pass" : "warning", {}];
-  if (id.includes("modification.date.declared")) return [!/Article["']/i.test(a.jsonLd.join('\n')) ? "not_applicable" : /["']dateModified["']\s*:/i.test(a.jsonLd.join('\n')) ? "pass" : "warning", {}];
-
-  if (id.includes("open.graph.title.present")) return result(!!meta('og:title'), { value: meta('og:title') });
-  if (id.includes("open.graph.description.present")) return result(!!meta('og:description'), { value: meta('og:description') });
-  if (id.includes("open.graph.url.present")) return result(!!meta('og:url'), { value: meta('og:url') });
-  if (id.includes("open.graph.type.present")) return result(!!meta('og:type'), { value: meta('og:type') });
-  if (id.includes("open.graph.image.declared")) return result(!!meta('og:image'), { value: meta('og:image') });
-  if (id.includes("open.graph.image.dimensions.measured")) { const width = Number(meta("og:image:width") || 0); const height = Number(meta("og:image:height") || 0); return [!meta("og:image") ? "not_applicable" : width > 0 && height > 0 ? "informational" : "warning", { width: width || null, height: height || null }]; }
-  if (id.includes("twitter.card.type.declared")) return result(!!meta('twitter:card'), { value: meta('twitter:card') }, "warning");
-  if (id.includes("twitter.title.or.open.graph")) return result(!!(meta('twitter:title') || meta('og:title')), {});
-  if (id.includes("twitter.description.or.open.graph")) return result(!!(meta('twitter:description') || meta('og:description')), {});
-  if (id.includes("twitter.image.or.open.graph")) return result(!!(meta('twitter:image') || meta('og:image')), {});
-  if (id.includes("favicon.declared")) return result(!!linkRel('icon'), { value: linkRel('icon') }, "warning");
-  if (id.includes("apple.touch.icon.declared")) return result(!!linkRel('apple-touch-icon'), { value: linkRel('apple-touch-icon') }, "warning");
-  if (id.includes("web.app.manifest.linked")) return result(!!linkRel('manifest'), { value: linkRel('manifest') }, "warning");
-  if (id.includes("open.graph.url.agrees.with.the.canonical.url")) { const og = meta('og:url'), canonical = linkRel('canonical'); return [!og || !canonical ? "not_applicable" : normalizeComparableUrl(new URL(og, a.url).href) === normalizeComparableUrl(new URL(canonical, a.url).href) ? "pass" : "warning", { openGraphUrl: og, canonical }]; }
-  if (id.includes("conflicting.duplicate.social.metadata")) { const values = [...html.matchAll(/<meta[^>]+(?:property|name)=["'](og:[^"']+|twitter:[^"']+)["'][^>]+content=["']([^"']*)/gi)].map((match) => `${match[1].toLowerCase()}=${match[2]}`); const keys = values.map((value) => value.split('=')[0]); const conflicts = [...new Set(keys.filter((key, index) => keys.indexOf(key) !== index))]; return result(!conflicts.length, { conflicts }, "warning"); }
-
-  if (id.includes("main.content.organised.under.semantic.headings")) return result(count(/<h[1-6]\b/gi) > 0, { headings: count(/<h[1-6]\b/gi) }, "warning");
-  if (id.includes("tables.available.in.machine")) return ["informational", { tables: count(/<table\b/gi) }];
-  if (id.includes("external.source.links.present")) { const external = a.links.filter((x) => { try { return new URL(x.href || '', a.url).hostname !== a.url.hostname; } catch { return false; } }); return ["informational", { count: external.length }]; }
-  if (id.includes("machine.readable.organisation.identity")) return result(/Organization["']/i.test(a.jsonLd.join('\n')), {}, "warning");
-  if (id.includes("machine.readable.author.identity")) return result(/["']author["']\s*:/i.test(a.jsonLd.join('\n')), {}, "warning");
-  if (id.includes("publisher.attribution")) return [!a.jsonLd.length ? "not_applicable" : /["']publisher["']\s*:/i.test(a.jsonLd.join('\n')) ? "pass" : "warning", {}];
-  if (id.includes("entity.sameas.references.use.valid.url.formats")) { const values = [...a.jsonLd.join('\n').matchAll(/["']sameAs["']\s*:\s*(?:\[([^\]]*)\]|["']([^"']+))/gi)].flatMap((match) => [...`${match[1] || match[2] || ''}`.matchAll(/["']([^"']+)["']/g)].map((item) => item[1])); const invalid = values.filter((value) => { try { new URL(value); return false; } catch { return true; } }); return result(!invalid.length, { values: values.length, invalid }, "warning"); }
-  if (id.includes("nosnippet.restrictions")) return result(!/\bnosnippet\b/i.test(`${meta('robots') || ''} ${res.headers.get('x-robots-tag') || ''}`), {}, "warning");
-  if (id.includes("max.snippet.restrictions")) return ["informational", { value: `${meta('robots') || ''} ${res.headers.get('x-robots-tag') || ''}`.match(/max-snippet\s*:\s*-?\d+/i)?.[0] || null }];
-  if (id.includes("data.nosnippet.sections")) return ["informational", { count: count(/\bdata-nosnippet\b/gi) }];
-  if (id.includes("login.requirement.encountered")) { const detected = res.status === 401 || res.status === 403 || /<input\b[^>]+type=["']password["']/i.test(html); return result(!detected, { status: res.status, passwordField: /<input\b[^>]+type=["']password["']/i.test(html) }, "warning"); }
-  if (id.includes("bot.challenge.encountered")) { const detected = /captcha|cf-chl-|challenge-platform|verify you are human/i.test(html); return result(!detected, { detected }, "warning"); }
-  return null;
+  const key = AUDIT_EVALUATOR_KEYS[id];
+  return Boolean(key && key !== "unsupported");
 }
 
 async function runUptime(env: Env, id: string) {
@@ -4780,7 +4165,10 @@ async function safeFetchTrace(
   let url = validPublicUrl(value);
   if (!url) throw new Error("Target must be a public HTTP or HTTPS URL");
   const redirects: { url: string; status: number; location: string }[] = [];
+  const visited = new Set<string>();
   for (let i = 0; i < 5; i++) {
+    if (visited.has(url.href)) throw new Error("redirect_loop");
+    visited.add(url.href);
     const hostname = url.hostname.toLowerCase();
     if (!validatedHosts?.has(hostname)) {
       await assertPublicResolution(url.hostname);
@@ -4802,7 +4190,7 @@ async function safeFetchTrace(
     if (!next) throw new Error("Redirect target is not permitted");
     url = next;
   }
-  throw new Error("Redirect limit exceeded");
+  throw new Error("redirect_limit_exceeded");
 }
 async function limitedText(res: Response, max: number) {
   const length = Number(res.headers.get("content-length") || 0);

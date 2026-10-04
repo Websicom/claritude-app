@@ -20,15 +20,15 @@ describe('audit runtime configuration', () => {
       { id: 'manual', title: 'Manual', weight: 1, logicVersion: '1.0.0', configurationVersion: 1 },
     ];
     const result = scoreAuditResults(snapshot, [
-      { check_id: 'heavy', outcome: 'pass' },
-      { check_id: 'light', outcome: 'fail' },
+      { check_id: 'heavy', outcome: 'passed' },
+      { check_id: 'light', outcome: 'failed' },
       { check_id: 'manual', outcome: 'unable_to_test' },
     ]);
 
     expect(result).toEqual({ score: 75, coverage: 67 });
   });
 
-  it('counts informational and not-applicable checks as executed without scoring them', () => {
+  it('scores advisory checks and counts not-applicable checks as executed', () => {
     const snapshot = [
       { id: 'pass', title: 'Pass', weight: 1, logicVersion: '1.0.0', configurationVersion: 1 },
       { id: 'info', title: 'Info', weight: 1, logicVersion: '1.0.0', configurationVersion: 1 },
@@ -36,9 +36,9 @@ describe('audit runtime configuration', () => {
       { id: 'missing', title: 'Missing result', weight: 1, logicVersion: '1.0.0', configurationVersion: 1 },
     ];
     expect(scoreAuditResults(snapshot, [
-      { check_id: 'pass', outcome: 'pass' },
-      { check_id: 'info', outcome: 'informational' },
+      { check_id: 'pass', outcome: 'passed' },
+      { check_id: 'info', outcome: 'advisory' },
       { check_id: 'na', outcome: 'not_applicable' },
-    ])).toEqual({ score: 100, coverage: 75 });
+    ])).toEqual({ score: 75, coverage: 75 });
   });
 });

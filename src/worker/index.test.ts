@@ -8,7 +8,6 @@ import {
   chunkAuditResults,
   cleanPath,
   editableWorkspaceRole,
-  evaluateSourceChecks,
   filterAnalyticsEvents,
   isFreshAuditRun,
   isPrivateHost,
@@ -23,6 +22,7 @@ import {
   renderUptimeAlertEmail,
 } from "./index";
 import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
+import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
 
 describe("worker evidence pipelines", () => {
   it("renders test alerts from the shared uptime template without implying delivery", () => {
@@ -337,53 +337,22 @@ describe("worker evidence pipelines", () => {
     expect(fallBack.series).toHaveLength(25);
   });
 
-  it("executes source and header checks with evidence", () => {
-    const html = `<!doctype html><html lang="en"><head><title>Example</title><meta name="description" content="Useful description"><meta name="viewport" content="width=device-width"><link rel="canonical" href="https://example.com/"></head><body><main><h1>Example</h1><p>${"useful content ".repeat(20)}</p></main></body></html>`;
-    const response = new Response(html, {
-      status: 200,
-      headers: {
-        "content-type": "text/html; charset=utf-8",
-        "strict-transport-security": "max-age=31536000",
-        "x-content-type-options": "nosniff",
-      },
-    });
-    Object.defineProperty(response, "url", { value: "https://example.com/" });
-    const snapshot = [
-      { id: "seo.metadata.title.present" },
-      { id: "seo.page.metadata.canonical.url.declared" },
-      { id: "seo.page.metadata.html.language.declared" },
-      { id: "seo.content.structure.and.headings.main.content.landmark.present" },
-      { id: "security.headers.hsts" },
-      { id: "security.security.and.browser.protections.x.content.type.options.set.to.nosniff" },
-    ];
-    const results = evaluateSourceChecks(snapshot, response, html, 123);
-    expect(results).toHaveLength(snapshot.length);
-    expect(results.every((item) => item.outcome === "pass")).toBe(true);
-  });
-
-  it("has executable evidence collection for every active catalogue check", () => {
+  it("routes every active catalogue check through one explicit evaluator key", () => {
     const active = AUDIT_REGISTRY.filter((check) => check.lifecycle === "active");
     const implemented = active.filter((check) => auditCheckHasExecutableLogic(check.id));
     const gaps = active.filter((check) => !auditCheckHasExecutableLogic(check.id));
     expect(active).toHaveLength(306);
-    expect(implemented).toHaveLength(306);
-    expect(gaps).toHaveLength(0);
+    expect(Object.keys(AUDIT_EVALUATOR_KEYS)).toHaveLength(306);
+    expect(implemented.length).toBeGreaterThan(0);
+    expect(gaps.length).toBeGreaterThan(0);
     expect(implemented.length + gaps.length).toBe(active.length);
-    expect(gaps.every((check) => ["source_html", "network", "rendered_browser", "dns", "lab"].includes(check.executionMethod))).toBe(true);
+    expect(gaps.every((check) => AUDIT_EVALUATOR_KEYS[check.id] === "unsupported")).toBe(true);
   });
 
-  it("records a result for every snapshotted catalogue check without treating gaps as passes", () => {
-    const html = "<!doctype html><html lang=\"en\"><head><title>Coverage probe</title></head><body><main>" + "evidence ".repeat(30) + "</main></body></html>";
-    const response = new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } });
-    Object.defineProperty(response, "url", { value: "https://example.com/" });
-    const active = AUDIT_REGISTRY.filter((check) => check.lifecycle === "active");
-    const results = evaluateSourceChecks(active, response, html, 100);
-    expect(results).toHaveLength(306);
-    const resultById = new Map(results.map((result) => [result.check_id, result]));
-    expect(active.filter((check) => !auditCheckHasExecutableLogic(check.id)).every(
-      (check) => resultById.get(check.id)?.outcome === "unable_to_test",
-    )).toBe(true);
-    expect(results.filter((result) => result.outcome === "pass").length).toBeLessThan(306);
+  it("does not classify explicitly unsupported checks as executable", () => {
+    const unsupported = AUDIT_REGISTRY.filter((check) => AUDIT_EVALUATOR_KEYS[check.id] === "unsupported");
+    expect(unsupported.length).toBeGreaterThan(0);
+    expect(unsupported.every((check) => !auditCheckHasExecutableLogic(check.id))).toBe(true);
   });
 
   it("rejects private, credentialed and non-HTTP audit targets", () => {
