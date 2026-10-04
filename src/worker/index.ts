@@ -24,6 +24,7 @@ import {
   type HttpEvidence,
   type LinkDeclaration,
   type ResourceDeclaration,
+  type ResourceEvidence,
 } from "../shared/audit-evidence";
 import {
   collectLinkInventory,
@@ -2787,22 +2788,48 @@ async function collectV2AuditEvidence(
   const linkDeclarations = mergedDeclarations.links;
   const resourceDeclarations = [...mergedDeclarations.resources, ...structuredDataResourceDeclarations(source)];
   const networkStarted = Date.now();
-  const validatedHosts = new Set<string>();
+  const validatedHosts = new Set<string>([new URL(source.documentUrl).hostname.toLowerCase()]);
+  const precollectedResources = new Map<string, { status: number; headers: Record<string, string>; resourceType: string }>();
+  if (browserLab) {
+    for (const resource of [...browserLab.desktop.networkResources, ...browserLab.mobile.networkResources]) {
+      if (resource.status == null || precollectedResources.has(resource.url)) continue;
+      precollectedResources.set(resource.url, {
+        status: resource.status,
+        headers: resource.headers,
+        resourceType: resource.resourceType,
+      });
+    }
+  }
   const [links, resources] = await Promise.all([
     collectLinkInventory(linkDeclarations, safeFetchTrace, undefined, validatedHosts),
-    collectResourceInventory(resourceDeclarations, safeFetchTrace, undefined, validatedHosts),
+    collectResourceInventory(resourceDeclarations, safeFetchTrace, undefined, validatedHosts, undefined, precollectedResources),
   ]);
   console.log("audit evidence phase", JSON.stringify({ pageUrl, phase: "inventories_complete", links: links.retained, resources: resources.retained }));
   const canonicalElement = source.elements.find((element) => element.tagName === "link" && (element.attributes.find((item) => item.name === "rel")?.value || "").toLowerCase().split(/\s+/).includes("canonical"));
   const canonicalHref = canonicalElement?.attributes.find((item) => item.name === "href")?.value || null;
-  const canonical = canonicalHref
-    ? await inspectDestination(new URL(canonicalHref, source.documentUrl).href, safeFetchTrace, { includeBody: true })
-    : null;
+  const canonicalUrl = canonicalHref ? new URL(canonicalHref, source.documentUrl).href : null;
+  const canonical: ResourceEvidence | null = canonicalUrl === source.documentUrl
+    ? {
+        requestedUrl: canonicalUrl,
+        finalUrl: http.finalUrl,
+        state: response.ok ? "success" : "unable_to_test",
+        status: http.status,
+        redirectTrace: http.redirectTrace,
+        contentType: http.contentType,
+        headers: http.headers,
+        body: html,
+        bodyTruncated: false,
+        error: null,
+        declarations: [],
+      }
+    : canonicalUrl
+      ? { ...await inspectDestination(canonicalUrl, safeFetchTrace, { includeBody: true, validatedHosts }), declarations: [] }
+      : null;
   const origin = new URL(source.documentUrl).origin;
-  const robotsDestination = await inspectDestination(`${origin}/robots.txt`, safeFetchTrace, { includeBody: true });
+  const robotsDestination = await inspectDestination(`${origin}/robots.txt`, safeFetchTrace, { includeBody: true, validatedHosts });
   const robots = parseRobotsEvidence(robotsDestination, source.documentUrl, ["Googlebot", "Bingbot", "OAI-SearchBot", "GPTBot", "ClaudeBot", "Claude-SearchBot", "ChatGPT-User", "Claude-User"]);
   const sitemapUrls = [...new Set([...robots.sitemaps, `${origin}/sitemap.xml`])].slice(0, 4);
-  const sitemapDestinations = await Promise.all(sitemapUrls.map((url) => inspectDestination(url, safeFetchTrace, { includeBody: true, bodyBytes: 1_000_000 })));
+  const sitemapDestinations = await Promise.all(sitemapUrls.map((url) => inspectDestination(url, safeFetchTrace, { includeBody: true, bodyBytes: 1_000_000, validatedHosts })));
   const sitemaps = sitemapDestinations.map((destination) => {
     const parsed = destination.body && !destination.bodyTruncated
       ? parseSitemapXml(destination.body, destination.requestedUrl)

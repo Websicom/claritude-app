@@ -43,6 +43,12 @@ export type InventoryCollection<T, Declaration> = {
   requests: number;
 };
 
+export type PrecollectedResource = {
+  status: number;
+  headers: Record<string, string>;
+  resourceType: string;
+};
+
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -126,6 +132,8 @@ export async function inspectDestination(
         headers: { "user-agent": "Claritude-Audit/2.0 (+https://claritude.io)" },
         signal: AbortSignal.timeout(8_000),
       }, options.validatedHosts);
+      if (!options.includeBody && !options.probeChallenge)
+        await trace.response.body?.cancel().catch(() => undefined);
       const captured = options.includeBody || options.probeChallenge
         ? await boundedBody(trace.response, options.bodyBytes || DEFAULT_COLLECTOR_LIMITS.bodyBytes, options.bodyTimeoutMs)
         : { text: "", truncated: false };
@@ -191,6 +199,7 @@ export async function collectResourceInventory(
   limits: CollectorLimits = DEFAULT_COLLECTOR_LIMITS,
   validatedHosts = new Set<string>(),
   onBatch?: () => Promise<void>,
+  precollected = new Map<string, PrecollectedResource>(),
 ): Promise<InventoryCollection<ResourceEvidence, ResourceDeclaration>> {
   const grouped = new Map<string, ResourceDeclaration[]>();
   for (const declaration of declarations) {
@@ -200,11 +209,31 @@ export async function collectResourceInventory(
   const entries = [...grouped.entries()];
   const selected = entries.slice(0, limits.resources);
   const results: ResourceEvidence[] = [];
+  let requests = 0;
   for (let index = 0; index < selected.length; index += 5) {
-    results.push(...await Promise.all(selected.slice(index, index + 5).map(async ([url, declarations]) => ({
-      ...await inspectDestination(url, fetchTrace, { includeBody: declarations.some((item) => bodyResourceKinds.has(item.declarationType)), bodyBytes: limits.bodyBytes, validatedHosts }),
-      declarations,
-    }))));
+    results.push(...await Promise.all(selected.slice(index, index + 5).map(async ([url, declarations]) => {
+      const needsBody = declarations.some((item) => bodyResourceKinds.has(item.declarationType));
+      const observed = !needsBody ? precollected.get(url) : undefined;
+      if (observed) {
+        return {
+          requestedUrl: url,
+          finalUrl: url,
+          state: classifyDestination(observed.status, null),
+          status: observed.status,
+          redirectTrace: [],
+          contentType: new Headers(observed.headers).get("content-type"),
+          headers: headerMultimap(new Headers(observed.headers)),
+          body: null,
+          bodyTruncated: false,
+          error: null,
+          declarations,
+        } satisfies ResourceEvidence;
+      }
+      requests += 1;
+      const inspected = await inspectDestination(url, fetchTrace, { includeBody: needsBody, bodyBytes: limits.bodyBytes, validatedHosts });
+      requests += inspected.redirectTrace.length;
+      return { ...inspected, declarations };
+    })));
     await onBatch?.();
   }
   return {
@@ -213,7 +242,7 @@ export async function collectResourceInventory(
     totalDiscovered: entries.length,
     retained: results.length,
     truncated: entries.length > results.length,
-    requests: results.length + results.reduce((total, result) => total + result.redirectTrace.length, 0),
+    requests,
   };
 }
 

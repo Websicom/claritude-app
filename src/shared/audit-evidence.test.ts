@@ -221,6 +221,24 @@ describe("audit v2 evidence architecture", () => {
     expect(batches).toBe(2);
   });
 
+  it("reuses BrowserLab response metadata for resources that do not require a body", async () => {
+    let fetches = 0;
+    const resources = await collectResourceInventory(
+      [{ declaredUrl: "/hero.png", resolvedUrl: "https://example.com/hero.png", declarationType: "image", locator: "img", source: "html" }],
+      async () => {
+        fetches += 1;
+        return { response: new Response("unexpected", { status: 200 }), redirects: [] };
+      },
+      undefined,
+      new Set(["example.com"]),
+      undefined,
+      new Map([["https://example.com/hero.png", { status: 200, headers: { "content-type": "image/png" }, resourceType: "image" }]]),
+    );
+    expect(fetches).toBe(0);
+    expect(resources.requests).toBe(0);
+    expect(resources.results[0]).toMatchObject({ status: 200, state: "success", contentType: "image/png", body: null });
+  });
+
   it("parses namespaced sitemap XML without discarding lastmod provenance", () => {
     const parsed = parseSitemapXml(`<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://example.com/a</loc><lastmod>2026-10-01</lastmod></url></urlset>`, "https://example.com/sitemap.xml");
     expect(parsed.error).toBeNull();
