@@ -106,45 +106,56 @@ async function boundedBody(response: Response, maxBytes: number, timeoutMs = 8_0
 export async function inspectDestination(
   url: string,
   fetchTrace: BoundedFetchTrace,
-  options: { includeBody?: boolean; probeChallenge?: boolean; bodyBytes?: number; bodyTimeoutMs?: number; validatedHosts?: Set<string> } = {},
+  options: { includeBody?: boolean; probeChallenge?: boolean; bodyBytes?: number; bodyTimeoutMs?: number; totalTimeoutMs?: number; validatedHosts?: Set<string> } = {},
 ): Promise<DestinationEvidence> {
+  const unavailable = (reason: string): DestinationEvidence => ({
+    requestedUrl: url,
+    finalUrl: null,
+    state: classifyDestination(null, reason),
+    status: null,
+    redirectTrace: [],
+    contentType: null,
+    headers: [],
+    body: null,
+    bodyTruncated: false,
+    error: reason,
+  });
+  const operation = (async (): Promise<DestinationEvidence> => {
+    try {
+      const trace = await fetchTrace(url, {
+        headers: { "user-agent": "Claritude-Audit/2.0 (+https://claritude.io)" },
+        signal: AbortSignal.timeout(8_000),
+      }, options.validatedHosts);
+      const captured = options.includeBody || options.probeChallenge
+        ? await boundedBody(trace.response, options.bodyBytes || DEFAULT_COLLECTOR_LIMITS.bodyBytes, options.bodyTimeoutMs)
+        : { text: "", truncated: false };
+      const body = options.includeBody ? captured.text : null;
+      const text = captured.text;
+      const challenge = /captcha|cf-chl-|challenge-platform|verify you are human/i.test(text);
+      return {
+        requestedUrl: url,
+        finalUrl: trace.response.url || url,
+        state: challenge ? "bot_challenge" : classifyDestination(trace.response.status, null, trace.redirects.length),
+        status: trace.response.status,
+        redirectTrace: trace.redirects.map((item) => ({ ...item, location: item.location || null })),
+        contentType: trace.response.headers.get("content-type"),
+        headers: headerMultimap(trace.response.headers),
+        body,
+        bodyTruncated: captured.truncated,
+        error: null,
+      };
+    } catch (error) {
+      return unavailable(errorMessage(error));
+    }
+  })();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<DestinationEvidence>((resolve) => {
+    timer = setTimeout(() => resolve(unavailable("Destination inspection timed out")), options.totalTimeoutMs ?? 20_000);
+  });
   try {
-    const trace = await fetchTrace(url, {
-      headers: { "user-agent": "Claritude-Audit/2.0 (+https://claritude.io)" },
-      signal: AbortSignal.timeout(8_000),
-    }, options.validatedHosts);
-    const captured = options.includeBody || options.probeChallenge
-      ? await boundedBody(trace.response, options.bodyBytes || DEFAULT_COLLECTOR_LIMITS.bodyBytes, options.bodyTimeoutMs)
-      : { text: "", truncated: false };
-    const body = options.includeBody ? captured.text : null;
-    const text = captured.text;
-    const challenge = /captcha|cf-chl-|challenge-platform|verify you are human/i.test(text);
-    return {
-      requestedUrl: url,
-      finalUrl: trace.response.url || url,
-      state: challenge ? "bot_challenge" : classifyDestination(trace.response.status, null, trace.redirects.length),
-      status: trace.response.status,
-      redirectTrace: trace.redirects.map((item) => ({ ...item, location: item.location || null })),
-      contentType: trace.response.headers.get("content-type"),
-      headers: headerMultimap(trace.response.headers),
-      body,
-      bodyTruncated: captured.truncated,
-      error: null,
-    };
-  } catch (error) {
-    const reason = errorMessage(error);
-    return {
-      requestedUrl: url,
-      finalUrl: null,
-      state: classifyDestination(null, reason),
-      status: null,
-      redirectTrace: [],
-      contentType: null,
-      headers: [],
-      body: null,
-      bodyTruncated: false,
-      error: reason,
-    };
+    return await Promise.race([operation, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
