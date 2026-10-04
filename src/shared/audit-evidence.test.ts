@@ -15,7 +15,7 @@ import {
   type AuditEvidenceBundle,
   type RenderedViewportEvidence,
 } from "./audit-evaluators";
-import { inspectDestination } from "./audit-collectors";
+import { collectLinkInventory, collectResourceInventory, inspectDestination } from "./audit-collectors";
 
 const destination = (overrides: Partial<DestinationEvidence> = {}): DestinationEvidence => ({
   requestedUrl: "https://example.com/",
@@ -170,6 +170,21 @@ describe("audit v2 evidence architecture", () => {
     }), { probeChallenge: true, bodyBytes: 16_384 });
     expect(inspected.state).toBe("bot_challenge");
     expect(inspected.body).toBeNull();
+  });
+
+  it("shares validated hosts across link and resource inventories", async () => {
+    const validatedHosts = new Set<string>();
+    const observedSets: Array<Set<string> | undefined> = [];
+    const fetchTrace = async (_url: string, _init?: RequestInit, hosts?: Set<string>) => {
+      observedSets.push(hosts);
+      return { response: new Response("ok", { status: 200 }), redirects: [] };
+    };
+    await Promise.all([
+      collectLinkInventory([{ originalUrl: "/a", resolvedUrl: "https://example.com/a", sourceElement: "a", locator: "a", internal: true, source: "html", accessibleName: "A" }], fetchTrace, undefined, validatedHosts),
+      collectResourceInventory([{ declaredUrl: "/app.css", resolvedUrl: "https://example.com/app.css", declarationType: "stylesheet", locator: "link", source: "html" }], fetchTrace, undefined, validatedHosts),
+    ]);
+    expect(observedSets).toHaveLength(2);
+    expect(observedSets.every((hosts) => hosts === validatedHosts)).toBe(true);
   });
 
   it("parses namespaced sitemap XML without discarding lastmod provenance", () => {

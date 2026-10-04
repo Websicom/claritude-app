@@ -131,12 +131,13 @@ export async function collectLinkInventory(
   links: LinkDeclaration[],
   fetchTrace: BoundedFetchTrace,
   limits: CollectorLimits = DEFAULT_COLLECTOR_LIMITS,
+  validatedHosts = new Set<string>(),
 ): Promise<InventoryCollection<DestinationEvidence, LinkDeclaration>> {
   const candidates = [...new Set(links.map((link) => link.resolvedUrl).filter((url): url is string => Boolean(url)))];
   const selected = candidates.slice(0, limits.links);
   const results: DestinationEvidence[] = [];
   for (let index = 0; index < selected.length; index += 5) {
-    results.push(...await Promise.all(selected.slice(index, index + 5).map((url) => inspectDestination(url, fetchTrace, { probeChallenge: true, bodyBytes: 16_384 }))));
+    results.push(...await Promise.all(selected.slice(index, index + 5).map((url) => inspectDestination(url, fetchTrace, { probeChallenge: true, bodyBytes: 16_384, validatedHosts }))));
   }
   return {
     declarations: links,
@@ -154,6 +155,7 @@ export async function collectResourceInventory(
   declarations: ResourceDeclaration[],
   fetchTrace: BoundedFetchTrace,
   limits: CollectorLimits = DEFAULT_COLLECTOR_LIMITS,
+  validatedHosts = new Set<string>(),
 ): Promise<InventoryCollection<ResourceEvidence, ResourceDeclaration>> {
   const grouped = new Map<string, ResourceDeclaration[]>();
   for (const declaration of declarations) {
@@ -165,7 +167,7 @@ export async function collectResourceInventory(
   const results: ResourceEvidence[] = [];
   for (let index = 0; index < selected.length; index += 5) {
     results.push(...await Promise.all(selected.slice(index, index + 5).map(async ([url, declarations]) => ({
-      ...await inspectDestination(url, fetchTrace, { includeBody: declarations.some((item) => bodyResourceKinds.has(item.declarationType)), bodyBytes: limits.bodyBytes }),
+      ...await inspectDestination(url, fetchTrace, { includeBody: declarations.some((item) => bodyResourceKinds.has(item.declarationType)), bodyBytes: limits.bodyBytes, validatedHosts }),
       declarations,
     }))));
   }

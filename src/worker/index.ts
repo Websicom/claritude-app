@@ -127,6 +127,7 @@ app.get("/health", (c) =>
       architectureVersion: "2.0.0",
       catalogueChecks: ACTIVE_AUDIT_CHECKS.length,
       implementedChecks: IMPLEMENTED_AUDIT_CHECKS.length,
+      unsupportedChecks: ACTIVE_AUDIT_CHECKS.length - IMPLEMENTED_AUDIT_CHECKS.length,
       implementationCoverage: implementationCoverage(ACTIVE_AUDIT_CHECKS.length, IMPLEMENTED_AUDIT_CHECKS.length),
     },
   }),
@@ -1045,8 +1046,8 @@ app.post("/api/properties/:id/verify", async (c) => {
   }
 });
 
-const AUDIT_HEARTBEAT_DEADLINE_MS = 2 * 60_000;
-const AUDIT_RUN_DEADLINE_MS = 5 * 60_000;
+const AUDIT_HEARTBEAT_DEADLINE_MS = 4 * 60_000;
+const AUDIT_RUN_DEADLINE_MS = 10 * 60_000;
 
 export function isFreshAuditRun(run: { heartbeat_at?: string | null; created_at: string }, now = Date.now()) {
   const heartbeatAt = Date.parse(run.heartbeat_at || run.created_at);
@@ -2651,8 +2652,10 @@ async function collectBrowserLab(env: Env, url: string) {
         resources: measured.resources as ResourceDeclaration[],
       };
     };
-    const desktop = await collect("desktop");
-    const mobile = await collect("mobile");
+    const [desktop, mobile] = await Promise.all([
+      collect("desktop"),
+      collect("mobile"),
+    ]);
     return { desktop, mobile };
   } finally {
     await browser.close();
@@ -2744,9 +2747,10 @@ async function collectV2AuditEvidence(
   const linkDeclarations = mergedDeclarations.links;
   const resourceDeclarations = [...mergedDeclarations.resources, ...structuredDataResourceDeclarations(source)];
   const networkStarted = Date.now();
+  const validatedHosts = new Set<string>();
   const [links, resources] = await Promise.all([
-    collectLinkInventory(linkDeclarations, safeFetchTrace),
-    collectResourceInventory(resourceDeclarations, safeFetchTrace),
+    collectLinkInventory(linkDeclarations, safeFetchTrace, undefined, validatedHosts),
+    collectResourceInventory(resourceDeclarations, safeFetchTrace, undefined, validatedHosts),
   ]);
   const canonicalElement = source.elements.find((element) => element.tagName === "link" && (element.attributes.find((item) => item.name === "rel")?.value || "").toLowerCase().split(/\s+/).includes("canonical"));
   const canonicalHref = canonicalElement?.attributes.find((item) => item.name === "href")?.value || null;
@@ -2859,7 +2863,17 @@ async function runAudit(env: Env, id: string) {
       const definition = registry(check.id);
       return check.primaryCategory === "performance" || ["rendered_browser", "lab"].includes(definition?.executionMethod || "");
     });
-    const collected = await collectV2AuditEvidence(env, run.page_url, res, html, responseMs, trace.redirects, requireBrowser);
+    const heartbeatTimer = setInterval(() => {
+      void updateRun({ heartbeat_at: new Date().toISOString() }).catch((error) => {
+        console.error("audit heartbeat failed", id, errorMessage(error));
+      });
+    }, 30_000);
+    let collected: Awaited<ReturnType<typeof collectV2AuditEvidence>>;
+    try {
+      collected = await collectV2AuditEvidence(env, run.page_url, res, html, responseMs, trace.redirects, requireBrowser);
+    } finally {
+      clearInterval(heartbeatTimer);
+    }
     await updateRun({
       execution_stage: "evaluating_checks",
       progress_completed: 0,
