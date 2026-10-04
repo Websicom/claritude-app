@@ -2960,8 +2960,9 @@ async function runAudit(env: Env, id: string) {
     const snapshotById = new Map(snapshot.map((check) => [check.id, check]));
     const decorate = (r: AuditResult) => {
       const check = snapshotById.get(r.check_id);
+      const persistedResult = compactAuditResult(r);
       return {
-        ...r,
+        ...persistedResult,
         audit_run_id: id,
         logic_version: check?.logicVersion || "unknown",
         configuration_version: check?.configurationVersion || 1,
@@ -3156,6 +3157,11 @@ export function chunkAuditResults<T>(values: T[], size = 24) {
   for (let index = 0; index < values.length; index += safeSize)
     chunks.push(values.slice(index, index + safeSize));
   return chunks;
+}
+
+export function compactAuditResult<T extends Record<string, any>>(result: T) {
+  const { reason: _reason, ...persisted } = result;
+  return persisted;
 }
 
 async function queryDns(query: string, type: string) {

@@ -6,6 +6,7 @@ import {
   auditCheckHasExecutableLogic,
   canonicalPropertyHost,
   chunkAuditResults,
+  compactAuditResult,
   cleanPath,
   editableWorkspaceRole,
   encodeAuditContinuationPayload,
@@ -57,6 +58,21 @@ describe("worker evidence pipelines", () => {
         Array.from({ length: 64 }, (_, index) => index + 64),
         [128, 129, 130],
       ]);
+  });
+
+  it("persists reasons inside evidence without writing an obsolete result column", () => {
+    expect(compactAuditResult({
+      check_id: "check-1",
+      outcome: "unable_to_test",
+      reason: "Rendered evidence was incomplete",
+      evidence: { reason: "Rendered evidence was incomplete" },
+      duration_ms: 1,
+    })).toEqual({
+      check_id: "check-1",
+      outcome: "unable_to_test",
+      evidence: { reason: "Rendered evidence was incomplete" },
+      duration_ms: 1,
+    });
   });
 
   it("round-trips a compressed audit persistence continuation within the queue ceiling", async () => {
