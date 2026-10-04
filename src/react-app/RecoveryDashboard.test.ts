@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  auditDisplayProgress,
+  auditScoreBand,
+  buildAuditFixPrompt,
   auditSeverityGroup,
   filterProperties,
   filterUserFacingAuditResults,
   filterWorkspaceMemberships,
   isPrimaryAuditPage,
+  isFixFirstAuditResult,
   paginateResults,
   prepareAvatarImage,
   propertyOnboardingChecks,
@@ -103,6 +107,72 @@ describe("top selector searches", () => {
     expect(filterUserFacingAuditResults(results, { category: "SEO" })).toHaveLength(2);
     expect(filterUserFacingAuditResults(results, { subcategory: "Security Headers" })).toEqual([results[2]]);
     expect(filterUserFacingAuditResults(results, { category: "SEO", outcome: "passed" })).toEqual([results[1]]);
+  });
+
+  it("hides unable-to-test results by default and exposes them only through an explicit filter", () => {
+    const results = [
+      { title: "Canonical target", category: "SEO", subcategory: "Indexing", outcome: "passed" },
+      { title: "Page redirects", category: "SEO", subcategory: "Links", outcome: "unable_to_test" },
+    ];
+    expect(filterUserFacingAuditResults(results, {}, { hideUnableByDefault: true })).toEqual([results[0]]);
+    expect(filterUserFacingAuditResults(results, { types: ["unable_to_test"] }, { hideUnableByDefault: true })).toEqual([results[1]]);
+    expect(filterUserFacingAuditResults(results, { search: "canonical" })).toEqual([results[0]]);
+  });
+
+  it("keeps Fix these first limited to failed Critical, Security and Warning groups", () => {
+    expect(isFixFirstAuditResult({ outcome: "failed", severity: "Critical", category: "SEO" })).toBe(true);
+    expect(isFixFirstAuditResult({ outcome: "failed", severity: "Security", category: "Security" })).toBe(true);
+    expect(isFixFirstAuditResult({ outcome: "failed", severity: "Warning", category: "SEO" })).toBe(true);
+    expect(isFixFirstAuditResult({ outcome: "advisory", severity: "Warning", category: "SEO" })).toBe(false);
+    expect(isFixFirstAuditResult({ outcome: "unable_to_test", severity: "Critical", category: "SEO" })).toBe(false);
+  });
+
+  it("builds an AI fix prompt from actionable findings and every stored occurrence only", () => {
+    const prompt = buildAuditFixPrompt({
+      pageName: "Homepage",
+      pageUrl: "https://example.com/",
+      runId: "run-123",
+      results: [
+        {
+          title: "Broken internal links",
+          outcome: "failed",
+          severity: "Warning",
+          category: "SEO",
+          result_summary: "Two links return HTTP 404.",
+          recommendation: "Update or remove each broken link.",
+          example_fix: '<a href="/working-page/">Working page</a>',
+          subfindings: [{ title: "Links returning HTTP 404", outcome: "failed", evidence_summary: "2 affected links" }],
+          occurrences: [
+            { check_title: "Links returning HTTP 404", occurrence: { url: "https://example.com/missing-one" } },
+            { check_title: "Links returning HTTP 404", occurrence: { url: "https://example.com/missing-two" } },
+          ],
+        },
+        { title: "Optional metadata", outcome: "advisory", severity: "Advisory", category: "SEO" },
+        { title: "Clean headings", outcome: "passed", severity: "Warning", category: "SEO" },
+      ],
+    });
+    expect(prompt).toContain("https://example.com/missing-one");
+    expect(prompt).toContain("https://example.com/missing-two");
+    expect(prompt).toMatch(/preserve the website's existing functionality/i);
+    expect(prompt).not.toContain("Optional metadata");
+    expect(prompt).not.toContain("Clean headings");
+  });
+
+  it("advances display progress smoothly without moving backwards or finishing early", () => {
+    expect(auditDisplayProgress(0, 0, false)).toBe(10);
+    expect(auditDisplayProgress(10, 0, false, true)).toBe(15);
+    expect(auditDisplayProgress(55, 20, false, true)).toBe(60);
+    expect(auditDisplayProgress(60, 82, false, true)).toBe(82);
+    expect(auditDisplayProgress(82, 40, false, true)).toBe(82);
+    expect(auditDisplayProgress(99, 100, false)).toBe(99);
+    expect(auditDisplayProgress(87, 100, true)).toBe(100);
+  });
+
+  it("assigns healthy, moderate and poor score-bar states", () => {
+    expect(auditScoreBand(91)).toBe("healthy");
+    expect(auditScoreBand(68)).toBe("moderate");
+    expect(auditScoreBand(34)).toBe("poor");
+    expect(auditScoreBand(null)).toBe("unknown");
   });
 
   it("keeps critical and security group severity visually distinct", () => {
