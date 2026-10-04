@@ -2825,8 +2825,10 @@ async function collectV2AuditEvidence(
   phases.networkMs = Date.now() - networkStarted;
   console.log("audit evidence phase", JSON.stringify({ pageUrl, phase: "network_complete", durationMs: phases.networkMs, dnsQueries: dns.length }));
   const fontFaces = resources.results.filter((item) => item.declarations.some((declaration) => declaration.declarationType === "stylesheet") && item.body).flatMap((item) => parseFontFaces(item.body || "", item.finalUrl || item.requestedUrl));
+  console.log("audit evidence phase", JSON.stringify({ pageUrl, phase: "font_faces_complete", fontFaces: fontFaces.length }));
   const evidence: AuditEvidenceBundle = { http, source, rendered, links, resources, canonical, dns, robots, sitemaps, fontFaces };
   const approximateEvidenceBytes = new TextEncoder().encode(JSON.stringify({ http, source: { elements: source.elements.length, links: source.links.length, resources: source.resources.length, structuredData: source.structuredData }, rendered, links, resources, dns, robots: { decisions: robots.decisions, sitemaps: robots.sitemaps }, sitemaps })).byteLength;
+  console.log("audit evidence phase", JSON.stringify({ pageUrl, phase: "bundle_sized", approximateEvidenceBytes }));
   const occurrenceCount = Object.values(rendered?.desktop.occurrences || {}).flat().length + Object.values(rendered?.mobile.occurrences || {}).flat().length;
   const telemetry = {
     architectureVersion: "2.0.0",
@@ -3013,6 +3015,7 @@ async function runAudit(env: Env, id: string) {
       });
   } catch (e) {
     const message = errorMessage(e);
+    console.error("audit run failed", JSON.stringify({ auditRunId: id, message }));
     await updateRun({
         status: "failed",
         execution_stage: "failed",
@@ -3020,7 +3023,9 @@ async function runAudit(env: Env, id: string) {
         error: message,
         completed_at: new Date().toISOString(),
         duration_ms: Date.now() - started,
-      }).catch(() => undefined);
+      }).catch((error) => {
+        console.error("audit failure status update failed", JSON.stringify({ auditRunId: id, message: errorMessage(error) }));
+      });
     const notification = auditOutcomeNotification("failed", null, 0, message);
     if (notification)
       await createPropertyNotification(env, run.property_id, {
