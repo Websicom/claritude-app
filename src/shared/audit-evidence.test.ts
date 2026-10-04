@@ -181,6 +181,21 @@ describe("audit v2 evidence architecture", () => {
     expect(inspected.error).toMatch(/body timed out/i);
   });
 
+  it("applies one absolute deadline to a continuously streaming body", async () => {
+    const encoder = new TextEncoder();
+    const inspected = await inspectDestination("https://example.com/drip", async () => ({
+      response: new Response(new ReadableStream({
+        async pull(controller) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          controller.enqueue(encoder.encode("x"));
+        },
+      }), { status: 200 }),
+      redirects: [],
+    }), { probeChallenge: true, bodyBytes: 1_024, bodyTimeoutMs: 20 });
+    expect(inspected.state).toBe("timeout");
+    expect(inspected.error).toMatch(/body timed out/i);
+  });
+
   it("shares validated hosts across link and resource inventories", async () => {
     const validatedHosts = new Set<string>();
     const observedSets: Array<Set<string> | undefined> = [];

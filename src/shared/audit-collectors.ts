@@ -50,17 +50,20 @@ function errorMessage(error: unknown) {
 async function boundedBody(response: Response, maxBytes: number, timeoutMs = 8_000) {
   if (!response.body) return { text: "", truncated: false };
   const reader = response.body.getReader();
+  const deadline = Date.now() + timeoutMs;
   const chunks: Uint8Array[] = [];
   let retained = 0;
   let truncated = Number(response.headers.get("content-length") || 0) > maxBytes;
   let failed = false;
   const read = async () => {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) throw new Error("Response body timed out");
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
         reader.read(),
         new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error("Response body timed out")), timeoutMs);
+          timer = setTimeout(() => reject(new Error("Response body timed out")), remainingMs);
         }),
       ]);
     } finally {
@@ -85,10 +88,10 @@ async function boundedBody(response: Response, maxBytes: number, timeoutMs = 8_0
     }
   } catch (error) {
     failed = true;
-    await reader.cancel().catch(() => undefined);
+    void reader.cancel().catch(() => undefined);
     throw error;
   } finally {
-    if (truncated && !failed) await reader.cancel().catch(() => undefined);
+    if (truncated && !failed) void reader.cancel().catch(() => undefined);
     else if (!failed) reader.releaseLock();
   }
   const joined = new Uint8Array(retained);
