@@ -2925,13 +2925,11 @@ async function collectV2AuditEvidence(
     collectorFailures: [source.collection, rendered?.desktop.collection, rendered?.mobile.collection].filter((state) => state && state.status !== "complete").length + dns.filter((item) => item.error).length + Number(Boolean(robots.parseError)) + sitemaps.filter((item) => item.error).length + probeEntries.filter(([, item]) => Boolean(item.error)).length + [llmsTxt, llmsFullTxt].filter((item) => item.presence === "unavailable").length,
   };
   const sharedEvidence = [
-    { evidence_type: "http", schema_version: "2.0.0", summary: { requestedUrl: http.requestedUrl, finalUrl: http.finalUrl, status: http.status, redirects: http.redirectTrace.length, responseMs: http.responseMs, contentType: http.contentType }, byte_size: JSON.stringify(http).length, collection_status: http.collection.status, error: null },
+    { evidence_type: "http", schema_version: "2.0.0", summary: { requestedUrl: http.requestedUrl, finalUrl: http.finalUrl, status: http.status, redirects: http.redirectTrace.length, responseMs: http.responseMs, contentType: http.contentType, alternateOrigins: Object.values(alternateOrigins).map((item) => ({ requestedUrl: item.requestedUrl, finalUrl: item.finalUrl, state: item.state, status: item.status, redirects: item.redirectTrace.length })) }, byte_size: JSON.stringify({ http, alternateOrigins }).length, collection_status: Object.values(alternateOrigins).some((item) => item.error) ? "partial" : http.collection.status, error: null },
     { evidence_type: "source", schema_version: "2.0.0", summary: { elements: source.elements.length, links: source.links.length, resources: source.resources.length, structuredDataBlocks: source.structuredData.length, duplicateIds: source.duplicateIds.length }, byte_size: new TextEncoder().encode(html).byteLength, collection_status: source.collection.status, error: source.collection.status === "complete" ? null : source.collection.reason },
     { evidence_type: "links", schema_version: "2.0.0", summary: { totalDiscovered: links.totalDiscovered, retained: links.retained, truncated: links.truncated }, byte_size: JSON.stringify(links).length, collection_status: links.truncated ? "partial" : "complete", error: links.truncated ? "link safety ceiling reached" : null },
-    { evidence_type: "resources", schema_version: "2.0.0", summary: { totalDiscovered: resources.totalDiscovered, retained: resources.retained, truncated: resources.truncated }, byte_size: JSON.stringify(resources).length, collection_status: resources.truncated ? "partial" : "complete", error: resources.truncated ? "resource safety ceiling reached" : null },
+    { evidence_type: "resources", schema_version: "2.0.0", summary: { totalDiscovered: resources.totalDiscovered, retained: resources.retained, truncated: resources.truncated, aiResources: [llmsTxt, llmsFullTxt].map((item) => ({ kind: item.kind, sourceUrl: item.sourceUrl, presence: item.presence, state: item.destination.state, status: item.destination.status, readable: item.readable, parseErrors: item.parse?.errors.length || 0, linksDiscovered: item.links?.totalDiscovered || 0, linksChecked: item.links?.retained || 0 })) }, byte_size: JSON.stringify({ resources, llmsTxt, llmsFullTxt }).length, collection_status: resources.truncated || [llmsTxt, llmsFullTxt].some((item) => item.presence === "unavailable") ? "partial" : "complete", error: resources.truncated ? "resource safety ceiling reached" : null },
     { evidence_type: "dns", schema_version: "2.0.0", summary: { queries: dns.length, failures: dns.filter((item) => item.error).length }, byte_size: JSON.stringify(dns).length, collection_status: dns.some((item) => item.error) ? "partial" : "complete", error: null },
-    { evidence_type: "alternate_origins", schema_version: "2.0.0", summary: { probes: Object.values(alternateOrigins).map((item) => ({ requestedUrl: item.requestedUrl, finalUrl: item.finalUrl, state: item.state, status: item.status, redirects: item.redirectTrace.length })) }, byte_size: JSON.stringify(alternateOrigins).length, collection_status: Object.values(alternateOrigins).some((item) => item.error) ? "partial" : "complete", error: null },
-    { evidence_type: "ai_resources", schema_version: "2.0.0", summary: { resources: [llmsTxt, llmsFullTxt].map((item) => ({ kind: item.kind, sourceUrl: item.sourceUrl, presence: item.presence, state: item.destination.state, status: item.destination.status, readable: item.readable, parseErrors: item.parse?.errors.length || 0, linksDiscovered: item.links?.totalDiscovered || 0, linksChecked: item.links?.retained || 0 })) }, byte_size: JSON.stringify({ llmsTxt, llmsFullTxt }).length, collection_status: [llmsTxt, llmsFullTxt].some((item) => item.presence === "unavailable") ? "partial" : "complete", error: null },
   ];
   return { evidence, telemetry, sharedEvidence };
 }
@@ -3115,6 +3113,27 @@ export async function decodeAuditContinuationPayload(payload: string): Promise<A
   return JSON.parse(decompressed) as AuditContinuationPayload;
 }
 
+export function schemaCompatibleSharedEvidenceRows(rows: Array<Record<string, any>>) {
+  const allowedTypes = new Set(["http", "source", "rendered_desktop", "rendered_mobile", "network", "links", "resources", "dns", "robots", "sitemaps", "css", "accessibility"]);
+  const compatible: Array<Record<string, any>> = rows.filter((row) => allowedTypes.has(row.evidence_type)).map((row) => ({ ...row, summary: { ...(row.summary || {}) } }));
+  const merge = (legacyType: string, targetType: "http" | "resources", summaryKey: string) => {
+    const legacy = rows.find((row) => row.evidence_type === legacyType);
+    if (!legacy) return;
+    const target = compatible.find((row) => row.evidence_type === targetType);
+    if (!target) throw new Error(`audit_shared_evidence_${legacyType}_requires_${targetType}`);
+    target.summary[summaryKey] = legacy.summary;
+    target.byte_size = Number(target.byte_size || 0) + Number(legacy.byte_size || 0);
+    if (legacy.collection_status !== "complete")
+      target.collection_status = target.collection_status === "failed" || legacy.collection_status === "failed" ? "failed" : "partial";
+    target.error = target.error || legacy.error || null;
+  };
+  merge("alternate_origins", "http", "alternateOrigins");
+  merge("ai_resources", "resources", "aiResources");
+  const unexpected = rows.filter((row) => !allowedTypes.has(row.evidence_type) && !["alternate_origins", "ai_resources"].includes(row.evidence_type));
+  if (unexpected.length) throw new Error(`audit_shared_evidence_unsupported_types: ${unexpected.map((row) => row.evidence_type).join(",")}`);
+  return compatible;
+}
+
 async function persistAuditContinuation(env: Env, id: string, encodedPayload: string) {
   const db = admin(env);
   const payload = await decodeAuditContinuationPayload(encodedPayload);
@@ -3143,7 +3162,7 @@ async function persistAuditContinuation(env: Env, id: string, encodedPayload: st
   }
 
   const { error: sharedEvidenceError } = await db.from("audit_run_evidence").upsert(
-    payload.sharedEvidence.map((row) => ({ ...row, audit_run_id: id })),
+    schemaCompatibleSharedEvidenceRows(payload.sharedEvidence).map((row) => ({ ...row, audit_run_id: id })),
     { onConflict: "audit_run_id,evidence_type" },
   );
   if (sharedEvidenceError) throw new Error(`audit_shared_evidence_persistence_failed: ${sharedEvidenceError.message}`);

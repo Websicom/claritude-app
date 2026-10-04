@@ -25,6 +25,7 @@ import {
   closeBrowserWithDeadline,
   workspaceDeletionError,
   renderUptimeAlertEmail,
+  schemaCompatibleSharedEvidenceRows,
 } from "./index";
 import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
@@ -58,6 +59,19 @@ describe("worker evidence pipelines", () => {
         Array.from({ length: 64 }, (_, index) => index + 64),
         [128, 129, 130],
       ]);
+  });
+
+  it("keeps new evidence summaries within the deployed shared-evidence schema", () => {
+    const rows = schemaCompatibleSharedEvidenceRows([
+      { evidence_type: "http", summary: { status: 200 }, byte_size: 10, collection_status: "complete", error: null },
+      { evidence_type: "resources", summary: { retained: 2 }, byte_size: 20, collection_status: "complete", error: null },
+      { evidence_type: "alternate_origins", summary: { probes: 3 }, byte_size: 30, collection_status: "complete", error: null },
+      { evidence_type: "ai_resources", summary: { resources: 2 }, byte_size: 40, collection_status: "partial", error: "rate limited" },
+    ]);
+    expect(rows.map((row) => row.evidence_type)).toEqual(["http", "resources"]);
+    expect(rows[0]).toMatchObject({ summary: { status: 200, alternateOrigins: { probes: 3 } }, byte_size: 40, collection_status: "complete" });
+    expect(rows[1]).toMatchObject({ summary: { retained: 2, aiResources: { resources: 2 } }, byte_size: 60, collection_status: "partial", error: "rate limited" });
+    expect(() => schemaCompatibleSharedEvidenceRows([{ evidence_type: "unknown" }])).toThrow(/unsupported_types/);
   });
 
   it("persists reasons inside evidence without writing an obsolete result column", () => {
