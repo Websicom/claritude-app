@@ -3022,13 +3022,53 @@ async function collectV2AuditEvidence(
   const approximateEvidenceBytes = new TextEncoder().encode(JSON.stringify({ http, source: { elements: source.elements.length, links: source.links.length, resources: source.resources.length, structuredData: source.structuredData }, rendered, links, resources, dns, robots: { decisions: robots.decisions, sitemaps: robots.sitemaps }, sitemaps, alternateOrigins, aiResources: { llmsTxt, llmsFullTxt } })).byteLength;
   console.log("audit evidence phase", JSON.stringify({ pageUrl, phase: "bundle_sized", approximateEvidenceBytes }));
   const occurrenceCount = Object.values(rendered?.desktop.occurrences || {}).flat().length + Object.values(rendered?.mobile.occurrences || {}).flat().length;
+  const httpOperationBreakdown = {
+    selectedPage: 1 + http.redirectTrace.length,
+    browserNetworkCapture: Number(rendered?.desktop.metrics.requests || 0) + Number(rendered?.mobile.metrics.requests || 0),
+    links: links.requests,
+    resources: resources.requests,
+    canonical: canonicalUrl && canonicalUrl !== source.documentUrl ? 1 + (canonical?.redirectTrace.length || 0) : 0,
+    alternateOrigins: probeEntries
+      .filter(([url]) => !destinationCache.has(url))
+      .reduce((total, [, item]) => total + 1 + item.redirectTrace.length, 0),
+    robots: 1 + robotsDestination.redirectTrace.length,
+    sitemaps: sitemapDestinations.reduce((total, item) => total + 1 + item.redirectTrace.length, 0),
+    llmsResources: 2 + llmsTxt.destination.redirectTrace.length + llmsFullTxt.destination.redirectTrace.length,
+    llmsLinks: llmsTxt.links?.requests || 0,
+    other: 0,
+  };
+  const httpOperations = Object.values(httpOperationBreakdown).reduce((total, count) => total + count, 0);
   const telemetry = {
     architectureVersion: "2.0.0",
     collectionMs: Date.now() - collectStarted,
     phases,
     browserDurationMs: (rendered?.desktop.durationMs || 0) + (rendered?.mobile.durationMs || 0),
     browserSessions: browserLab ? 1 : 0,
-    httpRequests: 1 + links.requests + resources.requests + (canonical ? 1 + canonical.redirectTrace.length : 0) + 1 + robotsDestination.redirectTrace.length + sitemapDestinations.reduce((total, item) => total + 1 + item.redirectTrace.length, 0) + probeEntries.filter(([url]) => !destinationCache.has(url)).reduce((total, [, item]) => total + 1 + item.redirectTrace.length, 0) + 2 + llmsTxt.destination.redirectTrace.length + llmsFullTxt.destination.redirectTrace.length + (llmsTxt.links?.requests || 0) + Number(rendered?.desktop.metrics.requests || 0) + Number(rendered?.mobile.metrics.requests || 0),
+    httpRequests: httpOperations,
+    httpOperationBreakdown,
+    collectorInvocations: {
+      sourceParses: 1,
+      browserSessions: browserLab ? 1 : 0,
+      browserViewportRuns: browserLab ? 2 : 0,
+      browserNavigations: browserLab ? 2 : 0,
+      axeRuns: browserLab ? 2 : 0,
+      renderedDomCollections: browserLab ? 2 : 0,
+      linkCollectors: 1,
+      resourceCollectors: 1,
+      canonicalProbes: canonicalUrl && canonicalUrl !== source.documentUrl ? 1 : 0,
+      alternateOriginProbes: probeEntries.filter(([url]) => !destinationCache.has(url)).length,
+      robotsFetches: 1,
+      sitemapFetches: sitemapDestinations.length,
+      llmsResourceFetches: 2,
+      llmsLinkCollectors: llmsTxt.links ? 1 : 0,
+      dnsQueries: dns.length,
+    },
+    browserExecution: {
+      strategy: "parallel_desktop_mobile_pages",
+      readiness: "domcontentloaded_fonts_or_2s_two_animation_frames",
+      desktop: { width: 1440, height: 900, deviceScaleFactor: 1 },
+      mobile: { width: 390, height: 844, deviceScaleFactor: 2 },
+    },
     uniqueLinksChecked: links.retained + (llmsTxt.links?.retained || 0),
     uniqueResourcesChecked: resources.retained,
     dnsQueries: dns.length,
@@ -3140,11 +3180,24 @@ async function runAudit(env: Env, id: string) {
     const score = scoreUserFacingAuditResults(userFacingResults);
     const outcomeCounts = Object.fromEntries(["passed", "failed", "advisory", "not_applicable", "unable_to_test"].map((outcome) => [outcome, results.filter((item) => item.outcome === outcome).length]));
     const decoratedResults = results.map(decorate);
+    const jsonBytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
     const telemetry = {
       ...collected.telemetry,
       phases: { ...(collected.telemetry.phases as Record<string, number>), evaluationMs },
+      collectorInvocations: {
+        ...(collected.telemetry.collectorInvocations as Record<string, number>),
+        userFacingGroupEvaluations: 1,
+      },
       queueMessagesUsed: 2,
-      databaseBytesWrittenEstimate: JSON.stringify(decoratedResults).length + JSON.stringify(collected.sharedEvidence).length,
+      databaseBytesWrittenEstimate: jsonBytes(decoratedResults) + jsonBytes(collected.sharedEvidence),
+      logicalStorageBreakdown: {
+        technicalResultsBytes: jsonBytes(decoratedResults),
+        technicalEvidenceBytes: decoratedResults.reduce((total, result) => total + jsonBytes(result.evidence || {}), 0),
+        technicalOccurrenceBytes: decoratedResults.reduce((total, result) => total + jsonBytes(Array.isArray(result.evidence?.occurrences) ? result.evidence.occurrences : []), 0),
+        technicalSnapshotBytes: jsonBytes(snapshot),
+        userFacingSnapshotBytes: jsonBytes(groupSnapshot),
+        sharedEvidenceBytes: jsonBytes(collected.sharedEvidence),
+      },
       occurrencesStored: results.reduce((total, item) => total + (Array.isArray(item.evidence.occurrences) ? item.evidence.occurrences.length : 0), 0),
       truncatedOccurrenceSets: Number(collected.telemetry.truncatedOccurrenceSets || 0) + results.filter((item) => item.evidence.truncated === true).length,
       checkOutcomeCounts: outcomeCounts,
