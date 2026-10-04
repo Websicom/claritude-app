@@ -132,6 +132,10 @@ app.get("/health", (c) =>
       implementedChecks: IMPLEMENTED_AUDIT_CHECKS.length,
       unsupportedChecks: ACTIVE_AUDIT_CHECKS.length - IMPLEMENTED_AUDIT_CHECKS.length,
       implementationCoverage: implementationCoverage(ACTIVE_AUDIT_CHECKS.length, IMPLEMENTED_AUDIT_CHECKS.length),
+      runtimeLimits: {
+        cpuMsPerInvocation: 30_000,
+        subrequestsPerInvocation: 750,
+      },
     },
   }),
 );
@@ -2317,6 +2321,7 @@ type BrowserLabResult = {
   networkResources: RenderedViewportEvidence["networkResources"];
   occurrences: Record<string, AuditOccurrence[]>;
   axe: RenderedViewportEvidence["axe"];
+  axeError: string | null;
   links: LinkDeclaration[];
   resources: ResourceDeclaration[];
 };
@@ -2414,8 +2419,11 @@ async function collectBrowserLab(env: Env, url: string) {
         await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
       });
       let axe: RenderedViewportEvidence["axe"] = null;
+      let axeError: string | null = null;
       try {
-        await page.addScriptTag({ content: AXE_SOURCE });
+        // Runtime.evaluate is not blocked by a site's Content-Security-Policy,
+        // unlike injecting an inline script element with addScriptTag.
+        await page.evaluate(AXE_SOURCE);
         axe = await page.evaluate(async (viewport) => {
           const instance = (window as any).axe;
           const report = await instance.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "best-practice"] } });
@@ -2446,7 +2454,8 @@ async function collectBrowserLab(env: Env, url: string) {
             })),
           };
         }, strategy);
-      } catch {
+      } catch (error) {
+        axeError = error instanceof Error ? error.message : String(error);
         axe = null;
       }
       const measured = await page.evaluate(async (viewport) => {
@@ -2684,6 +2693,7 @@ async function collectBrowserLab(env: Env, url: string) {
           axe: axe?.violations.flatMap((violation) => violation.nodes) || [],
         },
         axe,
+        axeError,
         links: measured.links as LinkDeclaration[],
         resources: measured.resources as ResourceDeclaration[],
       };
@@ -2707,11 +2717,12 @@ function renderedViewportEvidence(lab: BrowserLabResult): RenderedViewportEviden
     networkResources,
     occurrences,
     axe,
+    axeError,
     links: _links,
     resources: _resources,
     ...metrics
   } = lab;
-  return { collection, durationMs, networkResources, occurrences, axe, metrics };
+  return { collection, durationMs, networkResources, occurrences, axe, axeError, metrics };
 }
 
 function structuredDataResourceDeclarations(source: ReturnType<typeof parseSourceDom>): ResourceDeclaration[] {

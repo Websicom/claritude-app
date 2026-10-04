@@ -4,6 +4,10 @@
   "main": "src/worker/index.ts",
   "compatibility_date": "2025-10-08",
   "compatibility_flags": ["nodejs_compat"],
+  "limits": {
+    "cpu_ms": 30000,
+    "subrequests": 750
+  },
   "workers_dev": true,
   "preview_urls": true,
   "routes": [{ "pattern": "app.claritude.io/*", "zone_name": "claritude.io" }],

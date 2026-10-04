@@ -38,6 +38,7 @@ export type RenderedViewportEvidence = {
     passes: Array<{ id: string; nodes: number }>;
     incomplete: Array<{ id: string; impact: string | null; nodes: AuditOccurrence[] }>;
   } | null;
+  axeError: string | null;
 };
 
 export type AuditEvidenceBundle = {
@@ -275,7 +276,13 @@ function sourceExtendedEvaluator(check: AuditCheck, evidence: AuditEvidenceBundl
     case "seo.page.metadata.html.language.declared": {
       const html = all("html")[0];
       const language = html ? (attr(html, "lang") || "").trim() : "";
-      return result(language ? "passed" : "failed", { language, occurrences: html ? [occurrence(html)] : [] });
+      const declaration = html
+        ? `<html${language ? ` lang=${JSON.stringify(language)}` : ""}>`
+        : null;
+      return result(language ? "passed" : "failed", {
+        language,
+        occurrences: html ? [{ locator: html.locator, html: declaration, source: "html", values: { language } }] : [],
+      });
     }
     case "seo.page.metadata.html.language.code.valid": {
       const html = all("html")[0];
@@ -924,7 +931,14 @@ function renderedEvidenceEvaluator(check: AuditCheck, evidence: AuditEvidenceBun
   };
   const axeId = axeRuleByCheck[check.id];
   if (axeId) {
-    if (!evidence.rendered.desktop.axe || !evidence.rendered.mobile.axe) return unable("axe-core did not complete for both viewports", { desktop: Boolean(evidence.rendered.desktop.axe), mobile: Boolean(evidence.rendered.mobile.axe) });
+    if (!evidence.rendered.desktop.axe || !evidence.rendered.mobile.axe) return unable("axe-core did not complete for both viewports", {
+      desktop: Boolean(evidence.rendered.desktop.axe),
+      mobile: Boolean(evidence.rendered.mobile.axe),
+      errors: {
+        desktop: evidence.rendered.desktop.axeError,
+        mobile: evidence.rendered.mobile.axeError,
+      },
+    });
     const reports = [evidence.rendered.desktop.axe, evidence.rendered.mobile.axe];
     const violations = reports.flatMap((report) => report?.violations.filter((violation) => violation.id === axeId) || []);
     const incomplete = reports.flatMap((report) => report?.incomplete.filter((entry) => entry.id === axeId) || []);

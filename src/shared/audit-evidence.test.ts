@@ -38,6 +38,7 @@ const renderedViewport = (overrides: Partial<RenderedViewportEvidence> = {}): Re
   occurrences: {},
   networkResources: [],
   axe: { version: "4.13.0", violations: [], passes: [], incomplete: [] },
+  axeError: null,
   ...overrides,
 });
 
@@ -279,6 +280,17 @@ describe("audit v2 evidence architecture", () => {
     expect(evaluateAuditCheck("seo.page.metadata.html.language.code.valid", evidence).outcome).toBe("passed");
   });
 
+  it("keeps HTML language evidence compact even when the document is large", () => {
+    const evidence = bundle(`<html lang="en-GB"><body>${"Large document content ".repeat(10_000)}</body></html>`);
+    const evaluated = evaluateAuditCheck("seo.page.metadata.html.language.declared", evidence);
+    expect(evaluated.outcome).toBe("passed");
+    expect(evaluated.evidence).toMatchObject({
+      language: "en-GB",
+      occurrences: [{ locator: "html", html: '<html lang="en-GB">', source: "html", values: { language: "en-GB" } }],
+    });
+    expect(JSON.stringify(evaluated.evidence).length).toBeLessThan(300);
+  });
+
   it("fails required metadata when it is missing and uses not-applicable only for a dependent check", () => {
     const evidence = bundle("<html><head></head><body></body></html>");
     expect(evaluateAuditCheck("seo.page.metadata.canonical.url.declared", evidence).outcome).toBe("failed");
@@ -353,6 +365,11 @@ describe("audit v2 evidence architecture", () => {
     expect(evaluateAuditCheck("accessibility.accessibility.buttons.have.accessible.names", bundle("<button></button>", { rendered: { desktop: incomplete, mobile: incomplete } })).outcome).toBe("unable_to_test");
     const inapplicable = renderedViewport();
     expect(evaluateAuditCheck("accessibility.accessibility.buttons.have.accessible.names", bundle("<p>No buttons</p>", { rendered: { desktop: inapplicable, mobile: inapplicable } })).outcome).toBe("not_applicable");
+    const failing = renderedViewport({ axe: { version: "4.13.0", passes: [], incomplete: [], violations: [{ id: "button-name", impact: "critical", nodes: [{ source: "accessibility", locator: "#save", html: '<button id="save"></button>' }] }] } });
+    const failed = evaluateAuditCheck("accessibility.accessibility.buttons.have.accessible.names", bundle('<button id="save"></button>', { rendered: { desktop: failing, mobile: failing } }));
+    expect(failed.outcome).toBe("failed");
+    expect(failed.evidence).toMatchObject({ rule: "button-name", occurrences: [{ locator: "#save" }, { locator: "#save" }] });
+    expect(failed.evidence).toMatchObject({ retained: 2, truncated: false });
   });
 
   it("does not pass checked-link findings when destination collection is partial", () => {
