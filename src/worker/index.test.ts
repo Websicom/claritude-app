@@ -18,6 +18,7 @@ import {
   uptimeDueHorizon,
   validAvatarBytes,
   validPublicUrl,
+  withAuditDeadline,
   workspaceDeletionError,
   renderUptimeAlertEmail,
 } from "./index";
@@ -53,6 +54,17 @@ describe("worker evidence pipelines", () => {
         Array.from({ length: 64 }, (_, index) => index + 64),
         [128, 129, 130],
       ]);
+  });
+
+  it("fails a stalled audit operation at its hard deadline and runs cleanup", async () => {
+    let cleanedUp = false;
+    await expect(withAuditDeadline(
+      new Promise<never>(() => undefined),
+      5,
+      "collector timed out",
+      () => { cleanedUp = true; },
+    )).rejects.toThrow("collector timed out");
+    expect(cleanedUp).toBe(true);
   });
 
   it("expires audit runs on a stale heartbeat or the hard runtime deadline", () => {

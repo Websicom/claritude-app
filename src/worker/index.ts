@@ -2324,6 +2324,28 @@ function labMetricScore(value: number, good: number, poor: number) {
   return Math.round(100 - ((value - good) / (poor - good)) * 100);
 }
 
+export async function withAuditDeadline<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  message: string,
+  onTimeout?: () => void,
+) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          onTimeout?.();
+          reject(new Error(message));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function collectBrowserLab(env: Env, url: string) {
   const browser = await puppeteer.launch(env.BROWSER);
   try {
@@ -2652,13 +2674,15 @@ async function collectBrowserLab(env: Env, url: string) {
         resources: measured.resources as ResourceDeclaration[],
       };
     };
-    const [desktop, mobile] = await Promise.all([
+    const [desktop, mobile] = await withAuditDeadline(Promise.all([
       collect("desktop"),
       collect("mobile"),
-    ]);
+    ]), 90_000, "BrowserLab collection timed out", () => {
+      void browser.close().catch(() => undefined);
+    });
     return { desktop, mobile };
   } finally {
-    await browser.close();
+    await browser.close().catch(() => undefined);
   }
 }
 
