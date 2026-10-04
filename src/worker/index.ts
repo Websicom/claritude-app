@@ -2766,12 +2766,17 @@ async function collectV2AuditEvidence(
   const browserStarted = Date.now();
   if (requireBrowser) {
     try {
-      browserLab = await collectBrowserLab(env, pageUrl);
+      browserLab = await withAuditDeadline(
+        collectBrowserLab(env, pageUrl),
+        100_000,
+        "BrowserLab operation timed out",
+      );
     } catch (error) {
       console.error("browser evidence collection failed", errorMessage(error));
     }
   }
   phases.browserMs = Date.now() - browserStarted;
+  console.log("audit evidence phase", JSON.stringify({ pageUrl, phase: "browser_complete", durationMs: phases.browserMs, available: Boolean(browserLab) }));
   const rendered = browserLab ? {
     desktop: renderedViewportEvidence(browserLab.desktop),
     mobile: renderedViewportEvidence(browserLab.mobile),
@@ -2787,6 +2792,7 @@ async function collectV2AuditEvidence(
     collectLinkInventory(linkDeclarations, safeFetchTrace, undefined, validatedHosts),
     collectResourceInventory(resourceDeclarations, safeFetchTrace, undefined, validatedHosts),
   ]);
+  console.log("audit evidence phase", JSON.stringify({ pageUrl, phase: "inventories_complete", links: links.retained, resources: resources.retained }));
   const canonicalElement = source.elements.find((element) => element.tagName === "link" && (element.attributes.find((item) => item.name === "rel")?.value || "").toLowerCase().split(/\s+/).includes("canonical"));
   const canonicalHref = canonicalElement?.attributes.find((item) => item.name === "href")?.value || null;
   const canonical = canonicalHref
@@ -2817,6 +2823,7 @@ async function collectV2AuditEvidence(
     })));
   }
   phases.networkMs = Date.now() - networkStarted;
+  console.log("audit evidence phase", JSON.stringify({ pageUrl, phase: "network_complete", durationMs: phases.networkMs, dnsQueries: dns.length }));
   const fontFaces = resources.results.filter((item) => item.declarations.some((declaration) => declaration.declarationType === "stylesheet") && item.body).flatMap((item) => parseFontFaces(item.body || "", item.finalUrl || item.requestedUrl));
   const evidence: AuditEvidenceBundle = { http, source, rendered, links, resources, canonical, dns, robots, sitemaps, fontFaces };
   const approximateEvidenceBytes = new TextEncoder().encode(JSON.stringify({ http, source: { elements: source.elements.length, links: source.links.length, resources: source.resources.length, structuredData: source.structuredData }, rendered, links, resources, dns, robots: { decisions: robots.decisions, sitemaps: robots.sitemaps }, sitemaps })).byteLength;
