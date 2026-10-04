@@ -172,6 +172,15 @@ describe("audit v2 evidence architecture", () => {
     expect(inspected.body).toBeNull();
   });
 
+  it("turns a stalled destination body into unavailable evidence", async () => {
+    const inspected = await inspectDestination("https://example.com/slow", async () => ({
+      response: new Response(new ReadableStream({ pull: () => new Promise(() => {}) }), { status: 200 }),
+      redirects: [],
+    }), { probeChallenge: true, bodyTimeoutMs: 10 });
+    expect(inspected.state).toBe("timeout");
+    expect(inspected.error).toMatch(/body timed out/i);
+  });
+
   it("shares validated hosts across link and resource inventories", async () => {
     const validatedHosts = new Set<string>();
     const observedSets: Array<Set<string> | undefined> = [];

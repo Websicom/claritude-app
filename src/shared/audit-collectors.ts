@@ -47,15 +47,29 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function boundedBody(response: Response, maxBytes: number) {
+async function boundedBody(response: Response, maxBytes: number, timeoutMs = 8_000) {
   if (!response.body) return { text: "", truncated: false };
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let retained = 0;
   let truncated = Number(response.headers.get("content-length") || 0) > maxBytes;
+  let failed = false;
+  const read = async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Response body timed out")), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
   try {
     while (retained < maxBytes) {
-      const { done, value } = await reader.read();
+      const { done, value } = await read();
       if (done) break;
       const available = Math.min(value.byteLength, maxBytes - retained);
       if (available) chunks.push(value.slice(0, available));
@@ -66,12 +80,16 @@ async function boundedBody(response: Response, maxBytes: number) {
       }
     }
     if (retained === maxBytes) {
-      const next = await reader.read();
+      const next = await read();
       if (!next.done) truncated = true;
     }
+  } catch (error) {
+    failed = true;
+    await reader.cancel().catch(() => undefined);
+    throw error;
   } finally {
-    if (truncated) await reader.cancel().catch(() => undefined);
-    else reader.releaseLock();
+    if (truncated && !failed) await reader.cancel().catch(() => undefined);
+    else if (!failed) reader.releaseLock();
   }
   const joined = new Uint8Array(retained);
   let offset = 0;
@@ -85,7 +103,7 @@ async function boundedBody(response: Response, maxBytes: number) {
 export async function inspectDestination(
   url: string,
   fetchTrace: BoundedFetchTrace,
-  options: { includeBody?: boolean; probeChallenge?: boolean; bodyBytes?: number; validatedHosts?: Set<string> } = {},
+  options: { includeBody?: boolean; probeChallenge?: boolean; bodyBytes?: number; bodyTimeoutMs?: number; validatedHosts?: Set<string> } = {},
 ): Promise<DestinationEvidence> {
   try {
     const trace = await fetchTrace(url, {
@@ -93,7 +111,7 @@ export async function inspectDestination(
       signal: AbortSignal.timeout(8_000),
     }, options.validatedHosts);
     const captured = options.includeBody || options.probeChallenge
-      ? await boundedBody(trace.response, options.bodyBytes || DEFAULT_COLLECTOR_LIMITS.bodyBytes)
+      ? await boundedBody(trace.response, options.bodyBytes || DEFAULT_COLLECTOR_LIMITS.bodyBytes, options.bodyTimeoutMs)
       : { text: "", truncated: false };
     const body = options.includeBody ? captured.text : null;
     const text = captured.text;
