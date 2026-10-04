@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   analyticsRollupPlan,
+  auditOutcomeNotification,
   buildAnalyticsSummary,
   auditCheckHasExecutableLogic,
   canonicalPropertyHost,
@@ -432,5 +433,12 @@ describe("worker evidence pipelines", () => {
     expect(validAvatarBytes("image/gif", new TextEncoder().encode("GIF89a"))).toBe(true);
     expect(validAvatarBytes("image/webp", new TextEncoder().encode("RIFF0000WEBP"))).toBe(true);
     expect(validAvatarBytes("image/png", new TextEncoder().encode("<script>"))).toBe(false);
+  });
+
+  it("only creates audit notifications for failure or a score below 50", () => {
+    expect(auditOutcomeNotification("completed", 92, 100)).toBeNull();
+    expect(auditOutcomeNotification("partial", 64, 82)).toBeNull();
+    expect(auditOutcomeNotification("completed", 49, 100)).toMatchObject({ title: "Audit score below 50", severity: "critical" });
+    expect(auditOutcomeNotification("failed", null, 0, "browser unavailable")).toMatchObject({ title: "Audit failed", severity: "warning" });
   });
 });

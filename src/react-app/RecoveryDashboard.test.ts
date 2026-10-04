@@ -3,9 +3,12 @@ import {
   filterProperties,
   filterWorkspaceMemberships,
   isPrimaryAuditPage,
+  paginateResults,
   prepareAvatarImage,
+  propertyOnboardingChecks,
   propertyFaviconSources,
   squareImageCrop,
+  trafficSeriesKey,
 } from "./RecoveryDashboard";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -72,5 +75,20 @@ describe("top selector searches", () => {
     expect(canvas.toBlob).toHaveBeenCalledWith(expect.any(Function), "image/webp", 0.82);
     expect(result.type).toBe("image/webp");
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("maps traffic toggles to measured series and uses completed onboarding evidence", () => {
+    expect(trafficSeriesKey("Pageviews")).toBe("pageviews");
+    expect(trafficSeriesKey("Unique Visits")).toBe("dailyVisitors");
+    expect(trafficSeriesKey("Events")).toBe("events");
+    expect(paginateResults(Array.from({ length: 45 }, (_, index) => index + 1), 2)).toEqual(Array.from({ length: 20 }, (_, index) => index + 21));
+    const checks = propertyOnboardingChecks({
+      verification_status: "verified",
+      tracking_last_received_at: "2026-10-04T09:00:00Z",
+      uptime_monitors: [{ enabled: true, last_checked_at: "2026-10-04T09:00:00Z" }],
+      audit_runs: [{ status: "completed", score: 84 }],
+    } as any);
+    expect(checks.map((check) => check.complete)).toEqual([true, true, true, true]);
+    expect(propertyOnboardingChecks({ verification_status: "pending" } as any).map((check) => check.complete)).toEqual([false, false, false, false]);
   });
 });

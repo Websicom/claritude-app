@@ -914,6 +914,8 @@ tbody tr:hover {
 }
 .audit-nav-row .tabs {
   flex: 1;
+  margin-bottom: 0;
+  align-self: center;
 }
 .audit-page-picker {
   height: 36px;
@@ -2366,11 +2368,11 @@ input[type="checkbox"]:checked:after {
 }
 .audit-performance-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
 .audit-performance-toolbar .audit-performance-mode { margin: 0; }
-.audit-performance-toolbar > span { color: var(--muted); font-size: 13px; }
+.audit-performance-note { color: var(--muted); font-size: 12px; margin: -4px 0 14px; }
 .performance-panel-title { display: inline-flex; align-items: center; gap: 9px; }
 .performance-panel-title svg { width: 19px; height: 19px; }
 .performance-target { display: inline-flex; align-items: center; gap: 7px; }
-.performance-target i { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+.performance-target i { display: block; flex: 0 0 7px; width: 7px; min-width: 7px; height: 7px; margin: 0; padding: 0; border: 0; outline: 0; border-radius: 50%; background: var(--green); }
 .performance-target i.warning { background: var(--orange); }
 .audit-filter-wrap {
   position: relative;
@@ -2581,10 +2583,31 @@ input[type="checkbox"]:checked:after {
 .audit-category-bar:hover { text-decoration: underline; text-underline-offset: 3px; }
 .audit-checks-note { margin: 9px 0 0; }
 .audit-run-meta {
-  margin: -8px 0 12px 100px;
+  margin: -6px 2px 14px;
   color: var(--muted);
   font-size: 11px;
 }
+
+.pending-data-text {
+  color: var(--muted) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+}
+
+.analytics-install-banner {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  margin-bottom: 14px;
+  border: 1px solid #b9ead9;
+  border-radius: var(--radius-panel);
+  background: #f3fbf8;
+}
+.analytics-install-banner p { margin: 5px 0 0; color: #3f5f56; }
+.analytics-install-banner .install-code { margin: 0; background: #fff; }
+.analytics-install-banner .settings-actions { margin-top: 0; }
+
+.onboarding-list > span.pending svg { color: var(--orange); }
 .audit-compare-selectors {
   min-height: 60px;
   display: flex;

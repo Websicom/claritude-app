@@ -443,6 +443,7 @@ app.get("/api/bootstrap", async (c) => {
       db
         .from("notifications")
         .select("*")
+        .neq("title", "Audit completed")
         .order("created_at", { ascending: false })
         .limit(50),
       db
@@ -613,14 +614,16 @@ app.post("/api/properties", async (c) => {
     });
     return c.json({ error: "property_created_but_reload_required" }, 500);
   }
-  const { error: monitorError } = await service
+  const { data: monitor, error: monitorError } = await service
     .from("uptime_monitors")
     .upsert(
       { property_id: data.id },
       { onConflict: "property_id", ignoreDuplicates: true },
-    );
-  if (monitorError)
-    return c.json({ error: `property_created_monitor_failed: ${monitorError.message}` }, 500);
+    )
+    .select("id")
+    .single();
+  if (monitorError || !monitor)
+    return c.json({ error: `property_created_monitor_failed: ${monitorError?.message || "monitor_not_returned"}` }, 500);
   const { error: auditPageError } = await service
     .from("property_audit_pages")
     .insert({
@@ -631,6 +634,7 @@ app.post("/api/properties", async (c) => {
     });
   if (auditPageError)
     return c.json({ error: `property_created_audit_page_failed: ${auditPageError.message}` }, 500);
+  await c.env.JOBS.send({ type: "uptime", id: monitor.id });
   await recordActivity(c.env, c.get("userId"), "property.created", data.id, {
     workspaceId: b.workspaceId,
   });
@@ -2845,10 +2849,9 @@ async function runAudit(env: Env, id: string) {
     // consumer comfortably below Cloudflare's outbound subrequest budget.
     await persist(results);
     const { score, coverage } = scoreAuditResults(snapshot, results);
+    const finalStatus = results.some((r) => r.outcome === "unable_to_test") ? "partial" : "completed";
     await updateRun({
-        status: results.some((r) => r.outcome === "unable_to_test")
-          ? "partial"
-          : "completed",
+        status: finalStatus,
         score,
         coverage,
         execution_stage: "completed",
@@ -2858,13 +2861,12 @@ async function runAudit(env: Env, id: string) {
         completed_at: new Date().toISOString(),
         duration_ms: Date.now() - started,
       });
-    await createPropertyNotification(env, run.property_id, {
-      category: "audit_issues",
-      title: "Audit completed",
-      body: `Audit finished with score ${score ?? "—"} and ${coverage}% coverage.`,
-      severity: score != null && score < 80 ? "warning" : "info",
-      dedupeKey: `audit:${id}:completed`,
-    });
+    const notification = auditOutcomeNotification(finalStatus, score, coverage);
+    if (notification)
+      await createPropertyNotification(env, run.property_id, {
+        ...notification,
+        dedupeKey: `audit:${id}:${notification.kind}`,
+      });
     if (run.created_by)
       await recordActivity(env, run.created_by, "audit.completed", run.property_id, {
         auditRunId: id,
@@ -2872,15 +2874,40 @@ async function runAudit(env: Env, id: string) {
         coverage,
       });
   } catch (e) {
+    const message = errorMessage(e);
     await updateRun({
         status: "failed",
         execution_stage: "failed",
         heartbeat_at: new Date().toISOString(),
-        error: errorMessage(e),
+        error: message,
         completed_at: new Date().toISOString(),
         duration_ms: Date.now() - started,
       }).catch(() => undefined);
+    const notification = auditOutcomeNotification("failed", null, 0, message);
+    if (notification)
+      await createPropertyNotification(env, run.property_id, {
+        ...notification,
+        dedupeKey: `audit:${id}:${notification.kind}`,
+      }).catch(() => undefined);
   }
+}
+
+export function auditOutcomeNotification(status: string, score: number | null, coverage: number, error?: string) {
+  if (status === "failed") return {
+    kind: "failed",
+    category: "audit_issues",
+    title: "Audit failed",
+    body: error ? `The audit failed: ${error}` : "The audit could not be completed.",
+    severity: "warning",
+  };
+  if (score != null && score < 50) return {
+    kind: "score-below-50",
+    category: "audit_issues",
+    title: "Audit score below 50",
+    body: `The latest audit scored ${score} with ${coverage}% coverage and needs attention.`,
+    severity: "critical",
+  };
+  return null;
 }
 
 export function chunkAuditResults<T>(values: T[], size = 24) {

@@ -121,6 +121,17 @@ type AuditPage = {
   path: string;
 };
 
+type TrafficMetric = "Pageviews" | "Unique Visits" | "Events";
+
+export function trafficSeriesKey(metric: TrafficMetric) {
+  return metric === "Unique Visits" ? "dailyVisitors" : metric === "Events" ? "events" : "pageviews";
+}
+
+export function paginateResults<T>(values: T[], page: number, pageSize = 20) {
+  const safePage = Math.max(1, page);
+  return values.slice((safePage - 1) * pageSize, safePage * pageSize);
+}
+
 export function isPrimaryAuditPage(page: Pick<AuditPage, "path">) {
   return page.path === "/";
 }
@@ -169,6 +180,17 @@ type Property = {
   settings?: Record<string, any>;
   demo?: DemoMetrics;
 };
+
+export function propertyOnboardingChecks(property: Property) {
+  const monitor = property.uptime_monitors?.[0];
+  const completedAudit = property.audit_runs?.find((run) => ["completed", "partial"].includes(run.status));
+  return [
+    { complete: property.verification_status === "verified", label: "Property verified", detail: property.verification_status === "verified" ? "Verified" : "Verification required" },
+    { complete: Boolean(monitor?.enabled && monitor.last_checked_at), label: "First uptime check completed", detail: monitor?.last_checked_at ? `Checked ${relative(monitor.last_checked_at)}` : "Awaiting first check" },
+    { complete: Boolean(property.tracking_last_received_at), label: "Analytics receiving data", detail: property.tracking_last_received_at ? `Last event ${relative(property.tracking_last_received_at)}` : "Tracking script not detected" },
+    { complete: Boolean(completedAudit), label: "First audit completed", detail: completedAudit ? `${cap(completedAudit.status)} · ${completedAudit.score ?? "—"} / 100` : "No completed audit yet" },
+  ];
+}
 
 function PropertyFavicon({ property }: { property: Property }) {
   const [sourceIndex, setSourceIndex] = useState(0);
@@ -500,7 +522,7 @@ export function ClaritudeApplication({
               <Globe2 />
             )}
           </span>
-          <b>{property ? property.canonical_host : "Your properties"}</b>
+          <b>{property ? property.name : "Your properties"}</b>
           <span className="spacer" />
           <img className="selector-chevrons" src="/assets/chevrons-up-down.svg" alt="" />
         </button>
@@ -1566,8 +1588,10 @@ function PropertyOverview({
   notify: Notify;
 }) {
   const overviewLocation = useLocation();
+  const navigate = useNavigate();
   const livePeriod = periodQuery(overviewLocation.search);
   const [tab, setTab] = useState("Overview"),
+    [trafficMetric, setTrafficMetric] = useState<TrafficMetric>("Pageviews"),
     [analytics, setAnalytics] = useState<any>(null),
     [audits, setAudits] = useState<AuditRun[]>([]);
   useEffect(() => {
@@ -1600,6 +1624,7 @@ function PropertyOverview({
   const monitor = property.uptime_monitors?.[0],
     audit = audits[0] || property.audit_runs?.[0],
     views = analytics?.pageviews || 0,
+    uniqueVisits = fixture ? property.demo?.visitors || 0 : analytics?.sessions || 0,
     mobileScore = fixture
       ? analytics?.mobilePerformanceScore
       : webVitalsScore(analytics?.performanceByDevice?.mobile?.vitals),
@@ -1633,16 +1658,14 @@ function PropertyOverview({
       fixture ? "↑ 12.4%" : "Measured in this period",
     ],
     [
-      "Avg daily visitors",
-      fixture ? fmt(property.demo?.visitors || 474) : "—",
-      fixture
-        ? "Estimated, not unique users"
-        : "Not available without a visitor estimate",
+      "Unique Visits",
+      fmt(uniqueVisits),
+      fixture ? "Anonymous visits in this period" : "Anonymous sessions in this period",
     ],
     [
-      "Key events",
+      "Events",
       fmt(analytics?.events || 0),
-      fixture ? "1.3% of pageviews" : "All accepted events",
+      fixture ? "1.3% of pageviews" : "All accepted events in this period",
     ],
   ];
   return (
@@ -1663,7 +1686,10 @@ function PropertyOverview({
           <Tabs
             labels={["Overview", "Activity", "Setup"]}
             value={tab}
-            onChange={setTab}
+            onChange={(nextTab) => {
+              if (nextTab === "Setup") navigate(`/settings?property=${property.id}&settingsTab=Tracking`);
+              else setTab(nextTab);
+            }}
           />
           {tab === "Overview" ? (
             <>
@@ -1674,15 +1700,17 @@ function PropertyOverview({
             <div>
               <Panel
                 title="Traffic (last 30 days)"
-                actions={<ChartSwitch notify={notify} events />}
+                actions={<ChartSwitch notify={notify} events value={trafficMetric} onChange={setTrafficMetric} />}
               >
                 {mobilePageControls}
                 <SeriesChart
                   points={(analytics?.series || []).map((point: any) => ({
                     label: point.day,
-                    value: point.pageviews || 0,
+                    value: point[trafficSeriesKey(trafficMetric)] || 0,
                   }))}
                   emptyTitle="No measured property traffic yet"
+                  unit={trafficMetric === "Events" ? " events" : ""}
+                  label={`${trafficMetric} by day`}
                 />
               </Panel>
               <div className="property-overview-metrics-mobile">
@@ -1751,9 +1779,7 @@ function PropertyOverview({
             <Panel title="Recent property activity">
               <ActivityList property={property} />
             </Panel>
-          ) : (
-            <SetupPanel property={property} />
-          )}
+          ) : null}
         </>
       )}
     </Page>
@@ -2160,7 +2186,7 @@ function UptimeView({
           </div>
         </>
       ) : tab === "Incidents" ? (
-        <IncidentTable incidents={relevant} />
+        <IncidentTable incidents={relevant} propertyUrl={property.url} />
       ) : tab === "Maintenance" ? (
         <Panel
           title="Maintenance windows"
@@ -2279,12 +2305,13 @@ function AnalyticsView({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [reloadToken, setReloadToken] = useState(0);
-  const [chartMetric, setChartMetric] = useState("Pageviews");
+  const [chartMetric, setChartMetric] = useState<TrafficMetric>("Pageviews");
   const [chartMenuOpen, setChartMenuOpen] = useState(false);
   const [showPreviousTraffic, setShowPreviousTraffic] = useState(true);
   const [pageList, setPageList] = useState<{ rows: any[]; page: number; pageSize: number; total: number; pages: number } | null>(null);
   const [pageListError, setPageListError] = useState("");
   const [pageListLoading, setPageListLoading] = useState(false);
+  const [engagementPage, setEngagementPage] = useState(1);
   const [rangeOpen, setRangeOpen] = useState(false);
   const defaultTo = params.get("to") || new Date().toISOString().slice(0, 10);
   const defaultFrom = params.get("from") || new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10);
@@ -2367,6 +2394,8 @@ function AnalyticsView({
     return () => { cancelled = true; };
   }, [detailPage, filterQuery, fixture, listPage, listPageSize, livePeriod, property?.id, reloadToken, session, tab]);
 
+  useEffect(() => setEngagementPage(1), [filterQuery, property?.id]);
+
   if (!property) return <Empty title="Select a property" detail="Analytics is property-specific." />;
 
   const scoped = data || baseData || analyticsFixtureSummary();
@@ -2384,7 +2413,7 @@ function AnalyticsView({
   const minimumSamples = performance.minimumSamples || 1;
   const vital = (name: string) => (performance.vitals || []).find((entry: any) => entry.name === name);
   const selectedPerformanceMetric = filters.metric || "LCP";
-  const seriesKey = chartMetric === "Daily visitors" ? "dailyVisitors" : chartMetric === "Events" ? "events" : "pageviews";
+  const seriesKey = trafficSeriesKey(chartMetric);
   const chartPoints = (scoped.series || []).map((point: any) => ({ label: point.day, value: point[seriesKey] || 0 }));
   const previousChartPoints = (scoped.previous?.series || []).map((point: any) => ({ label: point.day, value: point[seriesKey] || 0 }));
   const performancePoints = (performance.series?.[selectedPerformanceMetric] || [])
@@ -2403,9 +2432,26 @@ function AnalyticsView({
       scope={config.scope}
     />
   );
+  const trackingSnippet = `<script defer src="${window.location.origin}/c.js" data-property="${property.tracking_id}"></script>`;
+  const engagingPages = engagement.pages || [];
+  const engagingPageCount = Math.max(1, Math.ceil(engagingPages.length / 20));
+  const shownEngagingPages = paginateResults(engagingPages, engagementPage);
 
   return (
     <Page title="Analytics" status={<Period />}>
+      {!property.tracking_last_received_at && (
+        <div className="analytics-install-banner" role="status">
+          <div>
+            <b>Install tracking to start collecting analytics</b>
+            <p>Add this script before the closing <code>&lt;/head&gt;</code> tag on every page. Analytics will begin populating after the first accepted pageview.</p>
+          </div>
+          <pre className="install-code">{trackingSnippet}</pre>
+          <div className="settings-actions">
+            <button className="btn" onClick={() => navigator.clipboard.writeText(trackingSnippet).then(() => notify("Tracking snippet copied"))}><Copy /> Copy tracking code</button>
+            <Link className="primary" to={`/settings?property=${property.id}&settingsTab=Tracking`}>Tracking setup guide</Link>
+          </div>
+        </div>
+      )}
       <Tabs labels={tabs} value={tab} onChange={changeTab} />
       {loading ? (
         <Empty title="Loading analytics…" detail="Applying the selected property, dates and filters." />
@@ -2424,7 +2470,7 @@ function AnalyticsView({
         <>
           <Metrics values={[
             ["Pageviews", fmt(scoped.pageviews || 0), comparisonText(scoped.pageviews, scoped.previous?.pageviews)],
-            ["Avg daily visitors", scoped.averageDailyVisitors == null ? "Unavailable" : fmt(scoped.averageDailyVisitors), scoped.averageDailyVisitors == null ? "Anonymous session estimate unavailable" : "Anonymous sessions per calendar day"],
+            ["Avg unique visits", scoped.averageDailyVisitors == null ? "Unavailable" : fmt(scoped.averageDailyVisitors), scoped.averageDailyVisitors == null ? "Anonymous session estimate unavailable" : "Anonymous sessions per calendar day"],
             ["Key events", fmt(scoped.keyEvents || 0), comparisonText(scoped.keyEvents, scoped.previous?.keyEvents)],
             ["Key events per pageview", keyEventRate == null ? "—" : `${keyEventRate.toFixed(1)}%`, scoped.pageviews ? `${fmt(scoped.keyEvents)} ÷ ${fmt(scoped.pageviews)}` : "No pageviews in range"],
           ]} />
@@ -2433,7 +2479,7 @@ function AnalyticsView({
             actions={
               <>
                 <span className="seg">
-                  {["Pageviews", "Daily visitors", "Events"].map((metric) => (
+                  {(["Pageviews", "Unique Visits", "Events"] as TrafficMetric[]).map((metric) => (
                     <button className={chartMetric === metric ? "active" : ""} onClick={() => setChartMetric(metric)} key={metric}>{metric}</button>
                   ))}
                 </span>
@@ -2463,7 +2509,7 @@ function AnalyticsView({
             <SeriesChart points={chartPoints} previousPoints={showPreviousTraffic ? previousChartPoints : []} emptyTitle="No measured traffic yet" unit={chartMetric === "Events" ? " events" : ""} label={`${chartMetric} by day`} timeZone={analyticsTimeZone} />
           </Panel>
           <div className="grid equal">
-            <Panel title="Top pages"><AnalyticsTable pages={pages} property={property} groupedLimit={5} eventHeader="Key events" /></Panel>
+            <Panel title="Top pages"><AnalyticsTable pages={pages} property={property} groupedLimit={5} eventHeader="Key events" onDetail={(page) => updateAnalyticsParams({ analyticsTab: "Pages", pagePath: page })} /></Panel>
             <Panel title="Traffic sources"><AnalyticsSourceTable sources={scoped.sources || []} /></Panel>
           </div>
           <div className="grid analytics-overview-bottom">
@@ -2523,9 +2569,9 @@ function AnalyticsView({
         <>
           {filtersToolbar}
           <div className="grid equal">
-            <Panel title="Devices"><AnalyticsValueTable headers={["Device", "Share"]} rows={shareRows(scoped.devices, scoped.pageviews, "device")} /></Panel>
-            <CountriesPanel rows={scoped.countries || []} total={scoped.pageviews || 0} onOpen={() => updateAnalyticsParams({ countryList: "all" })} />
             <Panel title="Browsers"><AnalyticsValueTable headers={["Browser", "Share"]} rows={shareRows(scoped.browsers, scoped.pageviews, "browser")} /></Panel>
+            <CountriesPanel rows={scoped.countries || []} total={scoped.pageviews || 0} onOpen={() => updateAnalyticsParams({ countryList: "all" })} />
+            <Panel title="Devices"><AnalyticsValueTable headers={["Device", "Share"]} rows={shareRows(scoped.devices, scoped.pageviews, "device")} /></Panel>
             <Panel title="Screen categories"><AnalyticsValueTable headers={["Width", "Share"]} rows={shareRows(scoped.screens, scoped.pageviews)} /></Panel>
           </div>
         </>
@@ -2540,7 +2586,10 @@ function AnalyticsView({
           {filtersToolbar}
           <div className="grid equal">
             <Panel title="Scroll depth"><AnalyticsValueTable headers={["Depth", "Pageviews"]} rows={(engagement.scrollDepth || []).map((row: any) => ({ label: `${row.depth}% reached`, value: row.pageviews }))} /></Panel>
-            <Panel title="Most engaging pages"><AnalyticsValueTable className="engagement-url-table" headers={["Page", "Engaged views"]} rows={(engagement.pages || []).map((row: any) => ({ label: row.path, value: row.engagedViews }))} /></Panel>
+            <Panel title="Most engaging pages">
+              <AnalyticsValueTable className="engagement-url-table" headers={["Page", "Engaged views"]} rows={shownEngagingPages.map((row: any) => ({ label: row.path, value: row.engagedViews }))} />
+              {engagingPages.length > 20 && <ResultsPagination page={engagementPage} total={engagingPages.length} label="pages" onPage={(page) => setEngagementPage(Math.min(engagingPageCount, page))} />}
+            </Panel>
           </div>
           <Panel title="Additional aggregate insights">
             <KeyValues rows={[
@@ -2972,14 +3021,9 @@ function AuditView({
       {tab === "Overview" ? (
         <>
           <AuditScore run={latest} />
-          <p className="audit-run-meta">
-            {latest
-              ? `Latest completed result for ${selectedPage?.name}: ${fmtDate(latest.completed_at || latest.created_at)} · run ${latest.id.slice(0, 8)}`
-              : `${selectedPage?.name || "This page"} has not been audited yet.`}
-            {activeRun && latest ? " · Previous completed result remains visible while the new run is active." : ""}
-          </p>
           <div className="grid">
-            <Panel title={`Fix these first · ${selectedPage?.name || "Selected page"}`}>
+            <div>
+              <Panel title={`Fix these first · ${selectedPage?.name || "Selected page"}`}>
               <div className="audit-summary" aria-label="Finding severity filters">
                 <button className={`audit-summary-item ${filter === "critical" ? "selected" : ""}`} onClick={() => setFilter(filter === "critical" ? "All" : "critical")}>
                   <OctagonAlert />{resultCounts.critical}
@@ -2997,15 +3041,21 @@ function AuditView({
                 onRetest={(checkId) => void run([checkId])}
                 onReview={updateReview}
               />
-            </Panel>
+              </Panel>
+              <p className="audit-run-meta">
+                {latest
+                  ? `Latest completed result for ${selectedPage?.name}: ${fmtDate(latest.completed_at || latest.created_at)} · run ${latest.id.slice(0, 8)}`
+                  : `${selectedPage?.name || "This page"} has not been audited yet.`}
+                {activeRun && latest ? " · Previous completed result remains visible while the new run is active." : ""}
+              </p>
+            </div>
             <div>
               <div className="audit-performance-toolbar">
-                <div className="segmented audit-performance-mode" role="group" aria-label="Performance data source">
+                <div className="seg audit-performance-mode" role="group" aria-label="Performance data source">
                   {(["Lab audit", "Real-user data"] as const).map((mode) => (
                     <button key={mode} className={performanceMode === mode ? "active" : ""} onClick={() => setPerformanceMode(mode)}>{mode}</button>
                   ))}
                 </div>
-                <span>Lab uses load-based TBT; real-user data uses INP.</span>
               </div>
               {performanceMode === "Lab audit" ? (
                 <>
@@ -3018,6 +3068,7 @@ function AuditView({
                   <Panel title={<span className="performance-panel-title"><Smartphone /> Mobile performance</span>}><RealUserPerformanceTable data={realUserPerformance} device="mobile" /></Panel>
                 </>
               )}
+              <p className="audit-performance-note">Lab uses load-based TBT; real-user data uses INP.</p>
             </div>
           </div>
         </>
@@ -3522,6 +3573,7 @@ function PropertySettingsView({
         onChange={setTab}
       />
       {tab === "General" ? (
+        <>
         <Panel title="General">
           <label className="field">
             Property name
@@ -3558,6 +3610,8 @@ function PropertySettingsView({
             </button>
           </div>
         </Panel>
+        <SetupPanel property={property} />
+        </>
       ) : tab === "Tracking" ? (
         <>
           <Panel title="Installation">
@@ -4944,7 +4998,7 @@ function Metrics({ values }: { values: ReactNode[][] }) {
       {values.map((v, i) => (
         <div className="metric" key={i}>
           <small>{v[0]}</small>
-          <b>{v[1]}</b>
+          <b className={isPendingDataText(v[1]) ? "pending-data-text" : ""}>{v[1]}</b>
           <span>{v[2]}</span>
         </div>
       ))}
@@ -4955,7 +5009,7 @@ function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div className="metric">
       <small>{label}</small>
-      <b>{value}</b>
+      <b className={isPendingDataText(value) ? "pending-data-text" : ""}>{value}</b>
     </div>
   );
 }
@@ -4983,7 +5037,7 @@ function DataTable({
           {sorted.rows.map((r, i) => (
             <tr key={i}>
               {r.map((x, j) => (
-                <td key={j}>{x}</td>
+                <td className={isPendingDataText(x) ? "pending-data-text" : ""} key={j}>{x}</td>
               ))}
             </tr>
           ))}
@@ -4991,6 +5045,10 @@ function DataTable({
       </table>
     </div>
   );
+}
+
+function isPendingDataText(value: ReactNode) {
+  return typeof value === "string" && /^(Awaiting field data|Awaiting audit|Not implemented (?:by this audit run|in this run))$/i.test(value);
 }
 
 type TableSort = { column: number; direction: "asc" | "desc" } | null;
@@ -5054,19 +5112,25 @@ function Status({ value }: { value: string }) {
 function ChartSwitch({
   notify,
   events = false,
+  value,
+  onChange,
 }: {
   notify: Notify;
   events?: boolean;
+  value?: TrafficMetric;
+  onChange?: (metric: TrafficMetric) => void;
 }) {
-  const [kind, setKind] = useState("Pageviews");
+  const [localValue, setLocalValue] = useState<TrafficMetric>("Pageviews");
+  const selected = value || localValue;
   return (
     <span className="seg">
-      {["Pageviews", "Daily visitors", ...(events ? ["Events"] : [])].map(
+      {(["Pageviews", "Unique Visits", ...(events ? ["Events"] : [])] as TrafficMetric[]).map(
         (x) => (
           <button
-            className={kind === x ? "active" : ""}
+            className={selected === x ? "active" : ""}
             onClick={() => {
-              setKind(x);
+              setLocalValue(x);
+              onChange?.(x);
               notify(`${x} chart selected`);
             }}
             key={x}
@@ -5409,7 +5473,7 @@ function Modal({
     </div>
   );
 }
-function IncidentTable({ incidents, compact = false }: { incidents: any[]; compact?: boolean }) {
+function IncidentTable({ incidents, compact = false, propertyUrl }: { incidents: any[]; compact?: boolean; propertyUrl?: string }) {
   const content = incidents.length ? (
     <DataTable
       headers={compact ? ["Date & time", "Type", "Duration", "Status"] : ["Property", "Opened", "Cause", "Duration", "Status"]}
@@ -5422,7 +5486,7 @@ function IncidentTable({ incidents, compact = false }: { incidents: any[]; compa
             : formatDuration(Date.now() - new Date(incident.opened_at).valueOf()),
           incident.resolved_at ? "Resolved" : "Open",
         ];
-        return compact ? values : [incident.property || "Selected property", ...values];
+        return compact ? values : [incident.property_url || propertyUrl || incident.property || "Property unavailable", ...values];
       })}
     />
   ) : (
@@ -6040,6 +6104,26 @@ function AnalyticsPagination({ page, pageSize, total, pages, onPage, onPageSize 
   );
 }
 
+function ResultsPagination({ page, total, label, onPage }: {
+  page: number;
+  total: number;
+  label: string;
+  onPage: (page: number) => void;
+}) {
+  const pageSize = 20;
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const first = total ? (page - 1) * pageSize + 1 : 0;
+  const last = Math.min(total, page * pageSize);
+  return (
+    <div className="pagination-row analytics-pagination" aria-label={`${label} pagination`}>
+      <span>{fmt(first)}–{fmt(last)} of {fmt(total)} {label}</span>
+      <button className="btn" disabled={page <= 1} onClick={() => onPage(page - 1)}>Previous</button>
+      <span>Page {page} of {pages}</span>
+      <button className="btn" disabled={page >= pages} onClick={() => onPage(page + 1)}>Next</button>
+    </div>
+  );
+}
+
 function AnalyticsPageDetail({ data, page, property, onBack }: { data: any; page: string; property: Property; onBack: () => void }) {
   const pageRow = (data.pages || []).find((row: any) => row.path === normalisePagePath(page)) || data.pages?.[0];
   return (
@@ -6249,6 +6333,7 @@ function EventsPanel({
   const [eventsState, setEventsState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [eventsLoadError, setEventsLoadError] = useState("");
   const [eventsReloadToken, setEventsReloadToken] = useState(0);
+  const [eventPage, setEventPage] = useState(1);
   useEffect(() => {
     if (data) return;
     if (fixture) {
@@ -6337,6 +6422,10 @@ function EventsPanel({
       notify(error.message);
     }
   }
+  const eventBreakdown = data?.eventBreakdown || [];
+  const eventPageCount = Math.max(1, Math.ceil(eventBreakdown.length / 20));
+  const shownEventBreakdown = paginateResults(eventBreakdown, eventPage);
+  useEffect(() => setEventPage(1), [eventBreakdown.length, property.id]);
   return (
     <>
       <Panel
@@ -6356,12 +6445,13 @@ function EventsPanel({
             <AnalyticsPageFilterToolbar filters={filters} options={options} onChange={onFilterChange} title="Events" categories={analyticsFilterConfigs.Events.categories} scope="this event table" />
             <AnalyticsValueTable
               headers={["Event", "Count", "Share"]}
-              rows={(data.eventBreakdown || []).map((event: any) => ({
+              rows={shownEventBreakdown.map((event: any) => ({
                 label: eventLabel(event.name),
                 value: event.count,
                 secondary: data.keyEvents ? `${(event.count / data.keyEvents * 100).toFixed(1)}%` : "0.0%",
               }))}
             />
+            {eventBreakdown.length > 20 && <ResultsPagination page={eventPage} total={eventBreakdown.length} label="events" onPage={(page) => setEventPage(Math.min(eventPageCount, page))} />}
             <p className="subtle">Event share is the proportion of all recorded key events in the selected scope.</p>
           </>
         ) : (
@@ -6566,7 +6656,7 @@ function AuditScore({ run }: { run?: AuditRun }) {
           <div className="audit-six-stat" key={x}>
             <small>{x}</small>
             <b>{categoryScore ?? "Pending"}</b>
-            <span className={categoryScore == null ? "subtle" : "trend-up"}>
+            <span className={categoryScore == null ? "subtle pending-data-text" : "trend-up"}>
               {categoryScore == null
                 ? run
                   ? "Not implemented in this run"
@@ -6979,22 +7069,25 @@ function ActivityList({ property }: { property: Property }) {
   );
 }
 function SetupPanel({ property }: { property: Property }) {
+  const checks = propertyOnboardingChecks(property);
   return (
     <Panel title="Onboarding checklist">
       <div className="onboarding-list large">
-        {[
-          [property.verification_status === "verified", "Property verified"],
-          [!!property.uptime_monitors?.length, "Uptime monitoring enabled"],
-          [!!property.tracking_last_received_at, "Analytics receiving data"],
-          [!!property.audit_runs?.length, "First audit completed"],
-        ].map(([ok, label]) => (
-          <span key={String(label)}>
-            {ok ? <CheckCircle2 /> : <CircleAlert />}
-            <b>{label}</b>
-            <small>{ok ? "Complete" : "Needs attention"}</small>
+        {checks.map((check) => (
+          <span className={check.complete ? "complete" : "pending"} key={check.label}>
+            {check.complete ? <CheckCircle2 /> : <CircleAlert />}
+            <b>{check.label}</b>
+            <small>{check.detail}</small>
           </span>
         ))}
       </div>
+      {!checks.every((check) => check.complete) && (
+        <div className="settings-actions">
+          {!property.tracking_last_received_at && <Link className="btn" to={`/settings?property=${property.id}&settingsTab=Tracking`}>Install tracking</Link>}
+          {!property.uptime_monitors?.[0]?.last_checked_at && <Link className="btn" to={`/uptime?property=${property.id}`}>Check uptime</Link>}
+          {!property.audit_runs?.some((run) => ["completed", "partial"].includes(run.status)) && <Link className="btn" to={`/audit?property=${property.id}`}>Run first audit</Link>}
+        </div>
+      )}
     </Panel>
   );
 }
@@ -7588,8 +7681,8 @@ function analyticsFixtureSummary() {
       { name: "successful-form-submission", count: 124 },
       { name: "downloads", count: 86 },
       { name: "telephone-clicks", count: 68 },
-      { name: "email-clicks", count: 50 },
       { name: "outbound-clicks", count: 30 },
+      ...Array.from({ length: 21 }, (_, index) => ({ name: `custom-event-${index + 1}`, count: index < 8 ? 3 : 2 })),
     ],
     engagement: {
       eligiblePageviews: 28460,
@@ -7600,7 +7693,13 @@ function analyticsFixtureSummary() {
       engagementRate: 64.7,
       javascriptErrors: 36,
       scrollDepth: [{ depth: 25, pageviews: 21320 }, { depth: 50, pageviews: 16840 }, { depth: 75, pageviews: 10260 }, { depth: 90, pageviews: 6740 }],
-      pages: [{ path: "/services/", engagedViews: 4820 }, { path: "/work/", engagedViews: 3940 }, { path: "/contact/", engagedViews: 1740 }, { path: "/insights/", engagedViews: 1480 }],
+      pages: [
+        { path: "/services/", engagedViews: 4820 },
+        { path: "/work/", engagedViews: 3940 },
+        { path: "/contact/", engagedViews: 1740 },
+        { path: "/insights/", engagedViews: 1480 },
+        ...Array.from({ length: 21 }, (_, index) => ({ path: `/guide-${index + 1}/`, engagedViews: 300 - index * 8 })),
+      ],
       visibleSections: [{ name: "services", count: 13250 }],
       collectionStatus: "available",
     },
