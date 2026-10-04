@@ -68,6 +68,7 @@ import {
 } from "react-router-dom";
 import { apiRequest as api } from "./api";
 import { estimateIncidentDowntime } from "../shared/uptime";
+import { USER_FACING_AUDIT_GROUPS } from "../shared/audit-user-facing-registry.generated";
 
 type Monitor = {
   id: string;
@@ -98,6 +99,7 @@ type AuditRun = {
   heartbeat_at?: string;
   registry_snapshot?: Array<{ id: string }>;
   audit_results?: any[];
+  user_facing_results?: any[];
   category_scores?: Record<string, number>;
   performance_metrics?: {
     desktop?: (string | number)[][];
@@ -112,6 +114,7 @@ type AuditRun = {
     attemptedChecks: number;
     successfullyExecutedChecks: number;
     passedChecks: number;
+    userFacingGroups?: number;
   };
 };
 type AuditPage = {
@@ -1633,7 +1636,7 @@ function PropertyOverview({
       : webVitalsScore(analytics?.performanceByDevice?.desktop?.vitals),
     seoScore =
       audit?.category_scores?.SEO ??
-      auditCategoryScore(audit?.audit_results, ["SEO"]),
+      auditCategoryScore(audit?.user_facing_results || audit?.audit_results, ["SEO"]),
     vitalRows = (analytics?.vitals || []).map((vital: any) => [
       vital.name,
       formatVital(vital.name, vital.value),
@@ -2823,14 +2826,14 @@ function AuditView({
     );
   const activeRun = runs.find(isCurrentActiveRun),
     latest = runs.find((run) => ["completed", "partial"].includes(run.status)),
-    results = latest?.audit_results || [],
+    results = latest?.user_facing_results || latest?.audit_results || [],
     completedCategoryCount = Object.values(auditRunCategoryScores(latest)).filter((score) => score != null).length,
     partial = Boolean(latest) && !isAuditRunComplete(latest),
     actionable = results.filter((result: any) => ["failed", "advisory"].includes(result.outcome));
   const resultCounts = {
-    critical: actionable.filter((result: any) => String(result.category) !== "Security" && (["critical", "high"].includes(result.severity) || result.outcome === "failed")).length,
-    security: actionable.filter((result: any) => result.category === "Security" && ["critical", "high"].includes(result.severity)).length,
-    warnings: actionable.filter((result: any) => !["critical", "high"].includes(result.severity) && result.outcome === "advisory").length,
+    critical: actionable.filter((result: any) => auditSeverityGroup(result) === "critical").length,
+    security: actionable.filter((result: any) => auditSeverityGroup(result) === "security").length,
+    warnings: actionable.filter((result: any) => auditSeverityGroup(result) === "warning").length,
   };
   async function run(checkIds?: string[]) {
     if (!selectedPage) return;
@@ -2913,14 +2916,13 @@ function AuditView({
   async function updateReview(resultId: string | number, status: string) {
     if (!session) return;
     try {
-      const updated = await api<any>(session, `/api/audit-results/${resultId}/review`, {
+      await api<any>(session, `/api/audit-results/${resultId}/review`, {
         method: "PATCH",
         body: JSON.stringify({ status }),
       });
-      setRuns((current) => current.map((candidate) => ({
-        ...candidate,
-        audit_results: (candidate.audit_results || []).map((result: any) => result.id === updated.id ? { ...result, ...updated } : result),
-      })));
+      const next = await api<AuditRun[]>(session, `/api/properties/${property!.id}/audits?${livePeriod}`);
+      setPropertyRuns(next);
+      setRuns(next.filter((candidate) => candidate.audit_page_id === selectedPage?.id));
       notify(status === "not_reviewed" ? "Review status cleared" : `Finding marked ${status.replaceAll("_", " ")}`);
     } catch (error: any) {
       notify(error.message);
@@ -3043,7 +3045,7 @@ function AuditView({
               <AuditFilterButton value={filter} onChange={setFilter} compact />
               <AuditResults
                 results={filterAuditFindings(actionable, filter).slice(0, 7)}
-                onRetest={(checkId) => void run([checkId])}
+                onRetest={(checkIds) => void run(checkIds)}
                 onReview={updateReview}
               />
               </Panel>
@@ -3085,7 +3087,7 @@ function AuditView({
           setFilter={setFilter}
           openCategories={openCategories}
           setOpenCategories={setOpenCategories}
-          onRetest={(checkId) => void run([checkId])}
+          onRetest={(checkIds) => void run(checkIds)}
           onReview={updateReview}
         />
       ) : tab === "Checks" ? (
@@ -6679,31 +6681,35 @@ function AuditScore({ run, implementationCoverage }: { run?: AuditRun; implement
     </div>
   );
 }
-const auditDetailedCategories = [
-  ["page.metadata", "SEO: Page Metadata", "SEO"],
-  ["crawling.and.indexing", "SEO: Crawling and Indexing", "SEO"],
-  ["content.structure.and.headings", "Content Structure and Headings", "SEO"],
-  ["links.and.navigation", "Links and Navigation", "SEO"],
-  ["images.and.media", "Images and Media", "SEO"],
-  ["accessibility", "Accessibility", "Accessibility"],
-  ["mobile.and.responsive.layout", "Mobile and Responsive Layout", "Performance"],
-  ["performance", "Performance", "Performance"],
-  ["security.and.browser.protections", "Security and Browser Protections", "Security"],
-  ["server.and.http.information", "Server and HTTP Information", "Infrastructure"],
-  ["dns.and.domain.configuration", "DNS and Domain Configuration", "Infrastructure"],
-  ["structured.data", "Structured Data", "Infrastructure"],
-  ["social.sharing.and.site.identity", "Social Sharing and Site Identity", "Infrastructure"],
-  ["crawler.permissions", "AI Readiness: Crawler Permissions", "AI Readiness"],
-  ["content.and.attribution", "AI Readiness: Content and Attribution", "AI Readiness"],
-  ["optional.resources", "AI Readiness: Optional Resources", "AI Readiness"],
-] as const;
+type AuditBrowseFilters = { category?: string; subcategory?: string; outcome?: string };
 
-function auditSeverityGroup(result: any) {
+export function filterUserFacingAuditResults(results: any[], filters: AuditBrowseFilters) {
+  return results.filter((result) =>
+    (!filters.category || result.category === filters.category) &&
+    (!filters.subcategory || result.subcategory === filters.subcategory) &&
+    (!filters.outcome || result.outcome === filters.outcome));
+}
+
+function auditDetailedCategoriesFor(results: any[]) {
+  const entries = new Map<string, { key: string; label: string; category: string; subcategory: string }>();
+  for (const result of results) {
+    const category = String(result.category || "General");
+    const subcategory = String(result.subcategory || "General");
+    const key = `${category}::${subcategory}`;
+    entries.set(key, { key, label: `${category}: ${subcategory}`, category, subcategory });
+  }
+  const categoryOrder = new Map(auditCategories.map((category, index) => [category, index]));
+  return [...entries.values()].sort((left, right) =>
+    (categoryOrder.get(left.category) ?? 99) - (categoryOrder.get(right.category) ?? 99) ||
+    left.subcategory.localeCompare(right.subcategory));
+}
+
+export function auditSeverityGroup(result: any) {
   if (result.outcome === "passed") return "pass";
   if (["advisory", "not_applicable", "unable_to_test"].includes(result.outcome)) return "advisory";
-  const severe = ["critical", "high"].includes(String(result.severity).toLowerCase()) || result.outcome === "failed";
-  if (severe && String(result.category) === "Security") return "security";
-  if (severe) return "critical";
+  const severity = String(result.severity).toLowerCase();
+  if (severity === "security" || (String(result.category) === "Security" && ["critical", "high"].includes(severity))) return "security";
+  if (["critical", "high"].includes(severity)) return "critical";
   return "warning";
 }
 
@@ -6731,15 +6737,33 @@ function AuditFindingsPanel({
   setFilter: (filter: string) => void;
   openCategories: Set<string>;
   setOpenCategories: (value: Set<string>) => void;
-  onRetest: (checkId: string) => void;
+  onRetest: (checkIds: string[]) => void;
   onReview: (resultId: string | number, status: string) => void;
 }) {
-  const counts = Object.fromEntries(["critical", "security", "warning", "advisory", "pass"].map((group) => [group, results.filter((result) => auditSeverityGroup(result) === group).length]));
-  const filtered = filter === "All" ? results : results.filter((result) => auditSeverityGroup(result) === filter);
-  const categories = auditDetailedCategories.filter(([key]) => filter === "All" || filtered.some((result) => result.subcategory === key));
+  const [categoryBrowse, setCategoryBrowse] = useState("");
+  const [subcategoryBrowse, setSubcategoryBrowse] = useState("");
+  const [outcomeBrowse, setOutcomeBrowse] = useState("");
+  const categoryOptions = [...new Set(results.map((result) => String(result.category || "General")))].sort();
+  const subcategoryOptions = [...new Set(results
+    .filter((result) => !categoryBrowse || result.category === categoryBrowse)
+    .map((result) => String(result.subcategory || "General")))].sort();
+  const outcomeOptions = [...new Set(results.map((result) => String(result.outcome || "recorded")))].sort();
+  const browsed = filterUserFacingAuditResults(results, {
+    category: categoryBrowse || undefined,
+    subcategory: subcategoryBrowse || undefined,
+    outcome: outcomeBrowse || undefined,
+  });
+  const counts = Object.fromEntries(["critical", "security", "warning", "advisory", "pass"].map((group) => [group, browsed.filter((result) => auditSeverityGroup(result) === group).length]));
+  const filtered = filter === "All" ? browsed : browsed.filter((result) => auditSeverityGroup(result) === filter);
+  const categories = auditDetailedCategoriesFor(filtered);
   return (
     <section className="panel audit-findings-panel">
       <h2>{pageName} findings</h2>
+      <div className="audit-catalogue-filters" aria-label="Audit catalogue filters">
+        <label>Category<select value={categoryBrowse} onChange={(event) => { setCategoryBrowse(event.target.value); setSubcategoryBrowse(""); }}><option value="">All categories</option>{categoryOptions.map((category) => <option value={category} key={category}>{category}</option>)}</select></label>
+        <label>Subcategory<select value={subcategoryBrowse} onChange={(event) => setSubcategoryBrowse(event.target.value)}><option value="">All subcategories</option>{subcategoryOptions.map((subcategory) => <option value={subcategory} key={subcategory}>{subcategory}</option>)}</select></label>
+        <label>Outcome<select value={outcomeBrowse} onChange={(event) => setOutcomeBrowse(event.target.value)}><option value="">All outcomes</option>{outcomeOptions.map((outcome) => <option value={outcome} key={outcome}>{cap(outcome)}</option>)}</select></label>
+      </div>
       <div className="audit-summary audit-findings-summary" aria-label="Finding result filters">
         {(["critical", "security", "warning", "advisory", "pass"] as const).map((group) => (
           <button key={group} className={`audit-summary-item ${group} ${filter === group ? "selected" : ""}`} onClick={() => setFilter(filter === group ? "All" : group)} aria-label={`${group === "security" ? "Security critical" : group}: ${counts[group]}`}>
@@ -6749,8 +6773,8 @@ function AuditFindingsPanel({
       </div>
       <AuditFilterButton value={filter} onChange={setFilter} />
       <div className="audit-findings-divider" />
-      {categories.length ? categories.map(([key, label]) => {
-        const categoryResults = filtered.filter((result) => result.subcategory === key);
+      {categories.length ? categories.map(({ key, label, category, subcategory }) => {
+        const categoryResults = filtered.filter((result) => result.category === category && result.subcategory === subcategory);
         const open = openCategories.has(key);
         return (
           <section className={`audit-category ${open ? "open" : ""}`} key={key}>
@@ -6773,15 +6797,15 @@ function AuditFindingsPanel({
 
 function AuditChecksPanel({ pageName, run, results, onOpenCategory }: { pageName: string; run?: AuditRun; results: any[]; onOpenCategory: (category: string) => void }) {
   const summary = {
-    automated: run?.catalogue_summary?.snapshotChecks ?? results.length,
+    automated: run?.catalogue_summary?.userFacingGroups ?? results.length,
     passed: results.filter((result) => result.outcome === "passed").length,
     findings: results.filter((result) => ["failed", "advisory"].includes(result.outcome)).length,
     informational: results.filter((result) => result.outcome === "not_applicable").length,
     reviewed: results.filter((result) => result.review_status && result.review_status !== "not_reviewed").length,
   };
   const unable = results.filter((result) => result.outcome === "unable_to_test").length;
-  const categoryRows = auditDetailedCategories.map(([key, label]) => {
-    const rows = results.filter((result) => result.subcategory === key);
+  const categoryRows = auditDetailedCategoriesFor(results).map(({ key, label, category, subcategory }) => {
+    const rows = results.filter((result) => result.category === category && result.subcategory === subcategory);
     const passed = rows.filter((result) => result.outcome === "passed").length;
     const findings = rows.filter((result) => ["failed", "advisory"].includes(result.outcome)).length;
     const info = rows.filter((result) => result.outcome === "not_applicable").length;
@@ -6822,7 +6846,7 @@ function AuditChecksPanel({ pageName, run, results, onOpenCategory }: { pageName
 function auditFindingIdentity(result: any) {
   const evidence = result.evidence && typeof result.evidence === "object" ? result.evidence : {};
   const resource = evidence.resource || evidence.url || evidence.path || evidence.src || evidence.selector || evidence.element || "page";
-  return `${result.check_id || result.id}:${String(resource).slice(0, 500)}`;
+  return `${result.group_id || result.check_id || result.id}:${String(resource).slice(0, 500)}`;
 }
 
 function AuditComparePanel({
@@ -6847,20 +6871,21 @@ function AuditComparePanel({
   const later = eligible.find((run) => run.id === laterRunId);
   if (!earlier || !later || earlier.id === later.id)
     return <Panel><Empty title="Select two different scans" detail="Earlier and later scans must belong to this page and cannot be the same run." /></Panel>;
-  const earlierResults = earlier.audit_results || [];
-  const laterResults = later.audit_results || [];
-  const previousByCheck = new Map(earlierResults.map((result: any) => [result.check_id, result]));
-  const currentByCheck = new Map(laterResults.map((result: any) => [result.check_id, result]));
+  const earlierResults = earlier.user_facing_results || earlier.audit_results || [];
+  const laterResults = later.user_facing_results || later.audit_results || [];
+  const identity = (result: any) => result.group_id || result.check_id;
+  const previousByCheck = new Map(earlierResults.map((result: any) => [identity(result), result]));
+  const currentByCheck = new Map(laterResults.map((result: any) => [identity(result), result]));
   const previousFindings = earlierResults.filter((result: any) => ["failed", "advisory"].includes(result.outcome));
   const currentFindings = laterResults.filter((result: any) => ["failed", "advisory"].includes(result.outcome));
   const previousFindingIds = new Set(previousFindings.map(auditFindingIdentity));
   const currentFindingIds = new Set(currentFindings.map(auditFindingIdentity));
   const resolved = previousFindings.filter((result: any) => {
-    const current: any = currentByCheck.get(result.check_id);
+    const current: any = currentByCheck.get(identity(result));
     return current && current.outcome !== "unable_to_test" && !["failed", "advisory"].includes(current.outcome) && !currentFindingIds.has(auditFindingIdentity(result));
   }).length;
   const added = currentFindings.filter((result: any) => {
-    const previous: any = previousByCheck.get(result.check_id);
+    const previous: any = previousByCheck.get(identity(result));
     return previous && previous.outcome !== "unable_to_test" && !["failed", "advisory"].includes(previous.outcome) && !previousFindingIds.has(auditFindingIdentity(result));
   }).length;
   const unchanged = currentFindings.filter((result: any) => previousFindingIds.has(auditFindingIdentity(result))).length;
@@ -6893,12 +6918,26 @@ function AuditComparePanel({
   );
 }
 
-function AuditResults({ results, onRetest, onReview }: { results: any[]; onRetest?: (checkId: string) => void; onReview?: (resultId: string | number, status: string) => void }) {
+function AuditOccurrences({ occurrences }: { occurrences: any[] }) {
+  const [showAll, setShowAll] = useState(false);
+  if (!occurrences.length) return <p className="subtle">No element-level occurrences were recorded.</p>;
+  const visible = showAll ? occurrences : occurrences.slice(0, 5);
+  return (
+    <div className="audit-occurrences">
+      <ol>
+        {visible.map((entry, index) => <li key={`${entry.check_id || "occurrence"}-${index}`}><b>{entry.check_title || "Affected item"}</b><code>{auditOccurrenceText(entry.occurrence)}</code></li>)}
+      </ol>
+      {occurrences.length > 5 && <button className="text-link" onClick={() => setShowAll((value) => !value)}>{showAll ? "Show fewer" : `Show all ${occurrences.length}`}</button>}
+    </div>
+  );
+}
+
+function AuditResults({ results, onRetest, onReview }: { results: any[]; onRetest?: (checkIds: string[]) => void; onReview?: (resultId: string | number, status: string) => void }) {
   return (
     <div className="audit-result-list">
       {results.length ? (
         results.map((x, i) => (
-          <details className="audit-item" key={x.id || i}>
+          <details className="audit-item" key={x.group_id || x.id || i}>
             <summary>
               <span className={`severity-icon ${auditSeverityGroup(x)}`}>{auditGroupIcon(auditSeverityGroup(x))}</span>
               <span>
@@ -6912,16 +6951,36 @@ function AuditResults({ results, onRetest, onReview }: { results: any[]; onRetes
             <div className="audit-detail">
               <div className="audit-review-row">
                 <span className="tag">{cap(x.outcome || "recorded")}</span>
-                <span className="subtle">Review status: {String(x.review_status || "not_reviewed").replaceAll("_", " ")}</span>
-                {onReview && x.id && <button className="text-link" onClick={() => onReview(x.id, x.review_status === "reviewed" ? "not_reviewed" : "reviewed")}>{x.review_status === "reviewed" ? "Clear review" : "Mark reviewed"}</button>}
+                {x.presentation_role && <span className="subtle">{x.presentation_role}</span>}
+                {!x.subfindings && <span className="subtle">Review status: {String(x.review_status || "not_reviewed").replaceAll("_", " ")}</span>}
+                {onReview && x.id && !x.subfindings && <button className="text-link" onClick={() => onReview(x.id, x.review_status === "reviewed" ? "not_reviewed" : "reviewed")}>{x.review_status === "reviewed" ? "Clear review" : "Mark reviewed"}</button>}
               </div>
-              <p>{x.description || "The audit recorded this result for the selected page."}</p>
-              <b className="audit-detail-label">Affected element or resource</b>
-              <code>{auditEvidenceText(x.evidence)}</code>
-              <b className="audit-detail-label">Recommended fix</b>
-              <p>{x.recommendation || "Review the recorded evidence and update the affected implementation."}</p>
+              {Array.isArray(x.subfindings) ? (
+                <>
+                  <b className="audit-detail-label">Technical sub-findings</b>
+                  <ul className="audit-subfindings">
+                    {x.subfindings.map((finding: any) => (
+                      <li key={finding.check_id}>
+                        <span className={`tag outcome-${finding.outcome}`}>{cap(finding.outcome)}</span>
+                        <span><b>{finding.title}</b><small>{finding.evidence_summary}</small></span>
+                        {onReview && finding.result_id != null && <button className="text-link" onClick={() => onReview(finding.result_id, finding.review_status === "reviewed" ? "not_reviewed" : "reviewed")}>{finding.review_status === "reviewed" ? "Clear review" : "Mark reviewed"}</button>}
+                      </li>
+                    ))}
+                  </ul>
+                  <b className="audit-detail-label">Affected elements or resources</b>
+                  <AuditOccurrences occurrences={x.occurrences || []} />
+                </>
+              ) : (
+                <>
+                  <p>{x.description || "The audit recorded this result for the selected page."}</p>
+                  <b className="audit-detail-label">Affected element or resource</b>
+                  <code>{auditEvidenceText(x.evidence)}</code>
+                  <b className="audit-detail-label">Recommended fix</b>
+                  <p>{x.recommendation || "Review the recorded evidence and update the affected implementation."}</p>
+                </>
+              )}
               <div className="audit-detail-actions">
-                <button className="btn" onClick={() => onRetest?.(x.check_id)} disabled={!onRetest || !x.check_id}><RefreshCw /> Re-test</button>
+                <button className="btn" onClick={() => onRetest?.(x.technical_check_ids || (x.check_id ? [x.check_id] : []))} disabled={!onRetest || !(x.technical_check_ids?.length || x.check_id)}><RefreshCw /> Re-test</button>
                 <a className="btn" href={auditLearnMoreUrl(x.category, x.source_reference)} target="_blank" rel="noreferrer"><HelpCircle /> Learn more</a>
               </div>
             </div>
@@ -6939,12 +6998,8 @@ function AuditResults({ results, onRetest, onReview }: { results: any[]; onRetes
 function filterAuditFindings(results: any[], filter: string) {
   if (filter === "All") return results;
   const normalized = filter.toLowerCase();
-  if (normalized === "critical")
-    return results.filter((result) => String(result.category) !== "Security" && (["critical", "high"].includes(result.severity) || result.outcome === "failed"));
-  if (normalized === "security")
-    return results.filter((result) => String(result.category).toLowerCase() === "security" && (["critical", "high"].includes(result.severity) || result.outcome === "failed"));
-  if (normalized === "advisory")
-    return results.filter((result) => ["not_applicable", "unable_to_test"].includes(result.outcome));
+  if (["critical", "security", "warning", "advisory", "pass"].includes(normalized))
+    return results.filter((result) => auditSeverityGroup(result) === normalized);
   return results.filter(
     (result) =>
       String(result.category || "").toLowerCase().includes(normalized) ||
@@ -7000,6 +7055,17 @@ function PerformanceTable({
       />
     )
   );
+}
+
+function auditOccurrenceText(occurrence: unknown) {
+  if (typeof occurrence === "string" || typeof occurrence === "number") return String(occurrence);
+  if (!occurrence || typeof occurrence !== "object") return "Recorded affected occurrence";
+  const safeKeys = ["selector", "element", "url", "path", "resource", "message", "description", "snippet", "attribute", "value"];
+  const details = safeKeys.flatMap((key) => {
+    const value = (occurrence as Record<string, unknown>)[key];
+    return value == null || value === "" || typeof value === "object" ? [] : [`${key.replaceAll("_", " ")}: ${String(value)}`];
+  });
+  return details.join(" · ") || "Recorded affected occurrence";
 }
 function PerformanceTarget({ row }: { row: (string | number)[] }) {
   const metric = String(row[0]);
@@ -7181,19 +7247,19 @@ function AdvancedRow({
 
 const auditCategories = [
   "SEO",
-  "Performance",
   "Accessibility",
+  "Performance",
   "Security",
-  "Infrastructure",
-  "AI Readiness",
+  "Technical",
+  "AI & Crawler Readiness",
 ];
 const auditCategoryPrefixes: Record<string, string[]> = {
   SEO: ["SEO"],
-  Performance: ["Performance", "Mobile"],
   Accessibility: ["Accessibility"],
+  Performance: ["Performance"],
   Security: ["Security"],
-  Infrastructure: ["Infrastructure", "Server", "DNS", "Structured Data", "Social Sharing"],
-  "AI Readiness": ["AI Readiness"],
+  Technical: ["Technical"],
+  "AI & Crawler Readiness": ["AI & Crawler Readiness"],
 };
 
 function auditRunCategoryScores(run?: AuditRun) {
@@ -7207,7 +7273,7 @@ function auditRunCategoryScores(run?: AuditRun) {
       category,
       category === "Performance" && measuredPerformance != null
         ? measuredPerformance
-        : run?.category_scores?.[category] ?? auditCategoryScore(run?.audit_results, auditCategoryPrefixes[category]),
+        : run?.category_scores?.[category] ?? auditCategoryScore(run?.user_facing_results || run?.audit_results, auditCategoryPrefixes[category]),
     ]),
   ) as Record<string, number | null>;
 }
@@ -7302,13 +7368,52 @@ function fixtureAudit(
   });
   const pageOffset = page.name === "Contact" ? -37 : page.name === "About" ? -8 : 0;
   const comparisonOffset = previous ? -7 : 0;
+  const userFacingResults = USER_FACING_AUDIT_GROUPS.map((group, groupIndex) => {
+    const optional = group.weight === 0;
+    const finding = !optional && (groupIndex + (previous ? 3 : 0)) % 11 === 0;
+    const advisory = optional && groupIndex % 3 === 0;
+    const outcome = finding ? "failed" : advisory ? "advisory" : "passed";
+    const subfindings = group.technicalChecks.map((mapping, checkIndex) => ({
+      result_id: `fixture-group-${groupIndex + 1}-${checkIndex + 1}`,
+      check_id: mapping.checkId,
+      title: `${group.name} technical check ${checkIndex + 1}`,
+      outcome: checkIndex === 0 ? outcome : "passed",
+      evidence_summary: checkIndex === 0 && outcome !== "passed"
+        ? `Fixture evidence for ${group.name.toLowerCase()}`
+        : "positively verified",
+      occurrence_count: checkIndex === 0 && outcome !== "passed" ? 1 : 0,
+      review_status: "not_reviewed",
+    }));
+    return {
+      group_id: group.id,
+      title: group.name,
+      category: group.category,
+      subcategory: group.subcategory,
+      presentation_role: group.presentationRole,
+      outcome_policy: group.outcomePolicy,
+      outcome,
+      severity: group.severity,
+      weight: group.weight,
+      source_reference: group.authoritativeReference,
+      technical_check_ids: group.technicalChecks.map((mapping) => mapping.checkId),
+      result_ids: subfindings.map((finding) => finding.result_id),
+      evidence_summary: subfindings.map((finding) => `${finding.title}: ${finding.evidence_summary}`),
+      subfindings,
+      occurrences: outcome === "passed" ? [] : [{
+        check_id: group.technicalChecks[0]?.checkId,
+        check_title: subfindings[0]?.title,
+        occurrence: { message: `Fixture occurrence for ${group.name.toLowerCase()}` },
+      }],
+      review_status: "not_reviewed",
+    };
+  });
   const categoryScores = {
     SEO: 94 + pageOffset + comparisonOffset,
     Performance: 82 + pageOffset + comparisonOffset,
     Accessibility: 91 + pageOffset + comparisonOffset,
     Security: 88 + pageOffset + comparisonOffset,
-    Infrastructure: 92 + pageOffset + comparisonOffset,
-    "AI Readiness": 84 + pageOffset + comparisonOffset,
+    Technical: 92 + pageOffset + comparisonOffset,
+    "AI & Crawler Readiness": 84 + pageOffset + comparisonOffset,
   };
   return {
     id: `${page.id}-${previous ? "earlier" : "latest"}`,
@@ -7342,9 +7447,11 @@ function fixtureAudit(
       attemptedChecks: 306,
       successfullyExecutedChecks: 306,
       passedChecks: auditResults.filter((result) => result.outcome === "passed").length,
+      userFacingGroups: userFacingResults.length,
     },
     registry_snapshot: auditResults.map((result) => ({ id: result.check_id })),
     audit_results: auditResults,
+    user_facing_results: userFacingResults,
   };
 }
 function severity(value: string) {

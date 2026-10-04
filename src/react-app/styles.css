@@ -3553,3 +3553,75 @@ input[type="checkbox"]:checked:after {
   .country-name-mobile { display: inline; }
   .country-bar-row { grid-template-columns: 70px minmax(80px, 1fr) auto; gap: 8px; }
 }
+.audit-catalogue-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.audit-catalogue-filters label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.audit-catalogue-filters select {
+  width: 100%;
+}
+
+.audit-subfindings,
+.audit-occurrences ol {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 16px;
+  padding: 0;
+  list-style: none;
+}
+
+.audit-subfindings li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.audit-subfindings li span:nth-child(2) {
+  display: grid;
+  gap: 3px;
+}
+
+.audit-subfindings small {
+  color: var(--muted);
+}
+
+.audit-occurrences li {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.audit-occurrences code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 720px) {
+  .audit-catalogue-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .audit-subfindings li {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .audit-subfindings li .text-link {
+    grid-column: 2;
+    justify-self: start;
+  }
+}

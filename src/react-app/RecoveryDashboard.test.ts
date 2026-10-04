@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  auditSeverityGroup,
   filterProperties,
+  filterUserFacingAuditResults,
   filterWorkspaceMemberships,
   isPrimaryAuditPage,
   paginateResults,
@@ -90,5 +92,22 @@ describe("top selector searches", () => {
     } as any);
     expect(checks.map((check) => check.complete)).toEqual([true, true, true, true]);
     expect(propertyOnboardingChecks({ verification_status: "pending" } as any).map((check) => check.complete)).toEqual([false, false, false, false]);
+  });
+
+  it("filters the rationalised audit catalogue by category, subcategory and outcome", () => {
+    const results = [
+      { category: "SEO", subcategory: "Page Metadata", outcome: "failed" },
+      { category: "SEO", subcategory: "Links & Navigation", outcome: "passed" },
+      { category: "Security", subcategory: "Security Headers", outcome: "failed" },
+    ];
+    expect(filterUserFacingAuditResults(results, { category: "SEO" })).toHaveLength(2);
+    expect(filterUserFacingAuditResults(results, { subcategory: "Security Headers" })).toEqual([results[2]]);
+    expect(filterUserFacingAuditResults(results, { category: "SEO", outcome: "passed" })).toEqual([results[1]]);
+  });
+
+  it("keeps critical and security group severity visually distinct", () => {
+    expect(auditSeverityGroup({ outcome: "failed", severity: "Critical", category: "SEO" })).toBe("critical");
+    expect(auditSeverityGroup({ outcome: "failed", severity: "Security", category: "Security" })).toBe("security");
+    expect(auditSeverityGroup({ outcome: "failed", severity: "Warning", category: "SEO" })).toBe("warning");
   });
 });

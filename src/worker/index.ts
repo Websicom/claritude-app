@@ -7,6 +7,15 @@ import WEB_VITALS_SOURCE from "../../node_modules/web-vitals/dist/web-vitals.iif
 import AXE_SOURCE from "../../node_modules/axe-core/axe.min.js?raw";
 import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
+import { USER_FACING_AUDIT_GROUPS } from "../shared/audit-user-facing-registry.generated";
+import {
+  buildUserFacingGroupSnapshot,
+  deriveUserFacingAuditResults,
+  generatedGroupRows,
+  resolveAuditAvailability,
+  scoreUserFacingAuditResults,
+  type UserFacingAuditGroupSnapshot,
+} from "../shared/audit-user-facing";
 import {
   buildRegistrySnapshot,
   implementationCoverage,
@@ -102,6 +111,82 @@ const IMPLEMENTED_AUDIT_CHECKS = ACTIVE_AUDIT_CHECKS.filter(
   (check) => auditCheckHasExecutableLogic(check.id),
 );
 const IMPLEMENTED_AUDIT_IDS = new Set(IMPLEMENTED_AUDIT_CHECKS.map((check) => check.id));
+const GENERATED_USER_FACING_ROWS = generatedGroupRows(USER_FACING_AUDIT_GROUPS);
+
+type AuditAvailabilityContext = {
+  accountId?: string | null;
+  entitlement?: string | null;
+  requestedCheckIds?: string[];
+};
+
+async function configuredAuditSnapshots(env: Env, context: AuditAvailabilityContext = {}) {
+  const db = admin(env);
+  const [registryResponse, groupResponse, mappingResponse] = await Promise.all([
+    db.from("audit_check_definitions")
+      .select("id,title,weight,logic_version,configuration_version,primary_category,subcategory,severity,description,recommendation,source_reference,evidence_schema,evidence_requirement,allowed_outcomes,group_id")
+      .eq("lifecycle", "active")
+      .order("id"),
+    db.from("audit_user_facing_groups")
+      .select("id,name,category,subcategory,presentation_role,outcome_policy,failure_severity,weight,authoritative_reference,lifecycle,enabled_by_default,configuration_version,sort_order")
+      .order("sort_order"),
+    db.from("audit_user_facing_group_checks")
+      .select("group_id,check_id,presentation_action,lifecycle,enabled_by_default,sort_order")
+      .order("sort_order"),
+  ]);
+  if (registryResponse.error) throw new Error(`audit_registry_unavailable: ${registryResponse.error.message}`);
+  if (groupResponse.error) throw new Error(`audit_group_registry_unavailable: ${groupResponse.error.message}`);
+  if (mappingResponse.error) throw new Error(`audit_group_mapping_unavailable: ${mappingResponse.error.message}`);
+
+  const packageResponse = context.entitlement
+    ? await db.from("audit_catalogue_package_availability")
+      .select("target_kind,target_id,enabled")
+      .eq("entitlement", context.entitlement)
+    : { data: [], error: null };
+  const accountResponse = context.accountId
+    ? await db.from("audit_catalogue_account_availability")
+      .select("target_kind,target_id,enabled")
+      .eq("account_id", context.accountId)
+    : { data: [], error: null };
+  if (packageResponse.error) throw new Error(`audit_package_availability_unavailable: ${packageResponse.error.message}`);
+  if (accountResponse.error) throw new Error(`audit_account_availability_unavailable: ${accountResponse.error.message}`);
+  const packageOverrides = (packageResponse.data || []) as any;
+  const accountOverrides = (accountResponse.data || []) as any;
+  const available = (kind: "technical_check" | "user_facing_group", id: string, enabledByDefault: boolean) =>
+    resolveAuditAvailability(kind, id, enabledByDefault, packageOverrides, accountOverrides);
+
+  let technicalSnapshot = buildRegistrySnapshot(registryResponse.data || [], IMPLEMENTED_AUDIT_IDS);
+  technicalSnapshot = technicalSnapshot.filter((check) => available("technical_check", check.id, true));
+  const enabledTechnicalIds = new Set(technicalSnapshot.map((check) => check.id));
+  let userFacingSnapshot = buildUserFacingGroupSnapshot(
+    (groupResponse.data || []).map((group: any) => ({
+      ...group,
+      enabled_by_default: available("user_facing_group", group.id, Boolean(group.enabled_by_default)),
+    })),
+    mappingResponse.data || [],
+    enabledTechnicalIds,
+  );
+  const groupEnabledTechnicalIds = new Set(userFacingSnapshot.flatMap((group) => group.technicalChecks.map((mapping) => mapping.checkId)));
+  technicalSnapshot = technicalSnapshot.filter((check) => groupEnabledTechnicalIds.has(check.id));
+
+  if (context.requestedCheckIds?.length) {
+    const requested = new Set(context.requestedCheckIds.slice(0, 100));
+    technicalSnapshot = technicalSnapshot.filter((check) => requested.has(check.id));
+    const selectedIds = new Set(technicalSnapshot.map((check) => check.id));
+    userFacingSnapshot = userFacingSnapshot.flatMap((group) => {
+      const technicalChecks = group.technicalChecks.filter((mapping) => selectedIds.has(mapping.checkId));
+      return technicalChecks.length ? [{ ...group, technicalChecks }] : [];
+    });
+  }
+  return { technicalSnapshot, userFacingSnapshot };
+}
+
+function fallbackUserFacingSnapshot(technicalSnapshot: AuditRegistrySnapshot[]): UserFacingAuditGroupSnapshot[] {
+  return buildUserFacingGroupSnapshot(
+    GENERATED_USER_FACING_ROWS.groups,
+    GENERATED_USER_FACING_ROWS.mappings,
+    new Set(technicalSnapshot.map((check) => check.id)),
+  );
+}
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 const TRACKER_VERSION = "2.1.4";
@@ -1070,7 +1155,7 @@ async function reconcileStaleAuditRuns(env: Env, propertyId: string) {
   const db = admin(env);
   const { data: activeRuns, error } = await db
     .from("audit_runs")
-    .select("id,status,heartbeat_at,created_at,progress_completed,progress_total,registry_snapshot")
+    .select("id,status,heartbeat_at,created_at,progress_completed,progress_total,registry_snapshot,user_facing_snapshot")
     .eq("property_id", propertyId)
     .in("status", ["queued", "running"])
     .order("created_at", { ascending: false })
@@ -1107,7 +1192,12 @@ async function reconcileStaleAuditRuns(env: Env, propertyId: string) {
     const snapshot = Array.isArray(candidate.registry_snapshot)
       ? candidate.registry_snapshot as AuditRegistrySnapshot[]
       : [];
-    const { score, coverage } = scoreAuditResults(snapshot, persistedResults || []);
+    const technicalResults = persistedResults || [];
+    const { coverage } = scoreAuditResults(snapshot, technicalResults);
+    const groupSnapshot = Array.isArray(candidate.user_facing_snapshot) && candidate.user_facing_snapshot.length
+      ? candidate.user_facing_snapshot as UserFacingAuditGroupSnapshot[]
+      : fallbackUserFacingSnapshot(snapshot);
+    const score = scoreUserFacingAuditResults(deriveUserFacingAuditResults(groupSnapshot, technicalResults as any));
     const status = (persistedResults || []).some((result) => result.outcome === "unable_to_test")
       ? "partial"
       : "completed";
@@ -1138,7 +1228,7 @@ app.post("/api/audits", async (c) => {
   const db = c.get("db");
   const { data: property } = await db
     .from("properties")
-    .select("id,url")
+    .select("id,url,workspaces(account_id,accounts(entitlement))")
     .eq("id", b.propertyId)
     .single();
   if (!property) return c.json({ error: "property_not_found" }, 404);
@@ -1164,20 +1254,20 @@ app.post("/api/audits", async (c) => {
     .gte("created_at", dayStart);
   if ((runsToday || 0) >= LIMITS.auditsPerPropertyPerDay)
     return c.json({ error: "audit_daily_limit_reached" }, 429);
-  const { data: registryRows, error: registryError } = await db
-    .from("audit_check_definitions")
-    .select("id,title,weight,logic_version,configuration_version,primary_category,subcategory,severity,description,recommendation,source_reference,evidence_schema,evidence_requirement,allowed_outcomes,group_id")
-    .eq("lifecycle", "active")
-    .order("id");
-  if (registryError)
+  let snapshot: AuditRegistrySnapshot[];
+  let userFacingSnapshot: UserFacingAuditGroupSnapshot[];
+  try {
+    const workspace = property.workspaces as any;
+    const configured = await configuredAuditSnapshots(c.env, {
+      accountId: workspace?.account_id || null,
+      entitlement: workspace?.accounts?.entitlement || null,
+      requestedCheckIds: b.checkIds,
+    });
+    snapshot = configured.technicalSnapshot;
+    userFacingSnapshot = configured.userFacingSnapshot;
+  } catch (error) {
+    console.error("audit registry configuration failed", errorMessage(error));
     return c.json({ error: "audit_registry_unavailable" }, 503);
-  let snapshot = buildRegistrySnapshot(
-    registryRows || [],
-    IMPLEMENTED_AUDIT_IDS,
-  );
-  if (Array.isArray(b.checkIds) && b.checkIds.length) {
-    const requested = new Set(b.checkIds.slice(0, 100));
-    snapshot = snapshot.filter((check) => requested.has(check.id));
   }
   if (!snapshot.length) return c.json({ error: "audit_registry_empty" }, 503);
   const { data: run, error } = await db
@@ -1188,6 +1278,7 @@ app.post("/api/audits", async (c) => {
       page_url: target.href,
       status: "queued",
       registry_snapshot: snapshot,
+      user_facing_snapshot: userFacingSnapshot,
       scoring_version: "2.0.0",
       execution_stage: "queued",
       progress_completed: 0,
@@ -1336,7 +1427,8 @@ app.get("/api/properties/:id/audits", async (c) => {
   const definitions = new Map(AUDIT_REGISTRY.map((check) => [check.id, check]));
   return c.json(
     runs.map((run: any) => {
-      const snapshotDefinitions = new Map((Array.isArray(run.registry_snapshot) ? run.registry_snapshot : []).map((check: any) => [check.id, check]));
+      const technicalSnapshot = Array.isArray(run.registry_snapshot) ? run.registry_snapshot as AuditRegistrySnapshot[] : [];
+      const snapshotDefinitions = new Map(technicalSnapshot.map((check: any) => [check.id, check]));
       const auditResults = (run.audit_results || []).map((result: any) => {
         const definition = definitions.get(result.check_id);
         const snapshotDefinition: any = snapshotDefinitions.get(result.check_id);
@@ -1355,6 +1447,10 @@ app.get("/api/properties/:id/audits", async (c) => {
           weight: Number(snapshotDefinition?.weight ?? definition?.weight ?? 1),
         };
       });
+      const groupSnapshot = Array.isArray(run.user_facing_snapshot) && run.user_facing_snapshot.length
+        ? run.user_facing_snapshot as UserFacingAuditGroupSnapshot[]
+        : fallbackUserFacingSnapshot(technicalSnapshot);
+      const userFacingResults = deriveUserFacingAuditResults(groupSnapshot, auditResults);
       const performanceRows = [
         ["LCP", "performance.performance.largest.contentful.paint.measured", "≤ 2.5 s", (value: number) => `${(value / 1000).toFixed(1)} s`],
         ["TBT", "performance.performance.total.blocking.time.measured", "≤ 200 ms", (value: number) => `${Math.round(value)} ms`],
@@ -1370,6 +1466,7 @@ app.get("/api/properties/:id/audits", async (c) => {
       return {
         ...run,
         audit_results: auditResults,
+        user_facing_results: userFacingResults,
         performance_metrics: desktopMetrics.length || mobileMetrics.length ? {
           desktop: desktopMetrics,
           mobile: mobileMetrics,
@@ -1382,6 +1479,7 @@ app.get("/api/properties/:id/audits", async (c) => {
           snapshotChecks: Array.isArray(run.registry_snapshot)
             ? run.registry_snapshot.length
             : 0,
+          userFacingGroups: userFacingResults.length,
           attemptedChecks: auditResults.length,
           successfullyExecutedChecks: auditResults.filter(
             (result: any) => result.outcome !== "unable_to_test",
@@ -1439,6 +1537,21 @@ app.get("/api/properties/:id/audit-coverage", async (c) => {
     if (response.error || !response.data) return c.json({ error: "audit_run_not_found" }, 404);
     run = response.data;
   }
+  let configuredIds = new Set<string>();
+  try {
+    const { data: property } = await admin(c.env)
+      .from("properties")
+      .select("workspaces(account_id,accounts(entitlement))")
+      .eq("id", c.req.param("id"))
+      .single();
+    const workspace = (property as any)?.workspaces;
+    configuredIds = new Set((await configuredAuditSnapshots(c.env, {
+      accountId: workspace?.account_id || null,
+      entitlement: workspace?.accounts?.entitlement || null,
+    })).technicalSnapshot.map((check) => check.id));
+  } catch (error) {
+    console.error("audit coverage configuration failed", errorMessage(error));
+  }
   const selected = new Set((run?.registry_snapshot || []).map((check: any) => check.id));
   const resultById = new Map((run?.audit_results || []).map((result: any) => [result.check_id, result]));
   const checks = ACTIVE_AUDIT_CHECKS.map((check) => {
@@ -1451,7 +1564,7 @@ app.get("/api/properties/:id/audit-coverage", async (c) => {
       scoreCategory: categoryLabel(check.primaryCategory),
       scope: check.scope,
       collectionMethod: check.executionMethod,
-      enabled: true,
+      enabled: configuredIds.has(check.id),
       executable,
       selectedInRun: run ? selected.has(check.id) : null,
       outcome: result?.outcome || null,
@@ -1469,6 +1582,7 @@ app.get("/api/properties/:id/audit-coverage", async (c) => {
   return c.json({
     catalogueSize: checks.length,
     implementedChecks: checks.filter((check) => check.executable).length,
+    enabledChecks: checks.filter((check) => check.enabled).length,
     implementationCoverage: implementationCoverage(checks.length, checks.filter((check) => check.executable).length),
     successfullyExecutedChecks: checks.filter((check) => check.outcome && check.outcome !== "unable_to_test").length,
     auditCoverage: run?.registry_snapshot?.length
@@ -3018,7 +3132,12 @@ async function runAudit(env: Env, id: string) {
         title_snapshot: check?.title || r.check_id,
       };
     };
-    const { score, coverage } = scoreAuditResults(snapshot, results);
+    const { coverage } = scoreAuditResults(snapshot, results);
+    const groupSnapshot = Array.isArray(run.user_facing_snapshot) && run.user_facing_snapshot.length
+      ? run.user_facing_snapshot as UserFacingAuditGroupSnapshot[]
+      : fallbackUserFacingSnapshot(snapshot);
+    const userFacingResults = deriveUserFacingAuditResults(groupSnapshot, results);
+    const score = scoreUserFacingAuditResults(userFacingResults);
     const outcomeCounts = Object.fromEntries(["passed", "failed", "advisory", "not_applicable", "unable_to_test"].map((outcome) => [outcome, results.filter((item) => item.outcome === outcome).length]));
     const decoratedResults = results.map(decorate);
     const telemetry = {
