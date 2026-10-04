@@ -37,7 +37,7 @@ const renderedViewport = (overrides: Partial<RenderedViewportEvidence> = {}): Re
   metrics: {},
   occurrences: {},
   networkResources: [],
-  axe: { version: "4.13.0", violations: [] },
+  axe: { version: "4.13.0", violations: [], passes: [], incomplete: [] },
   ...overrides,
 });
 
@@ -74,6 +74,37 @@ describe("audit v2 evidence architecture", () => {
     expect(validateAuditEvaluatorRegistry()).toEqual({ active: 306, duplicateIds: [], missing: [], unknown: [] });
     expect(Object.keys(AUDIT_EVALUATOR_KEYS)).toHaveLength(AUDIT_REGISTRY.length);
     expect(() => evaluateAuditCheck("unknown.check", bundle("<html></html>"))).toThrow(/Unknown active audit check/);
+  });
+
+  it("does not count a source-extended route as implemented without an explicit evaluator branch", () => {
+    const evidence = bundle("<html><head></head><body><main>Readable main content for deterministic evaluator routing.</main></body></html>");
+    const missing = Object.entries(AUDIT_EVALUATOR_KEYS)
+      .filter(([, key]) => key === "source_extended")
+      .filter(([id]) => evaluateAuditCheck(id, evidence).reason === "This check has no completed evidence evaluator")
+      .map(([id]) => id);
+    expect(missing).toEqual([]);
+  });
+
+  it("has no generic fall-through result among checks counted as implemented", () => {
+    const booleanMetrics = new Set(["lcpImageLazy", "viewportRestrictsZoom", "viewportDeviceWidth", "horizontalOverflow", "visibleMainHeading"]);
+    const metrics = new Proxy<Record<string, number | string | boolean | null>>({}, {
+      get: (_target, property) => property === "lcpElement" ? "img#hero" : booleanMetrics.has(String(property)) ? false : 0,
+    });
+    const axeRules = ["input-image-alt", "button-name", "aria-required-attr", "aria-valid-attr", "aria-valid-attr-value", "aria-roles", "aria-allowed-attr", "aria-required-parent", "aria-required-children", "duplicate-id-aria", "aria-hidden-focus", "nested-interactive", "tabindex", "scrollable-region-focusable", "label", "select-name", "form-field-multiple-labels", "td-headers-attr", "empty-table-header", "definition-list", "list", "meta-refresh", "svg-img-alt", "color-contrast"];
+    const viewport = renderedViewport({ metrics, axe: { version: "4.13.0", violations: [], incomplete: [], passes: axeRules.map((id) => ({ id, nodes: 1 })) } });
+    const broad = bundle('<html lang="en"><head><title>Page</title><meta name="description" content="Description"><link rel="canonical" href="/"></head><body><main><h1>Heading</h1><p>Readable content for complete route dispatch validation.</p></main></body></html>', {
+      rendered: { desktop: viewport, mobile: viewport },
+      canonical: destination({ body: "<html><head></head><body>Canonical</body></html>" }),
+      dns: ["A", "AAAA", "CNAME", "MX", "TXT", "CAA", "NS", "SOA"].map((recordType) => ({ queriedHostname: "example.com", recordType, responseCode: 0, authenticatedData: false, records: [{ value: recordType === "TXT" ? "v=spf1 -all" : "value", ttl: 300 }], error: null })),
+      robots: { url: "https://example.com/robots.txt", destination: destination({ requestedUrl: "https://example.com/robots.txt", finalUrl: "https://example.com/robots.txt", body: "User-agent: *\nAllow: /" }), decisions: Object.fromEntries(["Googlebot", "Bingbot", "OAI-SearchBot", "GPTBot", "ClaudeBot", "Claude-SearchBot"].map((agent) => [agent, { allowed: true, matchedBy: "2" }])), sitemaps: [], parseError: null },
+      sitemaps: [{ sourceUrl: "https://example.com/sitemap.xml", destinationState: "success", status: 200, urls: [{ loc: "https://example.com/", lastmod: "2026-10-01" }], error: null }],
+    });
+    const generic = Object.entries(AUDIT_EVALUATOR_KEYS)
+      .filter(([, key]) => key !== "unsupported")
+      .map(([id]) => evaluateAuditCheck(id, broad))
+      .filter((evaluated) => /still needs|no dedicated|no completed evidence evaluator/i.test(evaluated.reason || ""))
+      .map((evaluated) => evaluated.check_id);
+    expect(generic).toEqual([]);
   });
 
   it("preserves source attribute order, duplicate elements and stable source offsets", () => {
@@ -171,6 +202,32 @@ describe("audit v2 evidence architecture", () => {
     expect(evaluateAuditCheck("seo.page.metadata.canonical.target.contains.a.noindex.directive", blockedTarget).outcome).toBe("failed");
   });
 
+  it("evaluates duplicate metadata, canonical declarations and HTML language from collected source", () => {
+    const evidence = bundle(`<html lang="en-GB"><head><title>One</title><title>Two</title><meta name="description" content="One"><meta name="description" content="Two"><link rel="canonical" href="/page"></head></html>`);
+    expect(evaluateAuditCheck("seo.page.metadata.multiple.page.titles.detected", evidence).outcome).toBe("failed");
+    expect(evaluateAuditCheck("seo.page.metadata.multiple.meta.descriptions.detected", evidence).outcome).toBe("failed");
+    expect(evaluateAuditCheck("seo.page.metadata.canonical.url.declared", evidence).outcome).toBe("passed");
+    expect(evaluateAuditCheck("seo.page.metadata.canonical.url.format.valid", evidence).outcome).toBe("passed");
+    expect(evaluateAuditCheck("seo.page.metadata.html.language.declared", evidence).outcome).toBe("passed");
+    expect(evaluateAuditCheck("seo.page.metadata.html.language.code.valid", evidence).outcome).toBe("passed");
+  });
+
+  it("fails required metadata when it is missing and uses not-applicable only for a dependent check", () => {
+    const evidence = bundle("<html><head></head><body></body></html>");
+    expect(evaluateAuditCheck("seo.page.metadata.canonical.url.declared", evidence).outcome).toBe("failed");
+    expect(evaluateAuditCheck("seo.page.metadata.html.language.declared", evidence).outcome).toBe("failed");
+    const dependent = evaluateAuditCheck("seo.page.metadata.canonical.url.format.valid", evidence);
+    expect(dependent.outcome).toBe("not_applicable");
+    expect(dependent.evidence.reason).toMatch(/No canonical declaration/);
+  });
+
+  it("does not pass a canonical target check when destination evidence is unavailable", () => {
+    const evidence = bundle('<html><head><link rel="canonical" href="/target"></head></html>', {
+      canonical: destination({ state: "dns_failure", status: null, finalUrl: null, body: null, error: "DNS ENOTFOUND" }),
+    });
+    expect(evaluateAuditCheck("seo.page.metadata.canonical.target.reachable", evidence).outcome).toBe("unable_to_test");
+  });
+
   it("evaluates image-button names independently from generic buttons", () => {
     const evidence = bundle("<html><body><button>Ordinary</button><input type='image' src='submit.png'><input type='image' alt='Send' src='send.png'></body></html>");
     const result = evaluateAuditCheck("accessibility.accessibility.image.buttons.have.accessible.names", evidence);
@@ -184,6 +241,14 @@ describe("audit v2 evidence architecture", () => {
     const result = evaluateAuditCheck("seo.metadata.title.present", evidence);
     expect(result.outcome).toBe("unable_to_test");
     expect(result.reason).toMatch(/did not complete/);
+  });
+
+  it("does not infer a clean header result from a failed HTTP collection", () => {
+    const evidence = bundle("<html></html>");
+    evidence.http.collection = { status: "failed", reason: "upstream reset" };
+    evidence.http.status = null;
+    expect(evaluateAuditCheck("infrastructure.server.and.http.information.server.software.header.detected", evidence).outcome).toBe("unable_to_test");
+    expect(evaluateAuditCheck("security.headers.hsts", evidence).outcome).toBe("unable_to_test");
   });
 
   it("uses advisory rather than failure for missing optional resources", () => {
@@ -206,6 +271,35 @@ describe("audit v2 evidence architecture", () => {
     expect(result.evidence).toEqual({ desktop: { value: 2900, unit: "ms" }, mobile: { value: 2900, unit: "ms" }, threshold: { good: 2500, poor: 4000 } });
     expect(JSON.stringify(result.evidence)).not.toContain("consoleErrors");
     expect(JSON.stringify(result.evidence)).not.toContain("imageCount");
+  });
+
+  it("does not coerce a missing browser metric to zero and pass it", () => {
+    const viewport = renderedViewport({ metrics: { lcp: null } });
+    const evaluated = evaluateAuditCheck("performance.performance.largest.contentful.paint.measured", bundle("<html></html>", { rendered: { desktop: viewport, mobile: viewport } }));
+    expect(evaluated.outcome).toBe("unable_to_test");
+  });
+
+  it("distinguishes axe passes, incomplete checks and inapplicable rules", () => {
+    const passing = renderedViewport({ axe: { version: "4.13.0", violations: [], incomplete: [], passes: [{ id: "button-name", nodes: 2 }] } });
+    expect(evaluateAuditCheck("accessibility.accessibility.buttons.have.accessible.names", bundle("<button>Save</button>", { rendered: { desktop: passing, mobile: passing } })).outcome).toBe("passed");
+    const incomplete = renderedViewport({ axe: { version: "4.13.0", violations: [], passes: [], incomplete: [{ id: "button-name", impact: null, nodes: [{ source: "accessibility", locator: "button" }] }] } });
+    expect(evaluateAuditCheck("accessibility.accessibility.buttons.have.accessible.names", bundle("<button></button>", { rendered: { desktop: incomplete, mobile: incomplete } })).outcome).toBe("unable_to_test");
+    const inapplicable = renderedViewport();
+    expect(evaluateAuditCheck("accessibility.accessibility.buttons.have.accessible.names", bundle("<p>No buttons</p>", { rendered: { desktop: inapplicable, mobile: inapplicable } })).outcome).toBe("not_applicable");
+  });
+
+  it("does not pass checked-link findings when destination collection is partial", () => {
+    const evidence = bundle('<a href="https://outside.example/a">A</a>', {
+      links: {
+        declarations: parseSourceDom('<a href="https://outside.example/a">A</a>', "https://example.com/").links,
+        results: [destination({ requestedUrl: "https://outside.example/a", state: "timeout", status: null, finalUrl: null, error: "request timed out" })],
+        totalDiscovered: 1,
+        retained: 1,
+        truncated: false,
+        requests: 1,
+      },
+    });
+    expect(evaluateAuditCheck("seo.links.and.navigation.checked.links.returning.http.404.detected", evidence).outcome).toBe("unable_to_test");
   });
 
   it("never turns incomplete browser evidence or missing axe output into a pass", () => {

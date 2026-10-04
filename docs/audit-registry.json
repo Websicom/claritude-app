@@ -44,7 +44,7 @@
       "lifecycle": "active",
       "replacementCheckId": null,
       "implementationStatus": "implemented",
-      "verificationStatus": "unit_pending"
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.metadata.title.not_empty",
@@ -87,7 +87,7 @@
       "lifecycle": "active",
       "replacementCheckId": null,
       "implementationStatus": "implemented",
-      "verificationStatus": "unit_pending"
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.page.metadata.multiple.page.titles.detected",
@@ -129,8 +129,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.metadata.title.length",
@@ -173,7 +173,7 @@
       "lifecycle": "active",
       "replacementCheckId": null,
       "implementationStatus": "implemented",
-      "verificationStatus": "unit_pending"
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.metadata.description.present",
@@ -216,7 +216,7 @@
       "lifecycle": "active",
       "replacementCheckId": null,
       "implementationStatus": "implemented",
-      "verificationStatus": "unit_pending"
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.metadata.description.not_empty",
@@ -259,7 +259,7 @@
       "lifecycle": "active",
       "replacementCheckId": null,
       "implementationStatus": "implemented",
-      "verificationStatus": "unit_pending"
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.page.metadata.multiple.meta.descriptions.detected",
@@ -301,8 +301,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.page.metadata.meta.description.length.measured",
@@ -344,8 +344,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.page.metadata.canonical.url.declared",
@@ -387,8 +387,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.page.metadata.multiple.canonical.urls.detected",
@@ -430,8 +430,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.page.metadata.canonical.url.format.valid",
@@ -473,8 +473,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.page.metadata.canonical.target.reachable",
@@ -516,8 +516,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.page.metadata.canonical.target.redirects",
@@ -559,8 +559,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.page.metadata.canonical.target.contains.a.noindex.directive",
@@ -602,8 +602,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.page.metadata.canonical.points.to.a.different.page",
@@ -645,8 +645,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.page.metadata.html.language.declared",
@@ -688,8 +688,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.page.metadata.html.language.code.valid",
@@ -731,8 +731,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.crawling.http_status",
@@ -775,7 +775,7 @@
       "lifecycle": "active",
       "replacementCheckId": null,
       "implementationStatus": "implemented",
-      "verificationStatus": "unit_pending"
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.crawling.html_content",
@@ -818,7 +818,7 @@
       "lifecycle": "active",
       "replacementCheckId": null,
       "implementationStatus": "implemented",
-      "verificationStatus": "unit_pending"
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.crawling.and.indexing.redirect.chain.detected",
@@ -860,8 +860,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.crawling.and.indexing.redirect.loop.detected",
@@ -903,8 +903,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.crawling.and.indexing.robots.txt.file.reachable",
@@ -946,8 +946,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.crawling.and.indexing.robots.txt.contains.readable.text",
@@ -989,8 +989,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.crawling.and.indexing.robots.txt.parsing.errors.detected",
@@ -1032,8 +1032,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.crawling.and.indexing.selected.page.allowed.by.googlebot.robots.rules",
@@ -1075,8 +1075,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.crawling.and.indexing.selected.page.allowed.by.bingbot.robots.rules",
@@ -1118,8 +1118,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.crawling.and.indexing.meta.robots.directives.detected",
@@ -1161,8 +1161,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.crawling.and.indexing.x.robots.tag.directives.detected",
@@ -1204,8 +1204,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.crawling.and.indexing.conflicting.indexing.directives.detected",
@@ -1247,8 +1247,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.crawling.and.indexing.noindex.directive.detected",
@@ -1290,8 +1290,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.crawling.and.indexing.nofollow.directive.detected",
@@ -1333,8 +1333,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.crawling.and.indexing.sitemap.url.declared.in.robots.txt",
@@ -1376,8 +1376,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.crawling.and.indexing.conventional.sitemap.locations.checked",
@@ -1419,8 +1419,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.crawling.and.indexing.referenced.xml.sitemap.reachable",
@@ -1462,8 +1462,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.crawling.and.indexing.referenced.sitemap.xml.valid",
@@ -1505,8 +1505,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.crawling.and.indexing.selected.page.found.in.checked.sitemap.files",
@@ -1548,8 +1548,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.crawling.and.indexing.sitemap.lastmod.date.formats.valid",
@@ -1591,8 +1591,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.content.h1.present",
@@ -1635,7 +1635,7 @@
       "lifecycle": "active",
       "replacementCheckId": null,
       "implementationStatus": "implemented",
-      "verificationStatus": "unit_pending"
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.content.structure.and.headings.empty.h1.headings.detected",
@@ -1677,8 +1677,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.content.h1.multiple",
@@ -1721,7 +1721,7 @@
       "lifecycle": "active",
       "replacementCheckId": null,
       "implementationStatus": "implemented",
-      "verificationStatus": "unit_pending"
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.content.structure.and.headings.empty.h2.to.h6.headings.detected",
@@ -1763,8 +1763,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.content.structure.and.headings.skipped.heading.levels.detected",
@@ -1806,8 +1806,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.content.structure.and.headings.repeated.heading.text.detected",
@@ -1849,8 +1849,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.content.structure.and.headings.main.content.landmark.present",
@@ -1892,8 +1892,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.content.structure.and.headings.multiple.main.content.landmarks.detected",
@@ -1935,8 +1935,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.content.structure.and.headings.main.content.contains.extractable.text",
@@ -1978,8 +1978,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.content.structure.and.headings.main.content.word.count.measured",
@@ -2021,8 +2021,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.content.structure.and.headings.text.present.in.original.html",
@@ -2064,8 +2064,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.content.structure.and.headings.content.added.only.after.javascript.rendering.detected",
@@ -2107,8 +2107,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.content.structure.and.headings.original.html.and.rendered.text.differences.detected",
@@ -2150,8 +2150,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.content.structure.and.headings.lists.use.semantic.list.elements",
@@ -2193,8 +2193,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.content.structure.and.headings.data.tables.contain.header.cells",
@@ -2236,8 +2236,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.links.have.non.empty.destinations",
@@ -2279,8 +2279,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.links.have.accessible.names",
@@ -2322,8 +2322,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.empty.anchor.text.detected",
@@ -2365,8 +2365,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.placeholder.link.destinations.detected",
@@ -2408,8 +2408,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.javascript.link.destinations.detected",
@@ -2451,8 +2451,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.internal.links.identified",
@@ -2494,8 +2494,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.external.links.identified",
@@ -2537,8 +2537,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.checked.links.returning.http.404.detected",
@@ -2580,8 +2580,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.checked.links.returning.http.410.detected",
@@ -2623,8 +2623,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.checked.links.returning.server.errors.detected",
@@ -2666,8 +2666,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.checked.links.failing.dns.resolution.detected",
@@ -2709,8 +2709,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.checked.links.failing.https.connections.detected",
@@ -2752,8 +2752,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.checked.links.timing.out.detected",
@@ -2795,8 +2795,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.checked.links.blocked.by.access.restrictions.detected",
@@ -2838,8 +2838,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.checked.links.encountering.rate.limits.detected",
@@ -2881,8 +2881,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.checked.links.containing.redirect.loops.detected",
@@ -2924,8 +2924,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.checked.links.exceeding.the.redirect.limit.detected",
@@ -2967,8 +2967,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.checked.links.redirecting.to.broken.destinations.detected",
@@ -3010,8 +3010,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.redirecting.internal.links.detected",
@@ -3053,8 +3053,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.redirecting.external.links.detected",
@@ -3096,8 +3096,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.https.page.links.to.http.destinations",
@@ -3139,8 +3139,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.on.page.fragment.links.point.to.existing.elements",
@@ -3182,8 +3182,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.download.links.identified",
@@ -3225,8 +3225,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.telephone.link.formats.checked",
@@ -3268,8 +3268,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.email.link.formats.checked",
@@ -3311,8 +3311,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.sponsored.link.attributes.detected",
@@ -3354,8 +3354,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.user.generated.content.link.attributes.detected",
@@ -3397,8 +3397,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.navigation.landmarks.have.distinguishable.accessible.names",
@@ -3440,8 +3440,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.links.and.navigation.checked.and.unchecked.link.totals.recorded",
@@ -3483,8 +3483,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.images.and.media.images.contain.alt.attributes",
@@ -3526,8 +3526,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.images.and.media.empty.alt.attributes.identified",
@@ -3569,8 +3569,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.images.and.media.alt.text.repeats.image.filenames",
@@ -3612,8 +3612,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.images.and.media.images.marked.decorative.remain.focusable",
@@ -3655,8 +3655,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.images.and.media.image.resources.fail.to.load",
@@ -3698,8 +3698,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.images.and.media.image.intrinsic.dimensions.recorded",
@@ -3741,8 +3741,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.images.and.media.image.display.dimensions.recorded",
@@ -3784,8 +3784,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.images.and.media.oversized.images.relative.to.display.dimensions.detected",
@@ -3827,8 +3827,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.images.and.media.image.width.and.height.attributes.present",
@@ -3870,8 +3870,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.images.and.media.image.aspect.ratio.distortion.detected",
@@ -3913,8 +3913,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.images.and.media.responsive.srcset.declarations.detected",
@@ -3956,8 +3956,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.images.and.media.invalid.srcset.descriptors.detected",
@@ -3999,8 +3999,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.images.and.media.image.formats.recorded",
@@ -4042,8 +4042,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.images.and.media.image.transfer.sizes.measured",
@@ -4085,8 +4085,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.images.and.media.below.the.fold.image.loading.attributes.inspected",
@@ -4128,8 +4128,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.images.and.media.largest.contentful.paint.image.uses.lazy.loading",
@@ -4171,8 +4171,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.images.and.media.videos.contain.caption.track.declarations",
@@ -4214,8 +4214,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.images.and.media.caption.track.resources.reachable",
@@ -4257,8 +4257,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.images.and.media.autoplaying.media.detected",
@@ -4300,8 +4300,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.images.and.media.iframes.have.accessible.titles",
@@ -4343,8 +4343,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.document.title",
@@ -4387,7 +4387,7 @@
       "lifecycle": "active",
       "replacementCheckId": null,
       "implementationStatus": "implemented",
-      "verificationStatus": "unit_pending"
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.buttons.have.accessible.names",
@@ -4429,8 +4429,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.form.inputs.have.accessible.labels",
@@ -4472,8 +4472,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.select.controls.have.accessible.labels",
@@ -4515,8 +4515,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.textareas.have.accessible.labels",
@@ -4558,8 +4558,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.image.buttons.have.accessible.names",
@@ -4601,8 +4601,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.form.labels.reference.existing.controls",
@@ -4644,8 +4644,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.multiple.labels.for.the.same.control.detected",
@@ -4687,8 +4687,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.required.aria.attributes.present",
@@ -4730,8 +4730,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.aria.attribute.names.valid",
@@ -4773,8 +4773,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.aria.attribute.values.valid",
@@ -4816,8 +4816,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.aria.roles.valid",
@@ -4859,8 +4859,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.aria.attributes.permitted.for.their.roles",
@@ -4902,8 +4902,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.required.aria.parent.roles.present",
@@ -4945,8 +4945,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.required.aria.child.roles.present",
@@ -4988,8 +4988,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.aria.references.point.to.existing.elements",
@@ -5031,8 +5031,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.duplicate.ids.used.by.accessibility.references.detected",
@@ -5074,8 +5074,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.focusable.elements.inside.aria.hidden.content.detected",
@@ -5117,8 +5117,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.nested.interactive.controls.detected",
@@ -5160,8 +5160,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.positive.tabindex.values.detected",
@@ -5203,8 +5203,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.scrollable.regions.keyboard.focusable",
@@ -5246,8 +5246,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.text.contrast.measured.where.calculable",
@@ -5289,8 +5289,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.touch.target.size.and.spacing.checked",
@@ -5332,8 +5332,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.table.headers.associated.with.data.cells",
@@ -5375,8 +5375,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.table.header.cells.contain.text",
@@ -5418,8 +5418,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.definition.lists.have.valid.structure",
@@ -5461,8 +5461,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.lists.contain.valid.list.items",
@@ -5504,8 +5504,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.meta.refresh.redirects.detected",
@@ -5547,8 +5547,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.viewport.settings.restrict.zoom",
@@ -5590,8 +5590,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.accessibility.svg.elements.requiring.accessible.names.have.names",
@@ -5633,8 +5633,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.mobile.viewport",
@@ -5677,7 +5677,7 @@
       "lifecycle": "active",
       "replacementCheckId": null,
       "implementationStatus": "implemented",
-      "verificationStatus": "unit_pending"
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.mobile.and.responsive.layout.multiple.viewport.declarations.detected",
@@ -5719,8 +5719,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.mobile.and.responsive.layout.viewport.width.configured.for.device.width",
@@ -5762,8 +5762,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.mobile.and.responsive.layout.horizontal.page.overflow.detected.at.tested.widths",
@@ -5805,8 +5805,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.mobile.and.responsive.layout.elements.extend.beyond.tested.viewports",
@@ -5848,8 +5848,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.mobile.and.responsive.layout.images.exceed.their.containing.elements",
@@ -5891,8 +5891,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.mobile.and.responsive.layout.tables.overflow.their.containing.elements",
@@ -5934,8 +5934,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.mobile.and.responsive.layout.fixed.elements.geometrically.overlap.main.content.at.tested.widths",
@@ -5977,8 +5977,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.mobile.and.responsive.layout.text.sizes.measured.at.tested.mobile.widths",
@@ -6020,8 +6020,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.mobile.and.responsive.layout.desktop.and.mobile.content.differences.detected",
@@ -6063,8 +6063,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.mobile.and.responsive.layout.main.heading.visible.at.tested.widths",
@@ -6106,8 +6106,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "accessibility.mobile.and.responsive.layout.primary.navigation.controls.have.accessible.names",
@@ -6149,8 +6149,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.document.response.time.measured",
@@ -6192,8 +6192,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.first.contentful.paint.measured",
@@ -6235,8 +6235,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.largest.contentful.paint.measured",
@@ -6278,8 +6278,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.cumulative.layout.shift.measured",
@@ -6321,8 +6321,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.total.blocking.time.measured",
@@ -6364,8 +6364,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.total.transferred.page.size.measured",
@@ -6407,8 +6407,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.total.resource.request.count.measured",
@@ -6450,8 +6450,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.javascript.transfer.size.measured",
@@ -6493,8 +6493,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.css.transfer.size.measured",
@@ -6536,8 +6536,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.image.transfer.size.measured",
@@ -6579,8 +6579,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.font.transfer.size.measured",
@@ -6622,8 +6622,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.third.party.request.count.measured",
@@ -6665,8 +6665,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.render.blocking.resources.detected",
@@ -6708,8 +6708,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.long.main.thread.tasks.detected",
@@ -6751,8 +6751,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.unused.javascript.estimated",
@@ -6794,8 +6794,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.unused.css.estimated",
@@ -6837,8 +6837,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.text.compression.detected",
@@ -6880,8 +6880,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.static.resource.cache.directives.inspected",
@@ -6923,8 +6923,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.largest.contentful.paint.element.identified",
@@ -6966,8 +6966,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.largest.contentful.paint.resource.discovery.delay.measured",
@@ -7009,8 +7009,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.layout.shift.contributors.identified",
@@ -7052,8 +7052,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.font.display.declarations.inspected",
@@ -7095,8 +7095,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.failed.network.requests.detected",
@@ -7138,8 +7138,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.browser.console.errors.detected",
@@ -7181,8 +7181,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.uncaught.javascript.exceptions.detected",
@@ -7224,8 +7224,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.repeated.downloads.of.the.same.resource.detected",
@@ -7267,8 +7267,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.resource.preload.declarations.inspected",
@@ -7310,8 +7310,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "performance.performance.preloaded.resources.unused.during.the.test.detected",
@@ -7353,8 +7353,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.https.selected",
@@ -7397,7 +7397,7 @@
       "lifecycle": "active",
       "replacementCheckId": null,
       "implementationStatus": "implemented",
-      "verificationStatus": "unit_pending"
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.security.and.browser.protections.http.version.redirects.to.https",
@@ -7439,8 +7439,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "unsupported",
+      "verificationStatus": "blocked"
     },
     {
       "id": "security.security.and.browser.protections.https.connection.succeeds",
@@ -7482,8 +7482,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.security.and.browser.protections.active.mixed.content.requests.detected",
@@ -7525,8 +7525,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.security.and.browser.protections.http.image.and.media.references.detected",
@@ -7568,8 +7568,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.headers.hsts",
@@ -7612,7 +7612,7 @@
       "lifecycle": "active",
       "replacementCheckId": null,
       "implementationStatus": "implemented",
-      "verificationStatus": "unit_pending"
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.security.and.browser.protections.strict.transport.security.directives.parse.correctly",
@@ -7654,8 +7654,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.headers.csp",
@@ -7698,7 +7698,7 @@
       "lifecycle": "active",
       "replacementCheckId": null,
       "implementationStatus": "implemented",
-      "verificationStatus": "unit_pending"
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.security.and.browser.protections.content.security.policy.is.report.only",
@@ -7740,8 +7740,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.security.and.browser.protections.content.security.policy.contains.unsafe.inline.allowances",
@@ -7783,8 +7783,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.security.and.browser.protections.content.security.policy.contains.unsafe.eval.allowances",
@@ -7826,8 +7826,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.security.and.browser.protections.frame.embedding.protection.declared",
@@ -7869,8 +7869,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.security.and.browser.protections.x.content.type.options.header.present",
@@ -7912,8 +7912,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.security.and.browser.protections.x.content.type.options.set.to.nosniff",
@@ -7955,8 +7955,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.security.and.browser.protections.referrer.policy.declared",
@@ -7998,8 +7998,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.security.and.browser.protections.referrer.policy.value.recognised",
@@ -8041,8 +8041,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.security.and.browser.protections.permissions.policy.header.present",
@@ -8084,8 +8084,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.security.and.browser.protections.observed.cookies.have.secure.attributes",
@@ -8127,8 +8127,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.security.and.browser.protections.observed.cookies.have.httponly.attributes",
@@ -8170,8 +8170,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.security.and.browser.protections.observed.cookies.have.samesite.attributes",
@@ -8213,8 +8213,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.security.and.browser.protections.insecure.form.submission.destinations.detected",
@@ -8256,8 +8256,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.security.and.browser.protections.password.fields.appear.on.an.http.page",
@@ -8299,8 +8299,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "security.security.and.browser.protections.browser.reported.security.policy.violations.detected",
@@ -8342,8 +8342,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.server.and.http.information.server.software.header.detected",
@@ -8385,8 +8385,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.server.and.http.information.technology.disclosure.headers.detected",
@@ -8428,8 +8428,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.server.and.http.information.cdn.or.reverse.proxy.header.indicators.detected",
@@ -8471,8 +8471,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.server.and.http.information.cache.hit.or.miss.headers.detected",
@@ -8514,8 +8514,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.http.content_type",
@@ -8558,7 +8558,7 @@
       "lifecycle": "active",
       "replacementCheckId": null,
       "implementationStatus": "implemented",
-      "verificationStatus": "unit_pending"
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.server.and.http.information.response.character.encoding.declared",
@@ -8600,8 +8600,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.server.and.http.information.cache.control.directives.recorded",
@@ -8643,8 +8643,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.server.and.http.information.etag.header.detected",
@@ -8686,8 +8686,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.server.and.http.information.last.modified.header.detected",
@@ -8729,8 +8729,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.server.and.http.information.vary.header.recorded",
@@ -8772,8 +8772,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.server.and.http.information.server.timing.metrics.detected",
@@ -8815,8 +8815,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.server.and.http.information.response.cookie.attributes.recorded",
@@ -8858,8 +8858,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.dns.and.domain.configuration.selected.hostname.resolves.successfully",
@@ -8901,8 +8901,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.dns.and.domain.configuration.ipv4.addresses.recorded",
@@ -8944,8 +8944,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.dns.and.domain.configuration.ipv6.addresses.recorded",
@@ -8987,8 +8987,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.dns.and.domain.configuration.returned.cname.records.recorded",
@@ -9030,8 +9030,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.dns.and.domain.configuration.returned.dns.record.ttls.recorded",
@@ -9073,8 +9073,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.dns.and.domain.configuration.domain.nameservers.recorded",
@@ -9116,8 +9116,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.dns.and.domain.configuration.domain.soa.record.recorded",
@@ -9159,8 +9159,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.dns.and.domain.configuration.dns.resolver.errors.detected",
@@ -9202,8 +9202,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.dns.and.domain.configuration.non.existent.hostname.response.detected",
@@ -9245,8 +9245,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "unsupported",
+      "verificationStatus": "blocked"
     },
     {
       "id": "infrastructure.dns.and.domain.configuration.dnssec.validation.status.reported.by.the.resolver",
@@ -9288,8 +9288,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.dns.and.domain.configuration.apex.domain.resolution.checked",
@@ -9331,8 +9331,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.dns.and.domain.configuration.www.hostname.resolution.checked",
@@ -9374,8 +9374,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.dns.and.domain.configuration.apex.and.www.http.redirect.behaviour.compared",
@@ -9417,8 +9417,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "unsupported",
+      "verificationStatus": "blocked"
     },
     {
       "id": "infrastructure.dns.and.domain.configuration.mail.exchange.records.detected",
@@ -9460,8 +9460,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.dns.and.domain.configuration.spf.record.detected",
@@ -9503,8 +9503,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.dns.and.domain.configuration.multiple.spf.records.detected",
@@ -9546,8 +9546,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.dns.and.domain.configuration.dmarc.record.detected",
@@ -9589,8 +9589,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.dns.and.domain.configuration.dmarc.policy.recorded",
@@ -9632,8 +9632,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "infrastructure.dns.and.domain.configuration.caa.certificate.authority.restrictions.detected",
@@ -9675,8 +9675,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.structured.data.json.ld.blocks.detected",
@@ -9718,8 +9718,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.structured.data.json.ld.syntax.valid",
@@ -9761,8 +9761,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.structured.data.schema.org.types.identified",
@@ -9804,8 +9804,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.structured.data.structured.data.context.declared",
@@ -9847,8 +9847,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.structured.data.structured.data.url.identifiers.use.valid.formats",
@@ -9890,8 +9890,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.structured.data.structured.data.url.properties.use.valid.formats",
@@ -9933,8 +9933,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.structured.data.local.entity.references.resolve.within.the.document",
@@ -9976,8 +9976,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.structured.data.duplicate.entity.identifiers.contain.conflicting.values",
@@ -10019,8 +10019,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.structured.data.structured.data.dates.use.valid.formats",
@@ -10062,8 +10062,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.structured.data.checked.structured.data.image.urls.reachable",
@@ -10105,8 +10105,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.structured.data.structured.data.page.url.matches.the.selected.url",
@@ -10148,8 +10148,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.structured.data.organisation.name.declared",
@@ -10191,8 +10191,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.structured.data.organisation.website.declared",
@@ -10234,8 +10234,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.structured.data.article.headline.declared",
@@ -10277,8 +10277,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.structured.data.article.author.declared",
@@ -10320,8 +10320,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.structured.data.article.publication.date.declared",
@@ -10363,8 +10363,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.structured.data.article.modification.date.declared",
@@ -10406,8 +10406,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.structured.data.breadcrumb.items.have.names.and.positions",
@@ -10449,8 +10449,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.structured.data.breadcrumb.positions.form.a.consistent.sequence",
@@ -10492,8 +10492,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.structured.data.declared.product.price.formats.valid",
@@ -10535,8 +10535,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.structured.data.declared.product.currency.codes.valid",
@@ -10578,8 +10578,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.social.sharing.and.site.identity.open.graph.title.present",
@@ -10621,8 +10621,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.social.sharing.and.site.identity.open.graph.description.present",
@@ -10664,8 +10664,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.social.sharing.and.site.identity.open.graph.url.present",
@@ -10707,8 +10707,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.social.sharing.and.site.identity.open.graph.type.present",
@@ -10750,8 +10750,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.social.sharing.and.site.identity.open.graph.image.declared",
@@ -10793,8 +10793,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.social.sharing.and.site.identity.open.graph.image.reachable",
@@ -10836,8 +10836,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.social.sharing.and.site.identity.open.graph.image.dimensions.measured",
@@ -10879,8 +10879,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.social.sharing.and.site.identity.open.graph.url.agrees.with.the.canonical.url",
@@ -10922,8 +10922,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.social.sharing.and.site.identity.x.twitter.card.type.declared",
@@ -10965,8 +10965,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.social.sharing.and.site.identity.x.twitter.title.or.open.graph.fallback.available",
@@ -11008,8 +11008,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.social.sharing.and.site.identity.x.twitter.description.or.open.graph.fallback.available",
@@ -11051,8 +11051,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.social.sharing.and.site.identity.x.twitter.image.or.open.graph.fallback.available",
@@ -11094,8 +11094,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.social.sharing.and.site.identity.conflicting.duplicate.social.metadata.detected",
@@ -11137,8 +11137,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.social.sharing.and.site.identity.favicon.declared",
@@ -11180,8 +11180,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.social.sharing.and.site.identity.declared.favicon.reachable",
@@ -11223,8 +11223,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.social.sharing.and.site.identity.apple.touch.icon.declared",
@@ -11266,8 +11266,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.social.sharing.and.site.identity.declared.apple.touch.icon.reachable",
@@ -11309,8 +11309,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.social.sharing.and.site.identity.web.app.manifest.linked",
@@ -11352,8 +11352,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.social.sharing.and.site.identity.linked.web.app.manifest.reachable",
@@ -11395,8 +11395,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "seo.social.sharing.and.site.identity.web.app.manifest.contains.valid.json",
@@ -11438,8 +11438,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.crawler.permissions.selected.page.allowed.by.oai.searchbot.robots.rules",
@@ -11481,8 +11481,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.crawler.permissions.selected.page.allowed.by.gptbot.robots.rules",
@@ -11524,8 +11524,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.crawler.permissions.selected.page.allowed.by.claude.searchbot.robots.rules",
@@ -11567,8 +11567,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.crawler.permissions.selected.page.allowed.by.claudebot.robots.rules",
@@ -11610,8 +11610,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.crawler.permissions.explicit.chatgpt.user.robots.rules.detected",
@@ -11653,8 +11653,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.crawler.permissions.explicit.claude.user.robots.rules.detected",
@@ -11696,8 +11696,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.crawler.permissions.ai.search.and.training.crawler.permissions.differ",
@@ -11739,8 +11739,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.crawler.permissions.ai.crawler.rules.inherited.from.wildcard.directives.identified",
@@ -11782,8 +11782,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.crawler.permissions.googlebot.robots.access.for.the.selected.page.checked",
@@ -11825,8 +11825,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.crawler.permissions.nosnippet.restrictions.detected",
@@ -11868,8 +11868,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.crawler.permissions.max.snippet.restrictions.detected",
@@ -11911,8 +11911,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.crawler.permissions.data.nosnippet.sections.detected",
@@ -11954,8 +11954,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai.content.source_extractable",
@@ -11998,7 +11998,7 @@
       "lifecycle": "active",
       "replacementCheckId": null,
       "implementationStatus": "implemented",
-      "verificationStatus": "unit_pending"
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.content.and.attribution.main.content.extractable.after.javascript.rendering",
@@ -12040,8 +12040,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.content.and.attribution.login.requirement.encountered.by.the.audit.runner",
@@ -12083,8 +12083,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.content.and.attribution.bot.challenge.encountered.by.the.audit.runner",
@@ -12126,8 +12126,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.content.and.attribution.main.content.includes.machine.readable.text",
@@ -12169,8 +12169,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.content.and.attribution.main.content.organised.under.semantic.headings",
@@ -12212,8 +12212,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.content.and.attribution.lists.available.in.machine.readable.html",
@@ -12255,8 +12255,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.content.and.attribution.tables.available.in.machine.readable.html",
@@ -12298,8 +12298,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.content.and.attribution.author.attribution.declared.in.structured.data",
@@ -12341,8 +12341,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.content.and.attribution.publisher.attribution.declared.in.structured.data",
@@ -12384,8 +12384,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.content.and.attribution.publication.date.declared.in.structured.data",
@@ -12427,8 +12427,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.content.and.attribution.modification.date.declared.in.structured.data",
@@ -12470,8 +12470,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.content.and.attribution.external.source.links.present.in.the.main.content",
@@ -12513,8 +12513,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.content.and.attribution.machine.readable.organisation.identity.present",
@@ -12556,8 +12556,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.content.and.attribution.machine.readable.author.identity.present",
@@ -12599,8 +12599,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.content.and.attribution.entity.sameas.references.use.valid.url.formats",
@@ -12642,8 +12642,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.optional.resources.llms.txt.file.reachable",
@@ -12685,8 +12685,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "unsupported",
+      "verificationStatus": "blocked"
     },
     {
       "id": "ai_readiness.optional.resources.llms.txt.returned.as.readable.text",
@@ -12728,8 +12728,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "unsupported",
+      "verificationStatus": "blocked"
     },
     {
       "id": "ai_readiness.optional.resources.llms.txt.title.detected",
@@ -12771,8 +12771,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "unsupported",
+      "verificationStatus": "blocked"
     },
     {
       "id": "ai_readiness.optional.resources.llms.txt.summary.detected",
@@ -12814,8 +12814,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "unsupported",
+      "verificationStatus": "blocked"
     },
     {
       "id": "ai_readiness.optional.resources.llms.txt.markdown.links.parse.correctly",
@@ -12857,8 +12857,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "unsupported",
+      "verificationStatus": "blocked"
     },
     {
       "id": "ai_readiness.optional.resources.llms.txt.links.checked.within.the.request.limit",
@@ -12900,8 +12900,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "unsupported",
+      "verificationStatus": "blocked"
     },
     {
       "id": "ai_readiness.optional.resources.selected.page.referenced.in.checked.llms.txt.links",
@@ -12943,8 +12943,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "unsupported",
+      "verificationStatus": "blocked"
     },
     {
       "id": "ai_readiness.optional.resources.llms.full.txt.file.reachable",
@@ -12986,8 +12986,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "unsupported",
+      "verificationStatus": "blocked"
     },
     {
       "id": "ai_readiness.optional.resources.llms.full.txt.returned.as.readable.text",
@@ -13029,8 +13029,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "unsupported",
+      "verificationStatus": "blocked"
     },
     {
       "id": "ai_readiness.optional.resources.linked.markdown.alternative.for.the.selected.page.detected",
@@ -13072,8 +13072,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.optional.resources.declared.markdown.alternative.reachable",
@@ -13115,8 +13115,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     },
     {
       "id": "ai_readiness.optional.resources.declared.markdown.alternative.contains.readable.content",
@@ -13158,8 +13158,8 @@
       "configurationVersion": 2,
       "lifecycle": "active",
       "replacementCheckId": null,
-      "implementationStatus": "mapped",
-      "verificationStatus": "not_verified"
+      "implementationStatus": "implemented",
+      "verificationStatus": "route_verified"
     }
   ]
 }

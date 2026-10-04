@@ -13,11 +13,11 @@ const rows = active.map((check) => ({
   executable: auditCheckHasExecutableLogic(check.id),
   capabilityGap: auditCheckHasExecutableLogic(check.id)
     ? ""
-    : check.executionMethod === "rendered_browser" || check.executionMethod === "lab"
-      ? "authorised rendered-browser worker not configured"
-      : check.executionMethod === "dns"
-        ? "DNS evidence collector not implemented"
-        : "wider crawl/resource evidence or evaluator required",
+    : check.id.includes("llms")
+      ? "bounded llms.txt/llms-full.txt discovery, parsing and destination collection required"
+      : check.id.includes("non.existent.hostname")
+        ? "deliberate NXDOMAIN control query required"
+        : "alternate HTTP origin and redirect comparison collector required",
   logicVersion: check.logicVersion,
   configurationVersion: check.configurationVersion,
 }));
@@ -25,6 +25,7 @@ const rows = active.map((check) => ({
 const summary = {
   catalogueSize: rows.length,
   implementedChecks: rows.filter((row) => row.executable).length,
+  implementationCoverage: rows.length ? Math.round(rows.filter((row) => row.executable).length / rows.length * 100) : 0,
   capabilityGaps: rows.filter((row) => !row.executable).length,
   byMethod: Object.fromEntries([...new Set(rows.map((row) => row.collectionMethod))].map((method) => [method, {
     catalogue: rows.filter((row) => row.collectionMethod === method).length,

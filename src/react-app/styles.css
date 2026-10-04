@@ -982,6 +982,23 @@ tbody tr:hover {
   color: var(--muted);
   font-size: 9px;
 }
+.audit-coverage-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(130px, 1fr));
+  gap: 8px;
+}
+.audit-coverage-stats > div {
+  display: grid;
+  gap: 2px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fff;
+}
+.audit-coverage-stats small,
+.audit-coverage-stats span { color: var(--muted); }
+.audit-coverage-stats b { font-size: 18px; }
+.audit-coverage-stats span { font-size: 11px; }
 .audit-six-stats {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -1559,6 +1576,7 @@ input[type="checkbox"]:checked:after {
   .audit-score-row {
     flex-direction: column;
   }
+  .audit-coverage-stats { width: 100%; }
   .audit-six-stats {
     width: 100%;
     grid-template-columns: repeat(2, 1fr);

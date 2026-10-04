@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { AUDIT_REGISTRY } from "../src/shared/audit-registry.generated";
+import { AUDIT_EVALUATOR_KEYS } from "../src/shared/audit-evaluator-map.generated";
 import { collectLinkInventory, collectResourceInventory } from "../src/shared/audit-collectors";
 import { evaluateAuditCatalogue, type AuditEvidenceBundle } from "../src/shared/audit-evaluators";
 import { headerMultimap, parseSourceDom, type HttpEvidence } from "../src/shared/audit-evidence";
@@ -33,7 +34,9 @@ const http: HttpEvidence = {
   collection: { status: "complete" },
 };
 const evidence: AuditEvidenceBundle = { http, source, rendered: null, links, resources, canonical: null, dns: [], robots: null, sitemaps: [], fontFaces: [] };
-const results = evaluateAuditCatalogue(AUDIT_REGISTRY.filter((check) => check.lifecycle === "active").map((check) => check.id), evidence);
+const active = AUDIT_REGISTRY.filter((check) => check.lifecycle === "active");
+const implemented = active.filter((check) => AUDIT_EVALUATOR_KEYS[check.id] !== "unsupported");
+const results = evaluateAuditCatalogue(implemented.map((check) => check.id), evidence);
 const cpu = process.cpuUsage(cpuStarted);
 const outcomeCounts = Object.fromEntries(["passed", "failed", "advisory", "not_applicable", "unable_to_test"].map((outcome) => [outcome, results.filter((result) => result.outcome === outcome).length]));
 const evidenceBytes = encoder.encode(JSON.stringify({ http, source, links, resources })).byteLength;
@@ -41,7 +44,10 @@ const resultBytes = encoder.encode(JSON.stringify(results)).byteLength;
 
 console.log(JSON.stringify({
   fixture: "source + shared link/resource collection; browser, DNS, robots and sitemap deliberately unavailable",
-  catalogueChecks: results.length,
+  catalogueChecks: active.length,
+  implementedChecks: implemented.length,
+  implementationCoverage: active.length ? Math.round(implemented.length / active.length * 100) : 0,
+  checksAttemptedInFixture: results.length,
   wallTimeMs: Math.round((performance.now() - started) * 100) / 100,
   cpuUserMs: Math.round(cpu.user / 10) / 100,
   cpuSystemMs: Math.round(cpu.system / 10) / 100,

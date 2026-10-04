@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRegistrySnapshot, scoreAuditResults } from './audit-runtime';
+import { buildRegistrySnapshot, implementationCoverage, scoreAuditResults } from './audit-runtime';
 
 describe('audit runtime configuration', () => {
   it('only snapshots database checks that have version-controlled executors', () => {
@@ -40,5 +40,13 @@ describe('audit runtime configuration', () => {
       { check_id: 'info', outcome: 'advisory' },
       { check_id: 'na', outcome: 'not_applicable' },
     ])).toEqual({ score: 75, coverage: 75 });
+  });
+
+  it('keeps implementation coverage independent from an individual audit run', () => {
+    expect(implementationCoverage(306, 294)).toBe(96);
+    expect(scoreAuditResults([
+      { id: 'one', title: 'One', weight: 1, logicVersion: '2', configurationVersion: 2 },
+      { id: 'two', title: 'Two', weight: 1, logicVersion: '2', configurationVersion: 2 },
+    ], [{ check_id: 'one', outcome: 'passed' }]).coverage).toBe(50);
   });
 });

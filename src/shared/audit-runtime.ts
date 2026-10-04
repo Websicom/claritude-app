@@ -39,6 +39,10 @@ export type ScoredAuditResult = {
   outcome: string;
 };
 
+export function implementationCoverage(catalogueSize: number, implementedChecks: number) {
+  return catalogueSize > 0 ? Math.round(Math.max(0, Math.min(implementedChecks, catalogueSize)) / catalogueSize * 100) : 0;
+}
+
 export function buildRegistrySnapshot(rows: AuditRegistryRow[], executableIds: ReadonlySet<string>): AuditRegistrySnapshot[] {
   return rows
     .filter((row) => executableIds.has(row.id))

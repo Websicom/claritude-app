@@ -2667,6 +2667,7 @@ function AuditView({
     [pageToDelete, setPageToDelete] = useState<AuditPage | null>(null),
     [performanceMode, setPerformanceMode] = useState<"Lab audit" | "Real-user data">("Lab audit"),
     [realUserPerformance, setRealUserPerformance] = useState<any>(null),
+    [implementationCoverage, setImplementationCoverage] = useState<number | null>(null),
     [auditPages, setAuditPages] = useState<AuditPage[]>([]),
     [selectedPage, setSelectedPage] = useState<AuditPage | null>(null),
     [pageName, setPageName] = useState(""),
@@ -2708,6 +2709,7 @@ function AuditView({
         desktop: { from: "2026-09-01T00:00:00Z", to: "2026-09-30T23:59:59Z", performance: { vitals: analytics.desktopVitals, minimumSamples: 75, method: "p75" } },
         mobile: { from: "2026-09-01T00:00:00Z", to: "2026-09-30T23:59:59Z", performance: { vitals: analytics.mobileVitals, minimumSamples: 75, method: "p75" } },
       });
+      setImplementationCoverage(100);
     }
   }, [property?.id, session, fixture]);
   useEffect(() => {
@@ -2725,8 +2727,9 @@ function AuditView({
     Promise.all([
       api<AuditRun[]>(session, `/api/properties/${property.id}/audits?${livePeriod}`),
       api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}&pathMode=exact&pathValue=${encodeURIComponent(selectedPage.path)}`),
+      api<any>(session, `/api/properties/${property.id}/audit-coverage`),
     ])
-      .then(([nextRuns, performance]) => {
+      .then(([nextRuns, performance, coverageSummary]) => {
         if (requestSequence.current !== sequence) return;
         setPropertyRuns(nextRuns);
         setRuns(nextRuns.filter((run) => run.audit_page_id === selectedPage.id));
@@ -2742,12 +2745,14 @@ function AuditView({
             performance: performance.performanceByDevice?.mobile,
           },
         });
+        setImplementationCoverage(Number.isFinite(coverageSummary?.implementationCoverage) ? coverageSummary.implementationCoverage : null);
       })
       .catch(() => {
         if (requestSequence.current !== sequence) return;
         setRuns([]);
         setPropertyRuns([]);
         setRealUserPerformance(null);
+        setImplementationCoverage(null);
       });
   }, [property?.id, session, fixture, livePeriod, selectedPage?.id]);
   const latestCompletedCreatedAt = Date.parse(
@@ -3020,7 +3025,7 @@ function AuditView({
       )}
       {tab === "Overview" ? (
         <>
-          <AuditScore run={latest} />
+          <AuditScore run={latest} implementationCoverage={implementationCoverage} />
           <div className="grid">
             <div>
               <Panel title={`Fix these first · ${selectedPage?.name || "Selected page"}`}>
@@ -6637,7 +6642,7 @@ function AuditFilterButton({
   );
 }
 
-function AuditScore({ run }: { run?: AuditRun }) {
+function AuditScore({ run, implementationCoverage }: { run?: AuditRun; implementationCoverage: number | null }) {
   const categoryScores = auditRunCategoryScores(run);
   const complete = isAuditRunComplete(run);
   const score = run?.score;
@@ -6648,6 +6653,10 @@ function AuditScore({ run }: { run?: AuditRun }) {
         style={{ "--score": score || 0 } as any}
       >
         <span>{score ?? "—"}</span>
+      </div>
+      <div className="audit-coverage-stats" aria-label="Audit and implementation coverage">
+        <div><small>Audit coverage</small><b>{run?.coverage != null ? `${run.coverage}%` : "—"}</b><span>Evidence produced in this run</span></div>
+        <div><small>Implementation coverage</small><b>{implementationCoverage != null ? `${implementationCoverage}%` : "—"}</b><span>Catalogue checks implemented</span></div>
       </div>
       <div className="audit-six-stats">
         {auditCategories.map((x) => {

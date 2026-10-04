@@ -9,6 +9,7 @@ import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
 import {
   buildRegistrySnapshot,
+  implementationCoverage,
   scoreAuditResults,
   type AuditRegistrySnapshot,
 } from "../shared/audit-runtime";
@@ -91,11 +92,11 @@ export function workspaceDeletionError(workspaceCount: number, propertyCount: nu
 const ACTIVE_AUDIT_CHECKS = AUDIT_REGISTRY.filter(
   (check) => check.lifecycle === "active",
 );
-const ACTIVE_AUDIT_IDS = new Set(ACTIVE_AUDIT_CHECKS.map((check) => check.id));
 validateAuditEvaluatorRegistry();
 const IMPLEMENTED_AUDIT_CHECKS = ACTIVE_AUDIT_CHECKS.filter(
   (check) => auditCheckHasExecutableLogic(check.id),
 );
+const IMPLEMENTED_AUDIT_IDS = new Set(IMPLEMENTED_AUDIT_CHECKS.map((check) => check.id));
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 const TRACKER_VERSION = "2.1.4";
@@ -118,7 +119,17 @@ function admin(env: Env) {
 }
 
 app.get("/health", (c) =>
-  c.json({ ok: true, service: "claritude", time: new Date().toISOString() }),
+  c.json({
+    ok: true,
+    service: "claritude",
+    time: new Date().toISOString(),
+    audit: {
+      architectureVersion: "2.0.0",
+      catalogueChecks: ACTIVE_AUDIT_CHECKS.length,
+      implementedChecks: IMPLEMENTED_AUDIT_CHECKS.length,
+      implementationCoverage: implementationCoverage(ACTIVE_AUDIT_CHECKS.length, IMPLEMENTED_AUDIT_CHECKS.length),
+    },
+  }),
 );
 app.get("/api/config", (c) =>
   c.json({
@@ -1151,7 +1162,7 @@ app.post("/api/audits", async (c) => {
     return c.json({ error: "audit_registry_unavailable" }, 503);
   let snapshot = buildRegistrySnapshot(
     registryRows || [],
-    ACTIVE_AUDIT_IDS,
+    IMPLEMENTED_AUDIT_IDS,
   );
   if (Array.isArray(b.checkIds) && b.checkIds.length) {
     const requested = new Set(b.checkIds.slice(0, 100));
@@ -1447,7 +1458,11 @@ app.get("/api/properties/:id/audit-coverage", async (c) => {
   return c.json({
     catalogueSize: checks.length,
     implementedChecks: checks.filter((check) => check.executable).length,
+    implementationCoverage: implementationCoverage(checks.length, checks.filter((check) => check.executable).length),
     successfullyExecutedChecks: checks.filter((check) => check.outcome && check.outcome !== "unable_to_test").length,
+    auditCoverage: run?.registry_snapshot?.length
+      ? Math.round(checks.filter((check) => check.selectedInRun && check.outcome && check.outcome !== "unable_to_test").length / run.registry_snapshot.length * 100)
+      : null,
     runId: run?.id || null,
     runStatus: run?.status || null,
     checks,
@@ -2378,6 +2393,18 @@ async function collectBrowserLab(env: Env, url: string) {
                 source: "accessibility",
                 viewport: strategy,
                 values: { failureSummary: node.failureSummary, impact: node.impact || violation.impact || null },
+              })),
+            })),
+            passes: report.passes.map((rule: any) => ({ id: rule.id, nodes: rule.nodes.length })),
+            incomplete: report.incomplete.map((rule: any) => ({
+              id: rule.id,
+              impact: rule.impact || null,
+              nodes: rule.nodes.map((node: any) => ({
+                locator: Array.isArray(node.target) ? node.target.join(" ") : String(node.target || ""),
+                html: node.html,
+                source: "accessibility",
+                viewport: strategy,
+                values: { failureSummary: node.failureSummary, impact: node.impact || rule.impact || null },
               })),
             })),
           };

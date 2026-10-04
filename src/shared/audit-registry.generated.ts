@@ -43,7 +43,7 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "lifecycle": "active",
     "replacementCheckId": null,
     "implementationStatus": "implemented",
-    "verificationStatus": "unit_pending"
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.metadata.title.not_empty",
@@ -86,7 +86,7 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "lifecycle": "active",
     "replacementCheckId": null,
     "implementationStatus": "implemented",
-    "verificationStatus": "unit_pending"
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.page.metadata.multiple.page.titles.detected",
@@ -128,8 +128,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.metadata.title.length",
@@ -172,7 +172,7 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "lifecycle": "active",
     "replacementCheckId": null,
     "implementationStatus": "implemented",
-    "verificationStatus": "unit_pending"
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.metadata.description.present",
@@ -215,7 +215,7 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "lifecycle": "active",
     "replacementCheckId": null,
     "implementationStatus": "implemented",
-    "verificationStatus": "unit_pending"
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.metadata.description.not_empty",
@@ -258,7 +258,7 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "lifecycle": "active",
     "replacementCheckId": null,
     "implementationStatus": "implemented",
-    "verificationStatus": "unit_pending"
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.page.metadata.multiple.meta.descriptions.detected",
@@ -300,8 +300,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.page.metadata.meta.description.length.measured",
@@ -343,8 +343,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.page.metadata.canonical.url.declared",
@@ -386,8 +386,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.page.metadata.multiple.canonical.urls.detected",
@@ -429,8 +429,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.page.metadata.canonical.url.format.valid",
@@ -472,8 +472,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.page.metadata.canonical.target.reachable",
@@ -515,8 +515,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.page.metadata.canonical.target.redirects",
@@ -558,8 +558,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.page.metadata.canonical.target.contains.a.noindex.directive",
@@ -601,8 +601,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.page.metadata.canonical.points.to.a.different.page",
@@ -644,8 +644,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.page.metadata.html.language.declared",
@@ -687,8 +687,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.page.metadata.html.language.code.valid",
@@ -730,8 +730,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.crawling.http_status",
@@ -774,7 +774,7 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "lifecycle": "active",
     "replacementCheckId": null,
     "implementationStatus": "implemented",
-    "verificationStatus": "unit_pending"
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.crawling.html_content",
@@ -817,7 +817,7 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "lifecycle": "active",
     "replacementCheckId": null,
     "implementationStatus": "implemented",
-    "verificationStatus": "unit_pending"
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.crawling.and.indexing.redirect.chain.detected",
@@ -859,8 +859,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.crawling.and.indexing.redirect.loop.detected",
@@ -902,8 +902,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.crawling.and.indexing.robots.txt.file.reachable",
@@ -945,8 +945,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.crawling.and.indexing.robots.txt.contains.readable.text",
@@ -988,8 +988,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.crawling.and.indexing.robots.txt.parsing.errors.detected",
@@ -1031,8 +1031,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.crawling.and.indexing.selected.page.allowed.by.googlebot.robots.rules",
@@ -1074,8 +1074,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.crawling.and.indexing.selected.page.allowed.by.bingbot.robots.rules",
@@ -1117,8 +1117,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.crawling.and.indexing.meta.robots.directives.detected",
@@ -1160,8 +1160,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.crawling.and.indexing.x.robots.tag.directives.detected",
@@ -1203,8 +1203,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.crawling.and.indexing.conflicting.indexing.directives.detected",
@@ -1246,8 +1246,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.crawling.and.indexing.noindex.directive.detected",
@@ -1289,8 +1289,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.crawling.and.indexing.nofollow.directive.detected",
@@ -1332,8 +1332,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.crawling.and.indexing.sitemap.url.declared.in.robots.txt",
@@ -1375,8 +1375,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.crawling.and.indexing.conventional.sitemap.locations.checked",
@@ -1418,8 +1418,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.crawling.and.indexing.referenced.xml.sitemap.reachable",
@@ -1461,8 +1461,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.crawling.and.indexing.referenced.sitemap.xml.valid",
@@ -1504,8 +1504,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.crawling.and.indexing.selected.page.found.in.checked.sitemap.files",
@@ -1547,8 +1547,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.crawling.and.indexing.sitemap.lastmod.date.formats.valid",
@@ -1590,8 +1590,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.content.h1.present",
@@ -1634,7 +1634,7 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "lifecycle": "active",
     "replacementCheckId": null,
     "implementationStatus": "implemented",
-    "verificationStatus": "unit_pending"
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.content.structure.and.headings.empty.h1.headings.detected",
@@ -1676,8 +1676,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.content.h1.multiple",
@@ -1720,7 +1720,7 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "lifecycle": "active",
     "replacementCheckId": null,
     "implementationStatus": "implemented",
-    "verificationStatus": "unit_pending"
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.content.structure.and.headings.empty.h2.to.h6.headings.detected",
@@ -1762,8 +1762,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.content.structure.and.headings.skipped.heading.levels.detected",
@@ -1805,8 +1805,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.content.structure.and.headings.repeated.heading.text.detected",
@@ -1848,8 +1848,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.content.structure.and.headings.main.content.landmark.present",
@@ -1891,8 +1891,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.content.structure.and.headings.multiple.main.content.landmarks.detected",
@@ -1934,8 +1934,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.content.structure.and.headings.main.content.contains.extractable.text",
@@ -1977,8 +1977,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.content.structure.and.headings.main.content.word.count.measured",
@@ -2020,8 +2020,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.content.structure.and.headings.text.present.in.original.html",
@@ -2063,8 +2063,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.content.structure.and.headings.content.added.only.after.javascript.rendering.detected",
@@ -2106,8 +2106,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.content.structure.and.headings.original.html.and.rendered.text.differences.detected",
@@ -2149,8 +2149,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.content.structure.and.headings.lists.use.semantic.list.elements",
@@ -2192,8 +2192,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.content.structure.and.headings.data.tables.contain.header.cells",
@@ -2235,8 +2235,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.links.have.non.empty.destinations",
@@ -2278,8 +2278,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.links.have.accessible.names",
@@ -2321,8 +2321,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.empty.anchor.text.detected",
@@ -2364,8 +2364,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.placeholder.link.destinations.detected",
@@ -2407,8 +2407,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.javascript.link.destinations.detected",
@@ -2450,8 +2450,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.internal.links.identified",
@@ -2493,8 +2493,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.external.links.identified",
@@ -2536,8 +2536,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.checked.links.returning.http.404.detected",
@@ -2579,8 +2579,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.checked.links.returning.http.410.detected",
@@ -2622,8 +2622,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.checked.links.returning.server.errors.detected",
@@ -2665,8 +2665,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.checked.links.failing.dns.resolution.detected",
@@ -2708,8 +2708,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.checked.links.failing.https.connections.detected",
@@ -2751,8 +2751,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.checked.links.timing.out.detected",
@@ -2794,8 +2794,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.checked.links.blocked.by.access.restrictions.detected",
@@ -2837,8 +2837,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.checked.links.encountering.rate.limits.detected",
@@ -2880,8 +2880,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.checked.links.containing.redirect.loops.detected",
@@ -2923,8 +2923,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.checked.links.exceeding.the.redirect.limit.detected",
@@ -2966,8 +2966,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.checked.links.redirecting.to.broken.destinations.detected",
@@ -3009,8 +3009,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.redirecting.internal.links.detected",
@@ -3052,8 +3052,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.redirecting.external.links.detected",
@@ -3095,8 +3095,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.https.page.links.to.http.destinations",
@@ -3138,8 +3138,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.on.page.fragment.links.point.to.existing.elements",
@@ -3181,8 +3181,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.download.links.identified",
@@ -3224,8 +3224,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.telephone.link.formats.checked",
@@ -3267,8 +3267,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.email.link.formats.checked",
@@ -3310,8 +3310,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.sponsored.link.attributes.detected",
@@ -3353,8 +3353,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.user.generated.content.link.attributes.detected",
@@ -3396,8 +3396,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.navigation.landmarks.have.distinguishable.accessible.names",
@@ -3439,8 +3439,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.links.and.navigation.checked.and.unchecked.link.totals.recorded",
@@ -3482,8 +3482,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.images.and.media.images.contain.alt.attributes",
@@ -3525,8 +3525,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.images.and.media.empty.alt.attributes.identified",
@@ -3568,8 +3568,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.images.and.media.alt.text.repeats.image.filenames",
@@ -3611,8 +3611,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.images.and.media.images.marked.decorative.remain.focusable",
@@ -3654,8 +3654,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.images.and.media.image.resources.fail.to.load",
@@ -3697,8 +3697,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.images.and.media.image.intrinsic.dimensions.recorded",
@@ -3740,8 +3740,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.images.and.media.image.display.dimensions.recorded",
@@ -3783,8 +3783,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.images.and.media.oversized.images.relative.to.display.dimensions.detected",
@@ -3826,8 +3826,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.images.and.media.image.width.and.height.attributes.present",
@@ -3869,8 +3869,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.images.and.media.image.aspect.ratio.distortion.detected",
@@ -3912,8 +3912,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.images.and.media.responsive.srcset.declarations.detected",
@@ -3955,8 +3955,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.images.and.media.invalid.srcset.descriptors.detected",
@@ -3998,8 +3998,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.images.and.media.image.formats.recorded",
@@ -4041,8 +4041,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.images.and.media.image.transfer.sizes.measured",
@@ -4084,8 +4084,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.images.and.media.below.the.fold.image.loading.attributes.inspected",
@@ -4127,8 +4127,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.images.and.media.largest.contentful.paint.image.uses.lazy.loading",
@@ -4170,8 +4170,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.images.and.media.videos.contain.caption.track.declarations",
@@ -4213,8 +4213,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.images.and.media.caption.track.resources.reachable",
@@ -4256,8 +4256,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.images.and.media.autoplaying.media.detected",
@@ -4299,8 +4299,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.images.and.media.iframes.have.accessible.titles",
@@ -4342,8 +4342,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.document.title",
@@ -4386,7 +4386,7 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "lifecycle": "active",
     "replacementCheckId": null,
     "implementationStatus": "implemented",
-    "verificationStatus": "unit_pending"
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.buttons.have.accessible.names",
@@ -4428,8 +4428,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.form.inputs.have.accessible.labels",
@@ -4471,8 +4471,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.select.controls.have.accessible.labels",
@@ -4514,8 +4514,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.textareas.have.accessible.labels",
@@ -4557,8 +4557,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.image.buttons.have.accessible.names",
@@ -4600,8 +4600,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.form.labels.reference.existing.controls",
@@ -4643,8 +4643,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.multiple.labels.for.the.same.control.detected",
@@ -4686,8 +4686,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.required.aria.attributes.present",
@@ -4729,8 +4729,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.aria.attribute.names.valid",
@@ -4772,8 +4772,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.aria.attribute.values.valid",
@@ -4815,8 +4815,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.aria.roles.valid",
@@ -4858,8 +4858,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.aria.attributes.permitted.for.their.roles",
@@ -4901,8 +4901,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.required.aria.parent.roles.present",
@@ -4944,8 +4944,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.required.aria.child.roles.present",
@@ -4987,8 +4987,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.aria.references.point.to.existing.elements",
@@ -5030,8 +5030,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.duplicate.ids.used.by.accessibility.references.detected",
@@ -5073,8 +5073,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.focusable.elements.inside.aria.hidden.content.detected",
@@ -5116,8 +5116,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.nested.interactive.controls.detected",
@@ -5159,8 +5159,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.positive.tabindex.values.detected",
@@ -5202,8 +5202,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.scrollable.regions.keyboard.focusable",
@@ -5245,8 +5245,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.text.contrast.measured.where.calculable",
@@ -5288,8 +5288,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.touch.target.size.and.spacing.checked",
@@ -5331,8 +5331,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.table.headers.associated.with.data.cells",
@@ -5374,8 +5374,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.table.header.cells.contain.text",
@@ -5417,8 +5417,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.definition.lists.have.valid.structure",
@@ -5460,8 +5460,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.lists.contain.valid.list.items",
@@ -5503,8 +5503,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.meta.refresh.redirects.detected",
@@ -5546,8 +5546,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.viewport.settings.restrict.zoom",
@@ -5589,8 +5589,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.accessibility.svg.elements.requiring.accessible.names.have.names",
@@ -5632,8 +5632,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.mobile.viewport",
@@ -5676,7 +5676,7 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "lifecycle": "active",
     "replacementCheckId": null,
     "implementationStatus": "implemented",
-    "verificationStatus": "unit_pending"
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.mobile.and.responsive.layout.multiple.viewport.declarations.detected",
@@ -5718,8 +5718,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.mobile.and.responsive.layout.viewport.width.configured.for.device.width",
@@ -5761,8 +5761,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.mobile.and.responsive.layout.horizontal.page.overflow.detected.at.tested.widths",
@@ -5804,8 +5804,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.mobile.and.responsive.layout.elements.extend.beyond.tested.viewports",
@@ -5847,8 +5847,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.mobile.and.responsive.layout.images.exceed.their.containing.elements",
@@ -5890,8 +5890,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.mobile.and.responsive.layout.tables.overflow.their.containing.elements",
@@ -5933,8 +5933,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.mobile.and.responsive.layout.fixed.elements.geometrically.overlap.main.content.at.tested.widths",
@@ -5976,8 +5976,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.mobile.and.responsive.layout.text.sizes.measured.at.tested.mobile.widths",
@@ -6019,8 +6019,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.mobile.and.responsive.layout.desktop.and.mobile.content.differences.detected",
@@ -6062,8 +6062,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.mobile.and.responsive.layout.main.heading.visible.at.tested.widths",
@@ -6105,8 +6105,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "accessibility.mobile.and.responsive.layout.primary.navigation.controls.have.accessible.names",
@@ -6148,8 +6148,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.document.response.time.measured",
@@ -6191,8 +6191,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.first.contentful.paint.measured",
@@ -6234,8 +6234,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.largest.contentful.paint.measured",
@@ -6277,8 +6277,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.cumulative.layout.shift.measured",
@@ -6320,8 +6320,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.total.blocking.time.measured",
@@ -6363,8 +6363,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.total.transferred.page.size.measured",
@@ -6406,8 +6406,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.total.resource.request.count.measured",
@@ -6449,8 +6449,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.javascript.transfer.size.measured",
@@ -6492,8 +6492,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.css.transfer.size.measured",
@@ -6535,8 +6535,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.image.transfer.size.measured",
@@ -6578,8 +6578,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.font.transfer.size.measured",
@@ -6621,8 +6621,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.third.party.request.count.measured",
@@ -6664,8 +6664,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.render.blocking.resources.detected",
@@ -6707,8 +6707,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.long.main.thread.tasks.detected",
@@ -6750,8 +6750,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.unused.javascript.estimated",
@@ -6793,8 +6793,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.unused.css.estimated",
@@ -6836,8 +6836,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.text.compression.detected",
@@ -6879,8 +6879,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.static.resource.cache.directives.inspected",
@@ -6922,8 +6922,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.largest.contentful.paint.element.identified",
@@ -6965,8 +6965,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.largest.contentful.paint.resource.discovery.delay.measured",
@@ -7008,8 +7008,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.layout.shift.contributors.identified",
@@ -7051,8 +7051,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.font.display.declarations.inspected",
@@ -7094,8 +7094,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.failed.network.requests.detected",
@@ -7137,8 +7137,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.browser.console.errors.detected",
@@ -7180,8 +7180,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.uncaught.javascript.exceptions.detected",
@@ -7223,8 +7223,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.repeated.downloads.of.the.same.resource.detected",
@@ -7266,8 +7266,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.resource.preload.declarations.inspected",
@@ -7309,8 +7309,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "performance.performance.preloaded.resources.unused.during.the.test.detected",
@@ -7352,8 +7352,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.https.selected",
@@ -7396,7 +7396,7 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "lifecycle": "active",
     "replacementCheckId": null,
     "implementationStatus": "implemented",
-    "verificationStatus": "unit_pending"
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.security.and.browser.protections.http.version.redirects.to.https",
@@ -7438,8 +7438,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "unsupported",
+    "verificationStatus": "blocked"
   },
   {
     "id": "security.security.and.browser.protections.https.connection.succeeds",
@@ -7481,8 +7481,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.security.and.browser.protections.active.mixed.content.requests.detected",
@@ -7524,8 +7524,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.security.and.browser.protections.http.image.and.media.references.detected",
@@ -7567,8 +7567,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.headers.hsts",
@@ -7611,7 +7611,7 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "lifecycle": "active",
     "replacementCheckId": null,
     "implementationStatus": "implemented",
-    "verificationStatus": "unit_pending"
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.security.and.browser.protections.strict.transport.security.directives.parse.correctly",
@@ -7653,8 +7653,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.headers.csp",
@@ -7697,7 +7697,7 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "lifecycle": "active",
     "replacementCheckId": null,
     "implementationStatus": "implemented",
-    "verificationStatus": "unit_pending"
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.security.and.browser.protections.content.security.policy.is.report.only",
@@ -7739,8 +7739,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.security.and.browser.protections.content.security.policy.contains.unsafe.inline.allowances",
@@ -7782,8 +7782,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.security.and.browser.protections.content.security.policy.contains.unsafe.eval.allowances",
@@ -7825,8 +7825,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.security.and.browser.protections.frame.embedding.protection.declared",
@@ -7868,8 +7868,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.security.and.browser.protections.x.content.type.options.header.present",
@@ -7911,8 +7911,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.security.and.browser.protections.x.content.type.options.set.to.nosniff",
@@ -7954,8 +7954,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.security.and.browser.protections.referrer.policy.declared",
@@ -7997,8 +7997,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.security.and.browser.protections.referrer.policy.value.recognised",
@@ -8040,8 +8040,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.security.and.browser.protections.permissions.policy.header.present",
@@ -8083,8 +8083,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.security.and.browser.protections.observed.cookies.have.secure.attributes",
@@ -8126,8 +8126,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.security.and.browser.protections.observed.cookies.have.httponly.attributes",
@@ -8169,8 +8169,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.security.and.browser.protections.observed.cookies.have.samesite.attributes",
@@ -8212,8 +8212,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.security.and.browser.protections.insecure.form.submission.destinations.detected",
@@ -8255,8 +8255,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.security.and.browser.protections.password.fields.appear.on.an.http.page",
@@ -8298,8 +8298,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.security.and.browser.protections.browser.reported.security.policy.violations.detected",
@@ -8341,8 +8341,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.server.and.http.information.server.software.header.detected",
@@ -8384,8 +8384,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.server.and.http.information.technology.disclosure.headers.detected",
@@ -8427,8 +8427,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.server.and.http.information.cdn.or.reverse.proxy.header.indicators.detected",
@@ -8470,8 +8470,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.server.and.http.information.cache.hit.or.miss.headers.detected",
@@ -8513,8 +8513,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.http.content_type",
@@ -8557,7 +8557,7 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "lifecycle": "active",
     "replacementCheckId": null,
     "implementationStatus": "implemented",
-    "verificationStatus": "unit_pending"
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.server.and.http.information.response.character.encoding.declared",
@@ -8599,8 +8599,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.server.and.http.information.cache.control.directives.recorded",
@@ -8642,8 +8642,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.server.and.http.information.etag.header.detected",
@@ -8685,8 +8685,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.server.and.http.information.last.modified.header.detected",
@@ -8728,8 +8728,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.server.and.http.information.vary.header.recorded",
@@ -8771,8 +8771,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.server.and.http.information.server.timing.metrics.detected",
@@ -8814,8 +8814,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.server.and.http.information.response.cookie.attributes.recorded",
@@ -8857,8 +8857,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.dns.and.domain.configuration.selected.hostname.resolves.successfully",
@@ -8900,8 +8900,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.dns.and.domain.configuration.ipv4.addresses.recorded",
@@ -8943,8 +8943,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.dns.and.domain.configuration.ipv6.addresses.recorded",
@@ -8986,8 +8986,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.dns.and.domain.configuration.returned.cname.records.recorded",
@@ -9029,8 +9029,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.dns.and.domain.configuration.returned.dns.record.ttls.recorded",
@@ -9072,8 +9072,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.dns.and.domain.configuration.domain.nameservers.recorded",
@@ -9115,8 +9115,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.dns.and.domain.configuration.domain.soa.record.recorded",
@@ -9158,8 +9158,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.dns.and.domain.configuration.dns.resolver.errors.detected",
@@ -9201,8 +9201,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.dns.and.domain.configuration.non.existent.hostname.response.detected",
@@ -9244,8 +9244,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "unsupported",
+    "verificationStatus": "blocked"
   },
   {
     "id": "infrastructure.dns.and.domain.configuration.dnssec.validation.status.reported.by.the.resolver",
@@ -9287,8 +9287,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.dns.and.domain.configuration.apex.domain.resolution.checked",
@@ -9330,8 +9330,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.dns.and.domain.configuration.www.hostname.resolution.checked",
@@ -9373,8 +9373,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.dns.and.domain.configuration.apex.and.www.http.redirect.behaviour.compared",
@@ -9416,8 +9416,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "unsupported",
+    "verificationStatus": "blocked"
   },
   {
     "id": "infrastructure.dns.and.domain.configuration.mail.exchange.records.detected",
@@ -9459,8 +9459,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.dns.and.domain.configuration.spf.record.detected",
@@ -9502,8 +9502,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.dns.and.domain.configuration.multiple.spf.records.detected",
@@ -9545,8 +9545,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.dns.and.domain.configuration.dmarc.record.detected",
@@ -9588,8 +9588,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.dns.and.domain.configuration.dmarc.policy.recorded",
@@ -9631,8 +9631,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.dns.and.domain.configuration.caa.certificate.authority.restrictions.detected",
@@ -9674,8 +9674,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.structured.data.json.ld.blocks.detected",
@@ -9717,8 +9717,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.structured.data.json.ld.syntax.valid",
@@ -9760,8 +9760,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.structured.data.schema.org.types.identified",
@@ -9803,8 +9803,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.structured.data.structured.data.context.declared",
@@ -9846,8 +9846,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.structured.data.structured.data.url.identifiers.use.valid.formats",
@@ -9889,8 +9889,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.structured.data.structured.data.url.properties.use.valid.formats",
@@ -9932,8 +9932,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.structured.data.local.entity.references.resolve.within.the.document",
@@ -9975,8 +9975,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.structured.data.duplicate.entity.identifiers.contain.conflicting.values",
@@ -10018,8 +10018,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.structured.data.structured.data.dates.use.valid.formats",
@@ -10061,8 +10061,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.structured.data.checked.structured.data.image.urls.reachable",
@@ -10104,8 +10104,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.structured.data.structured.data.page.url.matches.the.selected.url",
@@ -10147,8 +10147,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.structured.data.organisation.name.declared",
@@ -10190,8 +10190,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.structured.data.organisation.website.declared",
@@ -10233,8 +10233,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.structured.data.article.headline.declared",
@@ -10276,8 +10276,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.structured.data.article.author.declared",
@@ -10319,8 +10319,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.structured.data.article.publication.date.declared",
@@ -10362,8 +10362,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.structured.data.article.modification.date.declared",
@@ -10405,8 +10405,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.structured.data.breadcrumb.items.have.names.and.positions",
@@ -10448,8 +10448,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.structured.data.breadcrumb.positions.form.a.consistent.sequence",
@@ -10491,8 +10491,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.structured.data.declared.product.price.formats.valid",
@@ -10534,8 +10534,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.structured.data.declared.product.currency.codes.valid",
@@ -10577,8 +10577,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.social.sharing.and.site.identity.open.graph.title.present",
@@ -10620,8 +10620,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.social.sharing.and.site.identity.open.graph.description.present",
@@ -10663,8 +10663,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.social.sharing.and.site.identity.open.graph.url.present",
@@ -10706,8 +10706,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.social.sharing.and.site.identity.open.graph.type.present",
@@ -10749,8 +10749,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.social.sharing.and.site.identity.open.graph.image.declared",
@@ -10792,8 +10792,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.social.sharing.and.site.identity.open.graph.image.reachable",
@@ -10835,8 +10835,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.social.sharing.and.site.identity.open.graph.image.dimensions.measured",
@@ -10878,8 +10878,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.social.sharing.and.site.identity.open.graph.url.agrees.with.the.canonical.url",
@@ -10921,8 +10921,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.social.sharing.and.site.identity.x.twitter.card.type.declared",
@@ -10964,8 +10964,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.social.sharing.and.site.identity.x.twitter.title.or.open.graph.fallback.available",
@@ -11007,8 +11007,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.social.sharing.and.site.identity.x.twitter.description.or.open.graph.fallback.available",
@@ -11050,8 +11050,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.social.sharing.and.site.identity.x.twitter.image.or.open.graph.fallback.available",
@@ -11093,8 +11093,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.social.sharing.and.site.identity.conflicting.duplicate.social.metadata.detected",
@@ -11136,8 +11136,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.social.sharing.and.site.identity.favicon.declared",
@@ -11179,8 +11179,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.social.sharing.and.site.identity.declared.favicon.reachable",
@@ -11222,8 +11222,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.social.sharing.and.site.identity.apple.touch.icon.declared",
@@ -11265,8 +11265,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.social.sharing.and.site.identity.declared.apple.touch.icon.reachable",
@@ -11308,8 +11308,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.social.sharing.and.site.identity.web.app.manifest.linked",
@@ -11351,8 +11351,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.social.sharing.and.site.identity.linked.web.app.manifest.reachable",
@@ -11394,8 +11394,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "seo.social.sharing.and.site.identity.web.app.manifest.contains.valid.json",
@@ -11437,8 +11437,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.crawler.permissions.selected.page.allowed.by.oai.searchbot.robots.rules",
@@ -11480,8 +11480,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.crawler.permissions.selected.page.allowed.by.gptbot.robots.rules",
@@ -11523,8 +11523,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.crawler.permissions.selected.page.allowed.by.claude.searchbot.robots.rules",
@@ -11566,8 +11566,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.crawler.permissions.selected.page.allowed.by.claudebot.robots.rules",
@@ -11609,8 +11609,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.crawler.permissions.explicit.chatgpt.user.robots.rules.detected",
@@ -11652,8 +11652,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.crawler.permissions.explicit.claude.user.robots.rules.detected",
@@ -11695,8 +11695,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.crawler.permissions.ai.search.and.training.crawler.permissions.differ",
@@ -11738,8 +11738,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.crawler.permissions.ai.crawler.rules.inherited.from.wildcard.directives.identified",
@@ -11781,8 +11781,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.crawler.permissions.googlebot.robots.access.for.the.selected.page.checked",
@@ -11824,8 +11824,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.crawler.permissions.nosnippet.restrictions.detected",
@@ -11867,8 +11867,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.crawler.permissions.max.snippet.restrictions.detected",
@@ -11910,8 +11910,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.crawler.permissions.data.nosnippet.sections.detected",
@@ -11953,8 +11953,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai.content.source_extractable",
@@ -11997,7 +11997,7 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "lifecycle": "active",
     "replacementCheckId": null,
     "implementationStatus": "implemented",
-    "verificationStatus": "unit_pending"
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.content.and.attribution.main.content.extractable.after.javascript.rendering",
@@ -12039,8 +12039,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.content.and.attribution.login.requirement.encountered.by.the.audit.runner",
@@ -12082,8 +12082,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.content.and.attribution.bot.challenge.encountered.by.the.audit.runner",
@@ -12125,8 +12125,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.content.and.attribution.main.content.includes.machine.readable.text",
@@ -12168,8 +12168,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.content.and.attribution.main.content.organised.under.semantic.headings",
@@ -12211,8 +12211,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.content.and.attribution.lists.available.in.machine.readable.html",
@@ -12254,8 +12254,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.content.and.attribution.tables.available.in.machine.readable.html",
@@ -12297,8 +12297,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.content.and.attribution.author.attribution.declared.in.structured.data",
@@ -12340,8 +12340,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.content.and.attribution.publisher.attribution.declared.in.structured.data",
@@ -12383,8 +12383,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.content.and.attribution.publication.date.declared.in.structured.data",
@@ -12426,8 +12426,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.content.and.attribution.modification.date.declared.in.structured.data",
@@ -12469,8 +12469,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.content.and.attribution.external.source.links.present.in.the.main.content",
@@ -12512,8 +12512,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.content.and.attribution.machine.readable.organisation.identity.present",
@@ -12555,8 +12555,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.content.and.attribution.machine.readable.author.identity.present",
@@ -12598,8 +12598,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.content.and.attribution.entity.sameas.references.use.valid.url.formats",
@@ -12641,8 +12641,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.optional.resources.llms.txt.file.reachable",
@@ -12684,8 +12684,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "unsupported",
+    "verificationStatus": "blocked"
   },
   {
     "id": "ai_readiness.optional.resources.llms.txt.returned.as.readable.text",
@@ -12727,8 +12727,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "unsupported",
+    "verificationStatus": "blocked"
   },
   {
     "id": "ai_readiness.optional.resources.llms.txt.title.detected",
@@ -12770,8 +12770,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "unsupported",
+    "verificationStatus": "blocked"
   },
   {
     "id": "ai_readiness.optional.resources.llms.txt.summary.detected",
@@ -12813,8 +12813,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "unsupported",
+    "verificationStatus": "blocked"
   },
   {
     "id": "ai_readiness.optional.resources.llms.txt.markdown.links.parse.correctly",
@@ -12856,8 +12856,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "unsupported",
+    "verificationStatus": "blocked"
   },
   {
     "id": "ai_readiness.optional.resources.llms.txt.links.checked.within.the.request.limit",
@@ -12899,8 +12899,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "unsupported",
+    "verificationStatus": "blocked"
   },
   {
     "id": "ai_readiness.optional.resources.selected.page.referenced.in.checked.llms.txt.links",
@@ -12942,8 +12942,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "unsupported",
+    "verificationStatus": "blocked"
   },
   {
     "id": "ai_readiness.optional.resources.llms.full.txt.file.reachable",
@@ -12985,8 +12985,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "unsupported",
+    "verificationStatus": "blocked"
   },
   {
     "id": "ai_readiness.optional.resources.llms.full.txt.returned.as.readable.text",
@@ -13028,8 +13028,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "unsupported",
+    "verificationStatus": "blocked"
   },
   {
     "id": "ai_readiness.optional.resources.linked.markdown.alternative.for.the.selected.page.detected",
@@ -13071,8 +13071,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.optional.resources.declared.markdown.alternative.reachable",
@@ -13114,8 +13114,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.optional.resources.declared.markdown.alternative.contains.readable.content",
@@ -13157,7 +13157,7 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "mapped",
-    "verificationStatus": "not_verified"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   }
 ];

@@ -24,6 +24,20 @@ const special = new Map([
   ['Main content extractable without JavaScript','ai.content.source_extractable'],
 ]);
 const allOutcomes = ['passed','failed','advisory','not_applicable','unable_to_test'];
+const knownUnsupportedIds = new Set([
+  'security.security.and.browser.protections.http.version.redirects.to.https',
+  'infrastructure.dns.and.domain.configuration.apex.and.www.http.redirect.behaviour.compared',
+  'infrastructure.dns.and.domain.configuration.non.existent.hostname.response.detected',
+  'ai_readiness.optional.resources.llms.txt.file.reachable',
+  'ai_readiness.optional.resources.llms.txt.returned.as.readable.text',
+  'ai_readiness.optional.resources.llms.txt.title.detected',
+  'ai_readiness.optional.resources.llms.txt.summary.detected',
+  'ai_readiness.optional.resources.llms.txt.markdown.links.parse.correctly',
+  'ai_readiness.optional.resources.llms.txt.links.checked.within.the.request.limit',
+  'ai_readiness.optional.resources.selected.page.referenced.in.checked.llms.txt.links',
+  'ai_readiness.optional.resources.llms.full.txt.file.reachable',
+  'ai_readiness.optional.resources.llms.full.txt.returned.as.readable.text',
+]);
 const groupFor = (title) => {
   const groups = [
     ['Page title', /^Page title|document title/i],
@@ -66,7 +80,9 @@ for (const line of text.split(/\r?\n/)) {
   const item = line.match(/^-\s+(.+)/); if (!item) continue;
   const title = item[1].trim(); const category = categoryFor(section); const subcategory = slug(section.replace(/^AI Readiness:\s*/,'').replace(/^SEO:\s*/,''));
   const executionMethod = /render|contrast|layout|paint|blocking|console|javascript|viewport|touch target|display dimensions|overlap/i.test(title) ? 'rendered_browser' : /first contentful|largest contentful|cumulative layout|total blocking|unused|main-thread/i.test(title) ? 'lab' : /dns|nameserver|soa|spf|dmarc|caa/i.test(title) ? 'dns' : /reachable|redirect|http|header|cookie|resource|link|sitemap|robots/i.test(title) ? 'network' : 'source_html';
-  checks.push({ id: special.get(title) || `${category}.${subcategory}.${slug(title)}`, title, description: title, primaryCategory: category, subcategory, tags: [], sourceReference: `${section} > ${title}`, scope: /DNS|hostname|domain|robots|sitemap/i.test(title) ? 'property' : 'page', applicability: 'Evaluate when the referenced element or resource is present; otherwise return not_applicable.', executionMethod, evidenceRequirement: requirementFor(executionMethod), evidenceSchema: evidenceSchemaFor(title, executionMethod), allowedOutcomes: allOutcomes, groupId: groupFor(title), focus: '', passedMessage: null, failedMessage: null, advisoryMessage: null, notApplicableMessage: null, unableToTestMessage: null, exampleFix: null, referenceUrl: null, measurements: [], timeoutClass: executionMethod === 'rendered_browser' || executionMethod === 'lab' ? 'expensive' : executionMethod === 'network' ? 'bounded_network' : 'fast', thresholds: {}, severity: /detected|fail|invalid|broken|missing|empty|noindex|insecure|restrict/i.test(title) ? 'medium' : 'informational', recommendation: `Review: ${title}.`, weight: /recorded|identified|detected|measured|declared/i.test(title) ? 0 : 1, informational: /recorded|identified|measured|detected/i.test(title), logicVersion: '2.0.0', configurationVersion: 2, lifecycle: 'active', replacementCheckId: null, implementationStatus: special.has(title) ? 'implemented' : 'mapped', verificationStatus: special.has(title) ? 'unit_pending' : 'not_verified' });
+  const id = special.get(title) || `${category}.${subcategory}.${slug(title)}`;
+  const implemented = !knownUnsupportedIds.has(id);
+  checks.push({ id, title, description: title, primaryCategory: category, subcategory, tags: [], sourceReference: `${section} > ${title}`, scope: /DNS|hostname|domain|robots|sitemap/i.test(title) ? 'property' : 'page', applicability: 'Evaluate when the referenced element or resource is present; otherwise return not_applicable.', executionMethod, evidenceRequirement: requirementFor(executionMethod), evidenceSchema: evidenceSchemaFor(title, executionMethod), allowedOutcomes: allOutcomes, groupId: groupFor(title), focus: '', passedMessage: null, failedMessage: null, advisoryMessage: null, notApplicableMessage: null, unableToTestMessage: null, exampleFix: null, referenceUrl: null, measurements: [], timeoutClass: executionMethod === 'rendered_browser' || executionMethod === 'lab' ? 'expensive' : executionMethod === 'network' ? 'bounded_network' : 'fast', thresholds: {}, severity: /detected|fail|invalid|broken|missing|empty|noindex|insecure|restrict/i.test(title) ? 'medium' : 'informational', recommendation: `Review: ${title}.`, weight: /recorded|identified|detected|measured|declared/i.test(title) ? 0 : 1, informational: /recorded|identified|measured|detected/i.test(title), logicVersion: '2.0.0', configurationVersion: 2, lifecycle: 'active', replacementCheckId: null, implementationStatus: implemented ? 'implemented' : 'unsupported', verificationStatus: implemented ? 'route_verified' : 'blocked' });
 }
 const header = `// Generated from docs/audit-checklist-source.md. Do not hand edit.\nimport type { AuditOutcome } from './audit-evidence';\nexport type AuditCheck = { id:string; title:string; description:string; primaryCategory:string; subcategory:string; tags:string[]; sourceReference:string; scope:string; applicability:string; executionMethod:string; evidenceRequirement:'source'|'rendered'|'source_and_rendered'|'http_network'|'dns'|'robots'|'sitemap'|'css'|'accessibility'; evidenceSchema:string; allowedOutcomes:AuditOutcome[]; groupId:string|null; focus:string; passedMessage:string|null; failedMessage:string|null; advisoryMessage:string|null; notApplicableMessage:string|null; unableToTestMessage:string|null; exampleFix:string|null; referenceUrl:string|null; measurements:string[]; timeoutClass:string; thresholds:Record<string,number>; severity:string; recommendation:string; weight:number; informational:boolean; logicVersion:string; configurationVersion:number; lifecycle:'draft'|'active'|'disabled'|'deprecated'|'retired'; replacementCheckId:string|null; implementationStatus:string; verificationStatus:string };\nexport const AUDIT_REGISTRY: AuditCheck[] = `;
 fs.mkdirSync(path.join(root, 'src', 'shared'), { recursive: true });
@@ -102,6 +118,46 @@ const resourceIds = new Set([
   'ai_readiness.optional.resources.declared.markdown.alternative.reachable',
   'ai_readiness.optional.resources.declared.markdown.alternative.contains.readable.content',
 ]);
+const renderedExtendedIds = new Set([
+  'accessibility.images.and.media.image.intrinsic.dimensions.recorded',
+  'accessibility.images.and.media.image.aspect.ratio.distortion.detected',
+  'accessibility.images.and.media.image.transfer.sizes.measured',
+  'accessibility.images.and.media.below.the.fold.image.loading.attributes.inspected',
+  'accessibility.accessibility.buttons.have.accessible.names',
+  'accessibility.accessibility.form.inputs.have.accessible.labels',
+  'accessibility.accessibility.select.controls.have.accessible.labels',
+  'accessibility.accessibility.textareas.have.accessible.labels',
+  'accessibility.accessibility.form.labels.reference.existing.controls',
+  'accessibility.accessibility.multiple.labels.for.the.same.control.detected',
+  'accessibility.accessibility.required.aria.attributes.present',
+  'accessibility.accessibility.aria.attribute.names.valid',
+  'accessibility.accessibility.aria.attribute.values.valid',
+  'accessibility.accessibility.aria.roles.valid',
+  'accessibility.accessibility.aria.attributes.permitted.for.their.roles',
+  'accessibility.accessibility.required.aria.parent.roles.present',
+  'accessibility.accessibility.required.aria.child.roles.present',
+  'accessibility.accessibility.aria.references.point.to.existing.elements',
+  'accessibility.accessibility.duplicate.ids.used.by.accessibility.references.detected',
+  'accessibility.accessibility.focusable.elements.inside.aria.hidden.content.detected',
+  'accessibility.accessibility.nested.interactive.controls.detected',
+  'accessibility.accessibility.positive.tabindex.values.detected',
+  'accessibility.accessibility.scrollable.regions.keyboard.focusable',
+  'accessibility.accessibility.table.headers.associated.with.data.cells',
+  'accessibility.accessibility.table.header.cells.contain.text',
+  'accessibility.accessibility.definition.lists.have.valid.structure',
+  'accessibility.accessibility.lists.contain.valid.list.items',
+  'accessibility.accessibility.meta.refresh.redirects.detected',
+  'accessibility.accessibility.svg.elements.requiring.accessible.names.have.names',
+  'accessibility.mobile.and.responsive.layout.horizontal.page.overflow.detected.at.tested.widths',
+  'accessibility.mobile.and.responsive.layout.images.exceed.their.containing.elements',
+  'accessibility.mobile.and.responsive.layout.tables.overflow.their.containing.elements',
+  'accessibility.mobile.and.responsive.layout.text.sizes.measured.at.tested.mobile.widths',
+  'accessibility.mobile.and.responsive.layout.desktop.and.mobile.content.differences.detected',
+  'accessibility.mobile.and.responsive.layout.main.heading.visible.at.tested.widths',
+  'accessibility.mobile.and.responsive.layout.primary.navigation.controls.have.accessible.names',
+  'security.security.and.browser.protections.browser.reported.security.policy.violations.detected',
+]);
+const blockedIds = knownUnsupportedIds;
 const keyFor = (check) => {
   if (sourceCoreIds.has(check.id)) return 'source_core';
   if (check.id === 'performance.performance.text.compression.detected') return 'text_compression';
@@ -109,14 +165,17 @@ const keyFor = (check) => {
   if (check.id === 'performance.performance.font.display.declarations.inspected') return 'font_display';
   if (resourceIds.has(check.id)) return 'resource_inventory';
   if (check.id.startsWith('seo.links.and.navigation.')) return 'link_inventory';
-  if (/structured data|json-ld|schema\.org/i.test(check.title)) return 'structured_data';
+  if (check.id.startsWith('seo.structured.data.') || /structured data|json-ld|schema\.org/i.test(check.title)) return 'structured_data';
   if (check.primaryCategory === 'performance') return 'performance_metric';
   if (check.executionMethod === 'rendered_browser' || check.executionMethod === 'lab') return 'rendered_evidence';
   if (check.executionMethod === 'dns') return 'dns_evidence';
+  if (check.id.startsWith('infrastructure.dns.and.domain.configuration.') && !blockedIds.has(check.id)) return 'dns_evidence';
   if (/robots/i.test(check.title)) return 'robots_evidence';
   if (/sitemap/i.test(check.title)) return 'sitemap_evidence';
+  if (renderedExtendedIds.has(check.id)) return 'rendered_evidence';
+  if (!blockedIds.has(check.id)) return 'source_extended';
   return 'unsupported';
 };
 const evaluatorRows = checks.map((check) => `  ${JSON.stringify(check.id)}: ${JSON.stringify(keyFor(check))},`).join('\n');
-fs.writeFileSync(path.join(root, 'src', 'shared', 'audit-evaluator-map.generated.ts'), `// Generated from the authoritative checklist. Do not hand edit.\nimport type { AuditCheck } from './audit-registry.generated';\nexport type AuditCheckId = AuditCheck['id'];\nexport type AuditEvaluatorKey = 'source_core'|'link_inventory'|'resource_inventory'|'structured_data'|'performance_metric'|'text_compression'|'static_resource_cache'|'font_display'|'rendered_evidence'|'dns_evidence'|'robots_evidence'|'sitemap_evidence'|'unsupported';\nexport const AUDIT_EVALUATOR_KEYS: Record<AuditCheckId, AuditEvaluatorKey> = {\n${evaluatorRows}\n};\n`);
+fs.writeFileSync(path.join(root, 'src', 'shared', 'audit-evaluator-map.generated.ts'), `// Generated from the authoritative checklist. Do not hand edit.\nimport type { AuditCheck } from './audit-registry.generated';\nexport type AuditCheckId = AuditCheck['id'];\nexport type AuditEvaluatorKey = 'source_core'|'source_extended'|'link_inventory'|'resource_inventory'|'structured_data'|'performance_metric'|'text_compression'|'static_resource_cache'|'font_display'|'rendered_evidence'|'dns_evidence'|'robots_evidence'|'sitemap_evidence'|'unsupported';\nexport const AUDIT_EVALUATOR_KEYS: Record<AuditCheckId, AuditEvaluatorKey> = {\n${evaluatorRows}\n};\n`);
 console.log(`Generated ${checks.length} mapped audit checks.`);
