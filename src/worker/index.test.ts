@@ -8,6 +8,8 @@ import {
   chunkAuditResults,
   cleanPath,
   editableWorkspaceRole,
+  encodeAuditContinuationPayload,
+  decodeAuditContinuationPayload,
   filterAnalyticsEvents,
   isFreshAuditRun,
   isPrivateHost,
@@ -55,6 +57,29 @@ describe("worker evidence pipelines", () => {
         Array.from({ length: 64 }, (_, index) => index + 64),
         [128, 129, 130],
       ]);
+  });
+
+  it("round-trips a compressed audit persistence continuation within the queue ceiling", async () => {
+    const source = {
+      startedAt: 1_750_000_000_000,
+      propertyId: "property-1",
+      createdBy: "user-1",
+      results: Array.from({ length: 294 }, (_, index) => ({
+        audit_run_id: "run-1",
+        check_id: `check-${index}`,
+        outcome: index % 2 ? "passed" : "failed",
+        evidence: { summary: "Repeated compact evidence", occurrences: [] },
+      })),
+      sharedEvidence: [{ evidence_type: "http", summary: { status: 200 } }],
+      telemetry: { architectureVersion: "2.0.0", queueMessagesUsed: 2 },
+      score: 78,
+      coverage: 100,
+      finalStatus: "completed" as const,
+      totalChecks: 294,
+    };
+    const encoded = await encodeAuditContinuationPayload(source);
+    expect(new TextEncoder().encode(encoded).byteLength).toBeLessThan(120_000);
+    await expect(decodeAuditContinuationPayload(encoded)).resolves.toEqual(source);
   });
 
   it("fails a stalled audit operation at its hard deadline and runs cleanup", async () => {

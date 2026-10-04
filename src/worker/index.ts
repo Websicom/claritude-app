@@ -53,7 +53,9 @@ type Env = {
   BROWSER: Fetcher;
 };
 type Variables = { db: SupabaseClient; userId: string };
-type Job = { type: "audit" | "uptime"; id: string };
+type Job =
+  | { type: "audit" | "uptime"; id: string }
+  | { type: "audit-persist"; id: string; payload: string };
 type AuditResult = TypedAuditResult;
 
 const LIMITS = {
@@ -2952,11 +2954,6 @@ async function runAudit(env: Env, id: string) {
       trace.redirects,
       requireBrowser,
     );
-    await updateRun({
-      execution_stage: "evaluating_checks",
-      progress_completed: 0,
-      heartbeat_at: new Date().toISOString(),
-    });
     const evaluationStarted = Date.now();
     const results = evaluateAuditCatalogue(snapshot.map((check) => check.id), collected.evidence);
     const evaluationMs = Date.now() - evaluationStarted;
@@ -2971,75 +2968,34 @@ async function runAudit(env: Env, id: string) {
         title_snapshot: check?.title || r.check_id,
       };
     };
-    const persist = async (results: AuditResult[]) => {
-      for (const batch of chunkAuditResults(results.map(decorate), 64)) {
-        let failure: string | null = null;
-        for (let attempt = 0; attempt < 3; attempt++) {
-          try {
-            const { error: resultError } = await db
-              .from("audit_results")
-              .upsert(batch, { onConflict: "audit_run_id,check_id" })
-              .abortSignal(AbortSignal.timeout(15_000));
-            failure = resultError?.message || null;
-          } catch (error) {
-            failure = errorMessage(error);
-          }
-          if (!failure) break;
-        }
-        if (failure) throw new Error(`audit_result_persistence_failed: ${failure}`);
-      }
-    };
-    const persistenceStarted = Date.now();
-    await updateRun({
-      execution_stage: "persisting_results",
-      progress_completed: results.filter((result) => result.outcome !== "unable_to_test").length,
-      heartbeat_at: new Date().toISOString(),
-    });
-    await persist(results);
-    const { error: sharedEvidenceError } = await db.from("audit_run_evidence").upsert(
-      collected.sharedEvidence.map((row) => ({ ...row, audit_run_id: id })),
-      { onConflict: "audit_run_id,evidence_type" },
-    );
-    if (sharedEvidenceError) throw new Error(`audit_shared_evidence_persistence_failed: ${sharedEvidenceError.message}`);
-    const persistenceMs = Date.now() - persistenceStarted;
     const { score, coverage } = scoreAuditResults(snapshot, results);
     const outcomeCounts = Object.fromEntries(["passed", "failed", "advisory", "not_applicable", "unable_to_test"].map((outcome) => [outcome, results.filter((item) => item.outcome === outcome).length]));
+    const decoratedResults = results.map(decorate);
     const telemetry = {
       ...collected.telemetry,
-      phases: { ...(collected.telemetry.phases as Record<string, number>), evaluationMs, persistenceMs },
-      totalWallTimeMs: Date.now() - started,
-      databaseBytesWrittenEstimate: JSON.stringify(results.map(decorate)).length + JSON.stringify(collected.sharedEvidence).length,
+      phases: { ...(collected.telemetry.phases as Record<string, number>), evaluationMs },
+      queueMessagesUsed: 2,
+      databaseBytesWrittenEstimate: JSON.stringify(decoratedResults).length + JSON.stringify(collected.sharedEvidence).length,
       occurrencesStored: results.reduce((total, item) => total + (Array.isArray(item.evidence.occurrences) ? item.evidence.occurrences.length : 0), 0),
       truncatedOccurrenceSets: Number(collected.telemetry.truncatedOccurrenceSets || 0) + results.filter((item) => item.evidence.truncated === true).length,
       checkOutcomeCounts: outcomeCounts,
       unableToTestCount: outcomeCounts.unable_to_test,
     };
     const finalStatus = results.some((r) => r.outcome === "unable_to_test") ? "partial" : "completed";
-    await updateRun({
-        status: finalStatus,
-        score,
-        coverage,
-        execution_stage: "completed",
-        progress_completed: results.length,
-        progress_total: snapshot.length,
-        heartbeat_at: new Date().toISOString(),
-        completed_at: new Date().toISOString(),
-        duration_ms: Date.now() - started,
-        telemetry,
-        architecture_version: "2.0.0",
-      });
-    const notification = auditOutcomeNotification(finalStatus, score, coverage);
-    if (notification)
-      await createPropertyNotification(env, run.property_id, {
-        ...notification,
-        dedupeKey: `audit:${id}:${notification.kind}`,
-      });
-    if (run.created_by)
-      await recordActivity(env, run.created_by, "audit.completed", run.property_id, {
-        auditRunId: id,
-        score,
-        coverage,
-      });
+    const payload = await encodeAuditContinuationPayload({
+      startedAt: started,
+      propertyId: run.property_id,
+      createdBy: run.created_by || null,
+      results: decoratedResults,
+      sharedEvidence: collected.sharedEvidence,
+      telemetry,
+      score,
+      coverage,
+      finalStatus,
+      totalChecks: snapshot.length,
+    });
+    console.log("audit continuation queued", JSON.stringify({ auditRunId: id, payloadBytes: payload.length, results: decoratedResults.length }));
+    await env.JOBS.send({ type: "audit-persist", id, payload });
   } catch (e) {
     const message = errorMessage(e);
     console.error("audit run failed", JSON.stringify({ auditRunId: id, message }));
@@ -3060,6 +3016,120 @@ async function runAudit(env: Env, id: string) {
         dedupeKey: `audit:${id}:${notification.kind}`,
       }).catch(() => undefined);
   }
+}
+
+type AuditContinuationPayload = {
+  startedAt: number;
+  propertyId: string;
+  createdBy: string | null;
+  results: Array<Record<string, any>>;
+  sharedEvidence: Array<Record<string, any>>;
+  telemetry: Record<string, any>;
+  score: number | null;
+  coverage: number;
+  finalStatus: "completed" | "partial";
+  totalChecks: number;
+};
+
+function bytesToBase64(bytes: Uint8Array) {
+  let value = "";
+  for (let index = 0; index < bytes.length; index += 0x8000)
+    value += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  return btoa(value);
+}
+
+function base64ToBytes(value: string) {
+  const decoded = atob(value);
+  const bytes = new Uint8Array(decoded.length);
+  for (let index = 0; index < decoded.length; index++) bytes[index] = decoded.charCodeAt(index);
+  return bytes;
+}
+
+export async function encodeAuditContinuationPayload(payload: AuditContinuationPayload) {
+  const source = new TextEncoder().encode(JSON.stringify(payload));
+  const compressed = new Uint8Array(await new Response(
+    new Blob([source]).stream().pipeThrough(new CompressionStream("gzip")),
+  ).arrayBuffer());
+  const encoded = bytesToBase64(compressed);
+  if (new TextEncoder().encode(encoded).byteLength > 120_000)
+    throw new Error("Audit continuation exceeded the queue payload limit");
+  return encoded;
+}
+
+export async function decodeAuditContinuationPayload(payload: string): Promise<AuditContinuationPayload> {
+  const decompressed = await new Response(
+    new Blob([base64ToBytes(payload)]).stream().pipeThrough(new DecompressionStream("gzip")),
+  ).text();
+  return JSON.parse(decompressed) as AuditContinuationPayload;
+}
+
+async function persistAuditContinuation(env: Env, id: string, encodedPayload: string) {
+  const db = admin(env);
+  const payload = await decodeAuditContinuationPayload(encodedPayload);
+  const persistenceStarted = Date.now();
+  const { error: stageError } = await db.from("audit_runs").update({
+    execution_stage: "persisting_results",
+    progress_completed: payload.results.filter((result) => result.outcome !== "unable_to_test").length,
+    heartbeat_at: new Date().toISOString(),
+  }).eq("id", id).in("status", ["queued", "running"]);
+  if (stageError) throw new Error(`audit_run_update_failed: ${stageError.message}`);
+
+  for (const batch of chunkAuditResults(payload.results, 64)) {
+    let failure: string | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const { error } = await db.from("audit_results")
+          .upsert(batch, { onConflict: "audit_run_id,check_id" })
+          .abortSignal(AbortSignal.timeout(15_000));
+        failure = error?.message || null;
+      } catch (error) {
+        failure = errorMessage(error);
+      }
+      if (!failure) break;
+    }
+    if (failure) throw new Error(`audit_result_persistence_failed: ${failure}`);
+  }
+
+  const { error: sharedEvidenceError } = await db.from("audit_run_evidence").upsert(
+    payload.sharedEvidence.map((row) => ({ ...row, audit_run_id: id })),
+    { onConflict: "audit_run_id,evidence_type" },
+  );
+  if (sharedEvidenceError) throw new Error(`audit_shared_evidence_persistence_failed: ${sharedEvidenceError.message}`);
+
+  const persistenceMs = Date.now() - persistenceStarted;
+  const telemetry = {
+    ...payload.telemetry,
+    phases: { ...(payload.telemetry.phases || {}), persistenceMs },
+    totalWallTimeMs: Date.now() - payload.startedAt,
+  };
+  const { error: completionError } = await db.from("audit_runs").update({
+    status: payload.finalStatus,
+    score: payload.score,
+    coverage: payload.coverage,
+    execution_stage: "completed",
+    progress_completed: payload.results.length,
+    progress_total: payload.totalChecks,
+    heartbeat_at: new Date().toISOString(),
+    completed_at: new Date().toISOString(),
+    duration_ms: Date.now() - payload.startedAt,
+    telemetry,
+    architecture_version: "2.0.0",
+    error: null,
+  }).eq("id", id).in("status", ["queued", "running"]);
+  if (completionError) throw new Error(`audit_run_update_failed: ${completionError.message}`);
+
+  const notification = auditOutcomeNotification(payload.finalStatus, payload.score, payload.coverage);
+  if (notification)
+    await createPropertyNotification(env, payload.propertyId, {
+      ...notification,
+      dedupeKey: `audit:${id}:${notification.kind}`,
+    });
+  if (payload.createdBy)
+    await recordActivity(env, payload.createdBy, "audit.completed", payload.propertyId, {
+      auditRunId: id,
+      score: payload.score,
+      coverage: payload.coverage,
+    });
 }
 
 export function auditOutcomeNotification(status: string, score: number | null, coverage: number, error?: string) {
@@ -4772,9 +4842,9 @@ export default {
   queue: async (batch: MessageBatch<Job>, env: Env) => {
     await Promise.all(batch.messages.map(async (message) => {
       try {
-        message.body.type === "audit"
-          ? await runAudit(env, message.body.id)
-          : await runUptime(env, message.body.id);
+        if (message.body.type === "audit") await runAudit(env, message.body.id);
+        else if (message.body.type === "audit-persist") await persistAuditContinuation(env, message.body.id, message.body.payload);
+        else await runUptime(env, message.body.id);
         message.ack();
       } catch (error) {
         console.error("queue job failed", message.body.type, message.body.id, errorMessage(error));
