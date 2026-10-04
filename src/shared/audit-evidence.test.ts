@@ -553,6 +553,36 @@ describe("final architecture v2 collectors and evaluators", () => {
     expect(evaluateAuditCheck("infrastructure.dns.and.domain.configuration.apex.and.www.http.redirect.behaviour.compared", evidence).outcome).toBe("failed");
   });
 
+  it("does not abort resource collection when BrowserLab returns a malformed header value", async () => {
+    const resourceUrl = "https://example.com/logo.svg";
+    const declaration = {
+      declaredUrl: resourceUrl,
+      resolvedUrl: resourceUrl,
+      declarationType: "image",
+      locator: "img",
+      source: "rendered" as const,
+    };
+    const precollected = new Map([[resourceUrl, {
+      status: 200,
+      resourceType: "image",
+      headers: {
+        "content-type": "image/svg+xml",
+        "x-upstream-note": "first line\r\nsecond line",
+        "bad header name": "ignored",
+      },
+    }]]);
+    const fetchTrace = async () => {
+      throw new Error("Precollected resources must not be fetched again");
+    };
+
+    const collected = await collectResourceInventory([declaration], fetchTrace, undefined, undefined, undefined, precollected);
+
+    expect(collected).toMatchObject({ retained: 1, requests: 0 });
+    expect(collected.results[0]).toMatchObject({ status: 200, contentType: "image/svg+xml", error: null });
+    expect(collected.results[0].headers).toContainEqual({ name: "x-upstream-note", values: ["first line  second line"] });
+    expect(collected.results[0].headers.some(({ name }) => name === "bad header name")).toBe(false);
+  });
+
   it("requires an explicit NXDOMAIN response from the deliberate DNS control", () => {
     const evidence = bundle("<html></html>");
     expect(evaluateAuditCheck("infrastructure.dns.and.domain.configuration.non.existent.hostname.response.detected", evidence).outcome).toBe("passed");

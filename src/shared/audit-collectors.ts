@@ -62,6 +62,22 @@ export type PrecollectedResource = {
   resourceType: string;
 };
 
+function safePrecollectedHeaders(input: Record<string, string>) {
+  const headers = new Headers();
+  for (const [name, rawValue] of Object.entries(input)) {
+    // BrowserLab may expose response headers that contain control characters.
+    // Preserve usable evidence without allowing one malformed upstream value to
+    // abort the entire audit during Web Headers validation.
+    const value = String(rawValue).replace(/[\u0000-\u0008\u000A-\u001F\u007F]/g, " ").trim();
+    try {
+      headers.append(name, value);
+    } catch {
+      // Invalid header names are unusable evidence and are omitted individually.
+    }
+  }
+  return headers;
+}
+
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -295,14 +311,15 @@ export async function collectResourceInventory(
       const needsBody = declarations.some((item) => bodyResourceKinds.has(item.declarationType));
       const observed = !needsBody ? precollected.get(url) : undefined;
       if (observed) {
+        const headers = safePrecollectedHeaders(observed.headers);
         return {
           requestedUrl: url,
           finalUrl: url,
           state: classifyDestination(observed.status, null),
           status: observed.status,
           redirectTrace: [],
-          contentType: new Headers(observed.headers).get("content-type"),
-          headers: headerMultimap(new Headers(observed.headers)),
+          contentType: headers.get("content-type"),
+          headers: headerMultimap(headers),
           body: null,
           bodyTruncated: false,
           error: null,

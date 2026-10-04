@@ -3151,11 +3151,18 @@ async function runAudit(env: Env, id: string) {
       unableToTestCount: outcomeCounts.unable_to_test,
     };
     const finalStatus = results.some((r) => r.outcome === "unable_to_test") ? "partial" : "completed";
+    await updateRun({
+      execution_stage: "persisting_results",
+      progress_completed: 0,
+      heartbeat_at: new Date().toISOString(),
+    });
+    await persistAuditResultRows(db, decoratedResults);
     const payload = await encodeAuditContinuationPayload({
       startedAt: started,
       propertyId: run.property_id,
       createdBy: run.created_by || null,
-      results: decoratedResults,
+      resultCount: decoratedResults.length,
+      testedCount: decoratedResults.filter((result) => result.outcome !== "unable_to_test").length,
       sharedEvidence: collected.sharedEvidence,
       telemetry,
       score,
@@ -3191,7 +3198,8 @@ type AuditContinuationPayload = {
   startedAt: number;
   propertyId: string;
   createdBy: string | null;
-  results: Array<Record<string, any>>;
+  resultCount: number;
+  testedCount: number;
   sharedEvidence: Array<Record<string, any>>;
   telemetry: Record<string, any>;
   score: number | null;
@@ -3212,6 +3220,24 @@ function base64ToBytes(value: string) {
   const bytes = new Uint8Array(decoded.length);
   for (let index = 0; index < decoded.length; index++) bytes[index] = decoded.charCodeAt(index);
   return bytes;
+}
+
+async function persistAuditResultRows(db: SupabaseClient, results: Array<Record<string, any>>) {
+  for (const batch of chunkAuditResults(results, 64)) {
+    let failure: string | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const { error } = await db.from("audit_results")
+          .upsert(batch, { onConflict: "audit_run_id,check_id" })
+          .abortSignal(AbortSignal.timeout(15_000));
+        failure = error?.message || null;
+      } catch (error) {
+        failure = errorMessage(error);
+      }
+      if (!failure) break;
+    }
+    if (failure) throw new Error(`audit_result_persistence_failed: ${failure}`);
+  }
 }
 
 export async function encodeAuditContinuationPayload(payload: AuditContinuationPayload) {
@@ -3259,26 +3285,10 @@ async function persistAuditContinuation(env: Env, id: string, encodedPayload: st
   const persistenceStarted = Date.now();
   const { error: stageError } = await db.from("audit_runs").update({
     execution_stage: "persisting_results",
-    progress_completed: payload.results.filter((result) => result.outcome !== "unable_to_test").length,
+    progress_completed: payload.testedCount,
     heartbeat_at: new Date().toISOString(),
   }).eq("id", id).in("status", ["queued", "running"]);
   if (stageError) throw new Error(`audit_run_update_failed: ${stageError.message}`);
-
-  for (const batch of chunkAuditResults(payload.results, 64)) {
-    let failure: string | null = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const { error } = await db.from("audit_results")
-          .upsert(batch, { onConflict: "audit_run_id,check_id" })
-          .abortSignal(AbortSignal.timeout(15_000));
-        failure = error?.message || null;
-      } catch (error) {
-        failure = errorMessage(error);
-      }
-      if (!failure) break;
-    }
-    if (failure) throw new Error(`audit_result_persistence_failed: ${failure}`);
-  }
 
   const { error: sharedEvidenceError } = await db.from("audit_run_evidence").upsert(
     schemaCompatibleSharedEvidenceRows(payload.sharedEvidence).map((row) => ({ ...row, audit_run_id: id })),
@@ -3297,7 +3307,7 @@ async function persistAuditContinuation(env: Env, id: string, encodedPayload: st
     score: payload.score,
     coverage: payload.coverage,
     execution_stage: "completed",
-    progress_completed: payload.results.length,
+    progress_completed: payload.resultCount,
     progress_total: payload.totalChecks,
     heartbeat_at: new Date().toISOString(),
     completed_at: new Date().toISOString(),

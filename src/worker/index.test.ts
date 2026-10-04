@@ -94,18 +94,14 @@ describe("worker evidence pipelines", () => {
       startedAt: 1_750_000_000_000,
       propertyId: "property-1",
       createdBy: "user-1",
-      results: Array.from({ length: 294 }, (_, index) => ({
-        audit_run_id: "run-1",
-        check_id: `check-${index}`,
-        outcome: index % 2 ? "passed" : "failed",
-        evidence: { summary: "Repeated compact evidence", occurrences: [] },
-      })),
+      resultCount: 306,
+      testedCount: 301,
       sharedEvidence: [{ evidence_type: "http", summary: { status: 200 } }],
       telemetry: { architectureVersion: "2.0.0", queueMessagesUsed: 2 },
       score: 78,
       coverage: 100,
       finalStatus: "completed" as const,
-      totalChecks: 294,
+      totalChecks: 306,
     };
     const encoded = await encodeAuditContinuationPayload(source);
     expect(new TextEncoder().encode(encoded).byteLength).toBeLessThan(120_000);
