@@ -1046,7 +1046,7 @@ app.post("/api/properties/:id/verify", async (c) => {
   }
 });
 
-const AUDIT_HEARTBEAT_DEADLINE_MS = 4 * 60_000;
+const AUDIT_HEARTBEAT_DEADLINE_MS = 8 * 60_000;
 const AUDIT_RUN_DEADLINE_MS = 10 * 60_000;
 
 export function isFreshAuditRun(run: { heartbeat_at?: string | null; created_at: string }, now = Date.now()) {
@@ -2709,17 +2709,9 @@ async function collectV2AuditEvidence(
   responseMs: number,
   redirects: { url: string; status: number; location: string }[],
   requireBrowser: boolean,
-  heartbeat: () => Promise<void>,
 ): Promise<{ evidence: AuditEvidenceBundle; telemetry: Record<string, unknown>; sharedEvidence: Array<Record<string, unknown>> }> {
   const phases: Record<string, number> = {};
   const collectStarted = Date.now();
-  let heartbeatPending: Promise<void> | null = null;
-  const pulse = async () => {
-    if (heartbeatPending) return;
-    heartbeatPending = heartbeat()
-      .catch((error) => console.error("audit heartbeat failed", errorMessage(error)))
-      .finally(() => { heartbeatPending = null; });
-  };
   const sourceStarted = Date.now();
   const source = parseSourceDom(html, response.url || pageUrl);
   phases.sourceParseMs = Date.now() - sourceStarted;
@@ -2744,7 +2736,6 @@ async function collectV2AuditEvidence(
       console.error("browser evidence collection failed", errorMessage(error));
     }
   }
-  await pulse();
   phases.browserMs = Date.now() - browserStarted;
   const rendered = browserLab ? {
     desktop: renderedViewportEvidence(browserLab.desktop),
@@ -2758,8 +2749,8 @@ async function collectV2AuditEvidence(
   const networkStarted = Date.now();
   const validatedHosts = new Set<string>();
   const [links, resources] = await Promise.all([
-    collectLinkInventory(linkDeclarations, safeFetchTrace, undefined, validatedHosts, pulse),
-    collectResourceInventory(resourceDeclarations, safeFetchTrace, undefined, validatedHosts, pulse),
+    collectLinkInventory(linkDeclarations, safeFetchTrace, undefined, validatedHosts),
+    collectResourceInventory(resourceDeclarations, safeFetchTrace, undefined, validatedHosts),
   ]);
   const canonicalElement = source.elements.find((element) => element.tagName === "link" && (element.attributes.find((item) => item.name === "rel")?.value || "").toLowerCase().split(/\s+/).includes("canonical"));
   const canonicalHref = canonicalElement?.attributes.find((item) => item.name === "href")?.value || null;
@@ -2771,7 +2762,6 @@ async function collectV2AuditEvidence(
   const robots = parseRobotsEvidence(robotsDestination, source.documentUrl, ["Googlebot", "Bingbot", "OAI-SearchBot", "GPTBot", "ClaudeBot", "Claude-SearchBot", "ChatGPT-User", "Claude-User"]);
   const sitemapUrls = [...new Set([...robots.sitemaps, `${origin}/sitemap.xml`])].slice(0, 4);
   const sitemapDestinations = await Promise.all(sitemapUrls.map((url) => inspectDestination(url, safeFetchTrace, { includeBody: true, bodyBytes: 1_000_000 })));
-  await pulse();
   const sitemaps = sitemapDestinations.map((destination) => {
     const parsed = destination.body && !destination.bodyTruncated
       ? parseSitemapXml(destination.body, destination.requestedUrl)
@@ -2790,7 +2780,6 @@ async function collectV2AuditEvidence(
         return { queriedHostname: hostname, recordType, responseCode: null, authenticatedData: null, records: [], error: errorMessage(error) };
       }
     })));
-    await pulse();
   }
   phases.networkMs = Date.now() - networkStarted;
   const fontFaces = resources.results.filter((item) => item.declarations.some((declaration) => declaration.declarationType === "stylesheet") && item.body).flatMap((item) => parseFontFaces(item.body || "", item.finalUrl || item.requestedUrl));
@@ -2842,15 +2831,24 @@ async function runAudit(env: Env, id: string) {
   const updateRun = async (values: Record<string, unknown>) => {
     let failure: string | null = null;
     for (let attempt = 0; attempt < 3; attempt++) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const { error } = await db
+        const request = db
           .from("audit_runs")
           .update(values)
           .eq("id", id)
           .abortSignal(AbortSignal.timeout(10_000));
+        const { error } = await Promise.race([
+          Promise.resolve(request),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("audit run update timed out")), 10_000);
+          }),
+        ]);
         failure = error?.message || null;
       } catch (error) {
         failure = errorMessage(error);
+      } finally {
+        if (timer) clearTimeout(timer);
       }
       if (!failure) return;
     }
@@ -2882,7 +2880,6 @@ async function runAudit(env: Env, id: string) {
       responseMs,
       trace.redirects,
       requireBrowser,
-      () => updateRun({ heartbeat_at: new Date().toISOString() }),
     );
     await updateRun({
       execution_stage: "evaluating_checks",

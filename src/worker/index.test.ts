@@ -63,7 +63,7 @@ describe("worker evidence pipelines", () => {
     }, now)).toBe(true);
     expect(isFreshAuditRun({
       created_at: "2026-10-03T18:27:00Z",
-      heartbeat_at: "2026-10-03T18:25:59Z",
+      heartbeat_at: "2026-10-03T18:21:59Z",
     }, now)).toBe(false);
     expect(isFreshAuditRun({
       created_at: "2026-10-03T18:19:59Z",
