@@ -12,6 +12,7 @@ export type AuditOutcome =
 export type EvidenceSource =
   | "html"
   | "rendered"
+  | "ai_resource"
   | "network"
   | "http"
   | "dns"
@@ -81,8 +82,18 @@ export type LinkDeclaration = {
   sourceElement: string;
   locator: string;
   internal: boolean | null;
-  source: "html" | "rendered";
+  source: "html" | "rendered" | "ai_resource";
   accessibleName: string;
+};
+
+export type LlmsTextParseEvidence = {
+  collection: CollectionState;
+  bom: boolean;
+  title: string | null;
+  summary: string | null;
+  sections: Array<{ heading: string; line: number; links: number }>;
+  links: LinkDeclaration[];
+  errors: Array<{ line: number; message: string; sample: string }>;
 };
 
 export type ResourceDeclaration = {
@@ -111,6 +122,7 @@ export type DestinationState =
   | "forbidden"
   | "not_found"
   | "gone"
+  | "client_error"
   | "rate_limited"
   | "server_error"
   | "dns_failure"
@@ -343,13 +355,14 @@ export function classifyDestination(status: number | null, error: string | null,
   if (reason.includes("redirect_limit")) return "redirect_limit_exceeded";
   if (reason.includes("timeout") || reason.includes("timed out") || reason.includes("aborted")) return "timeout";
   if (reason.includes("certificate") || reason.includes("tls") || reason.includes("ssl")) return "tls_failure";
-  if (reason.includes("dns") || reason.includes("enotfound") || reason.includes("name not resolved")) return "dns_failure";
+  if (reason.includes("dns") || reason.includes("enotfound") || reason.includes("name not resolved") || reason.includes("did not resolve")) return "dns_failure";
   if (error) return "unable_to_test";
   if (status === 401) return "unauthorized";
   if (status === 403) return "forbidden";
   if (status === 404) return "not_found";
   if (status === 410) return "gone";
   if (status === 429) return "rate_limited";
+  if (status != null && status >= 400 && status < 500) return "client_error";
   if (status != null && status >= 500) return "server_error";
   if (status != null && status >= 200 && status < 400) return redirects ? "redirect" : "success";
   return "unable_to_test";
@@ -369,6 +382,123 @@ export function parseSitemapXml(xml: string, sourceUrl: string | null = null): S
     };
   } catch (error) {
     return { sourceUrl, destinationState: null, status: null, urls: [], error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function unescapedIndex(value: string, target: string, start = 0) {
+  for (let index = start; index < value.length; index += 1) {
+    if (value[index] !== target) continue;
+    let slashes = 0;
+    for (let cursor = index - 1; cursor >= 0 && value[cursor] === "\\"; cursor -= 1) slashes += 1;
+    if (slashes % 2 === 0) return index;
+  }
+  return -1;
+}
+
+function markdownListLink(value: string) {
+  const labelStart = unescapedIndex(value, "[");
+  if (labelStart < 0) return null;
+  const labelEnd = unescapedIndex(value, "]", labelStart + 1);
+  if (labelEnd < 0 || value[labelEnd + 1] !== "(") return null;
+  let depth = 1;
+  let destinationEnd = -1;
+  for (let index = labelEnd + 2; index < value.length; index += 1) {
+    const character = value[index];
+    let slashes = 0;
+    for (let cursor = index - 1; cursor >= 0 && value[cursor] === "\\"; cursor -= 1) slashes += 1;
+    if (slashes % 2) continue;
+    if (character === "(") depth += 1;
+    if (character === ")") depth -= 1;
+    if (depth === 0) {
+      destinationEnd = index;
+      break;
+    }
+  }
+  if (destinationEnd < 0) return null;
+  const label = value.slice(labelStart + 1, labelEnd).replace(/\\([\\\[\]])/g, "$1").trim();
+  let destination = value.slice(labelEnd + 2, destinationEnd).trim();
+  if (destination.startsWith("<") && destination.endsWith(">")) destination = destination.slice(1, -1).trim();
+  const titleSeparator = destination.search(/\s+["']/);
+  if (titleSeparator >= 0) destination = destination.slice(0, titleSeparator).trim();
+  return label && destination ? { label, destination } : null;
+}
+
+/** Parses the constrained Markdown structure defined by the llms.txt proposal. */
+export function parseLlmsText(markdown: string, sourceUrl: string): LlmsTextParseEvidence {
+  try {
+    const bom = markdown.startsWith("\uFEFF");
+    const lines = (bom ? markdown.slice(1) : markdown).replace(/\r\n?/g, "\n").split("\n");
+    const firstContent = lines.findIndex((line) => line.trim().length > 0);
+    const titleMatch = firstContent >= 0 ? lines[firstContent].match(/^#\s+(.+?)\s*$/) : null;
+    const title = titleMatch?.[1]?.trim() || null;
+    const firstSection = lines.findIndex((line) => /^##\s+\S/.test(line));
+    const summaryLines: string[] = [];
+    for (let index = Math.max(0, firstContent + 1); index < (firstSection < 0 ? lines.length : firstSection); index += 1) {
+      const match = lines[index].match(/^\s*>\s?(.*)$/);
+      if (match) summaryLines.push(match[1].trim());
+      else if (summaryLines.length && lines[index].trim()) break;
+    }
+    const sections: LlmsTextParseEvidence["sections"] = [];
+    const links: LinkDeclaration[] = [];
+    const errors: LlmsTextParseEvidence["errors"] = [];
+    let sectionIndex = -1;
+    let sectionLinkCount = 0;
+    const commitSection = () => {
+      if (sectionIndex >= 0) sections[sectionIndex].links = sectionLinkCount;
+      sectionLinkCount = 0;
+    };
+    const baseHost = new URL(sourceUrl).hostname;
+    lines.forEach((line, index) => {
+      const heading = line.match(/^##\s+(.+?)\s*$/);
+      if (heading) {
+        commitSection();
+        sections.push({ heading: heading[1].trim(), line: index + 1, links: 0 });
+        sectionIndex = sections.length - 1;
+        return;
+      }
+      const item = line.match(/^\s{0,3}[-*+]\s+(.+)$/);
+      if (!item || sectionIndex < 0) return;
+      const parsed = markdownListLink(item[1]);
+      if (!parsed) {
+        errors.push({ line: index + 1, message: "File-list item does not contain a valid Markdown link", sample: line.trim().slice(0, 240) });
+        return;
+      }
+      const resolvedUrl = safeResolvedUrl(parsed.destination, sourceUrl);
+      if (!resolvedUrl) {
+        errors.push({ line: index + 1, message: "Markdown link is not a valid HTTP or HTTPS URL", sample: line.trim().slice(0, 240) });
+        return;
+      }
+      links.push({
+        originalUrl: parsed.destination,
+        resolvedUrl,
+        sourceElement: "markdown-link",
+        locator: `line:${index + 1}`,
+        internal: new URL(resolvedUrl).hostname === baseHost,
+        source: "ai_resource",
+        accessibleName: parsed.label,
+      });
+      sectionLinkCount += 1;
+    });
+    commitSection();
+    return {
+      collection: { status: "complete" },
+      bom,
+      title,
+      summary: summaryLines.join(" ").trim() || null,
+      sections,
+      links,
+      errors,
+    };
+  } catch (error) {
+    return {
+      collection: { status: "failed", reason: error instanceof Error ? error.message : String(error) },
+      bom: markdown.startsWith("\uFEFF"),
+      title: null,
+      summary: null,
+      sections: [],
+      links: [],
+      errors: [],
+    };
   }
 }
 

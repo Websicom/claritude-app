@@ -15,6 +15,7 @@ import {
 } from "../shared/audit-runtime";
 import { summarizeUptimeChecks } from "../shared/uptime";
 import {
+  classifyDestination,
   headerMultimap,
   parseFontFaces,
   parseSitemapXml,
@@ -28,6 +29,7 @@ import {
 } from "../shared/audit-evidence";
 import {
   collectLinkInventory,
+  collectOptionalAiResource,
   collectResourceInventory,
   inspectDestination,
   mergeRenderedDeclarations,
@@ -2818,6 +2820,21 @@ async function collectV2AuditEvidence(
     collectLinkInventory(linkDeclarations, safeFetchTrace, undefined, validatedHosts),
     collectResourceInventory(resourceDeclarations, safeFetchTrace, undefined, validatedHosts, undefined, precollectedResources),
   ]);
+  const pageDestination = {
+    requestedUrl: http.requestedUrl,
+    finalUrl: http.finalUrl,
+    state: classifyDestination(http.status, null, http.redirectTrace.length),
+    status: http.status,
+    redirectTrace: http.redirectTrace,
+    contentType: http.contentType,
+    headers: http.headers,
+    body: null,
+    bodyTruncated: false,
+    error: null,
+  } as const;
+  const destinationCache = new Map([...links.results, ...resources.results].map((item) => [item.requestedUrl, item]));
+  destinationCache.set(http.requestedUrl, pageDestination);
+  if (http.finalUrl) destinationCache.set(http.finalUrl, pageDestination);
   console.log("audit evidence phase", JSON.stringify({ pageUrl, phase: "inventories_complete", links: links.retained, resources: resources.retained }));
   const canonicalElement = source.elements.find((element) => element.tagName === "link" && (element.attributes.find((item) => item.name === "rel")?.value || "").toLowerCase().split(/\s+/).includes("canonical"));
   const canonicalHref = canonicalElement?.attributes.find((item) => item.name === "href")?.value || null;
@@ -2839,8 +2856,27 @@ async function collectV2AuditEvidence(
     : canonicalUrl
       ? { ...await inspectDestination(canonicalUrl, safeFetchTrace, { includeBody: true, validatedHosts }), declarations: [] }
       : null;
-  const origin = new URL(source.documentUrl).origin;
-  const robotsDestination = await inspectDestination(`${origin}/robots.txt`, safeFetchTrace, { includeBody: true, validatedHosts });
+  const documentUrl = new URL(source.documentUrl);
+  const origin = documentUrl.origin;
+  const apex = canonicalPropertyHost(documentUrl.hostname);
+  const alternateProbeUrls = [...new Set([
+    `http://${documentUrl.hostname}/`,
+    `http://${apex}/`,
+    `http://www.${apex}/`,
+  ])];
+  const [robotsDestination, probeEntries, llmsTxt, llmsFullTxt] = await Promise.all([
+    inspectDestination(`${origin}/robots.txt`, safeFetchTrace, { includeBody: true, validatedHosts }),
+    Promise.all(alternateProbeUrls.map(async (url) => [url, destinationCache.get(url) || await inspectDestination(url, safeFetchTrace, { probeChallenge: true, bodyBytes: 16_384, validatedHosts })] as const)),
+    collectOptionalAiResource("llms.txt", `${origin}/llms.txt`, safeFetchTrace, validatedHosts, destinationCache),
+    collectOptionalAiResource("llms-full.txt", `${origin}/llms-full.txt`, safeFetchTrace, validatedHosts, destinationCache),
+  ]);
+  const alternateProbeMap = new Map(probeEntries);
+  const httpToHttps = alternateProbeMap.get(`http://${documentUrl.hostname}/`);
+  const apexHttp = alternateProbeMap.get(`http://${apex}/`);
+  const wwwHttp = alternateProbeMap.get(`http://www.${apex}/`);
+  if (!httpToHttps || !apexHttp || !wwwHttp)
+    throw new Error("alternate_origin_probe_collection_incomplete");
+  const alternateOrigins = { httpToHttps, apexHttp, wwwHttp };
   const robots = parseRobotsEvidence(robotsDestination, source.documentUrl, ["Googlebot", "Bingbot", "OAI-SearchBot", "GPTBot", "ClaudeBot", "Claude-SearchBot", "ChatGPT-User", "Claude-User"]);
   const sitemapUrls = [...new Set([...robots.sitemaps, `${origin}/sitemap.xml`])].slice(0, 4);
   const sitemapDestinations = await Promise.all(sitemapUrls.map((url) => inspectDestination(url, safeFetchTrace, { includeBody: true, bodyBytes: 1_000_000, validatedHosts })));
@@ -2850,8 +2886,8 @@ async function collectV2AuditEvidence(
       : { sourceUrl: destination.requestedUrl, destinationState: destination.state, status: destination.status, urls: [], error: destination.bodyTruncated ? "sitemap body limit exceeded" : destination.error || `HTTP ${destination.status ?? "unavailable"}` };
     return { ...parsed, sourceUrl: destination.requestedUrl, destinationState: destination.state, status: destination.status };
   });
-  const apex = canonicalPropertyHost(new URL(source.documentUrl).hostname);
-  const dnsQueries = [[apex, "A"], [apex, "AAAA"], [apex, "CNAME"], [apex, "MX"], [apex, "TXT"], [apex, "CAA"], [apex, "NS"], [apex, "SOA"], [`www.${apex}`, "A"], [`www.${apex}`, "AAAA"], [`_dmarc.${apex}`, "TXT"]] as const;
+  const nxdomainControlHostname = `claritude-nxdomain-control-${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}.${apex}`;
+  const dnsQueries: Array<readonly [string, string]> = [[apex, "A"], [apex, "AAAA"], [apex, "CNAME"], [apex, "MX"], [apex, "TXT"], [apex, "CAA"], [apex, "NS"], [apex, "SOA"], [`www.${apex}`, "A"], [`www.${apex}`, "AAAA"], [`_dmarc.${apex}`, "TXT"], [nxdomainControlHostname, "A"]];
   const dns: DnsEvidence[] = [];
   for (let index = 0; index < dnsQueries.length; index += 3) {
     dns.push(...await Promise.all(dnsQueries.slice(index, index + 3).map(async ([hostname, recordType]) => {
@@ -2863,12 +2899,13 @@ async function collectV2AuditEvidence(
       }
     })));
   }
+  const nxdomainControl = dns.find((item) => item.queriedHostname === nxdomainControlHostname && item.recordType === "A") || null;
   phases.networkMs = Date.now() - networkStarted;
   console.log("audit evidence phase", JSON.stringify({ pageUrl, phase: "network_complete", durationMs: phases.networkMs, dnsQueries: dns.length }));
   const fontFaces = resources.results.filter((item) => item.declarations.some((declaration) => declaration.declarationType === "stylesheet") && item.body).flatMap((item) => parseFontFaces(item.body || "", item.finalUrl || item.requestedUrl));
   console.log("audit evidence phase", JSON.stringify({ pageUrl, phase: "font_faces_complete", fontFaces: fontFaces.length }));
-  const evidence: AuditEvidenceBundle = { http, source, rendered, links, resources, canonical, dns, robots, sitemaps, fontFaces };
-  const approximateEvidenceBytes = new TextEncoder().encode(JSON.stringify({ http, source: { elements: source.elements.length, links: source.links.length, resources: source.resources.length, structuredData: source.structuredData }, rendered, links, resources, dns, robots: { decisions: robots.decisions, sitemaps: robots.sitemaps }, sitemaps })).byteLength;
+  const evidence: AuditEvidenceBundle = { http, source, rendered, links, resources, canonical, dns, robots, sitemaps, fontFaces, alternateOrigins, nxdomainControl, aiResources: { llmsTxt, llmsFullTxt } };
+  const approximateEvidenceBytes = new TextEncoder().encode(JSON.stringify({ http, source: { elements: source.elements.length, links: source.links.length, resources: source.resources.length, structuredData: source.structuredData }, rendered, links, resources, dns, robots: { decisions: robots.decisions, sitemaps: robots.sitemaps }, sitemaps, alternateOrigins, aiResources: { llmsTxt, llmsFullTxt } })).byteLength;
   console.log("audit evidence phase", JSON.stringify({ pageUrl, phase: "bundle_sized", approximateEvidenceBytes }));
   const occurrenceCount = Object.values(rendered?.desktop.occurrences || {}).flat().length + Object.values(rendered?.mobile.occurrences || {}).flat().length;
   const telemetry = {
@@ -2877,15 +2914,15 @@ async function collectV2AuditEvidence(
     phases,
     browserDurationMs: (rendered?.desktop.durationMs || 0) + (rendered?.mobile.durationMs || 0),
     browserSessions: browserLab ? 1 : 0,
-    httpRequests: 1 + links.requests + resources.requests + (canonical ? 1 + canonical.redirectTrace.length : 0) + 1 + robotsDestination.redirectTrace.length + sitemapDestinations.reduce((total, item) => total + 1 + item.redirectTrace.length, 0) + Number(rendered?.desktop.metrics.requests || 0) + Number(rendered?.mobile.metrics.requests || 0),
-    uniqueLinksChecked: links.retained,
+    httpRequests: 1 + links.requests + resources.requests + (canonical ? 1 + canonical.redirectTrace.length : 0) + 1 + robotsDestination.redirectTrace.length + sitemapDestinations.reduce((total, item) => total + 1 + item.redirectTrace.length, 0) + probeEntries.filter(([url]) => !destinationCache.has(url)).reduce((total, [, item]) => total + 1 + item.redirectTrace.length, 0) + 2 + llmsTxt.destination.redirectTrace.length + llmsFullTxt.destination.redirectTrace.length + (llmsTxt.links?.requests || 0) + Number(rendered?.desktop.metrics.requests || 0) + Number(rendered?.mobile.metrics.requests || 0),
+    uniqueLinksChecked: links.retained + (llmsTxt.links?.retained || 0),
     uniqueResourcesChecked: resources.retained,
     dnsQueries: dns.length,
     queueMessagesUsed: 1,
     approximateEvidenceBytes,
     occurrencesCollected: occurrenceCount,
-    truncatedOccurrenceSets: Number(links.truncated) + Number(resources.truncated),
-    collectorFailures: [source.collection, rendered?.desktop.collection, rendered?.mobile.collection].filter((state) => state && state.status !== "complete").length + dns.filter((item) => item.error).length + Number(Boolean(robots.parseError)) + sitemaps.filter((item) => item.error).length,
+    truncatedOccurrenceSets: Number(links.truncated) + Number(resources.truncated) + Number(Boolean(llmsTxt.links?.truncated)),
+    collectorFailures: [source.collection, rendered?.desktop.collection, rendered?.mobile.collection].filter((state) => state && state.status !== "complete").length + dns.filter((item) => item.error).length + Number(Boolean(robots.parseError)) + sitemaps.filter((item) => item.error).length + probeEntries.filter(([, item]) => Boolean(item.error)).length + [llmsTxt, llmsFullTxt].filter((item) => item.presence === "unavailable").length,
   };
   const sharedEvidence = [
     { evidence_type: "http", schema_version: "2.0.0", summary: { requestedUrl: http.requestedUrl, finalUrl: http.finalUrl, status: http.status, redirects: http.redirectTrace.length, responseMs: http.responseMs, contentType: http.contentType }, byte_size: JSON.stringify(http).length, collection_status: http.collection.status, error: null },
@@ -2893,6 +2930,8 @@ async function collectV2AuditEvidence(
     { evidence_type: "links", schema_version: "2.0.0", summary: { totalDiscovered: links.totalDiscovered, retained: links.retained, truncated: links.truncated }, byte_size: JSON.stringify(links).length, collection_status: links.truncated ? "partial" : "complete", error: links.truncated ? "link safety ceiling reached" : null },
     { evidence_type: "resources", schema_version: "2.0.0", summary: { totalDiscovered: resources.totalDiscovered, retained: resources.retained, truncated: resources.truncated }, byte_size: JSON.stringify(resources).length, collection_status: resources.truncated ? "partial" : "complete", error: resources.truncated ? "resource safety ceiling reached" : null },
     { evidence_type: "dns", schema_version: "2.0.0", summary: { queries: dns.length, failures: dns.filter((item) => item.error).length }, byte_size: JSON.stringify(dns).length, collection_status: dns.some((item) => item.error) ? "partial" : "complete", error: null },
+    { evidence_type: "alternate_origins", schema_version: "2.0.0", summary: { probes: Object.values(alternateOrigins).map((item) => ({ requestedUrl: item.requestedUrl, finalUrl: item.finalUrl, state: item.state, status: item.status, redirects: item.redirectTrace.length })) }, byte_size: JSON.stringify(alternateOrigins).length, collection_status: Object.values(alternateOrigins).some((item) => item.error) ? "partial" : "complete", error: null },
+    { evidence_type: "ai_resources", schema_version: "2.0.0", summary: { resources: [llmsTxt, llmsFullTxt].map((item) => ({ kind: item.kind, sourceUrl: item.sourceUrl, presence: item.presence, state: item.destination.state, status: item.destination.status, readable: item.readable, parseErrors: item.parse?.errors.length || 0, linksDiscovered: item.links?.totalDiscovered || 0, linksChecked: item.links?.retained || 0 })) }, byte_size: JSON.stringify({ llmsTxt, llmsFullTxt }).length, collection_status: [llmsTxt, llmsFullTxt].some((item) => item.presence === "unavailable") ? "partial" : "complete", error: null },
   ];
   return { evidence, telemetry, sharedEvidence };
 }

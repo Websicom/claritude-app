@@ -24,20 +24,7 @@ const special = new Map([
   ['Main content extractable without JavaScript','ai.content.source_extractable'],
 ]);
 const allOutcomes = ['passed','failed','advisory','not_applicable','unable_to_test'];
-const knownUnsupportedIds = new Set([
-  'security.security.and.browser.protections.http.version.redirects.to.https',
-  'infrastructure.dns.and.domain.configuration.apex.and.www.http.redirect.behaviour.compared',
-  'infrastructure.dns.and.domain.configuration.non.existent.hostname.response.detected',
-  'ai_readiness.optional.resources.llms.txt.file.reachable',
-  'ai_readiness.optional.resources.llms.txt.returned.as.readable.text',
-  'ai_readiness.optional.resources.llms.txt.title.detected',
-  'ai_readiness.optional.resources.llms.txt.summary.detected',
-  'ai_readiness.optional.resources.llms.txt.markdown.links.parse.correctly',
-  'ai_readiness.optional.resources.llms.txt.links.checked.within.the.request.limit',
-  'ai_readiness.optional.resources.selected.page.referenced.in.checked.llms.txt.links',
-  'ai_readiness.optional.resources.llms.full.txt.file.reachable',
-  'ai_readiness.optional.resources.llms.full.txt.returned.as.readable.text',
-]);
+const knownUnsupportedIds = new Set([]);
 const groupFor = (title) => {
   const groups = [
     ['Page title', /^Page title|document title/i],
@@ -158,7 +145,28 @@ const renderedExtendedIds = new Set([
   'security.security.and.browser.protections.browser.reported.security.policy.violations.detected',
 ]);
 const blockedIds = knownUnsupportedIds;
+const alternateOriginIds = new Set([
+  'security.security.and.browser.protections.http.version.redirects.to.https',
+  'infrastructure.dns.and.domain.configuration.apex.and.www.http.redirect.behaviour.compared',
+]);
+const nxdomainControlIds = new Set([
+  'infrastructure.dns.and.domain.configuration.non.existent.hostname.response.detected',
+]);
+const aiResourceIds = new Set([
+  'ai_readiness.optional.resources.llms.txt.file.reachable',
+  'ai_readiness.optional.resources.llms.txt.returned.as.readable.text',
+  'ai_readiness.optional.resources.llms.txt.title.detected',
+  'ai_readiness.optional.resources.llms.txt.summary.detected',
+  'ai_readiness.optional.resources.llms.txt.markdown.links.parse.correctly',
+  'ai_readiness.optional.resources.llms.txt.links.checked.within.the.request.limit',
+  'ai_readiness.optional.resources.selected.page.referenced.in.checked.llms.txt.links',
+  'ai_readiness.optional.resources.llms.full.txt.file.reachable',
+  'ai_readiness.optional.resources.llms.full.txt.returned.as.readable.text',
+]);
 const keyFor = (check) => {
+  if (alternateOriginIds.has(check.id)) return 'alternate_origin';
+  if (nxdomainControlIds.has(check.id)) return 'nxdomain_control';
+  if (aiResourceIds.has(check.id)) return 'ai_resources';
   if (sourceCoreIds.has(check.id)) return 'source_core';
   if (check.id === 'performance.performance.text.compression.detected') return 'text_compression';
   if (check.id === 'performance.performance.static.resource.cache.directives.inspected') return 'static_resource_cache';
@@ -177,5 +185,5 @@ const keyFor = (check) => {
   return 'unsupported';
 };
 const evaluatorRows = checks.map((check) => `  ${JSON.stringify(check.id)}: ${JSON.stringify(keyFor(check))},`).join('\n');
-fs.writeFileSync(path.join(root, 'src', 'shared', 'audit-evaluator-map.generated.ts'), `// Generated from the authoritative checklist. Do not hand edit.\nimport type { AuditCheck } from './audit-registry.generated';\nexport type AuditCheckId = AuditCheck['id'];\nexport type AuditEvaluatorKey = 'source_core'|'source_extended'|'link_inventory'|'resource_inventory'|'structured_data'|'performance_metric'|'text_compression'|'static_resource_cache'|'font_display'|'rendered_evidence'|'dns_evidence'|'robots_evidence'|'sitemap_evidence'|'unsupported';\nexport const AUDIT_EVALUATOR_KEYS: Record<AuditCheckId, AuditEvaluatorKey> = {\n${evaluatorRows}\n};\n`);
+fs.writeFileSync(path.join(root, 'src', 'shared', 'audit-evaluator-map.generated.ts'), `// Generated from the authoritative checklist. Do not hand edit.\nimport type { AuditCheck } from './audit-registry.generated';\nexport type AuditCheckId = AuditCheck['id'];\nexport type AuditEvaluatorKey = 'source_core'|'source_extended'|'link_inventory'|'resource_inventory'|'structured_data'|'performance_metric'|'text_compression'|'static_resource_cache'|'font_display'|'rendered_evidence'|'dns_evidence'|'robots_evidence'|'sitemap_evidence'|'alternate_origin'|'nxdomain_control'|'ai_resources'|'unsupported';\nexport const AUDIT_EVALUATOR_KEYS: Record<AuditCheckId, AuditEvaluatorKey> = {\n${evaluatorRows}\n};\n`);
 console.log(`Generated ${checks.length} mapped audit checks.`);

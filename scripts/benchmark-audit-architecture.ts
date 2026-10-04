@@ -33,7 +33,7 @@ const http: HttpEvidence = {
   decodedBytes: encoder.encode(html).byteLength,
   collection: { status: "complete" },
 };
-const evidence: AuditEvidenceBundle = { http, source, rendered: null, links, resources, canonical: null, dns: [], robots: null, sitemaps: [], fontFaces: [] };
+const evidence: AuditEvidenceBundle = { http, source, rendered: null, links, resources, canonical: null, dns: [], robots: null, sitemaps: [], fontFaces: [], alternateOrigins: null, nxdomainControl: null, aiResources: null };
 const active = AUDIT_REGISTRY.filter((check) => check.lifecycle === "active");
 const implemented = active.filter((check) => AUDIT_EVALUATOR_KEYS[check.id] !== "unsupported");
 const results = evaluateAuditCatalogue(implemented.map((check) => check.id), evidence);

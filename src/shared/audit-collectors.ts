@@ -2,8 +2,10 @@ import robotsParser from "robots-parser";
 import {
   classifyDestination,
   headerMultimap,
+  parseLlmsText,
   type DestinationEvidence,
   type LinkDeclaration,
+  type LlmsTextParseEvidence,
   type ResourceDeclaration,
   type ResourceEvidence,
   type SourceDomEvidence,
@@ -41,6 +43,17 @@ export type InventoryCollection<T, Declaration> = {
   retained: number;
   truncated: boolean;
   requests: number;
+};
+
+export type OptionalAiResourceEvidence = {
+  kind: "llms.txt" | "llms-full.txt";
+  sourceUrl: string;
+  destination: DestinationEvidence;
+  presence: "present" | "missing" | "unavailable";
+  readable: boolean | null;
+  readabilityReason: string | null;
+  parse: LlmsTextParseEvidence | null;
+  links: InventoryCollection<DestinationEvidence, LinkDeclaration> | null;
 };
 
 export type PrecollectedResource = {
@@ -173,12 +186,21 @@ export async function collectLinkInventory(
   limits: CollectorLimits = DEFAULT_COLLECTOR_LIMITS,
   validatedHosts = new Set<string>(),
   onBatch?: () => Promise<void>,
+  precollected = new Map<string, DestinationEvidence>(),
 ): Promise<InventoryCollection<DestinationEvidence, LinkDeclaration>> {
   const candidates = [...new Set(links.map((link) => link.resolvedUrl).filter((url): url is string => Boolean(url)))];
   const selected = candidates.slice(0, limits.links);
   const results: DestinationEvidence[] = [];
+  let requests = 0;
   for (let index = 0; index < selected.length; index += 5) {
-    results.push(...await Promise.all(selected.slice(index, index + 5).map((url) => inspectDestination(url, fetchTrace, { probeChallenge: true, bodyBytes: 16_384, validatedHosts }))));
+    results.push(...await Promise.all(selected.slice(index, index + 5).map(async (url) => {
+      const observed = precollected.get(url);
+      if (observed) return observed;
+      requests += 1;
+      const inspected = await inspectDestination(url, fetchTrace, { probeChallenge: true, bodyBytes: 16_384, validatedHosts });
+      requests += inspected.redirectTrace.length;
+      return inspected;
+    })));
     await onBatch?.();
   }
   return {
@@ -187,7 +209,65 @@ export async function collectLinkInventory(
     totalDiscovered: candidates.length,
     retained: results.length,
     truncated: candidates.length > results.length,
-    requests: results.length + results.reduce((total, result) => total + result.redirectTrace.length, 0),
+    requests,
+  };
+}
+
+function readableAiText(destination: DestinationEvidence) {
+  if (destination.bodyTruncated) return { readable: null, reason: "Response exceeded the bounded body limit" } as const;
+  if (destination.body == null) return { readable: null, reason: destination.error || "Response body was unavailable" } as const;
+  const contentType = (destination.contentType || "").split(";", 1)[0].trim().toLowerCase();
+  const allowedType = !contentType || ["text/plain", "text/markdown", "text/x-markdown", "application/markdown", "application/x-markdown"].includes(contentType);
+  if (!allowedType) return { readable: false, reason: `Response Content-Type ${contentType} is not readable text` } as const;
+  if (!destination.body.trim()) return { readable: false, reason: "Response body was empty" } as const;
+  if (/[\u0000\uFFFD]/.test(destination.body)) return { readable: false, reason: "Response body contains invalid text bytes" } as const;
+  if (/^\s*(?:<!doctype\s+html|<html\b)/i.test(destination.body)) return { readable: false, reason: "Response body is HTML rather than an AI text resource" } as const;
+  return { readable: true, reason: null } as const;
+}
+
+export async function collectOptionalAiResource(
+  kind: OptionalAiResourceEvidence["kind"],
+  sourceUrl: string,
+  fetchTrace: BoundedFetchTrace,
+  validatedHosts = new Set<string>(),
+  precollected = new Map<string, DestinationEvidence>(),
+): Promise<OptionalAiResourceEvidence> {
+  const destination = await inspectDestination(sourceUrl, fetchTrace, {
+    includeBody: true,
+    probeChallenge: true,
+    bodyBytes: DEFAULT_COLLECTOR_LIMITS.bodyBytes,
+    validatedHosts,
+  });
+  const missing = ["not_found", "gone"].includes(destination.state);
+  const present = ["success", "redirect"].includes(destination.state) && destination.status != null && destination.status >= 200 && destination.status < 400;
+  if (!present) {
+    return {
+      kind,
+      sourceUrl,
+      destination,
+      presence: missing ? "missing" : "unavailable",
+      readable: null,
+      readabilityReason: missing ? "Optional resource was not found" : destination.error || `Destination state: ${destination.state}`,
+      parse: null,
+      links: null,
+    };
+  }
+  const readability = readableAiText(destination);
+  const parsed = kind === "llms.txt" && readability.readable === true
+    ? parseLlmsText(destination.body || "", destination.finalUrl || sourceUrl)
+    : null;
+  const links = parsed
+    ? await collectLinkInventory(parsed.links, fetchTrace, DEFAULT_COLLECTOR_LIMITS, validatedHosts, undefined, precollected)
+    : null;
+  return {
+    kind,
+    sourceUrl,
+    destination,
+    presence: "present",
+    readable: readability.readable,
+    readabilityReason: readability.reason,
+    parse: parsed,
+    links,
   };
 }
 

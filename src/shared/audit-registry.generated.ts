@@ -7438,8 +7438,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "unsupported",
-    "verificationStatus": "blocked"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "security.security.and.browser.protections.https.connection.succeeds",
@@ -9244,8 +9244,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "unsupported",
-    "verificationStatus": "blocked"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.dns.and.domain.configuration.dnssec.validation.status.reported.by.the.resolver",
@@ -9416,8 +9416,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "unsupported",
-    "verificationStatus": "blocked"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "infrastructure.dns.and.domain.configuration.mail.exchange.records.detected",
@@ -12684,8 +12684,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "unsupported",
-    "verificationStatus": "blocked"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.optional.resources.llms.txt.returned.as.readable.text",
@@ -12727,8 +12727,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "unsupported",
-    "verificationStatus": "blocked"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.optional.resources.llms.txt.title.detected",
@@ -12770,8 +12770,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "unsupported",
-    "verificationStatus": "blocked"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.optional.resources.llms.txt.summary.detected",
@@ -12813,8 +12813,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "unsupported",
-    "verificationStatus": "blocked"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.optional.resources.llms.txt.markdown.links.parse.correctly",
@@ -12856,8 +12856,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "unsupported",
-    "verificationStatus": "blocked"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.optional.resources.llms.txt.links.checked.within.the.request.limit",
@@ -12899,8 +12899,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "unsupported",
-    "verificationStatus": "blocked"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.optional.resources.selected.page.referenced.in.checked.llms.txt.links",
@@ -12942,8 +12942,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "unsupported",
-    "verificationStatus": "blocked"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.optional.resources.llms.full.txt.file.reachable",
@@ -12985,8 +12985,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "unsupported",
-    "verificationStatus": "blocked"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.optional.resources.llms.full.txt.returned.as.readable.text",
@@ -13028,8 +13028,8 @@ export const AUDIT_REGISTRY: AuditCheck[] = [
     "configurationVersion": 2,
     "lifecycle": "active",
     "replacementCheckId": null,
-    "implementationStatus": "unsupported",
-    "verificationStatus": "blocked"
+    "implementationStatus": "implemented",
+    "verificationStatus": "route_verified"
   },
   {
     "id": "ai_readiness.optional.resources.linked.markdown.alternative.for.the.selected.page.detected",

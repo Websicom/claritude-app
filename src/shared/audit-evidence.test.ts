@@ -5,6 +5,7 @@ import {
   classifyDestination,
   headerMultimap,
   parseFontFaces,
+  parseLlmsText,
   parseSitemapXml,
   parseSourceDom,
   type DestinationEvidence,
@@ -15,7 +16,7 @@ import {
   type AuditEvidenceBundle,
   type RenderedViewportEvidence,
 } from "./audit-evaluators";
-import { collectLinkInventory, collectResourceInventory, inspectDestination } from "./audit-collectors";
+import { collectLinkInventory, collectOptionalAiResource, collectResourceInventory, inspectDestination, type OptionalAiResourceEvidence } from "./audit-collectors";
 
 const destination = (overrides: Partial<DestinationEvidence> = {}): DestinationEvidence => ({
   requestedUrl: "https://example.com/",
@@ -66,6 +67,39 @@ function bundle(html: string, overrides: Partial<AuditEvidenceBundle> = {}): Aud
     robots: null,
     sitemaps: [],
     fontFaces: [],
+    alternateOrigins: {
+      httpToHttps: destination({ requestedUrl: "http://example.com/", finalUrl: "https://example.com/", state: "redirect", redirectTrace: [{ url: "http://example.com/", status: 301, location: "https://example.com/" }] }),
+      apexHttp: destination({ requestedUrl: "http://example.com/", finalUrl: "https://example.com/", state: "redirect", redirectTrace: [{ url: "http://example.com/", status: 301, location: "https://example.com/" }] }),
+      wwwHttp: destination({ requestedUrl: "http://www.example.com/", finalUrl: "https://example.com/", state: "redirect", redirectTrace: [{ url: "http://www.example.com/", status: 301, location: "https://example.com/" }] }),
+    },
+    nxdomainControl: { queriedHostname: "claritude-nxdomain-control.example.com", recordType: "A", responseCode: 3, authenticatedData: false, records: [], error: null },
+    aiResources: {
+      llmsTxt: { kind: "llms.txt", sourceUrl: "https://example.com/llms.txt", destination: destination({ requestedUrl: "https://example.com/llms.txt", finalUrl: "https://example.com/llms.txt", state: "not_found", status: 404, body: "Not found" }), presence: "missing", readable: null, readabilityReason: "Optional resource was not found", parse: null, links: null },
+      llmsFullTxt: { kind: "llms-full.txt", sourceUrl: "https://example.com/llms-full.txt", destination: destination({ requestedUrl: "https://example.com/llms-full.txt", finalUrl: "https://example.com/llms-full.txt", state: "not_found", status: 404, body: "Not found" }), presence: "missing", readable: null, readabilityReason: "Optional resource was not found", parse: null, links: null },
+    },
+    ...overrides,
+  };
+}
+
+function publishedAiResource(markdown: string, overrides: Partial<OptionalAiResourceEvidence> = {}): OptionalAiResourceEvidence {
+  const sourceUrl = "https://example.com/llms.txt";
+  const parse = parseLlmsText(markdown, sourceUrl);
+  return {
+    kind: "llms.txt",
+    sourceUrl,
+    destination: destination({ requestedUrl: sourceUrl, finalUrl: sourceUrl, contentType: "text/plain; charset=utf-8", body: markdown }),
+    presence: "present",
+    readable: true,
+    readabilityReason: null,
+    parse,
+    links: {
+      declarations: parse.links,
+      results: parse.links.map((link) => destination({ requestedUrl: link.resolvedUrl || link.originalUrl, finalUrl: link.resolvedUrl, contentType: "text/markdown" })),
+      totalDiscovered: parse.links.length,
+      retained: parse.links.length,
+      truncated: false,
+      requests: parse.links.length,
+    },
     ...overrides,
   };
 }
@@ -134,7 +168,7 @@ describe("audit v2 evidence architecture", () => {
   });
 
   it.each([
-    [401, "unauthorized"], [403, "forbidden"], [404, "not_found"], [410, "gone"], [429, "rate_limited"], [500, "server_error"],
+    [400, "client_error"], [401, "unauthorized"], [403, "forbidden"], [404, "not_found"], [410, "gone"], [429, "rate_limited"], [500, "server_error"],
   ] as const)("distinguishes HTTP %s destination outcomes", (status, expected) => {
     expect(classifyDestination(status, null)).toBe(expected);
   });
@@ -143,6 +177,7 @@ describe("audit v2 evidence architecture", () => {
     ["redirect_loop detected", "redirect_loop"],
     ["redirect_limit exceeded after five hops", "redirect_limit_exceeded"],
     ["DNS ENOTFOUND", "dns_failure"],
+    ["Target hostname did not resolve", "dns_failure"],
     ["TLS certificate failure", "tls_failure"],
     ["request timed out", "timeout"],
   ] as const)("distinguishes collector error %s", (error, expected) => {
@@ -405,5 +440,125 @@ describe("audit v2 evidence architecture", () => {
     expect(evaluateAuditCheck("performance.performance.largest.contentful.paint.measured", bundle("<html></html>", { rendered: { desktop: partial, mobile: partial } })).outcome).toBe("unable_to_test");
     const noAxe = renderedViewport({ axe: null });
     expect(evaluateAuditCheck("accessibility.accessibility.text.contrast.measured.where.calculable", bundle("<html></html>", { rendered: { desktop: noAxe, mobile: noAxe } })).outcome).toBe("unable_to_test");
+  });
+});
+
+describe("final architecture v2 collectors and evaluators", () => {
+  const validLlms = "\uFEFF# Example\n\n> Concise project summary.\n\n## Documentation\n\n- [Home](/): Main page\n- [Guide](https://example.com/docs/guide_(v2).md): Guide";
+
+  it("parses the llms.txt v2 structure, relative links and parenthesized destinations", () => {
+    const parsed = parseLlmsText(validLlms, "https://example.com/llms.txt");
+    expect(parsed).toMatchObject({ collection: { status: "complete" }, bom: true, title: "Example", summary: "Concise project summary.", errors: [] });
+    expect(parsed.sections).toEqual([{ heading: "Documentation", line: 5, links: 2 }]);
+    expect(parsed.links.map((link) => link.resolvedUrl)).toEqual(["https://example.com/", "https://example.com/docs/guide_(v2).md"]);
+    expect(parsed.links.every((link) => link.source === "ai_resource")).toBe(true);
+  });
+
+  it("collects and validates llms.txt links through the bounded shared link collector", async () => {
+    const requested: string[] = [];
+    const fetchTrace = async (url: string) => {
+      requested.push(url);
+      const body = url.endsWith("/llms.txt") ? validLlms : "# Linked page";
+      return { response: new Response(body, { status: 200, headers: { "content-type": "text/plain" } }), redirects: [] };
+    };
+    const collected = await collectOptionalAiResource("llms.txt", "https://example.com/llms.txt", fetchTrace);
+    expect(collected).toMatchObject({ presence: "present", readable: true });
+    expect(collected.parse?.links).toHaveLength(2);
+    expect(collected.links).toMatchObject({ totalDiscovered: 2, retained: 2, truncated: false, requests: 2 });
+    expect(requested).toEqual(["https://example.com/llms.txt", "https://example.com/", "https://example.com/docs/guide_(v2).md"]);
+  });
+
+  it("rejects a successful HTML fallback as an unreadable optional AI resource", async () => {
+    const fetchTrace = async () => ({ response: new Response("<!doctype html><html><body>Fallback</body></html>", { status: 200, headers: { "content-type": "text/html" } }), redirects: [] });
+    const collected = await collectOptionalAiResource("llms.txt", "https://example.com/llms.txt", fetchTrace);
+    expect(collected).toMatchObject({ presence: "present", readable: false, parse: null, links: null });
+    expect(collected.readabilityReason).toMatch(/not readable text/);
+  });
+
+  it("treats absent optional AI files as advisory or not applicable rather than failures", () => {
+    const evidence = bundle("<html><body><main>Page</main></body></html>");
+    expect(evaluateAuditCheck("ai_readiness.optional.resources.llms.txt.file.reachable", evidence).outcome).toBe("advisory");
+    expect(evaluateAuditCheck("ai_readiness.optional.resources.llms.txt.returned.as.readable.text", evidence).outcome).toBe("not_applicable");
+    expect(evaluateAuditCheck("ai_readiness.optional.resources.llms.full.txt.file.reachable", evidence).outcome).toBe("advisory");
+    expect(evaluateAuditCheck("ai_readiness.optional.resources.llms.full.txt.returned.as.readable.text", evidence).outcome).toBe("not_applicable");
+  });
+
+  it("passes all llms.txt checks only from complete readable and validated evidence", () => {
+    const llmsTxt = publishedAiResource(validLlms);
+    const llmsFullTxt: OptionalAiResourceEvidence = {
+      kind: "llms-full.txt",
+      sourceUrl: "https://example.com/llms-full.txt",
+      destination: destination({ requestedUrl: "https://example.com/llms-full.txt", finalUrl: "https://example.com/llms-full.txt", contentType: "text/plain", body: "# Complete documentation" }),
+      presence: "present",
+      readable: true,
+      readabilityReason: null,
+      parse: null,
+      links: null,
+    };
+    const evidence = bundle("<html><body><main>Page</main></body></html>", { aiResources: { llmsTxt, llmsFullTxt } });
+    const ids = [
+      "ai_readiness.optional.resources.llms.txt.file.reachable",
+      "ai_readiness.optional.resources.llms.txt.returned.as.readable.text",
+      "ai_readiness.optional.resources.llms.txt.title.detected",
+      "ai_readiness.optional.resources.llms.txt.summary.detected",
+      "ai_readiness.optional.resources.llms.txt.markdown.links.parse.correctly",
+      "ai_readiness.optional.resources.llms.txt.links.checked.within.the.request.limit",
+      "ai_readiness.optional.resources.selected.page.referenced.in.checked.llms.txt.links",
+      "ai_readiness.optional.resources.llms.full.txt.file.reachable",
+      "ai_readiness.optional.resources.llms.full.txt.returned.as.readable.text",
+    ];
+    expect(ids.map((id) => evaluateAuditCheck(id, evidence).outcome)).toEqual(ids.map(() => "passed"));
+  });
+
+  it("fails invalid declared AI resources while refusing to pass partial collection", () => {
+    const malformed = publishedAiResource("# Example\n\n## Docs\n- [Broken](https://example.com/docs");
+    const malformedEvidence = bundle("<html></html>", { aiResources: { llmsTxt: malformed, llmsFullTxt: malformed } });
+    const parsed = evaluateAuditCheck("ai_readiness.optional.resources.llms.txt.markdown.links.parse.correctly", malformedEvidence);
+    expect(parsed.outcome).toBe("failed");
+    expect(parsed.evidence).toMatchObject({ retained: 1, truncated: false, occurrences: [{ locator: "line:4" }] });
+
+    const partial = publishedAiResource(validLlms);
+    partial.destination.bodyTruncated = true;
+    partial.readable = null;
+    partial.readabilityReason = "Response exceeded the bounded body limit";
+    partial.parse = null;
+    partial.links = null;
+    const partialEvidence = bundle("<html></html>", { aiResources: { llmsTxt: partial, llmsFullTxt: partial } });
+    expect(evaluateAuditCheck("ai_readiness.optional.resources.llms.txt.returned.as.readable.text", partialEvidence).outcome).toBe("unable_to_test");
+    expect(evaluateAuditCheck("ai_readiness.optional.resources.llms.txt.title.detected", partialEvidence).outcome).toBe("unable_to_test");
+  });
+
+  it("retains broken llms.txt link occurrences and does not pass unavailable destinations", () => {
+    const broken = publishedAiResource(validLlms);
+    broken.links!.results[1] = destination({ requestedUrl: "https://example.com/docs/guide_(v2).md", finalUrl: "https://example.com/docs/guide_(v2).md", state: "not_found", status: 404 });
+    const brokenEvidence = bundle("<html></html>", { aiResources: { llmsTxt: broken, llmsFullTxt: broken } });
+    const evaluated = evaluateAuditCheck("ai_readiness.optional.resources.llms.txt.links.checked.within.the.request.limit", brokenEvidence);
+    expect(evaluated.outcome).toBe("failed");
+    expect(evaluated.evidence).toMatchObject({ occurrences: [{ locator: "line:8", values: { status: 404 } }] });
+
+    broken.links!.results[1] = destination({ requestedUrl: "https://example.com/docs/guide_(v2).md", finalUrl: null, state: "timeout", status: null, error: "request timed out" });
+    expect(evaluateAuditCheck("ai_readiness.optional.resources.llms.txt.links.checked.within.the.request.limit", brokenEvidence).outcome).toBe("unable_to_test");
+  });
+
+  it("evaluates bounded HTTP redirect probes without converting network failures into passes", () => {
+    const evidence = bundle("<html></html>");
+    expect(evaluateAuditCheck("security.security.and.browser.protections.http.version.redirects.to.https", evidence).outcome).toBe("passed");
+    expect(evaluateAuditCheck("infrastructure.dns.and.domain.configuration.apex.and.www.http.redirect.behaviour.compared", evidence).outcome).toBe("passed");
+
+    evidence.alternateOrigins!.httpToHttps = destination({ requestedUrl: "http://example.com/", finalUrl: null, state: "timeout", status: null, error: "timed out" });
+    expect(evaluateAuditCheck("security.security.and.browser.protections.http.version.redirects.to.https", evidence).outcome).toBe("unable_to_test");
+    evidence.alternateOrigins!.httpToHttps = destination({ requestedUrl: "http://example.com/", finalUrl: "http://example.com/", state: "not_found", status: 404 });
+    expect(evaluateAuditCheck("security.security.and.browser.protections.http.version.redirects.to.https", evidence).outcome).toBe("failed");
+    evidence.alternateOrigins!.wwwHttp = destination({ requestedUrl: "http://www.example.com/", finalUrl: "https://www.example.com/", state: "redirect", redirectTrace: [{ url: "http://www.example.com/", status: 301, location: "https://www.example.com/" }] });
+    expect(evaluateAuditCheck("infrastructure.dns.and.domain.configuration.apex.and.www.http.redirect.behaviour.compared", evidence).outcome).toBe("failed");
+  });
+
+  it("requires an explicit NXDOMAIN response from the deliberate DNS control", () => {
+    const evidence = bundle("<html></html>");
+    expect(evaluateAuditCheck("infrastructure.dns.and.domain.configuration.non.existent.hostname.response.detected", evidence).outcome).toBe("passed");
+    evidence.nxdomainControl = { queriedHostname: "control.example.com", recordType: "A", responseCode: 0, authenticatedData: false, records: [{ value: "203.0.113.1", ttl: 30 }], error: null };
+    expect(evaluateAuditCheck("infrastructure.dns.and.domain.configuration.non.existent.hostname.response.detected", evidence).outcome).toBe("failed");
+    evidence.nxdomainControl = { queriedHostname: "control.example.com", recordType: "A", responseCode: null, authenticatedData: null, records: [], error: "resolver timed out" };
+    expect(evaluateAuditCheck("infrastructure.dns.and.domain.configuration.non.existent.hostname.response.detected", evidence).outcome).toBe("unable_to_test");
   });
 });

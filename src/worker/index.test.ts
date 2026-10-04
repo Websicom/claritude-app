@@ -403,16 +403,15 @@ describe("worker evidence pipelines", () => {
     const gaps = active.filter((check) => !auditCheckHasExecutableLogic(check.id));
     expect(active).toHaveLength(306);
     expect(Object.keys(AUDIT_EVALUATOR_KEYS)).toHaveLength(306);
-    expect(implemented.length).toBeGreaterThan(0);
-    expect(gaps.length).toBeGreaterThan(0);
+    expect(implemented).toHaveLength(306);
+    expect(gaps).toEqual([]);
     expect(implemented.length + gaps.length).toBe(active.length);
     expect(gaps.every((check) => AUDIT_EVALUATOR_KEYS[check.id] === "unsupported")).toBe(true);
   });
 
-  it("does not classify explicitly unsupported checks as executable", () => {
+  it("has no checks left on the unsupported evaluator route", () => {
     const unsupported = AUDIT_REGISTRY.filter((check) => AUDIT_EVALUATOR_KEYS[check.id] === "unsupported");
-    expect(unsupported.length).toBeGreaterThan(0);
-    expect(unsupported.every((check) => !auditCheckHasExecutableLogic(check.id))).toBe(true);
+    expect(unsupported).toEqual([]);
   });
 
   it("rejects private, credentialed and non-HTTP audit targets", () => {

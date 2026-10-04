@@ -16,7 +16,7 @@ import {
   type SitemapEvidence,
   type SourceDomEvidence,
 } from "./audit-evidence";
-import type { InventoryCollection, RobotsEvidence } from "./audit-collectors";
+import type { InventoryCollection, OptionalAiResourceEvidence, RobotsEvidence } from "./audit-collectors";
 
 export type RenderedViewportEvidence = {
   collection: { status: "complete" | "partial" | "failed"; reason?: string };
@@ -52,6 +52,16 @@ export type AuditEvidenceBundle = {
   robots: RobotsEvidence | null;
   sitemaps: SitemapEvidence[];
   fontFaces: FontFaceEvidence[];
+  alternateOrigins: {
+    httpToHttps: DestinationEvidence;
+    apexHttp: DestinationEvidence;
+    wwwHttp: DestinationEvidence;
+  } | null;
+  nxdomainControl: DnsEvidence | null;
+  aiResources: {
+    llmsTxt: OptionalAiResourceEvidence;
+    llmsFullTxt: OptionalAiResourceEvidence;
+  } | null;
 };
 
 export type TypedAuditResult = {
@@ -86,6 +96,162 @@ const occurrence = (element: SourceDomEvidence["elements"][number], values?: Rec
 const result = (outcome: AuditOutcome, evidence: Record<string, unknown>, reason?: string) => ({ outcome, evidence, ...(reason ? { reason } : {}) });
 const unable = (reason: string, evidence: Record<string, unknown> = {}) => result("unable_to_test", { ...evidence, reason }, reason);
 const optionalMissing = (feature: string) => result("advisory", { present: false, feature }, `${feature} is optional and was not detected`);
+
+const compactDestination = (destination: DestinationEvidence) => ({
+  requestedUrl: destination.requestedUrl,
+  finalUrl: destination.finalUrl,
+  state: destination.state,
+  status: destination.status,
+  redirectTrace: destination.redirectTrace,
+  contentType: destination.contentType,
+  bodyTruncated: destination.bodyTruncated,
+  error: destination.error,
+});
+
+const incompleteDestinationStates = new Set(["rate_limited", "server_error", "dns_failure", "tls_failure", "timeout", "redirect_loop", "redirect_limit_exceeded", "bot_challenge", "unable_to_test"]);
+
+function alternateOriginEvaluator(check: AuditCheck, evidence: AuditEvidenceBundle) {
+  if (!evidence.alternateOrigins) return unable("Alternate-origin HTTP probes were not collected");
+  if (check.id === "security.security.and.browser.protections.http.version.redirects.to.https") {
+    const probe = evidence.alternateOrigins.httpToHttps;
+    const compact = compactDestination(probe);
+    if (incompleteDestinationStates.has(probe.state) || probe.status == null)
+      return unable(`The HTTP alternate-origin probe did not complete (${probe.state})`, { probe: compact });
+    if (probe.status >= 400)
+      return result("failed", { probe: compact }, `The HTTP alternate origin returned HTTP ${probe.status}`);
+    const redirectedToHttps = Boolean(probe.finalUrl?.startsWith("https://") && probe.redirectTrace.length);
+    return result(redirectedToHttps ? "passed" : "failed", { probe: compact, redirectedToHttps });
+  }
+  if (check.id === "infrastructure.dns.and.domain.configuration.apex.and.www.http.redirect.behaviour.compared") {
+    const probes = [evidence.alternateOrigins.apexHttp, evidence.alternateOrigins.wwwHttp];
+    const compact = probes.map(compactDestination);
+    const incomplete = probes.filter((probe) => incompleteDestinationStates.has(probe.state) || probe.status == null);
+    if (incomplete.length) return unable("Apex and www redirect comparison did not complete for both origins", { probes: compact });
+    const badHttp = probes.filter((probe) => (probe.status || 0) >= 400);
+    if (badHttp.length) return result("failed", { probes: compact, failedOrigins: badHttp.map((probe) => probe.requestedUrl) });
+    const normalizedFinals = probes.map((probe) => {
+      try {
+        const url = new URL(probe.finalUrl || probe.requestedUrl);
+        return `${url.protocol}//${url.hostname.toLowerCase()}${url.pathname.replace(/\/$/, "") || "/"}`;
+      } catch {
+        return null;
+      }
+    });
+    const converged = Boolean(normalizedFinals[0] && normalizedFinals[0] === normalizedFinals[1]);
+    return result(converged ? "passed" : "failed", { probes: compact, normalizedFinals, converged });
+  }
+  throw new Error(`Unexpected alternate-origin check: ${check.id}`);
+}
+
+function nxdomainControlEvaluator(check: AuditCheck, evidence: AuditEvidenceBundle) {
+  if (check.id !== "infrastructure.dns.and.domain.configuration.non.existent.hostname.response.detected")
+    throw new Error(`Unexpected NXDOMAIN control check: ${check.id}`);
+  const control = evidence.nxdomainControl;
+  if (!control) return unable("The deliberate NXDOMAIN control query was not collected");
+  const compact = {
+    queriedHostname: control.queriedHostname,
+    recordType: control.recordType,
+    responseCode: control.responseCode,
+    authenticatedData: control.authenticatedData,
+    records: control.records,
+    error: control.error,
+  };
+  if (control.error || control.responseCode == null)
+    return unable("The deliberate NXDOMAIN control query did not complete", { control: compact });
+  if (control.responseCode === 3 && control.records.length === 0)
+    return result("passed", { control: compact, nxdomain: true });
+  if (control.responseCode === 0)
+    return result("failed", { control: compact, nxdomain: false }, control.records.length ? "The deliberately non-existent hostname resolved, indicating wildcard DNS" : "The control hostname returned NOERROR instead of NXDOMAIN");
+  return unable(`The DNS resolver returned response code ${control.responseCode} for the control query`, { control: compact });
+}
+
+function aiResourceOccurrence(resource: OptionalAiResourceEvidence, values: Record<string, unknown>, locator?: string): AuditOccurrence {
+  return { source: "ai_resource", url: resource.sourceUrl, locator, values };
+}
+
+function requireAiResource(resource: OptionalAiResourceEvidence | undefined, label: string) {
+  if (!resource) return unable(`${label} evidence was not collected`);
+  return null;
+}
+
+function aiResourceEvaluator(check: AuditCheck, evidence: AuditEvidenceBundle) {
+  const resources = evidence.aiResources;
+  if (!resources) return unable("Optional AI resource evidence was not collected");
+  const isFull = check.id === "ai_readiness.optional.resources.llms.full.txt.file.reachable"
+    || check.id === "ai_readiness.optional.resources.llms.full.txt.returned.as.readable.text";
+  const resource = isFull ? resources.llmsFullTxt : resources.llmsTxt;
+  const missingEvidence = requireAiResource(resource, isFull ? "llms-full.txt" : "llms.txt");
+  if (missingEvidence) return missingEvidence;
+  const destination = compactDestination(resource.destination);
+  const base = { sourceUrl: resource.sourceUrl, presence: resource.presence, destination };
+  const missing = () => result("not_applicable", base, `${resource.kind} is optional and was not published`);
+  const unreachable = () => {
+    if (["unauthorized", "forbidden"].includes(resource.destination.state) || (resource.destination.status != null && resource.destination.status >= 400 && resource.destination.status < 500))
+      return result("failed", base, `${resource.kind} returned HTTP ${resource.destination.status}`);
+    return unable(`${resource.kind} could not be collected (${resource.destination.state})`, base);
+  };
+  switch (check.id) {
+    case "ai_readiness.optional.resources.llms.txt.file.reachable":
+    case "ai_readiness.optional.resources.llms.full.txt.file.reachable":
+      if (resource.presence === "missing") return result("advisory", base, `${resource.kind} is optional and was not published`);
+      if (resource.presence === "unavailable") return unreachable();
+      return result("passed", base);
+    case "ai_readiness.optional.resources.llms.txt.returned.as.readable.text":
+    case "ai_readiness.optional.resources.llms.full.txt.returned.as.readable.text":
+      if (resource.presence === "missing") return missing();
+      if (resource.presence === "unavailable") return unreachable();
+      if (resource.readable == null) return unable(`${resource.kind} readability could not be established`, { ...base, readabilityReason: resource.readabilityReason });
+      return result(resource.readable ? "passed" : "failed", { ...base, readable: resource.readable, readabilityReason: resource.readabilityReason });
+    case "ai_readiness.optional.resources.llms.txt.title.detected":
+      if (resource.presence === "missing") return missing();
+      if (resource.presence === "unavailable" || resource.readable !== true || !resource.parse)
+        return unable("llms.txt title could not be evaluated because readable, complete text was unavailable", { ...base, readable: resource.readable, readabilityReason: resource.readabilityReason });
+      if (resource.parse.collection.status !== "complete") return unable("llms.txt parsing did not complete", { ...base, collection: resource.parse.collection });
+      return result(resource.parse.title ? "passed" : "failed", { ...base, title: resource.parse.title, bom: resource.parse.bom });
+    case "ai_readiness.optional.resources.llms.txt.summary.detected":
+      if (resource.presence === "missing") return missing();
+      if (resource.presence === "unavailable" || resource.readable !== true || !resource.parse)
+        return unable("llms.txt summary could not be evaluated because readable, complete text was unavailable", { ...base, readable: resource.readable, readabilityReason: resource.readabilityReason });
+      if (resource.parse.collection.status !== "complete") return unable("llms.txt parsing did not complete", { ...base, collection: resource.parse.collection });
+      return result(resource.parse.summary ? "passed" : "advisory", { ...base, summary: resource.parse.summary }, resource.parse.summary ? undefined : "The optional llms.txt summary was not detected");
+    case "ai_readiness.optional.resources.llms.txt.markdown.links.parse.correctly": {
+      if (resource.presence === "missing") return missing();
+      if (resource.presence === "unavailable" || resource.readable !== true || !resource.parse)
+        return unable("llms.txt links could not be parsed because readable, complete text was unavailable", { ...base, readable: resource.readable, readabilityReason: resource.readabilityReason });
+      if (resource.parse.collection.status !== "complete") return unable("llms.txt parsing did not complete", { ...base, collection: resource.parse.collection });
+      const occurrences = resource.parse.errors.map((error) => aiResourceOccurrence(resource, { message: error.message, sample: error.sample }, `line:${error.line}`));
+      if (occurrences.length) return result("failed", { ...base, errors: resource.parse.errors, ...occurrenceEnvelope(occurrences) });
+      if (!resource.parse.links.length) return result("not_applicable", { ...base, sections: resource.parse.sections.length, links: 0 });
+      return result("passed", { ...base, sections: resource.parse.sections.length, links: resource.parse.links.length });
+    }
+    case "ai_readiness.optional.resources.llms.txt.links.checked.within.the.request.limit": {
+      if (resource.presence === "missing") return missing();
+      if (!resource.parse || !resource.links) return unable("llms.txt link validation evidence was unavailable", { ...base, readable: resource.readable });
+      if (resource.parse.collection.status !== "complete" || resource.parse.errors.length)
+        return unable("llms.txt link validation was incomplete because one or more declarations could not be parsed", { ...base, parseErrors: resource.parse.errors });
+      if (!resource.links.totalDiscovered) return result("not_applicable", { ...base, totalDiscovered: 0 });
+      if (resource.links.truncated) return unable("llms.txt link validation reached the bounded request limit", { ...base, totalDiscovered: resource.links.totalDiscovered, retained: resource.links.retained });
+      const unavailableResults = resource.links.results.filter((item) => incompleteDestinationStates.has(item.state) || item.status == null);
+      if (unavailableResults.length) return unable("One or more llms.txt link destinations could not be conclusively tested", { ...base, states: unavailableResults.map(compactDestination) });
+      const brokenResults = resource.links.results.filter((item) => (item.status || 0) >= 400);
+      const occurrences = brokenResults.flatMap((item) => resource.links?.declarations.filter((declaration) => declaration.resolvedUrl === item.requestedUrl).map((declaration) => aiResourceOccurrence(resource, { targetUrl: item.requestedUrl, status: item.status, state: item.state }, declaration.locator)) || []);
+      return result(brokenResults.length ? "failed" : "passed", { ...base, linksDiscovered: resource.links.totalDiscovered, checked: resource.links.retained, requests: resource.links.requests, states: resource.links.results.map((item) => ({ url: item.requestedUrl, status: item.status, state: item.state })), ...occurrenceEnvelope(occurrences) });
+    }
+    case "ai_readiness.optional.resources.selected.page.referenced.in.checked.llms.txt.links": {
+      if (resource.presence === "missing") return missing();
+      if (!resource.parse || !resource.links) return unable("llms.txt page-reference evidence was unavailable", base);
+      if (resource.parse.collection.status !== "complete" || resource.parse.errors.length || resource.links.truncated)
+        return unable("llms.txt page-reference evidence was incomplete", { ...base, parseErrors: resource.parse.errors.length, truncated: resource.links.truncated });
+      const normalize = (value: string) => { try { const url = new URL(value); url.hash = ""; return url.href.replace(/\/$/, ""); } catch { return value; } };
+      const selectedUrl = normalize(evidence.source.documentUrl);
+      const checked = new Set(resource.links.results.map((item) => normalize(item.requestedUrl)));
+      const matches = resource.parse.links.filter((link) => link.resolvedUrl && checked.has(normalize(link.resolvedUrl)) && normalize(link.resolvedUrl) === selectedUrl);
+      return result(matches.length ? "passed" : "advisory", { ...base, selectedUrl: evidence.source.documentUrl, linksChecked: checked.size, matches: matches.map((match) => ({ url: match.resolvedUrl, locator: match.locator })) }, matches.length ? undefined : "The selected page was not referenced by the checked llms.txt links");
+    }
+    default:
+      throw new Error(`Unexpected optional AI resource check: ${check.id}`);
+  }
+}
 
 function sourceCoreEvaluator(check: AuditCheck, evidence: AuditEvidenceBundle) {
   if (evidence.source.collection.status !== "complete") return unable("Source HTML collection or parsing did not complete", { collection: evidence.source.collection });
@@ -1298,6 +1464,9 @@ export const auditEvaluators: Record<AuditEvaluatorKey, AuditEvaluator> = {
   dns_evidence: dnsEvidenceEvaluator,
   robots_evidence: robotsEvidenceEvaluator,
   sitemap_evidence: sitemapEvidenceEvaluator,
+  alternate_origin: alternateOriginEvaluator,
+  nxdomain_control: nxdomainControlEvaluator,
+  ai_resources: aiResourceEvaluator,
   unsupported: unsupportedEvaluator,
 };
 
