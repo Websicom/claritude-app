@@ -142,53 +142,6 @@ app.get("/health", (c) =>
   }),
 );
 
-app.get("/health/paid-verification", async (c) => {
-  const db = admin(c.env);
-  const { data: run, error: runError } = await db
-    .from("audit_runs")
-    .select("id,status,score,coverage,duration_ms,progress_completed,progress_total,error,telemetry,created_at,completed_at")
-    .eq("retry_of", PAID_VERIFICATION_SOURCE_RUN_ID)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (runError) return c.json({ ok: false, error: runError.message }, 500);
-  if (!run) return c.json({ ok: true, run: null });
-  const [{ data: results, error: resultError }, { data: sharedEvidence, error: evidenceError }] = await Promise.all([
-    db.from("audit_results").select("check_id,outcome,evidence,duration_ms").eq("audit_run_id", run.id).limit(400),
-    db.from("audit_run_evidence").select("evidence_type,schema_version,summary,byte_size,collection_status,error").eq("audit_run_id", run.id).limit(20),
-  ]);
-  if (resultError || evidenceError)
-    return c.json({ ok: false, error: resultError?.message || evidenceError?.message }, 500);
-  const rows = results || [];
-  const rowBytes = rows.map((row) => new TextEncoder().encode(JSON.stringify(row)).byteLength);
-  const outcomes = Object.fromEntries(["passed", "failed", "advisory", "not_applicable", "unable_to_test"].map((outcome) => [outcome, rows.filter((row) => row.outcome === outcome).length]));
-  const unable = rows.filter((row) => row.outcome === "unable_to_test").map((row) => ({
-    checkId: row.check_id,
-    reason: typeof row.evidence?.reason === "string" ? row.evidence.reason : "No reason recorded",
-    errors: row.evidence?.errors || null,
-  }));
-  const runBytes = new TextEncoder().encode(JSON.stringify(run)).byteLength;
-  const resultBytes = rowBytes.reduce((sum, value) => sum + value, 0);
-  const sharedEvidenceBytes = new TextEncoder().encode(JSON.stringify(sharedEvidence || [])).byteLength;
-  return c.json({
-    ok: true,
-    run,
-    results: {
-      count: rows.length,
-      outcomes,
-      unable,
-      approximateJsonBytes: resultBytes,
-      largestApproximateJsonBytes: Math.max(0, ...rowBytes),
-    },
-    sharedEvidence,
-    storage: {
-      runApproximateJsonBytes: runBytes,
-      resultsApproximateJsonBytes: resultBytes,
-      sharedEvidenceApproximateJsonBytes: sharedEvidenceBytes,
-      totalApproximateJsonBytes: runBytes + resultBytes + sharedEvidenceBytes,
-    },
-  });
-});
 app.get("/api/config", (c) =>
   c.json({
     supabaseUrl: c.env.SUPABASE_URL,
@@ -3489,10 +3442,67 @@ async function queuePaidVerificationAudit(env: Env) {
   console.log("paid verification audit queued", JSON.stringify({ auditRunId: run.id, sourceRunId: PAID_VERIFICATION_SOURCE_RUN_ID }));
 }
 
+async function logPaidVerificationAudit(env: Env) {
+  const db = admin(env);
+  const { data: run, error: runError } = await db
+    .from("audit_runs")
+    .select("id,status,score,coverage,duration_ms,progress_completed,progress_total,error,telemetry,created_at,completed_at")
+    .eq("retry_of", PAID_VERIFICATION_SOURCE_RUN_ID)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (runError) throw new Error(`paid_verification_report_run_failed: ${runError.message}`);
+  if (!run || !["completed", "partial", "failed"].includes(run.status)) return;
+  const [{ data: results, error: resultError }, { data: sharedEvidence, error: evidenceError }] = await Promise.all([
+    db.from("audit_results").select("check_id,outcome,evidence,duration_ms").eq("audit_run_id", run.id).limit(400),
+    db.from("audit_run_evidence").select("evidence_type,schema_version,summary,byte_size,collection_status,error").eq("audit_run_id", run.id).limit(20),
+  ]);
+  if (resultError || evidenceError)
+    throw new Error(`paid_verification_report_evidence_failed: ${resultError?.message || evidenceError?.message}`);
+  const rows = results || [];
+  const measuredRows = rows.map((row) => ({ row, bytes: new TextEncoder().encode(JSON.stringify(row)).byteLength }));
+  const outcomes = Object.fromEntries(["passed", "failed", "advisory", "not_applicable", "unable_to_test"].map((outcome) => [outcome, rows.filter((row) => row.outcome === outcome).length]));
+  const unable = rows.filter((row) => row.outcome === "unable_to_test").map((row) => ({
+    checkId: row.check_id,
+    reason: typeof row.evidence?.reason === "string" ? row.evidence.reason : "No reason recorded",
+    errors: row.evidence?.errors || null,
+  }));
+  const accessibility = rows.filter((row) => row.check_id.startsWith("accessibility.")).map((row) => ({
+    checkId: row.check_id,
+    outcome: row.outcome,
+    rule: row.evidence?.rule || null,
+    reason: row.evidence?.reason || null,
+    occurrences: Array.isArray(row.evidence?.occurrences) ? row.evidence.occurrences.length : 0,
+    errors: row.evidence?.errors || null,
+  }));
+  const runBytes = new TextEncoder().encode(JSON.stringify(run)).byteLength;
+  const resultBytes = measuredRows.reduce((sum, item) => sum + item.bytes, 0);
+  const sharedEvidenceBytes = new TextEncoder().encode(JSON.stringify(sharedEvidence || [])).byteLength;
+  console.log("paid verification audit report", JSON.stringify({
+    run,
+    results: {
+      count: rows.length,
+      outcomes,
+      unable,
+      accessibility,
+      approximateJsonBytes: resultBytes,
+      largestRows: measuredRows.sort((a, b) => b.bytes - a.bytes).slice(0, 10).map(({ row, bytes }) => ({ checkId: row.check_id, outcome: row.outcome, bytes })),
+    },
+    sharedEvidence,
+    storage: {
+      runApproximateJsonBytes: runBytes,
+      resultsApproximateJsonBytes: resultBytes,
+      sharedEvidenceApproximateJsonBytes: sharedEvidenceBytes,
+      totalApproximateJsonBytes: runBytes + resultBytes + sharedEvidenceBytes,
+    },
+  }));
+}
+
 async function scheduled(env: Env, cron: string) {
   const db = admin(env);
   if (cron === "*/5 * * * *") {
     await queuePaidVerificationAudit(env);
+    await logPaidVerificationAudit(env);
     const { data } = await db
       .from("uptime_monitors")
       .select("id")
