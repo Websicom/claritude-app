@@ -12,6 +12,7 @@
     "assets:sources": "node scripts/prepare-source-icons.mjs",
     "audit:registry": "node scripts/generate-audit-registry.mjs",
     "audit:coverage": "vite-node scripts/report-audit-coverage.ts",
+    "audit:content": "vite-node scripts/validate-audit-content.ts",
     "audit:benchmark": "vite-node scripts/benchmark-audit-architecture.ts"
   },
   "dependencies": {

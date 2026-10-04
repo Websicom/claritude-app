@@ -127,7 +127,7 @@ async function configuredAuditSnapshots(env: Env, context: AuditAvailabilityCont
       .eq("lifecycle", "active")
       .order("id"),
     db.from("audit_user_facing_groups")
-      .select("id,name,category,subcategory,presentation_role,outcome_policy,failure_severity,weight,authoritative_reference,lifecycle,enabled_by_default,configuration_version,sort_order")
+      .select("id,name,category,subcategory,presentation_role,outcome_policy,failure_severity,weight,authoritative_reference,focus,passed_message,failed_message,advisory_message,not_applicable_message,unable_to_test_message,recommendation,example_fix,reference_label,evidence_presentation,occurrence_presentation,lifecycle,enabled_by_default,configuration_version,sort_order")
       .order("sort_order"),
     db.from("audit_user_facing_group_checks")
       .select("group_id,check_id,presentation_action,lifecycle,enabled_by_default,sort_order")

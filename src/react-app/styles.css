@@ -3611,6 +3611,41 @@ input[type="checkbox"]:checked:after {
   overflow-wrap: anywhere;
 }
 
+.audit-content-section p {
+  margin: 6px 0 16px;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.audit-result-summary {
+  margin: 4px 0 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--soft);
+  line-height: 1.5;
+}
+
+.audit-example-fix {
+  margin-top: 14px;
+}
+
+.audit-example-fix summary {
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.audit-example-fix pre {
+  margin: 10px 0 0;
+  max-width: 100%;
+  overflow: auto;
+  padding: 14px;
+  border-radius: 10px;
+  background: #111827;
+  color: #f9fafb;
+  white-space: pre-wrap;
+}
+
 @media (max-width: 720px) {
   .audit-catalogue-filters {
     grid-template-columns: 1fr;

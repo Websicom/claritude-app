@@ -6918,16 +6918,18 @@ function AuditComparePanel({
   );
 }
 
-function AuditOccurrences({ occurrences }: { occurrences: any[] }) {
+function AuditOccurrences({ occurrences, presentation }: { occurrences: any[]; presentation?: { enabled?: boolean; initialLimit?: number; fields?: string[] } }) {
   const [showAll, setShowAll] = useState(false);
-  if (!occurrences.length) return <p className="subtle">No element-level occurrences were recorded.</p>;
-  const visible = showAll ? occurrences : occurrences.slice(0, 5);
+  if (presentation?.enabled === false || !occurrences.length) return null;
+  const initialLimit = Math.max(1, Number(presentation?.initialLimit) || 10);
+  const visible = showAll ? occurrences : occurrences.slice(0, initialLimit);
   return (
     <div className="audit-occurrences">
+      <p className="subtle">Showing {visible.length} of {occurrences.length}</p>
       <ol>
-        {visible.map((entry, index) => <li key={`${entry.check_id || "occurrence"}-${index}`}><b>{entry.check_title || "Affected item"}</b><code>{auditOccurrenceText(entry.occurrence)}</code></li>)}
+        {visible.map((entry, index) => <li key={`${entry.check_id || "occurrence"}-${index}`}><b>{entry.check_title || "Affected item"}</b><code>{auditOccurrenceText(entry.occurrence, presentation?.fields)}</code></li>)}
       </ol>
-      {occurrences.length > 5 && <button className="text-link" onClick={() => setShowAll((value) => !value)}>{showAll ? "Show fewer" : `Show all ${occurrences.length}`}</button>}
+      {occurrences.length > initialLimit && <button className="text-link" onClick={() => setShowAll((value) => !value)}>{showAll ? `Show first ${initialLimit}` : "Show all"}</button>}
     </div>
   );
 }
@@ -6951,12 +6953,15 @@ function AuditResults({ results, onRetest, onReview }: { results: any[]; onRetes
             <div className="audit-detail">
               <div className="audit-review-row">
                 <span className="tag">{cap(x.outcome || "recorded")}</span>
+                {x.severity && <span className={`tag severity-${auditSeverityGroup(x)}`}>{x.severity}</span>}
                 {x.presentation_role && <span className="subtle">{x.presentation_role}</span>}
                 {!x.subfindings && <span className="subtle">Review status: {String(x.review_status || "not_reviewed").replaceAll("_", " ")}</span>}
                 {onReview && x.id && !x.subfindings && <button className="text-link" onClick={() => onReview(x.id, x.review_status === "reviewed" ? "not_reviewed" : "reviewed")}>{x.review_status === "reviewed" ? "Clear review" : "Mark reviewed"}</button>}
               </div>
               {Array.isArray(x.subfindings) ? (
                 <>
+                  {x.focus && <section className="audit-content-section"><b className="audit-detail-label">What Claritude checks</b><p>{x.focus}</p></section>}
+                  {x.result_summary && <section className="audit-result-summary" aria-label="Audit result summary">{x.result_summary}</section>}
                   <b className="audit-detail-label">Technical sub-findings</b>
                   <ul className="audit-subfindings">
                     {x.subfindings.map((finding: any) => (
@@ -6967,8 +6972,12 @@ function AuditResults({ results, onRetest, onReview }: { results: any[]; onRetes
                       </li>
                     ))}
                   </ul>
-                  <b className="audit-detail-label">Affected elements or resources</b>
-                  <AuditOccurrences occurrences={x.occurrences || []} />
+                  {x.occurrence_presentation?.enabled !== false && (x.occurrences || []).length > 0 && <>
+                    <b className="audit-detail-label">Affected elements or resources</b>
+                    <AuditOccurrences occurrences={x.occurrences || []} presentation={x.occurrence_presentation} />
+                  </>}
+                  {["failed", "advisory"].includes(x.outcome) && x.recommendation && <section className="audit-content-section"><b className="audit-detail-label">Recommendation</b><p>{x.recommendation}</p></section>}
+                  {["failed", "advisory"].includes(x.outcome) && x.example_fix && <details className="audit-example-fix"><summary>Example fix</summary><pre><code>{x.example_fix}</code></pre></details>}
                 </>
               ) : (
                 <>
@@ -6981,7 +6990,7 @@ function AuditResults({ results, onRetest, onReview }: { results: any[]; onRetes
               )}
               <div className="audit-detail-actions">
                 <button className="btn" onClick={() => onRetest?.(x.technical_check_ids || (x.check_id ? [x.check_id] : []))} disabled={!onRetest || !(x.technical_check_ids?.length || x.check_id)}><RefreshCw /> Re-test</button>
-                <a className="btn" href={auditLearnMoreUrl(x.category, x.source_reference)} target="_blank" rel="noreferrer"><HelpCircle /> Learn more</a>
+                <a className="btn" href={auditLearnMoreUrl(x.category, x.source_reference)} target="_blank" rel="noreferrer"><HelpCircle /> {x.reference_label || "Authoritative reference"}</a>
               </div>
             </div>
           </details>
@@ -7057,14 +7066,25 @@ function PerformanceTable({
   );
 }
 
-function auditOccurrenceText(occurrence: unknown) {
+function auditOccurrenceText(occurrence: unknown, configuredFields?: string[]) {
   if (typeof occurrence === "string" || typeof occurrence === "number") return String(occurrence);
   if (!occurrence || typeof occurrence !== "object") return "Recorded affected occurrence";
-  const safeKeys = ["selector", "element", "url", "path", "resource", "message", "description", "snippet", "attribute", "value"];
+  const allowed = new Set(["selector", "element", "html", "locator", "url", "path", "resource", "resourceType", "message", "description", "snippet", "attribute", "viewport", "status", "value", "source"]);
+  const safeKeys = (configuredFields?.length ? configuredFields : [...allowed]).filter((key) => allowed.has(key));
   const details = safeKeys.flatMap((key) => {
     const value = (occurrence as Record<string, unknown>)[key];
-    return value == null || value === "" || typeof value === "object" ? [] : [`${key.replaceAll("_", " ")}: ${String(value)}`];
+    if (value == null || value === "" || typeof value === "object") return [];
+    const compact = String(value).replace(/\s+/g, " ").trim();
+    return [`${key.replaceAll("_", " ")}: ${compact.length > 240 ? `${compact.slice(0, 237)}…` : compact}`];
   });
+  const values = (occurrence as Record<string, unknown>).values;
+  if (values && typeof values === "object" && !Array.isArray(values)) {
+    for (const key of ["viewport", "status", "value"]) {
+      if (!safeKeys.includes(key)) continue;
+      const value = (values as Record<string, unknown>)[key];
+      if (typeof value === "string" || typeof value === "number") details.push(`${key}: ${String(value)}`);
+    }
+  }
   return details.join(" · ") || "Recorded affected occurrence";
 }
 function PerformanceTarget({ row }: { row: (string | number)[] }) {
