@@ -64,6 +64,8 @@ const LIMITS = {
   analyticsEventsPerPropertyPerDay: 50_000,
 } as const;
 
+const PAID_VERIFICATION_SOURCE_RUN_ID = "2f8ccefe-2840-44e5-9d11-df3e7ba27d77";
+
 export function validAvatarBytes(contentType: string, bytes: Uint8Array) {
   const startsWith = (...signature: number[]) =>
     signature.every((value, index) => bytes[index] === value);
@@ -139,6 +141,54 @@ app.get("/health", (c) =>
     },
   }),
 );
+
+app.get("/health/paid-verification", async (c) => {
+  const db = admin(c.env);
+  const { data: run, error: runError } = await db
+    .from("audit_runs")
+    .select("id,status,score,coverage,duration_ms,progress_completed,progress_total,error,telemetry,created_at,completed_at")
+    .eq("retry_of", PAID_VERIFICATION_SOURCE_RUN_ID)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (runError) return c.json({ ok: false, error: runError.message }, 500);
+  if (!run) return c.json({ ok: true, run: null });
+  const [{ data: results, error: resultError }, { data: sharedEvidence, error: evidenceError }] = await Promise.all([
+    db.from("audit_results").select("check_id,outcome,evidence,duration_ms").eq("audit_run_id", run.id).limit(400),
+    db.from("audit_run_evidence").select("evidence_type,schema_version,summary,byte_size,collection_status,error").eq("audit_run_id", run.id).limit(20),
+  ]);
+  if (resultError || evidenceError)
+    return c.json({ ok: false, error: resultError?.message || evidenceError?.message }, 500);
+  const rows = results || [];
+  const rowBytes = rows.map((row) => new TextEncoder().encode(JSON.stringify(row)).byteLength);
+  const outcomes = Object.fromEntries(["passed", "failed", "advisory", "not_applicable", "unable_to_test"].map((outcome) => [outcome, rows.filter((row) => row.outcome === outcome).length]));
+  const unable = rows.filter((row) => row.outcome === "unable_to_test").map((row) => ({
+    checkId: row.check_id,
+    reason: typeof row.evidence?.reason === "string" ? row.evidence.reason : "No reason recorded",
+    errors: row.evidence?.errors || null,
+  }));
+  const runBytes = new TextEncoder().encode(JSON.stringify(run)).byteLength;
+  const resultBytes = rowBytes.reduce((sum, value) => sum + value, 0);
+  const sharedEvidenceBytes = new TextEncoder().encode(JSON.stringify(sharedEvidence || [])).byteLength;
+  return c.json({
+    ok: true,
+    run,
+    results: {
+      count: rows.length,
+      outcomes,
+      unable,
+      approximateJsonBytes: resultBytes,
+      largestApproximateJsonBytes: Math.max(0, ...rowBytes),
+    },
+    sharedEvidence,
+    storage: {
+      runApproximateJsonBytes: runBytes,
+      resultsApproximateJsonBytes: resultBytes,
+      sharedEvidenceApproximateJsonBytes: sharedEvidenceBytes,
+      totalApproximateJsonBytes: runBytes + resultBytes + sharedEvidenceBytes,
+    },
+  });
+});
 app.get("/api/config", (c) =>
   c.json({
     supabaseUrl: c.env.SUPABASE_URL,
@@ -3400,9 +3450,49 @@ export function renderUptimeAlertEmail({
   </body></html>`;
 }
 
+async function queuePaidVerificationAudit(env: Env) {
+  const db = admin(env);
+  const { data: existing, error: existingError } = await db
+    .from("audit_runs")
+    .select("id")
+    .eq("retry_of", PAID_VERIFICATION_SOURCE_RUN_ID)
+    .limit(1)
+    .maybeSingle();
+  if (existingError) throw new Error(`paid_verification_lookup_failed: ${existingError.message}`);
+  if (existing) return;
+  const { data: source, error: sourceError } = await db
+    .from("audit_runs")
+    .select("property_id,audit_page_id,page_url,registry_snapshot,created_by")
+    .eq("id", PAID_VERIFICATION_SOURCE_RUN_ID)
+    .single();
+  if (sourceError || !source) throw new Error(`paid_verification_source_failed: ${sourceError?.message || "not found"}`);
+  const { data: run, error: insertError } = await db
+    .from("audit_runs")
+    .insert({
+      property_id: source.property_id,
+      audit_page_id: source.audit_page_id,
+      page_url: source.page_url,
+      status: "queued",
+      registry_snapshot: source.registry_snapshot,
+      scoring_version: "2.0.0",
+      execution_stage: "queued",
+      progress_completed: 0,
+      progress_total: Array.isArray(source.registry_snapshot) ? source.registry_snapshot.length : 0,
+      heartbeat_at: new Date().toISOString(),
+      created_by: source.created_by,
+      retry_of: PAID_VERIFICATION_SOURCE_RUN_ID,
+    })
+    .select("id")
+    .single();
+  if (insertError || !run) throw new Error(`paid_verification_insert_failed: ${insertError?.message || "no run returned"}`);
+  await env.JOBS.send({ type: "audit", id: run.id });
+  console.log("paid verification audit queued", JSON.stringify({ auditRunId: run.id, sourceRunId: PAID_VERIFICATION_SOURCE_RUN_ID }));
+}
+
 async function scheduled(env: Env, cron: string) {
   const db = admin(env);
   if (cron === "*/5 * * * *") {
+    await queuePaidVerificationAudit(env);
     const { data } = await db
       .from("uptime_monitors")
       .select("id")
