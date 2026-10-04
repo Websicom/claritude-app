@@ -31,6 +31,15 @@ describe("Stage 4 user-facing audit content", () => {
     expect(snapshot.configurationVersion).toBe(2);
   });
 
+  it("preserves approved technical-name capitalisation in prose", () => {
+    const lcp = USER_FACING_AUDIT_CONTENT_BY_ID.get("audit-group.performance.largest-contentful-paint")!;
+    const csp = USER_FACING_AUDIT_CONTENT_BY_ID.get("audit-group.security.content-security-policy")!;
+    expect(lcp.focus).toContain("Largest Contentful Paint");
+    expect(lcp.focus).not.toContain("largest Contentful Paint");
+    expect(csp.focus).toContain("Content Security Policy");
+    expect(csp.focus).not.toContain("content Security Policy");
+  });
+
   it("renders metric-specific values without exposing a BrowserLab object", () => {
     const group = USER_FACING_AUDIT_GROUPS.find((item) => item.name === "Largest Contentful Paint")!;
     const rows = generatedGroupRows([group]);

@@ -224,30 +224,24 @@ function metricPresentation(name: string) {
   return null;
 }
 
-function lowerTopic(value: string) {
-  return /^(?:AI|ARIA|CAA|CDN|CLS|CSP|DMARC|DNS|DOM|FCP|H1|HTML|HTTP|HTTPS|IPv4|IPv6|JSON-LD|LCP|MIME|MX|SEO|SPF|SVG|TBT|URL|XML|X Card)(?:\b|\s|\/)/.test(value)
-    ? value
-    : value.charAt(0).toLowerCase() + value.slice(1);
-}
-
 function contentFor(group: (typeof USER_FACING_AUDIT_GROUPS)[number]) {
-  const topic = lowerTopic(group.name);
+  const topic = group.name;
   const titles = group.technicalChecks.map((mapping) => technicalById.get(mapping.checkId)?.title || mapping.checkId);
-  const examples = titles.slice(0, 3).map(lowerTopic);
+  const examples = titles.slice(0, 3);
   const focus = `Claritude examines ${topic} using ${group.technicalChecks.length} technical ${group.technicalChecks.length === 1 ? "check" : "checks"}, including ${examples.join(", ")}${titles.length > examples.length ? ", and related evidence" : ""}. ${reasonByCategory[group.category]}`;
   const optional = group.outcomePolicy.startsWith("Advisory when");
   const contextual = group.outcomePolicy.startsWith("Contextual:");
   const metric = metricPresentation(group.name);
   const passedMessage = metric
     ? `Mobile was {mobileValue} and desktop was {desktopValue}. The recommended threshold is {threshold}.`
-    : `All {checkedCount} applicable technical checks verified ${topic}.`;
+    : `All {checkedCount} applicable technical checks produced the expected result for ${topic}.`;
   const failedMessage = `{failedCount} of {checkedCount} technical checks found a problem with ${topic}.`;
   const advisoryMessage = optional
-    ? `The audit found an optional or suboptimal ${topic} opportunity. This is not a confirmed technical failure.`
+    ? `The audit found an optional or suboptimal opportunity related to ${topic}. This is not a confirmed technical failure.`
     : contextual
       ? `The audit recorded the site's ${topic} policy. Confirm that this state matches the publisher's intent; it is not automatically a defect.`
-      : `The evidence indicates an opportunity to improve ${topic}, but it does not justify treating it as a confirmed failure.`;
-  const notApplicableMessage = `No relevant ${topic} target was present on this page, so the group did not apply.`;
+      : `The evidence indicates an opportunity related to ${topic}, but it does not justify treating it as a confirmed failure.`;
+  const notApplicableMessage = `No relevant target for ${topic} was present on this page, so the group did not apply.`;
   const unableToTestMessage = `Claritude could not reach a reliable conclusion about ${topic}. {unableReason}`;
   const exampleFix = exampleRules.find(([pattern]) => pattern.test(group.name))?.[1] || null;
   const occurrenceEnabled = !["DNS & Domain", "Server & HTTP", "Performance Metrics", "Core Web Vitals & Rendering"].includes(group.subcategory)
