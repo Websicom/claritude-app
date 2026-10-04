@@ -2709,6 +2709,7 @@ async function collectV2AuditEvidence(
   responseMs: number,
   redirects: { url: string; status: number; location: string }[],
   requireBrowser: boolean,
+  heartbeat: () => Promise<void>,
 ): Promise<{ evidence: AuditEvidenceBundle; telemetry: Record<string, unknown>; sharedEvidence: Array<Record<string, unknown>> }> {
   const phases: Record<string, number> = {};
   const collectStarted = Date.now();
@@ -2736,6 +2737,7 @@ async function collectV2AuditEvidence(
       console.error("browser evidence collection failed", errorMessage(error));
     }
   }
+  await heartbeat();
   phases.browserMs = Date.now() - browserStarted;
   const rendered = browserLab ? {
     desktop: renderedViewportEvidence(browserLab.desktop),
@@ -2749,8 +2751,8 @@ async function collectV2AuditEvidence(
   const networkStarted = Date.now();
   const validatedHosts = new Set<string>();
   const [links, resources] = await Promise.all([
-    collectLinkInventory(linkDeclarations, safeFetchTrace, undefined, validatedHosts),
-    collectResourceInventory(resourceDeclarations, safeFetchTrace, undefined, validatedHosts),
+    collectLinkInventory(linkDeclarations, safeFetchTrace, undefined, validatedHosts, heartbeat),
+    collectResourceInventory(resourceDeclarations, safeFetchTrace, undefined, validatedHosts, heartbeat),
   ]);
   const canonicalElement = source.elements.find((element) => element.tagName === "link" && (element.attributes.find((item) => item.name === "rel")?.value || "").toLowerCase().split(/\s+/).includes("canonical"));
   const canonicalHref = canonicalElement?.attributes.find((item) => item.name === "href")?.value || null;
@@ -2762,6 +2764,7 @@ async function collectV2AuditEvidence(
   const robots = parseRobotsEvidence(robotsDestination, source.documentUrl, ["Googlebot", "Bingbot", "OAI-SearchBot", "GPTBot", "ClaudeBot", "Claude-SearchBot", "ChatGPT-User", "Claude-User"]);
   const sitemapUrls = [...new Set([...robots.sitemaps, `${origin}/sitemap.xml`])].slice(0, 4);
   const sitemapDestinations = await Promise.all(sitemapUrls.map((url) => inspectDestination(url, safeFetchTrace, { includeBody: true, bodyBytes: 1_000_000 })));
+  await heartbeat();
   const sitemaps = sitemapDestinations.map((destination) => {
     const parsed = destination.body && !destination.bodyTruncated
       ? parseSitemapXml(destination.body, destination.requestedUrl)
@@ -2780,6 +2783,7 @@ async function collectV2AuditEvidence(
         return { queriedHostname: hostname, recordType, responseCode: null, authenticatedData: null, records: [], error: errorMessage(error) };
       }
     })));
+    await heartbeat();
   }
   phases.networkMs = Date.now() - networkStarted;
   const fontFaces = resources.results.filter((item) => item.declarations.some((declaration) => declaration.declarationType === "stylesheet") && item.body).flatMap((item) => parseFontFaces(item.body || "", item.finalUrl || item.requestedUrl));
@@ -2863,17 +2867,16 @@ async function runAudit(env: Env, id: string) {
       const definition = registry(check.id);
       return check.primaryCategory === "performance" || ["rendered_browser", "lab"].includes(definition?.executionMethod || "");
     });
-    const heartbeatTimer = setInterval(() => {
-      void updateRun({ heartbeat_at: new Date().toISOString() }).catch((error) => {
-        console.error("audit heartbeat failed", id, errorMessage(error));
-      });
-    }, 30_000);
-    let collected: Awaited<ReturnType<typeof collectV2AuditEvidence>>;
-    try {
-      collected = await collectV2AuditEvidence(env, run.page_url, res, html, responseMs, trace.redirects, requireBrowser);
-    } finally {
-      clearInterval(heartbeatTimer);
-    }
+    const collected = await collectV2AuditEvidence(
+      env,
+      run.page_url,
+      res,
+      html,
+      responseMs,
+      trace.redirects,
+      requireBrowser,
+      () => updateRun({ heartbeat_at: new Date().toISOString() }),
+    );
     await updateRun({
       execution_stage: "evaluating_checks",
       progress_completed: 0,

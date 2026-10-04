@@ -132,12 +132,14 @@ export async function collectLinkInventory(
   fetchTrace: BoundedFetchTrace,
   limits: CollectorLimits = DEFAULT_COLLECTOR_LIMITS,
   validatedHosts = new Set<string>(),
+  onBatch?: () => Promise<void>,
 ): Promise<InventoryCollection<DestinationEvidence, LinkDeclaration>> {
   const candidates = [...new Set(links.map((link) => link.resolvedUrl).filter((url): url is string => Boolean(url)))];
   const selected = candidates.slice(0, limits.links);
   const results: DestinationEvidence[] = [];
   for (let index = 0; index < selected.length; index += 5) {
     results.push(...await Promise.all(selected.slice(index, index + 5).map((url) => inspectDestination(url, fetchTrace, { probeChallenge: true, bodyBytes: 16_384, validatedHosts }))));
+    await onBatch?.();
   }
   return {
     declarations: links,
@@ -156,6 +158,7 @@ export async function collectResourceInventory(
   fetchTrace: BoundedFetchTrace,
   limits: CollectorLimits = DEFAULT_COLLECTOR_LIMITS,
   validatedHosts = new Set<string>(),
+  onBatch?: () => Promise<void>,
 ): Promise<InventoryCollection<ResourceEvidence, ResourceDeclaration>> {
   const grouped = new Map<string, ResourceDeclaration[]>();
   for (const declaration of declarations) {
@@ -170,6 +173,7 @@ export async function collectResourceInventory(
       ...await inspectDestination(url, fetchTrace, { includeBody: declarations.some((item) => bodyResourceKinds.has(item.declarationType)), bodyBytes: limits.bodyBytes, validatedHosts }),
       declarations,
     }))));
+    await onBatch?.();
   }
   return {
     declarations,
