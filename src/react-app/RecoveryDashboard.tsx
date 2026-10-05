@@ -2462,13 +2462,15 @@ function AnalyticsView({
     page: page.path,
     views: page.pageviews || 0,
     events: page.events || 0,
+    activeTime: page.averageActiveSeconds,
   }));
   const config = analyticsFilterConfigs[tab];
-  const keyEventRate = scoped.pageviews ? (scoped.keyEvents / scoped.pageviews) * 100 : null;
   const engagement = scoped.engagement || {};
+  const previousEngagement = scoped.previous?.engagement || {};
   const performance = scoped.performance || { vitals: scoped.vitals || [], series: {}, minimumSamples: 1 };
   const minimumSamples = performance.minimumSamples || 1;
   const vital = (name: string) => (performance.vitals || []).find((entry: any) => entry.name === name);
+  const previousVital = (name: string) => (scoped.previous?.performance?.vitals || []).find((entry: any) => entry.name === name);
   const selectedPerformanceMetric = filters.metric || "LCP";
   const seriesKey = trafficSeriesKey(chartMetric);
   const chartPoints = (scoped.series || []).map((point: any) => ({ label: point.day, value: point[seriesKey] || 0 }));
@@ -2525,10 +2527,11 @@ function AnalyticsView({
       ) : tab === "Overview" ? (
         <>
           <Metrics values={[
-            ["Pageviews", fmt(scoped.pageviews || 0), comparisonText(scoped.pageviews, scoped.previous?.pageviews)],
-            ["Avg unique visits", scoped.averageDailyVisitors == null ? "Unavailable" : fmt(scoped.averageDailyVisitors), scoped.averageDailyVisitors == null ? "Anonymous session estimate unavailable" : "Anonymous sessions per calendar day"],
-            ["Key events", fmt(scoped.keyEvents || 0), comparisonText(scoped.keyEvents, scoped.previous?.keyEvents)],
-            ["Key events per pageview", keyEventRate == null ? "—" : `${keyEventRate.toFixed(1)}%`, scoped.pageviews ? `${fmt(scoped.keyEvents)} ÷ ${fmt(scoped.pageviews)}` : "No pageviews in range"],
+            ["Pageviews", fmt(scoped.pageviews || 0), <MetricComparison current={scoped.pageviews} previous={scoped.previous?.pageviews} />],
+            [<MetricTerm term="Sessions" />, fmt(scoped.sessions || 0), <MetricComparison current={scoped.sessions} previous={scoped.previous?.sessions} />],
+            ["Tracked events", fmt(scoped.keyEvents || 0), <MetricComparison current={scoped.keyEvents} previous={scoped.previous?.keyEvents} />],
+            [<MetricTerm term="Bounce rate" />, engagement.bounceRate == null ? "Unavailable" : `${engagement.bounceRate.toFixed(1)}%`, <MetricComparison current={engagement.bounceRate} previous={previousEngagement.bounceRate} direction="lower" />],
+            [<MetricTerm term="Average active session duration" />, engagement.averageActiveSessionSeconds == null ? "Unavailable" : durationLabel(engagement.averageActiveSessionSeconds), <MetricComparison current={engagement.averageActiveSessionSeconds} previous={previousEngagement.averageActiveSessionSeconds} direction="higher" />],
           ]} />
           <Panel
             title="Traffic"
@@ -2582,6 +2585,13 @@ function AnalyticsView({
           onBack={() => updateAnalyticsParams({ pagePath: null }, false)}
         />
       ) : tab === "Pages" ? (
+        <>
+        <Metrics values={[
+          ["Pageviews", fmt(scoped.pageviews || 0), <MetricComparison current={scoped.pageviews} previous={scoped.previous?.pageviews} />],
+          [<MetricTerm term="Sessions" />, fmt(scoped.sessions || 0), <MetricComparison current={scoped.sessions} previous={scoped.previous?.sessions} />],
+          ["Average active page time", engagement.averageActiveSeconds == null ? "Unavailable" : durationLabel(engagement.averageActiveSeconds), <MetricComparison current={engagement.averageActiveSeconds} previous={previousEngagement.averageActiveSeconds} direction="higher" />],
+          [<MetricTerm term="Bounce rate" />, engagement.bounceRate == null ? "Unavailable" : `${engagement.bounceRate.toFixed(1)}%`, <MetricComparison current={engagement.bounceRate} previous={previousEngagement.bounceRate} direction="lower" />],
+        ]} />
         <Panel title="Pages">
           {filtersToolbar}
           {pageListLoading ? (
@@ -2591,8 +2601,9 @@ function AnalyticsView({
           ) : pageList?.rows?.length ? (
             <>
               <AnalyticsTable
-                pages={pageList.rows.map((row: any) => ({ page: row.path, views: row.pageviews, events: row.events }))}
+                pages={pageList.rows.map((row: any) => ({ page: row.path, views: row.pageviews, events: row.events, activeTime: row.averageActiveSeconds }))}
                 property={property}
+                showActiveTime
                 onDetail={(page) => updateAnalyticsParams({ pagePath: page })}
               />
               <AnalyticsPagination
@@ -2611,14 +2622,23 @@ function AnalyticsView({
             </div>
           )}
         </Panel>
+        </>
       ) : tab === "Sources" && detailSource ? (
         <AnalyticsSourceDetail data={scoped} source={detailSource} property={property} onBack={() => updateAnalyticsParams({ sourceDetail: null })} />
       ) : tab === "Sources" ? (
+        <>
+        <Metrics values={[
+          ["Pageviews", fmt(scoped.pageviews || 0), <MetricComparison current={scoped.pageviews} previous={scoped.previous?.pageviews} />],
+          [<MetricTerm term="Sessions" />, fmt(scoped.sessions || 0), <MetricComparison current={scoped.sessions} previous={scoped.previous?.sessions} />],
+          ["Tracked events", fmt(scoped.keyEvents || 0), <MetricComparison current={scoped.keyEvents} previous={scoped.previous?.keyEvents} />],
+          [<MetricTerm term="Bounce rate" />, engagement.bounceRate == null ? "Unavailable" : `${engagement.bounceRate.toFixed(1)}%`, <MetricComparison current={engagement.bounceRate} previous={previousEngagement.bounceRate} direction="lower" />],
+        ]} />
         <Panel title="Traffic sources">
           {filtersToolbar}
           <AnalyticsSourceTable sources={scoped.sources || []} onDetail={(source) => updateAnalyticsParams({ sourceDetail: source })} />
           <p className="subtle">Source categories are mutually exclusive and total {fmt((scoped.sources || []).reduce((sum: number, source: any) => sum + source.pageviews, 0))} pageviews.</p>
         </Panel>
+        </>
       ) : tab === "Events" && detailEvent ? (
         <AnalyticsEventDetail
           session={session}
@@ -2632,6 +2652,13 @@ function AnalyticsView({
           onBack={() => updateAnalyticsParams({ eventDetail: null })}
         />
       ) : tab === "Events" ? (
+        <>
+        <Metrics values={[
+          ["Tracked events", fmt(scoped.keyEvents || 0), <MetricComparison current={scoped.keyEvents} previous={scoped.previous?.keyEvents} />],
+          [<MetricTerm term="Sessions" />, fmt(scoped.sessions || 0), <MetricComparison current={scoped.sessions} previous={scoped.previous?.sessions} />],
+          ["Pageviews", fmt(scoped.pageviews || 0), <MetricComparison current={scoped.pageviews} previous={scoped.previous?.pageviews} />],
+          ["Engaged sessions", engagement.engagedSessions == null ? "Unavailable" : fmt(engagement.engagedSessions), <MetricComparison current={engagement.engagedSessions} previous={previousEngagement.engagedSessions} direction="higher" />],
+        ]} />
         <EventsPanel
           session={session}
           property={property}
@@ -2643,8 +2670,15 @@ function AnalyticsView({
           onFilterChange={changeFilters}
           onOpenEvent={(eventName) => updateAnalyticsParams({ eventDetail: eventName })}
         />
+        </>
       ) : tab === "Audience" ? (
         <>
+          <Metrics values={[
+            ["Pageviews", fmt(scoped.pageviews || 0), <MetricComparison current={scoped.pageviews} previous={scoped.previous?.pageviews} />],
+            [<MetricTerm term="Sessions" />, fmt(scoped.sessions || 0), <MetricComparison current={scoped.sessions} previous={scoped.previous?.sessions} />],
+            ["Countries", fmt((scoped.countries || []).length), <MetricComparison current={(scoped.countries || []).length} previous={(scoped.previous?.countries || []).length} />],
+            ["Devices", fmt((scoped.devices || []).length), <MetricComparison current={(scoped.devices || []).length} previous={(scoped.previous?.devices || []).length} />],
+          ]} />
           {filtersToolbar}
           <div className="grid equal">
             <Panel title="Browsers"><AnalyticsValueTable headers={["Browser", "Share"]} rows={shareRows(scoped.browsers, scoped.pageviews, "browser")} /></Panel>
@@ -2656,10 +2690,10 @@ function AnalyticsView({
       ) : tab === "Engagement" ? (
         <>
           <Metrics values={[
-            ["Engaged pageviews", engagement.engagedPageviews == null ? "Unavailable" : fmt(engagement.engagedPageviews), engagement.engagedPageviews == null ? "New correlated pageviews only" : `${fmt(engagement.eligiblePageviews)} eligible pageviews`],
-            ["Median scroll depth", engagement.medianScrollDepth == null ? "Unavailable" : `${Math.round(engagement.medianScrollDepth)}%`, engagement.medianScrollDepth == null ? "Awaiting correlated scroll signals" : "Per-page-view maximum"],
-            ["Pageviews with key events", engagement.pageviewsWithKeyEvents == null ? "Unavailable" : fmt(engagement.pageviewsWithKeyEvents), "Each pageview counted once"],
-            ["Median active time", engagement.medianActiveSeconds == null ? "Unavailable" : durationLabel(engagement.medianActiveSeconds), "Visible foreground time"],
+            [<MetricTerm term="Bounce rate" />, engagement.bounceRate == null ? "Unavailable" : `${engagement.bounceRate.toFixed(1)}%`, <MetricComparison current={engagement.bounceRate} previous={previousEngagement.bounceRate} direction="lower" />],
+            ["Engaged sessions", engagement.engagedSessions == null ? "Unavailable" : fmt(engagement.engagedSessions), <MetricComparison current={engagement.engagedSessions} previous={previousEngagement.engagedSessions} direction="higher" />],
+            [<MetricTerm term="Average active session duration" />, engagement.averageActiveSessionSeconds == null ? "Unavailable" : durationLabel(engagement.averageActiveSessionSeconds), <MetricComparison current={engagement.averageActiveSessionSeconds} previous={previousEngagement.averageActiveSessionSeconds} direction="higher" />],
+            [<MetricTerm term="Median active session duration" />, engagement.medianActiveSessionSeconds == null ? "Unavailable" : durationLabel(engagement.medianActiveSessionSeconds), <MetricComparison current={engagement.medianActiveSessionSeconds} previous={previousEngagement.medianActiveSessionSeconds} direction="higher" />],
           ]} />
           {filtersToolbar}
           <div className="grid equal">
@@ -2674,9 +2708,11 @@ function AnalyticsView({
           </Panel>
           <Panel title="Additional aggregate insights">
             <KeyValues rows={[
-              ["Engagement rate", engagement.engagementRate == null ? "Unavailable" : `${engagement.engagementRate.toFixed(1)}%`],
+              ["Session engagement rate", engagement.sessionEngagementRate == null ? "Unavailable" : `${engagement.sessionEngagementRate.toFixed(1)}%`],
+              ["Engaged pageviews", engagement.engagedPageviews == null ? "Unavailable" : fmt(engagement.engagedPageviews)],
+              ["Median scroll depth", engagement.medianScrollDepth == null ? "Unavailable" : `${Math.round(engagement.medianScrollDepth)}%`],
               ["JavaScript errors", engagement.collectionStatus === "available" ? fmt(engagement.javascriptErrors || 0) : "Unavailable"],
-              ["Median active time", engagement.medianActiveSeconds == null ? "Unavailable" : durationLabel(engagement.medianActiveSeconds)],
+              ["Median active page time", engagement.medianActiveSeconds == null ? "Unavailable" : durationLabel(engagement.medianActiveSeconds)],
               ["Top visible section", engagement.visibleSections?.[0] ? `${eventLabel(engagement.visibleSections[0].name)} · ${fmt(engagement.visibleSections[0].count)} pageviews` : "Unavailable"],
             ]} />
             <p className="subtle">Aggregate signals use anonymous page-view identifiers and do not create person profiles.</p>
@@ -2685,10 +2721,10 @@ function AnalyticsView({
       ) : (
         <>
           <Metrics values={[
-            [<MetricTerm term="LCP" />, vitalMetricValue(vital("LCP"), minimumSamples), vitalMetricSamples(vital("LCP"), minimumSamples)],
-            [<MetricTerm term="INP" />, vitalMetricValue(vital("INP"), minimumSamples), vitalMetricSamples(vital("INP"), minimumSamples)],
-            [<MetricTerm term="CLS" />, vitalMetricValue(vital("CLS"), minimumSamples), vitalMetricSamples(vital("CLS"), minimumSamples)],
-            ["Good experiences", performance.goodExperiencesPercent == null || performance.eligibleGoodExperienceViews < minimumSamples ? "Unavailable" : `${Math.round(performance.goodExperiencesPercent)}%`, performance.goodExperiencesPercent == null ? "Requires LCP, INP and CLS per view" : `${fmt(performance.eligibleGoodExperienceViews)} eligible pageviews`],
+            [<MetricTerm term="LCP" />, vitalMetricValue(vital("LCP"), minimumSamples), <MetricComparison current={Number(vital("LCP")?.samples || 0) >= minimumSamples ? vital("LCP")?.value : null} previous={Number(previousVital("LCP")?.samples || 0) >= minimumSamples ? previousVital("LCP")?.value : null} direction="lower" />],
+            [<MetricTerm term="INP" />, vitalMetricValue(vital("INP"), minimumSamples), <MetricComparison current={Number(vital("INP")?.samples || 0) >= minimumSamples ? vital("INP")?.value : null} previous={Number(previousVital("INP")?.samples || 0) >= minimumSamples ? previousVital("INP")?.value : null} direction="lower" />],
+            [<MetricTerm term="CLS" />, vitalMetricValue(vital("CLS"), minimumSamples), <MetricComparison current={Number(vital("CLS")?.samples || 0) >= minimumSamples ? vital("CLS")?.value : null} previous={Number(previousVital("CLS")?.samples || 0) >= minimumSamples ? previousVital("CLS")?.value : null} direction="lower" />],
+            ["Good experiences", performance.goodExperiencesPercent == null || performance.eligibleGoodExperienceViews < minimumSamples ? "Unavailable" : `${Math.round(performance.goodExperiencesPercent)}%`, <MetricComparison current={performance.goodExperiencesPercent} previous={scoped.previous?.performance?.goodExperiencesPercent} direction="higher" />],
           ]} />
           <Panel className="analytics-performance-panel">
             {filtersToolbar}
@@ -5104,7 +5140,7 @@ function Panel({
 }
 function Metrics({ values }: { values: ReactNode[][] }) {
   return (
-    <div className="metrics">
+    <div className={`metrics metrics-${values.length}`}>
       {values.map((v, i) => (
         <div className="metric" key={i}>
           <small>{v[0]}</small>
@@ -5157,6 +5193,37 @@ function DataTable({
       </table>
     </div>
   );
+}
+
+type AnalyticsComparisonDirection = "higher" | "lower" | "neutral";
+
+export function analyticsComparisonModel(
+  current: number | null | undefined,
+  previous: number | null | undefined,
+  direction: AnalyticsComparisonDirection = "neutral",
+) {
+  if (!Number.isFinite(current) || !Number.isFinite(previous) || Number(previous) === 0) {
+    return { text: "-- vs previous period", tone: "neutral" as const };
+  }
+  const change = ((Number(current) - Number(previous)) / Math.abs(Number(previous))) * 100;
+  if (!Number.isFinite(change)) return { text: "-- vs previous period", tone: "neutral" as const };
+  if (Math.abs(change) < 0.05) return { text: "→ 0% vs previous period", tone: "neutral" as const };
+  const increased = change > 0;
+  const favourable = direction === "higher" ? increased : direction === "lower" ? !increased : null;
+  const rounded = Math.abs(change) >= 10 ? Math.abs(change).toFixed(0) : Math.abs(change).toFixed(1);
+  return {
+    text: `${increased ? "↑" : "↓"} ${rounded}% vs previous period`,
+    tone: favourable == null ? "neutral" as const : favourable ? "favourable" as const : "unfavourable" as const,
+  };
+}
+
+function MetricComparison({ current, previous, direction = "neutral" }: {
+  current: number | null | undefined;
+  previous: number | null | undefined;
+  direction?: AnalyticsComparisonDirection;
+}) {
+  const comparison = analyticsComparisonModel(current, previous, direction);
+  return <span className={`metric-comparison ${comparison.tone}`}>{comparison.text}</span>;
 }
 
 function isPendingDataText(value: ReactNode) {
@@ -6161,12 +6228,14 @@ function AnalyticsTable({
   property,
   groupedLimit,
   eventHeader = "Events",
+  showActiveTime = false,
   onDetail,
 }: {
   pages: any[];
   property: Property;
   groupedLimit?: number;
   eventHeader?: string;
+  showActiveTime?: boolean;
   onDetail?: (page: string) => void;
 }) {
   const [groupOpen, setGroupOpen] = useState(false);
@@ -6184,13 +6253,19 @@ function AnalyticsTable({
       ]
     : visiblePages;
   const max = Math.max(1, ...rows.map((page) => page.views));
-  const sorted = useSortableRows(rows, (row, column) => column === 0 ? row.page : column === 1 ? row.views : row.events);
+  const headers = showActiveTime ? ["Page", "Pageviews", eventHeader, "Avg. active time"] : ["Page", "Pageviews", eventHeader];
+  const sorted = useSortableRows(rows, (row, column) => {
+    if (column === 0) return row.page;
+    if (column === 1) return row.views;
+    if (column === 2) return row.events;
+    return Number(row.activeTime ?? -1);
+  });
   return (
     <>
       <div className="table-wrap">
-        <table className="bar-table analytics-pages-table">
+        <table className={`bar-table analytics-pages-table${showActiveTime ? " has-active-time" : ""}`}>
           <thead>
-            <tr>{["Page", "Pageviews", eventHeader].map((label, column) => <SortableHeader key={label} label={label} column={column} sort={sorted.sort} onSort={sorted.onSort} />)}</tr>
+            <tr>{headers.map((label, column) => <SortableHeader key={label} label={label} column={column} sort={sorted.sort} onSort={sorted.onSort} />)}</tr>
           </thead>
           <tbody>
             {sorted.rows.map((page) => (
@@ -6220,6 +6295,7 @@ function AnalyticsTable({
                 </InCellBar>
                 <td>{fmt(page.views)}</td>
                 <td>{fmt(page.events)}</td>
+                {showActiveTime && <td>{page.activeTime == null ? "Unavailable" : durationLabel(Number(page.activeTime))}</td>}
               </tr>
             ))}
           </tbody>
@@ -6229,8 +6305,8 @@ function AnalyticsTable({
         <Modal title="Other grouped pages" close={() => setGroupOpen(false)}>
           <p>Lower-volume pages are grouped here instead of being replaced with a fictional row.</p>
           <DataTable
-            headers={["Page", "Pageviews", "Events"]}
-            rows={groupedPages.map((page) => [page.page, fmt(page.views), fmt(page.events)])}
+            headers={showActiveTime ? ["Page", "Pageviews", "Events", "Avg. active time"] : ["Page", "Pageviews", "Events"]}
+            rows={groupedPages.map((page) => [page.page, fmt(page.views), fmt(page.events), ...(showActiveTime ? [page.activeTime == null ? "Unavailable" : durationLabel(Number(page.activeTime))] : [])])}
           />
           <div className="dialog-actions">
             <button className="btn" onClick={() => setGroupOpen(false)}>Close</button>
@@ -6320,10 +6396,10 @@ function AnalyticsPageDetail({ data, page, property, onBack }: { data: any; page
         <a className="btn" href={new URL(page, property.url).href} target="_blank" rel="noopener noreferrer"><ExternalLink /> Open live page</a>
       </div>
       <Metrics values={[
-        ["Pageviews", fmt(pageRow?.pageviews || data.pageviews || 0), "Selected page only"],
-        ["Key events", fmt(pageRow?.events || data.keyEvents || 0), "Clicks, outbound clicks and confirmed forms"],
-        ["Engaged pageviews", data.engagement?.engagedPageviews == null ? "Unavailable" : fmt(data.engagement.engagedPageviews), "Correlated pageviews only"],
-        ["Median active time", data.engagement?.medianActiveSeconds == null ? "Unavailable" : durationLabel(data.engagement.medianActiveSeconds), "Visible, active foreground time"],
+        ["Pageviews", fmt(pageRow?.pageviews || data.pageviews || 0), <MetricComparison current={pageRow?.pageviews ?? data.pageviews} previous={data.previous?.pageviews} />],
+        ["Key events", fmt(pageRow?.events || data.keyEvents || 0), <MetricComparison current={pageRow?.events ?? data.keyEvents} previous={data.previous?.keyEvents} />],
+        ["Engaged pageviews", data.engagement?.engagedPageviews == null ? "Unavailable" : fmt(data.engagement.engagedPageviews), <MetricComparison current={data.engagement?.engagedPageviews} previous={data.previous?.engagement?.engagedPageviews} direction="higher" />],
+        ["Average active page time", data.engagement?.averageActiveSeconds == null ? "Unavailable" : durationLabel(data.engagement.averageActiveSeconds), <MetricComparison current={data.engagement?.averageActiveSeconds} previous={data.previous?.engagement?.averageActiveSeconds} direction="higher" />],
       ]} />
       <Panel title="Page traffic"><SeriesChart points={(data.series || []).map((point: any) => ({ label: point.day, value: point.pageviews || 0 }))} previousPoints={(data.previous?.series || []).map((point: any) => ({ label: point.day, value: point.pageviews || 0 }))} emptyTitle="No pageviews for this page" label={`Pageviews for ${page}`} timeZone={data.timeZone || property.settings?.timezone} /></Panel>
       <div className="grid equal">
@@ -6342,10 +6418,10 @@ function AnalyticsSourceDetail({ data, source, property, onBack }: { data: any; 
     <>
       <div className="analytics-detail-heading"><button className="btn" onClick={onBack}><ChevronLeft /> All sources</button><DimensionMark kind="source" value={source} /><h2>{source}</h2></div>
       <Metrics values={[
-        ["Pageviews", fmt(data.pageviews || 0), "Selected source only"],
-        ["Key events", fmt(data.keyEvents || 0), "Selected source only"],
-        ["Pages", fmt(pages.length), "Observed landing and visited paths"],
-        ["Property", property.name, property.canonical_host],
+        ["Pageviews", fmt(data.pageviews || 0), <MetricComparison current={data.pageviews} previous={data.previous?.pageviews} />],
+        ["Key events", fmt(data.keyEvents || 0), <MetricComparison current={data.keyEvents} previous={data.previous?.keyEvents} />],
+        [<MetricTerm term="Sessions" />, fmt(data.sessions || 0), <MetricComparison current={data.sessions} previous={data.previous?.sessions} />],
+        [<MetricTerm term="Bounce rate" />, data.engagement?.bounceRate == null ? "Unavailable" : `${data.engagement.bounceRate.toFixed(1)}%`, <MetricComparison current={data.engagement?.bounceRate} previous={data.previous?.engagement?.bounceRate} direction="lower" />],
       ]} />
       <Panel title="Source traffic"><SeriesChart points={(data.series || []).map((point: any) => ({ label: point.day, value: point.pageviews || 0 }))} previousPoints={(data.previous?.series || []).map((point: any) => ({ label: point.day, value: point.pageviews || 0 }))} emptyTitle="No traffic for this source" label={`Pageviews from ${source}`} timeZone={data.timeZone || property.settings?.timezone} /></Panel>
       <div className="grid equal">
@@ -7893,6 +7969,10 @@ function auditOccurrenceText(occurrence: unknown, configuredFields?: string[]) {
   return details.join(" · ") || "Recorded affected occurrence";
 }
 const performanceTermDescriptions: Record<string, string> = {
+  "SESSIONS": "A session is one anonymous browser session. It can contain multiple pageviews and events, and does not use cookies or persistent identity.",
+  "BOUNCE RATE": "The percentage of measured sessions with less than 10 seconds of active time, less than 50% scroll depth and no key event. It is 100% minus the session engagement rate.",
+  "AVERAGE ACTIVE SESSION DURATION": "The mean visible, active foreground time across measured anonymous sessions. Inactive background time is excluded.",
+  "MEDIAN ACTIVE SESSION DURATION": "The middle active-session duration after measured anonymous sessions are ordered from shortest to longest.",
   P75: "The 75th percentile: 75% of recorded visits were at or faster than this value.",
   LCP: "Largest Contentful Paint measures how quickly the page's main content appears.",
   TBT: "Total Blocking Time estimates how long the browser's main thread was blocked during a lab test.",
@@ -8543,12 +8623,6 @@ function analyticsFilterValueLabel(category: string, value: string) {
   return ["Page", "Measured page", "Metric"].includes(category) ? value : cap(value);
 }
 
-function comparisonText(current: number | undefined, previous: number | undefined) {
-  if (!Number.isFinite(current) || !Number.isFinite(previous) || !previous) return "No comparable previous period";
-  const change = ((Number(current) - Number(previous)) / Number(previous)) * 100;
-  return `${change >= 0 ? "↑" : "↓"} ${change >= 0 ? "+" : ""}${change.toFixed(1)}%`;
-}
-
 function formatPercentage(value: number) {
   return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(2)}%`;
 }
@@ -8596,7 +8670,9 @@ function countryFlag(value: string) {
 
 function durationLabel(seconds: number) {
   const rounded = Math.max(0, Math.round(seconds));
-  return rounded >= 60 ? `${Math.floor(rounded / 60)} min ${rounded % 60} s` : `${rounded} s`;
+  return rounded >= 60
+    ? `${Math.floor(rounded / 60)} min ${String(rounded % 60).padStart(2, "0")} sec`
+    : `${rounded} sec`;
 }
 
 function vitalMetricValue(vital: any, minimumSamples: number) {
@@ -8656,19 +8732,40 @@ function analyticsFixtureSummary() {
     pageviews: 28460,
     events: 358,
     keyEvents: 358,
+    sessions: 14220,
     averageDailyVisitors: 474,
     dailyVisitorMethod: "anonymous_sessions",
-    pages: ANALYTICS_FIXTURE_PAGES.map(({ path, pageviews, events }) => ({
+    pages: ANALYTICS_FIXTURE_PAGES.map(({ path, pageviews, events }, index) => ({
       path,
       pageviews,
       events,
+      averageActiveSeconds: 38 + ((index * 17) % 94),
     })),
     series,
     previous: {
       pageviews: 25320,
       keyEvents: 334,
+      sessions: 13120,
+      countries: [{ name: "GB", count: 17200 }, { name: "US", count: 3600 }, { name: "DE", count: 2700 }],
+      devices: [{ name: "Desktop", count: 15800 }, { name: "Mobile", count: 8800 }, { name: "Tablet", count: 720 }],
+      engagement: {
+        engagedSessions: 8120,
+        bounceRate: 38.1,
+        averageActiveSessionSeconds: 88,
+        medianActiveSessionSeconds: 64,
+        engagedPageviews: 16980,
+        averageActiveSeconds: 84,
+      },
       series: series.map((point, index) => ({ ...point, day: `2026-08-${String(index + 1).padStart(2, "0")}`, pageviews: Math.round(point.pageviews * 0.89), events: Math.round(point.events * 0.91), dailyVisitors: Math.round(point.dailyVisitors * 0.92) })),
-      performance: { series: Object.fromEntries(Object.entries(performanceSeries).map(([metric, points]) => [metric, points.map((point: any, index) => ({ ...point, day: `2026-08-${String(index + 1).padStart(2, "0")}`, value: point.value * 1.08 }))])) },
+      performance: {
+        vitals: [
+          { name: "LCP", value: 2480, samples: 1180, percentile: 75 },
+          { name: "INP", value: 181, samples: 701, percentile: 75 },
+          { name: "CLS", value: 0.05, samples: 1180, percentile: 75 },
+        ],
+        goodExperiencesPercent: 78,
+        series: Object.fromEntries(Object.entries(performanceSeries).map(([metric, points]) => [metric, points.map((point: any, index) => ({ ...point, day: `2026-08-${String(index + 1).padStart(2, "0")}`, value: point.value * 1.08 }))])),
+      },
     },
     sources: [
       { name: "Google", pageviews: 10020, events: 142 },
@@ -8694,7 +8791,14 @@ function analyticsFixtureSummary() {
       medianScrollDepth: 64,
       pageviewsWithKeyEvents: 318,
       medianActiveSeconds: 102,
+      averageActiveSeconds: 118,
       engagementRate: 64.7,
+      eligibleSessions: 14220,
+      engagedSessions: 9450,
+      sessionEngagementRate: 66.5,
+      bounceRate: 33.5,
+      averageActiveSessionSeconds: 96,
+      medianActiveSessionSeconds: 72,
       javascriptErrors: 36,
       scrollDepth: [{ depth: 25, pageviews: 21320 }, { depth: 50, pageviews: 16840 }, { depth: 75, pageviews: 10260 }, { depth: 90, pageviews: 6740 }],
       pages: [
@@ -8795,7 +8899,13 @@ function filterAnalyticsFixture(filters: AnalyticsPageFilters) {
     pageviews,
     events,
     keyEvents: events,
-    pages: rows.map(({ path, pageviews, events }) => ({ path, pageviews, events })),
+    sessions: Math.round(summary.sessions * pageviewRatio),
+    pages: rows.map((row) => ({
+      path: row.path,
+      pageviews: row.pageviews,
+      events: row.events,
+      averageActiveSeconds: 38 + ((ANALYTICS_FIXTURE_PAGES.indexOf(row) * 17) % 94),
+    })),
     sources: rows.map((row) => ({ name: row.source === "Direct" ? "Direct / unknown" : row.source, pageviews: row.pageviews, events: row.events })),
     countries: aggregate("country", "pageviews"),
     devices: aggregate("device", "pageviews"),

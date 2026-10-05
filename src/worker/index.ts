@@ -2434,6 +2434,7 @@ app.get("/api/properties/:id/analytics/pages", async (c) => {
     path: row.path,
     pageviews: Number(row.pageviews || 0),
     events: Number(row.events || 0),
+    averageActiveSeconds: row.average_active_seconds == null ? null : Number(row.average_active_seconds),
   }));
   const total = Number((data || [])[0]?.total_rows || 0);
   return c.json({ rows, page, pageSize, total, pages: Math.max(1, Math.ceil(total / pageSize)) });
@@ -4324,7 +4325,7 @@ export function buildAnalyticsSummary(
   historicalViews: any[] = [],
   options: { includeVisitTimes?: boolean } = {},
 ) {
-  const pageMap = new Map<string, { pageviews: number; events: number }>();
+  const pageMap = new Map<string, { pageviews: number; events: number; activeSeconds: number; activeViews: number }>();
   const seriesMap = new Map<string, { pageviews: number; events: number; sessions: Set<string> }>();
   const sourceMap = new Map<string, { pageviews: number; events: number }>();
   const countryMap = new Map<string, number>();
@@ -4340,6 +4341,7 @@ export function buildAnalyticsSummary(
   const deviceVitals = new Map<string, Map<string, number[]>>();
   const views = new Map<string, {
     path: string;
+    sessionId: string;
     activeSeconds: number;
     maxScroll: number;
     keyEvents: number;
@@ -4405,6 +4407,7 @@ export function buildAnalyticsSummary(
     }
     views.set(`${row.day}:${row.view_key}`, {
       path: normalizeAnalyticsPath(row.path),
+      sessionId,
       activeSeconds: Number(row.active_seconds || 0),
       maxScroll: Number(row.max_scroll || 0),
       keyEvents: Number(row.key_events || 0),
@@ -4419,7 +4422,7 @@ export function buildAnalyticsSummary(
     const amount = event._aggregateCount == null ? 1 : Math.max(0, Number(event._aggregateCount || 0));
     totalEvents += amount;
     const path = normalizeAnalyticsPath(event.path);
-    const page = pageMap.get(path) || { pageviews: 0, events: 0 };
+    const page = pageMap.get(path) || { pageviews: 0, events: 0, activeSeconds: 0, activeViews: 0 };
     const day = eventDay(event.occurred_at);
     const bucket = days === 1
       ? new Date(Math.floor(new Date(event.occurred_at).valueOf() / 3600000) * 3600000).toISOString()
@@ -4448,6 +4451,7 @@ export function buildAnalyticsSummary(
       if (viewId && SUPPORTED_TRACKER_VERSIONS.has(event.metadata?.tracker_version) && !views.has(viewId)) {
         views.set(viewId, {
           path,
+          sessionId: String(event.metadata?.session || ""),
           activeSeconds: 0,
           maxScroll: 0,
           keyEvents: 0,
@@ -4555,6 +4559,25 @@ export function buildAnalyticsSummary(
   );
   const activeTimes = eligibleViews.map((view) => view.activeSeconds);
   const scrollDepths = eligibleViews.map((view) => view.maxScroll);
+  const measuredSessions = new Map<string, { activeSeconds: number; maxScroll: number; keyEvents: number }>();
+  for (const view of eligibleViews) {
+    const page = pageMap.get(view.path);
+    if (page) {
+      page.activeSeconds += view.activeSeconds;
+      page.activeViews += 1;
+    }
+    if (!view.sessionId) continue;
+    const session = measuredSessions.get(view.sessionId) || { activeSeconds: 0, maxScroll: 0, keyEvents: 0 };
+    session.activeSeconds += view.activeSeconds;
+    session.maxScroll = Math.max(session.maxScroll, view.maxScroll);
+    session.keyEvents += view.keyEvents;
+    measuredSessions.set(view.sessionId, session);
+  }
+  const eligibleSessions = [...measuredSessions.values()];
+  const engagedSessions = eligibleSessions.filter(
+    (session) => session.activeSeconds >= 10 || session.maxScroll >= 50 || session.keyEvents > 0,
+  );
+  const activeSessionTimes = eligibleSessions.map((session) => session.activeSeconds);
   const engagedPageMap = new Map<string, number>();
   const visibleSectionMap = new Map<string, number>();
   for (const view of engagedViews) bump(engagedPageMap, view.path);
@@ -4601,7 +4624,12 @@ export function buildAnalyticsSummary(
     dailyVisitorMethod: sessions.size ? "anonymous_sessions" : "unavailable",
     truncated: events.length >= 50000,
     pages: [...pageMap]
-      .map(([path, value]) => ({ path, ...value }))
+      .map(([path, value]) => ({
+        path,
+        pageviews: value.pageviews,
+        events: value.events,
+        averageActiveSeconds: value.activeViews ? value.activeSeconds / value.activeViews : null,
+      }))
       .sort((a, b) => b.pageviews - a.pageviews),
     series: seriesBuckets.map((day) => ({
       day,
@@ -4627,7 +4655,22 @@ export function buildAnalyticsSummary(
         ? eligibleViews.filter((view) => view.keyEvents > 0).length
         : null,
       medianActiveSeconds: eligibleViews.length ? percentile(activeTimes, 0.5) : null,
+      averageActiveSeconds: eligibleViews.length
+        ? activeTimes.reduce((total, value) => total + value, 0) / eligibleViews.length
+        : null,
       engagementRate: eligibleViews.length ? (engagedViews.length / eligibleViews.length) * 100 : null,
+      eligibleSessions: eligibleSessions.length,
+      engagedSessions: eligibleSessions.length ? engagedSessions.length : null,
+      sessionEngagementRate: eligibleSessions.length
+        ? (engagedSessions.length / eligibleSessions.length) * 100
+        : null,
+      bounceRate: eligibleSessions.length
+        ? 100 - (engagedSessions.length / eligibleSessions.length) * 100
+        : null,
+      averageActiveSessionSeconds: eligibleSessions.length
+        ? activeSessionTimes.reduce((total, value) => total + value, 0) / eligibleSessions.length
+        : null,
+      medianActiveSessionSeconds: eligibleSessions.length ? percentile(activeSessionTimes, 0.5) : null,
       javascriptErrors,
       scrollDepth,
       pages: ranked(engagedPageMap).map(({ name, count }) => ({ path: name, engagedViews: count })),

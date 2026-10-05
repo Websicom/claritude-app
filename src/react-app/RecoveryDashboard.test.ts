@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   auditDisplayProgress,
+  analyticsComparisonModel,
   auditHistoryStatus,
   auditProgressCeiling,
   auditProgressMessagePool,
@@ -281,5 +282,31 @@ describe("top selector searches", () => {
     expect(auditSeverityGroup({ outcome: "failed", severity: "Critical", category: "SEO" })).toBe("critical");
     expect(auditSeverityGroup({ outcome: "failed", severity: "Security", category: "Security" })).toBe("security");
     expect(auditSeverityGroup({ outcome: "failed", severity: "Warning", category: "SEO" })).toBe("warning");
+  });
+});
+
+describe("analytics previous-period comparisons", () => {
+  it("keeps volume changes neutral and marks favourable directional changes", () => {
+    expect(analyticsComparisonModel(112, 100)).toEqual({
+      text: "↑ 12% vs previous period",
+      tone: "neutral",
+    });
+    expect(analyticsComparisonModel(45, 50, "lower")).toEqual({
+      text: "↓ 10% vs previous period",
+      tone: "favourable",
+    });
+    expect(analyticsComparisonModel(55, 50, "lower")).toEqual({
+      text: "↑ 10% vs previous period",
+      tone: "unfavourable",
+    });
+    expect(analyticsComparisonModel(65, 50, "higher")).toEqual({
+      text: "↑ 30% vs previous period",
+      tone: "favourable",
+    });
+  });
+
+  it("does not invent a delta when the prior period is unavailable or zero", () => {
+    expect(analyticsComparisonModel(12, null).text).toBe("-- vs previous period");
+    expect(analyticsComparisonModel(12, 0).text).toBe("-- vs previous period");
   });
 });

@@ -512,6 +512,9 @@ main {
   border: 0;
   margin-bottom: 14px;
 }
+.metrics.metrics-5 {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
 .workspace-properties-layout {
   display: contents;
 }
@@ -536,6 +539,15 @@ main {
 }
 .metric small,
 .metric span {
+  color: var(--muted);
+}
+.metric .metric-comparison.favourable {
+  color: #16825d;
+}
+.metric .metric-comparison.unfavourable {
+  color: #c23b3b;
+}
+.metric .metric-comparison.neutral {
   color: var(--muted);
 }
 .metric-value-link,
@@ -1563,6 +1575,9 @@ input[type="checkbox"]:checked:after {
   .metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  .metrics.metrics-5 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .metric {
     border-bottom: 1px solid var(--line);
   }
@@ -1570,6 +1585,12 @@ input[type="checkbox"]:checked:after {
     border-right: 0;
   }
   .metric:nth-last-child(-n + 2) {
+    border-bottom: 0;
+  }
+  .metrics.metrics-5 .metric:nth-child(4) {
+    border-bottom: 1px solid var(--line);
+  }
+  .metrics.metrics-5 .metric:last-child {
     border-bottom: 0;
   }
   .grid,
@@ -2050,6 +2071,16 @@ input[type="checkbox"]:checked:after {
 }
 .analytics-pages-table th:nth-child(3) {
   width: 19%;
+}
+.analytics-pages-table.has-active-time th:first-child {
+  width: 46%;
+}
+.analytics-pages-table.has-active-time th:nth-child(2),
+.analytics-pages-table.has-active-time th:nth-child(3) {
+  width: 17%;
+}
+.analytics-pages-table.has-active-time th:nth-child(4) {
+  width: 20%;
 }
 .property-top-pages-table {
   table-layout: fixed;
@@ -3705,6 +3736,19 @@ input[type="checkbox"]:checked:after {
   .analytics-pages-table th:nth-child(2),
   .analytics-pages-table th:nth-child(3) {
     width: 18%;
+  }
+  .analytics-pages-table.has-active-time {
+    min-width: 620px;
+  }
+  .analytics-pages-table.has-active-time th:first-child {
+    width: 46%;
+  }
+  .analytics-pages-table.has-active-time th:nth-child(2),
+  .analytics-pages-table.has-active-time th:nth-child(3) {
+    width: 16%;
+  }
+  .analytics-pages-table.has-active-time th:nth-child(4) {
+    width: 22%;
   }
   .analytics-pages-table .bar-cell {
     min-width: 0;

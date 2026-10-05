@@ -263,6 +263,13 @@ describe("worker evidence pipelines", () => {
           occurred_at: "2026-10-02T00:00:10Z",
         },
         {
+          event_type: "active_time",
+          path: "/",
+          value: 12,
+          metadata: { view_id: "view-1", tracker_version: "2.1.0" },
+          occurred_at: "2026-10-02T00:00:11Z",
+        },
+        {
           event_type: "web_vital",
           path: "/",
           name: "LCP",
@@ -317,7 +324,7 @@ describe("worker evidence pipelines", () => {
       30,
     );
     expect(summary.pageviews).toBe(2);
-    expect(summary.events).toBe(8);
+    expect(summary.events).toBe(9);
     expect(summary.keyEvents).toBe(2);
     expect(summary.pages.find((page) => page.path === "/")).toMatchObject({
       pageviews: 1,
@@ -330,7 +337,12 @@ describe("worker evidence pipelines", () => {
     expect(summary.sources[0]).toEqual({ name: "Google", pageviews: 1, events: 0 });
     expect(summary.countries).toContainEqual({ name: "GB", count: 1 });
     expect(summary.engagement.engagedPageviews).toBe(2);
+    expect(summary.engagement.eligibleSessions).toBe(2);
+    expect(summary.engagement.engagedSessions).toBe(2);
+    expect(summary.engagement.bounceRate).toBe(0);
+    expect(summary.engagement.averageActiveSessionSeconds).toBe(6);
     expect(summary.engagement.pageviewsWithKeyEvents).toBe(1);
+    expect(summary.pages.find((page) => page.path === "/")?.averageActiveSeconds).toBe(12);
     expect(summary.engagement.scrollDepth.find((row) => row.depth === 75)?.pageviews).toBe(1);
     expect(summary.vitals).toContainEqual({ name: "LCP", value: 2100, samples: 1, percentile: 75 });
     expect(summary.vitals).toContainEqual({ name: "INP", value: 180, samples: 1, percentile: 75 });
@@ -341,6 +353,44 @@ describe("worker evidence pipelines", () => {
       visitorsComplete: true,
       pageCount: 2,
     });
+  });
+
+  it("derives session bounce and duration from active engagement rather than page count", () => {
+    const summary = buildAnalyticsSummary([
+      {
+        event_type: "pageview",
+        path: "/single/",
+        metadata: { session: "engaged-single-page", view_id: "view-1", tracker_version: "2.1.0" },
+        occurred_at: "2026-10-02T10:00:00Z",
+      },
+      {
+        event_type: "active_time",
+        path: "/single/",
+        value: 14,
+        metadata: { session: "engaged-single-page", view_id: "view-1", tracker_version: "2.1.0" },
+        occurred_at: "2026-10-02T10:00:14Z",
+      },
+      {
+        event_type: "pageview",
+        path: "/first/",
+        metadata: { session: "multi-page-bounce", view_id: "view-2", tracker_version: "2.1.0" },
+        occurred_at: "2026-10-02T11:00:00Z",
+      },
+      {
+        event_type: "pageview",
+        path: "/second/",
+        metadata: { session: "multi-page-bounce", view_id: "view-3", tracker_version: "2.1.0" },
+        occurred_at: "2026-10-02T11:00:02Z",
+      },
+    ], 1, "2026-10-02T00:00:00Z", "2026-10-02T23:59:59Z", "UTC");
+
+    expect(summary.sessions).toBe(2);
+    expect(summary.engagement.eligibleSessions).toBe(2);
+    expect(summary.engagement.engagedSessions).toBe(1);
+    expect(summary.engagement.sessionEngagementRate).toBe(50);
+    expect(summary.engagement.bounceRate).toBe(50);
+    expect(summary.engagement.averageActiveSessionSeconds).toBe(7);
+    expect(summary.engagement.medianActiveSessionSeconds).toBe(0);
   });
 
   it("maps pageview timestamps into property-local weekday/hour cells across raw and rolled views", () => {
