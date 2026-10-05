@@ -2261,7 +2261,7 @@ app.get("/api/properties/:id/overview", async (c) => {
     }),
     db
       .from("audit_runs")
-      .select("id,status,score,coverage,category_scores,created_at,completed_at")
+      .select("id,status,score,coverage,created_at,completed_at,registry_snapshot,user_facing_snapshot,audit_results(id,check_id,outcome,review_status)")
       .eq("property_id", c.req.param("id"))
       .in("status", ["completed", "partial"])
       .order("created_at", { ascending: false })
@@ -2270,6 +2270,34 @@ app.get("/api/properties/:id/overview", async (c) => {
   ]);
   const failure = analyticsResult.error || auditResult.error;
   if (failure) return c.json({ error: failure.message }, 400);
+  const latestAudit = auditResult.data as any;
+  let audit = null;
+  if (latestAudit) {
+    const technicalSnapshot = Array.isArray(latestAudit.registry_snapshot)
+      ? latestAudit.registry_snapshot as AuditRegistrySnapshot[]
+      : [];
+    const groupSnapshot = Array.isArray(latestAudit.user_facing_snapshot) && latestAudit.user_facing_snapshot.length
+      ? latestAudit.user_facing_snapshot as UserFacingAuditGroupSnapshot[]
+      : fallbackUserFacingSnapshot(technicalSnapshot);
+    const groupedResults = deriveUserFacingAuditResults(
+      groupSnapshot,
+      Array.isArray(latestAudit.audit_results) ? latestAudit.audit_results : [],
+    );
+    const categories = ["SEO", "Accessibility", "Performance", "Security", "Technical", "AI & Crawler Readiness"];
+    const categoryScores = Object.fromEntries(categories.map((category) => [
+      category,
+      scoreUserFacingAuditResults(groupedResults.filter((result) => result.category === category)),
+    ]));
+    audit = {
+      id: latestAudit.id,
+      status: latestAudit.status,
+      score: latestAudit.score,
+      coverage: latestAudit.coverage,
+      created_at: latestAudit.created_at,
+      completed_at: latestAudit.completed_at,
+      category_scores: categoryScores,
+    };
+  }
   c.header("Server-Timing", `overview-db;dur=${(performance.now() - startedAt).toFixed(1)}`);
   c.header("Cache-Control", "private, max-age=15");
   return c.json({
@@ -2285,7 +2313,7 @@ app.get("/api/properties/:id/overview", async (c) => {
       vitals: [],
       performanceByDevice: {},
     },
-    audit: auditResult.data || null,
+    audit,
   });
 });
 
