@@ -2624,7 +2624,7 @@ input[type="checkbox"]:checked:after {
   position: absolute;
   z-index: -1;
   inset: 0 auto 0 0;
-  width: calc(var(--pass-rate) * 1%);
+  width: calc(var(--bar-value) * 1%);
   border-radius: inherit;
   background: #def5ed;
 }

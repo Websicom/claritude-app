@@ -6980,6 +6980,7 @@ function auditCheckMetrics(results: any[]) {
 
 function AuditChecksPanel({ pageName, run, results, onOpenCategory }: { pageName: string; run?: AuditRun; results: any[]; onOpenCategory: (category: string) => void }) {
   const [openCategory, setOpenCategory] = useState<string | null>(null);
+  const categoryScores = auditRunCategoryScores(run);
   const summary = {
     automated: run?.catalogue_summary?.userFacingGroups ?? results.length,
     passed: results.filter((result) => result.outcome === "passed").length,
@@ -7003,14 +7004,14 @@ function AuditChecksPanel({ pageName, run, results, onOpenCategory }: { pageName
               {visibleCategories.map((category) => {
                 const categoryResults = results.filter((result) => result.category === category);
                 const metrics = auditCheckMetrics(categoryResults);
-                const visualScore = metrics.passRate;
+                const visualScore = categoryScores[category];
                 const status = auditScoreBand(visualScore);
                 const open = openCategory === category;
                 const subcategories = auditDetailedCategoriesFor(categoryResults);
                 const toggle = () => setOpenCategory(open ? null : category);
                 return <Fragment key={category}>
                   <tr className="audit-check-category-row">
-                    <td><button className={`audit-category-bar ${status}`} style={{ "--pass-rate": visualScore ?? 0 } as any} aria-expanded={open} onClick={toggle}>{category}</button></td>
+                    <td><button className={`audit-category-bar ${status}`} style={{ "--bar-value": visualScore ?? 0 } as any} title={visualScore == null ? "Category score unavailable" : `Category score: ${visualScore}/100`} aria-expanded={open} onClick={toggle}>{category}</button></td>
                     <td>{metrics.checks}</td><td>{metrics.passed}</td><td>{metrics.issues}</td><td>{metrics.passRate == null ? "--" : `${metrics.passRate}%`}</td>
                     <td><button className="audit-check-expand" aria-label={`${open ? "Collapse" : "Expand"} ${category}`} aria-expanded={open} onClick={toggle}><ChevronDown /></button></td>
                   </tr>
@@ -7018,7 +7019,7 @@ function AuditChecksPanel({ pageName, run, results, onOpenCategory }: { pageName
                     const subcategoryResults = categoryResults.filter((result) => result.subcategory === subcategory);
                     const subcategoryMetrics = auditCheckMetrics(subcategoryResults);
                     return <tr className="audit-check-subcategory-row" key={key}>
-                      <td><button className="audit-category-bar subcategory" style={{ "--pass-rate": subcategoryMetrics.passRate ?? 0 } as any} onClick={() => onOpenCategory(key)}>{subcategory}</button></td>
+                      <td><button className="audit-category-bar subcategory" style={{ "--bar-value": subcategoryMetrics.passRate ?? 0 } as any} onClick={() => onOpenCategory(key)}>{subcategory}</button></td>
                       <td>{subcategoryMetrics.checks}</td><td>{subcategoryMetrics.passed}</td><td>{subcategoryMetrics.issues}</td><td>{subcategoryMetrics.passRate == null ? "--" : `${subcategoryMetrics.passRate}%`}</td>
                       <td><button className="audit-check-open-findings" aria-label={`View ${subcategory} issues`} onClick={() => onOpenCategory(key)}><ChevronRight /></button></td>
                     </tr>;
@@ -7136,7 +7137,7 @@ function AuditOccurrences({ occurrences, presentation }: { occurrences: any[]; p
 }
 
 export function auditScoreBand(score: number | null | undefined) {
-  return score == null ? "unknown" : score >= 80 ? "healthy" : score >= 50 ? "moderate" : "poor";
+  return score == null ? "unknown" : score >= 80 ? "healthy" : score >= 60 ? "moderate" : "poor";
 }
 
 export function auditHistoryStatus(status: string) {
@@ -7619,7 +7620,7 @@ const auditCategoryPrefixes: Record<string, string[]> = {
   "AI & Crawler Readiness": ["AI & Crawler Readiness"],
 };
 
-function auditRunCategoryScores(run?: AuditRun) {
+export function auditRunCategoryScores(run?: AuditRun) {
   const performanceScores = run?.performance_metrics?.scores;
   const measuredPerformance = performanceScores && [performanceScores.desktop, performanceScores.mobile].some((score) => score != null)
     ? Math.round([performanceScores.desktop, performanceScores.mobile].filter((score): score is number => score != null).reduce((sum, score) => sum + score, 0) /

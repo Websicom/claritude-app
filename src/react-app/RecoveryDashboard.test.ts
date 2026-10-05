@@ -4,6 +4,7 @@ import {
   auditHistoryStatus,
   auditProgressCeiling,
   auditProgressMessagePool,
+  auditRunCategoryScores,
   auditScoreBand,
   buildAuditFixPrompt,
   auditSeverityGroup,
@@ -206,10 +207,32 @@ describe("top selector searches", () => {
   });
 
   it("assigns healthy, moderate and poor score-bar states", () => {
+    expect(auditScoreBand(100)).toBe("healthy");
+    expect(auditScoreBand(80)).toBe("healthy");
     expect(auditScoreBand(91)).toBe("healthy");
+    expect(auditScoreBand(79)).toBe("moderate");
+    expect(auditScoreBand(60)).toBe("moderate");
     expect(auditScoreBand(68)).toBe("moderate");
+    expect(auditScoreBand(59)).toBe("poor");
     expect(auditScoreBand(34)).toBe("poor");
     expect(auditScoreBand(null)).toBe("unknown");
+  });
+
+  it("uses the same stored category scores as the overview, including measured performance", () => {
+    const scores = auditRunCategoryScores({
+      category_scores: {
+        SEO: 54,
+        Accessibility: 61,
+        Performance: 22,
+        Security: 80,
+        Technical: 79,
+        "AI & Crawler Readiness": 92,
+      },
+      performance_metrics: { scores: { desktop: 72, mobile: 64 } },
+    } as any);
+    expect(scores.SEO).toBe(54);
+    expect(scores.Security).toBe(80);
+    expect(scores.Performance).toBe(68);
   });
 
   it("presents terminal partial runs as successful without changing their stored status", () => {
