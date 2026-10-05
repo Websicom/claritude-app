@@ -1917,7 +1917,7 @@ function UptimeView({
 }) {
   const uptimeLocation = useLocation();
   const reportTimeZone = property?.settings?.timezone || "Europe/London";
-  const livePeriod = `${periodQuery(uptimeLocation.search)}&time_zone=${encodeURIComponent(reportTimeZone)}`;
+  const livePeriod = `${uptimePeriodQuery(uptimeLocation.search)}&time_zone=${encodeURIComponent(reportTimeZone)}`;
   const [tab, setTab] = useState("Overview"),
     [busy, setBusy] = useState(false),
     [maintenance, setMaintenance] = useState<any[]>([]),
@@ -2119,7 +2119,7 @@ function UptimeView({
             <i className={`status-dot ${observedStatus === "online" ? "online" : observedStatus === "offline" ? "down" : "paused"}`} />
             {observedStatus === "online" ? "Online" : observedStatus === "offline" ? "Offline" : cap(observedStatus)}
           </span>
-          <Period />
+          <Period defaultDays={1} />
         </>
       }
       actions={
@@ -2198,7 +2198,7 @@ function UptimeView({
                         downloadSeriesCsv(
                           checkData?.responseSeries || [],
                           "uptime-response-time.csv",
-                          `Median response time by ${checkData?.responseBucket || "period"} (ms)`,
+                          responseChartLabel(checkData?.responseBucket, true),
                         );
                         setChartMenuOpen(false);
                       }}>Download CSV</button>
@@ -2214,7 +2214,7 @@ function UptimeView({
                 ? checkData?.previous?.responseSeries || []
                 : []}
               unit="ms"
-              label={`Median response time by ${checkData?.responseBucket || "period"}`}
+              label={responseChartLabel(checkData?.responseBucket)}
               timeZone={reportTimeZone}
               dateGranularity={checkData?.responseBucket}
               emptyTitle="No uptime checks recorded"
@@ -5074,11 +5074,11 @@ function Page({
     </div>
   );
 }
-function Period() {
+function Period({ defaultDays = 30 }: { defaultDays?: number } = {}) {
   const periodLocation = useLocation();
   const params = new URLSearchParams(periodLocation.search);
   const to = params.get("to") || new Date().toISOString().slice(0, 10);
-  const from = params.get("from") || new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10);
+  const from = params.get("from") || new Date(Date.now() - Math.max(0, defaultDays - 1) * 864e5).toISOString().slice(0, 10);
   return (
     <span className="period-chip">
       <CalendarDays />
@@ -5240,6 +5240,22 @@ function DataTable({
       </table>
     </div>
   );
+}
+
+export function uptimePeriodQuery(search: string) {
+  const params = new URLSearchParams(search);
+  const from = params.get("from");
+  const to = params.get("to");
+  return from && to
+    ? new URLSearchParams({ from, to }).toString()
+    : "days=1&response_mode=checks";
+}
+
+export function responseChartLabel(bucket?: string, csv = false) {
+  const label = bucket === "check"
+    ? "Response time by monitor check"
+    : `Median response time by ${bucket || "period"}`;
+  return csv ? `${label} (ms)` : label;
 }
 
 type AnalyticsComparisonDirection = "higher" | "lower" | "neutral";
@@ -5443,7 +5459,7 @@ function SeriesChart({
   unit?: string;
   label?: string;
   timeZone?: string;
-  dateGranularity?: "hour" | "day" | "month";
+  dateGranularity?: "check" | "hour" | "day" | "month";
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const wrapper = useRef<HTMLDivElement>(null);
@@ -8823,7 +8839,7 @@ function formatChartTooltip(value: number, unit: string) {
   return `${Number(value).toLocaleString(undefined, { maximumFractionDigits: unit ? 0 : 2 })}${unit}`;
 }
 
-function chartDateLabel(value: string, timeZone?: string, granularity?: "hour" | "day" | "month") {
+function chartDateLabel(value: string, timeZone?: string, granularity?: "check" | "hour" | "day" | "month") {
   if (value.includes("T")) {
     const instant = new Date(value);
     return Number.isFinite(instant.valueOf())

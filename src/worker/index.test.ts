@@ -25,6 +25,7 @@ import {
   TRACKER_SOURCE,
   trackerSessionAcquisition,
   uptimeDueHorizon,
+  uptimeCheckResponseSeries,
   uptimeResponseBucket,
   validAvatarBytes,
   validPublicUrl,
@@ -42,6 +43,17 @@ describe("worker evidence pipelines", () => {
     expect(uptimeResponseBucket("2026-10-05T00:00:00.000Z", "2026-10-05T23:59:59.999Z")).toBe("hour");
     expect(uptimeResponseBucket("2026-10-01T00:00:00.000Z", "2026-10-05T23:59:59.999Z")).toBe("day");
     expect(uptimeResponseBucket("2026-01-01T00:00:00.000Z", "2026-10-05T23:59:59.999Z")).toBe("month");
+  });
+
+  it("retains every measured monitor response for the default day chart", () => {
+    expect(uptimeCheckResponseSeries([
+      { checked_at: "2026-10-06T09:00:00.000Z", response_ms: 210 },
+      { checked_at: "2026-10-06T09:10:00.000Z", response_ms: 305 },
+      { checked_at: "2026-10-06T09:20:00.000Z", response_ms: null },
+    ])).toEqual([
+      { label: "2026-10-06T09:00:00.000Z", value: 210, samples: 1 },
+      { label: "2026-10-06T09:10:00.000Z", value: 305, samples: 1 },
+    ]);
   });
 
   it("renders test alerts from the shared uptime template without implying delivery", () => {

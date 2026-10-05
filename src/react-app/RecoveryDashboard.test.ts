@@ -27,6 +27,8 @@ import {
   squareImageCrop,
   sortWorkspaceProperties,
   trafficSeriesKey,
+  uptimePeriodQuery,
+  responseChartLabel,
   workspaceKeyEventCount,
 } from "./RecoveryDashboard";
 
@@ -131,6 +133,13 @@ describe("top selector searches", () => {
     expect(pageActiveTimeLabel(9.96)).toBe("10.0 s");
     expect(pageActiveTimeLabel(10.2)).toBe("10 s");
     expect(pageActiveTimeLabel(78)).toBe("1 min 18 s");
+  });
+
+  it("uses individual checks by default and medians only for a selected uptime range", () => {
+    expect(uptimePeriodQuery("?property=property-1")).toBe("days=1&response_mode=checks");
+    expect(uptimePeriodQuery("?from=2026-10-01&to=2026-10-06")).toBe("from=2026-10-01&to=2026-10-06");
+    expect(responseChartLabel("check")).toBe("Response time by monitor check");
+    expect(responseChartLabel("day")).toBe("Median response time by day");
   });
 
   it("shows finite custom-event usage and Pro's separate unlimited entitlement", () => {

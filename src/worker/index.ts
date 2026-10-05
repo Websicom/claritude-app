@@ -1677,20 +1677,29 @@ export function uptimeResponseBucket(from: string, to: string) {
   return "day" as const;
 }
 
+export function uptimeCheckResponseSeries(checks: Array<{ checked_at: string; response_ms: number | null }>) {
+  return checks.flatMap((check) => {
+    if (check.response_ms == null || !Number.isFinite(Number(check.response_ms))) return [];
+    return [{ label: check.checked_at, value: Number(check.response_ms), samples: 1 }];
+  });
+}
+
 app.get("/api/monitors/:id/checks", async (c) => {
-  const window = requestedWindow(c, 30, UPTIME_MAXIMUM_DAYS);
+  const individualChecks = c.req.query("response_mode") === "checks";
+  const window = requestedWindow(c, individualChecks ? 1 : 30, UPTIME_MAXIMUM_DAYS);
   if (!window) return c.json({ error: "invalid_date_range" }, 400);
   const duration = new Date(window.to).valueOf() - new Date(window.from).valueOf() + 1;
   const previousTo = new Date(new Date(window.from).valueOf() - 1);
   const previousFrom = new Date(previousTo.valueOf() - duration + 1);
   const responseBucket = uptimeResponseBucket(window.from, window.to);
   const fields = "id,checked_at,success,status_code,response_ms,error_code,suppressed_by_maintenance";
+  const responseFields = "checked_at,response_ms";
   const now = new Date();
   const currentLocalDay = localDateKey(now, window.timeZone);
   const dailyStartKey = shiftDateKey(currentLocalDay, -29);
   const dailyFrom = zonedDateBoundary(dailyStartKey, window.timeZone, false).toISOString();
   const dailyTo = zonedDateBoundary(currentLocalDay, window.timeZone, true).toISOString();
-  const [currentResult, previousResult, dailyResult, monitorResult] = await Promise.all([
+  const [currentResult, previousResult, dailyResult, monitorResult, currentChecksResult, previousChecksResult] = await Promise.all([
     c.get("db").rpc("uptime_response_window", {
       p_monitor_id: c.req.param("id"),
       p_from: window.from,
@@ -1718,10 +1727,32 @@ app.get("/api/monitors/:id/checks", async (c) => {
       .select("id,property_id,interval_minutes,created_at")
       .eq("id", c.req.param("id"))
       .single(),
+    individualChecks
+      ? c.get("db")
+          .from("uptime_checks")
+          .select(responseFields)
+          .eq("monitor_id", c.req.param("id"))
+          .gte("checked_at", window.from)
+          .lte("checked_at", window.to)
+          .order("checked_at", { ascending: true })
+          .limit(2000)
+      : Promise.resolve({ data: [], error: null }),
+    individualChecks
+      ? c.get("db")
+          .from("uptime_checks")
+          .select(responseFields)
+          .eq("monitor_id", c.req.param("id"))
+          .gte("checked_at", previousFrom.toISOString())
+          .lte("checked_at", previousTo.toISOString())
+          .order("checked_at", { ascending: true })
+          .limit(2000)
+      : Promise.resolve({ data: [], error: null }),
   ]);
   if (currentResult.error) return c.json({ error: currentResult.error.message }, 400);
   if (previousResult.error) return c.json({ error: previousResult.error.message }, 400);
   if (dailyResult.error) return c.json({ error: dailyResult.error.message }, 400);
+  if (currentChecksResult.error) return c.json({ error: currentChecksResult.error.message }, 400);
+  if (previousChecksResult.error) return c.json({ error: previousChecksResult.error.message }, 400);
   if (monitorResult.error || !monitorResult.data)
     return c.json({ error: "monitor_not_found" }, 404);
   const responseWindow = currentResult.data && typeof currentResult.data === "object"
@@ -1800,12 +1831,16 @@ app.get("/api/monitors/:id/checks", async (c) => {
     };
   });
   return c.json({
-    responseSeries: Array.isArray(responseWindow.series) ? responseWindow.series : [],
-    responseBucket: responseWindow.bucket || responseBucket,
+    responseSeries: individualChecks
+      ? uptimeCheckResponseSeries(currentChecksResult.data || [])
+      : Array.isArray(responseWindow.series) ? responseWindow.series : [],
+    responseBucket: individualChecks ? "check" : responseWindow.bucket || responseBucket,
     summary: responseWindow.summary || {},
     previous: {
-      responseSeries: Array.isArray(previousResponseWindow.series) ? previousResponseWindow.series : [],
-      responseBucket: previousResponseWindow.bucket || responseBucket,
+      responseSeries: individualChecks
+        ? uptimeCheckResponseSeries(previousChecksResult.data || [])
+        : Array.isArray(previousResponseWindow.series) ? previousResponseWindow.series : [],
+      responseBucket: individualChecks ? "check" : previousResponseWindow.bucket || responseBucket,
       summary: previousResponseWindow.summary || {},
     },
     latestCheck: dailyChecks.at(-1) || null,
