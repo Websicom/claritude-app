@@ -286,10 +286,10 @@ describe("top selector searches", () => {
 });
 
 describe("analytics previous-period comparisons", () => {
-  it("keeps volume changes neutral and marks favourable directional changes", () => {
+  it("colours volume and directional changes by whether they improved", () => {
     expect(analyticsComparisonModel(112, 100)).toEqual({
       text: "↑ 12% vs previous period",
-      tone: "neutral",
+      tone: "favourable",
     });
     expect(analyticsComparisonModel(45, 50, "lower")).toEqual({
       text: "↓ 10% vs previous period",
@@ -305,8 +305,19 @@ describe("analytics previous-period comparisons", () => {
     });
   });
 
-  it("does not invent a delta when the prior period is unavailable or zero", () => {
+  it("keeps unavailable comparisons explicit and handles a zero baseline without inventing a percentage", () => {
     expect(analyticsComparisonModel(12, null).text).toBe("-- vs previous period");
-    expect(analyticsComparisonModel(12, 0).text).toBe("-- vs previous period");
+    expect(analyticsComparisonModel(12, 0)).toEqual({
+      text: "↑ from 0 vs previous period",
+      tone: "favourable",
+    });
+    expect(analyticsComparisonModel(12, 0, "lower")).toEqual({
+      text: "↑ from 0 vs previous period",
+      tone: "unfavourable",
+    });
+    expect(analyticsComparisonModel(0, 0)).toEqual({
+      text: "→ 0% vs previous period",
+      tone: "neutral",
+    });
   });
 });

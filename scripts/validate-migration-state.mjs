@@ -16,7 +16,10 @@ export function validateMigrationState(payload, mode) {
       throw new Error("Supabase migration output contained an invalid entry.");
     }
     for (const version of [entry.local, entry.remote]) {
-      if (version != null && !versionPattern.test(String(version))) {
+      // Supabase CLI 2.119 serializes an unapplied side as an empty string.
+      // Treat that documented absence the same as null without weakening the
+      // strict validation applied to actual migration versions.
+      if (version != null && version !== "" && !versionPattern.test(String(version))) {
         throw new Error("Supabase migration output contained an invalid migration version.");
       }
     }

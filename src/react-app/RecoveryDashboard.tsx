@@ -1613,7 +1613,7 @@ function PropertyOverview({
 }) {
   const overviewLocation = useLocation();
   const navigate = useNavigate();
-  const livePeriod = periodQuery(overviewLocation.search);
+  const livePeriod = `${periodQuery(overviewLocation.search)}&time_zone=${encodeURIComponent(property?.settings?.timezone || "Europe/London")}`;
   const [tab, setTab] = useState("Overview"),
     [trafficMetric, setTrafficMetric] = useState<TrafficMetric>("Pageviews"),
     [analytics, setAnalytics] = useState<any>(null),
@@ -1660,7 +1660,7 @@ function PropertyOverview({
   const monitor = property.uptime_monitors?.[0],
     audit = latestAudit || property.audit_runs?.[0],
     views = analytics?.pageviews || 0,
-    uniqueVisits = fixture ? property.demo?.visitors || 0 : analytics?.sessions || 0,
+    sessions = fixture ? property.demo?.visitors || 0 : analytics?.sessions || 0,
     mobileScore = fixture
       ? analytics?.mobilePerformanceScore
       : webVitalsScore(analytics?.performanceByDevice?.mobile?.vitals),
@@ -1696,17 +1696,17 @@ function PropertyOverview({
     [
       "Pageviews",
       <Link className="metric-value-link" to={analyticsHref}>{analyticsLoading ? "—" : fmt(views)}</Link>,
-      fixture ? "↑ 12.4%" : "Measured in this period",
+      fixture ? "↑ 12.4%" : <MetricComparison current={analytics?.pageviews} previous={analytics?.previous?.pageviews} />,
     ],
     [
-      "Unique Visits",
-      <Link className="metric-value-link" to={analyticsHref}>{analyticsLoading ? "—" : fmt(uniqueVisits)}</Link>,
-      fixture ? "Anonymous visits in this period" : "Anonymous sessions in this period",
+      "Sessions",
+      <Link className="metric-value-link" to={analyticsHref}>{analyticsLoading ? "—" : fmt(sessions)}</Link>,
+      fixture ? "Anonymous visits in this period" : <MetricComparison current={analytics?.sessions} previous={analytics?.previous?.sessions} />,
     ],
     [
       "Events",
       <Link className="metric-value-link" to={analyticsTabHref("Events")}>{analyticsLoading ? "—" : fmt(analytics?.keyEvents || 0)}</Link>,
-      fixture ? "1.3% of pageviews" : "Tracked events in this period",
+      fixture ? "1.3% of pageviews" : <MetricComparison current={analytics?.keyEvents} previous={analytics?.previous?.keyEvents} />,
     ],
   ];
   return (
@@ -5200,10 +5200,20 @@ type AnalyticsComparisonDirection = "higher" | "lower" | "neutral";
 export function analyticsComparisonModel(
   current: number | null | undefined,
   previous: number | null | undefined,
-  direction: AnalyticsComparisonDirection = "neutral",
+  direction: AnalyticsComparisonDirection = "higher",
 ) {
-  if (!Number.isFinite(current) || !Number.isFinite(previous) || Number(previous) === 0) {
+  if (!Number.isFinite(current) || !Number.isFinite(previous)) {
     return { text: "-- vs previous period", tone: "neutral" as const };
+  }
+  if (Number(previous) === 0) {
+    if (Number(current) === 0)
+      return { text: "→ 0% vs previous period", tone: "neutral" as const };
+    const increased = Number(current) > 0;
+    const favourable = direction === "higher" ? increased : direction === "lower" ? !increased : null;
+    return {
+      text: `${increased ? "↑" : "↓"} from 0 vs previous period`,
+      tone: favourable == null ? "neutral" as const : favourable ? "favourable" as const : "unfavourable" as const,
+    };
   }
   const change = ((Number(current) - Number(previous)) / Math.abs(Number(previous))) * 100;
   if (!Number.isFinite(change)) return { text: "-- vs previous period", tone: "neutral" as const };
@@ -5217,7 +5227,7 @@ export function analyticsComparisonModel(
   };
 }
 
-function MetricComparison({ current, previous, direction = "neutral" }: {
+function MetricComparison({ current, previous, direction = "higher" }: {
   current: number | null | undefined;
   previous: number | null | undefined;
   direction?: AnalyticsComparisonDirection;

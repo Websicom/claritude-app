@@ -18,6 +18,15 @@ describe("production migration guard", () => {
     }, "--allow-pending")).toEqual(["20261006090000"]);
   });
 
+  it("accepts the CLI empty-string representation for an unapplied remote migration", () => {
+    expect(validateMigrationState({
+      migrations: [
+        { local: "20261005155152", remote: "20261005155152" },
+        { local: "20261005191230", remote: "" },
+      ],
+    }, "--allow-pending")).toEqual(["20261005191230"]);
+  });
+
   it("rejects unapplied migrations after a push", () => {
     expect(() => validateMigrationState({
       migrations: [{ local: "20261006090000", remote: null }],

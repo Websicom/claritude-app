@@ -2254,13 +2254,20 @@ app.get("/api/account/export", async (c) => {
 app.get("/api/properties/:id/overview", async (c) => {
   const window = requestedWindow(c);
   if (!window) return c.json({ error: "invalid_date_range" }, 400);
+  const previousWindow = analyticsPreviousPeriodRange(window.from, window.to);
   const startedAt = performance.now();
   const db = c.get("db");
-  const [analyticsResult, auditResult] = await Promise.all([
+  const [analyticsResult, previousAnalyticsResult, auditResult] = await Promise.all([
     db.rpc("analytics_property_overview", {
       p_property_id: c.req.param("id"),
       p_from: window.from,
       p_to: window.to,
+      p_time_zone: window.timeZone,
+    }),
+    db.rpc("analytics_property_overview", {
+      p_property_id: c.req.param("id"),
+      p_from: previousWindow.from,
+      p_to: previousWindow.to,
       p_time_zone: window.timeZone,
     }),
     db
@@ -2272,7 +2279,7 @@ app.get("/api/properties/:id/overview", async (c) => {
       .limit(1)
       .maybeSingle(),
   ]);
-  const failure = analyticsResult.error || auditResult.error;
+  const failure = analyticsResult.error || previousAnalyticsResult.error || auditResult.error;
   if (failure) {
     console.error("property overview query failed", failure.message);
     return c.json({ error: failure.message }, 400);
@@ -2307,18 +2314,24 @@ app.get("/api/properties/:id/overview", async (c) => {
   }
   c.header("Server-Timing", `overview-db;dur=${(performance.now() - startedAt).toFixed(1)}`);
   c.header("Cache-Control", "private, max-age=15");
+  const emptyAnalytics = (from: string, to: string) => ({
+    from,
+    to,
+    timeZone: window.timeZone,
+    pageviews: 0,
+    keyEvents: 0,
+    sessions: 0,
+    series: [],
+    pages: [],
+    vitals: [],
+    performanceByDevice: {},
+  });
+  const currentAnalytics = analyticsResult.data || emptyAnalytics(window.from, window.to);
+  const previousAnalytics = previousAnalyticsResult.data || emptyAnalytics(previousWindow.from, previousWindow.to);
   return c.json({
-    analytics: analyticsResult.data || {
-      from: window.from,
-      to: window.to,
-      timeZone: window.timeZone,
-      pageviews: 0,
-      keyEvents: 0,
-      sessions: 0,
-      series: [],
-      pages: [],
-      vitals: [],
-      performanceByDevice: {},
+    analytics: {
+      ...currentAnalytics,
+      previous: previousAnalytics,
     },
     audit,
   });
@@ -2346,9 +2359,9 @@ app.get("/api/properties/:id/analytics", async (c) => {
   };
   const db = c.get("db");
   const overviewOnly = c.req.query("view") === "overview";
-  const span = new Date(window.to).valueOf() - new Date(window.from).valueOf() + 1;
-  const previousTo = new Date(new Date(window.from).valueOf() - 1).toISOString();
-  const previousFrom = new Date(new Date(window.from).valueOf() - span).toISOString();
+  const previousWindow = analyticsPreviousPeriodRange(window.from, window.to);
+  const previousTo = previousWindow.to;
+  const previousFrom = previousWindow.from;
   const useRollups = !hasAnalyticsFilters(filters);
   let currentResult: AnalyticsWindowData;
   let previousResult: AnalyticsWindowData | null = null;
@@ -4167,6 +4180,18 @@ const utcDayStart = (value: number) => {
   const date = new Date(value);
   return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
 };
+
+export function analyticsPreviousPeriodRange(from: string, to: string): AnalyticsRange {
+  const fromMs = Date.parse(from);
+  const toMs = Date.parse(to);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || fromMs > toMs)
+    throw new Error("invalid_analytics_window");
+  const span = toMs - fromMs + 1;
+  return {
+    from: new Date(fromMs - span).toISOString(),
+    to: new Date(fromMs - 1).toISOString(),
+  };
+}
 
 export function analyticsRollupPlan(
   from: string,

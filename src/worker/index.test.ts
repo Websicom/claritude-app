@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  analyticsPreviousPeriodRange,
   analyticsRollupPlan,
   auditOutcomeNotification,
   buildAnalyticsEventDetailSummary,
@@ -639,6 +640,16 @@ describe("worker evidence pipelines", () => {
       { from: "2026-09-03T23:00:00.000Z", to: "2026-09-03T23:59:59.999Z" },
       { from: "2026-10-03T00:00:00.000Z", to: "2026-10-03T22:59:59.999Z" },
     ]);
+  });
+
+  it("uses the immediately preceding equal-duration analytics window", () => {
+    expect(analyticsPreviousPeriodRange(
+      "2026-10-04T23:00:00.000Z",
+      "2026-10-05T22:59:59.999Z",
+    )).toEqual({
+      from: "2026-10-03T23:00:00.000Z",
+      to: "2026-10-04T22:59:59.999Z",
+    });
   });
 
   it("produces desktop and mobile performance from the same analytics pass", () => {
