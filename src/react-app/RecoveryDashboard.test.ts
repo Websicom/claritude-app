@@ -195,6 +195,14 @@ describe("top selector searches", () => {
     expect(auditProgressMessagePool("running", 60)).toContain("Checking under the bonnet");
     expect(auditProgressMessagePool("running", 85)).toContain("Saving everything for you");
     expect(auditProgressMessagePool("running", 40, true)).toContain("Doing the final checks");
+    const journey = [
+      ...auditProgressMessagePool("queued", 10),
+      ...auditProgressMessagePool("running", 20),
+      ...auditProgressMessagePool("running", 60),
+      ...auditProgressMessagePool("running", 85),
+    ];
+    expect(new Set(journey).size).toBe(journey.length);
+    expect(auditProgressMessagePool("running", 85).at(-1)).toBe("Saving everything for you");
   });
 
   it("assigns healthy, moderate and poor score-bar states", () => {

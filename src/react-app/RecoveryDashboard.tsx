@@ -2808,7 +2808,7 @@ function AuditView({
               completionTimer.current = window.setTimeout(() => {
                 setCompletionRun(null);
                 completionTimer.current = null;
-              }, 1_800);
+              }, 700);
             }
             notify(finished.status === "failed" ? "Audit failed" : "Audit results are ready");
           }
@@ -6596,8 +6596,8 @@ const auditFinalMessages = [
   "Pulling the findings together",
   "Doing the final checks",
   "Tidying up the evidence",
+  "Doing the final touches",
   "Saving everything for you",
-  "Almost there",
 ];
 
 export function auditProgressCeiling(elapsedMs: number, finalising = false) {
@@ -6609,10 +6609,18 @@ export function auditProgressCeiling(elapsedMs: number, finalising = false) {
   return Math.min(90, 85 + ((elapsed - 60_000) / 60_000) * 5);
 }
 
+export function auditProgressMessagePhase(status: string, percent: number, finalising = false) {
+  if (status === "queued") return "preparing";
+  if (finalising || percent >= 82) return "final";
+  if (percent < 32) return "early";
+  return "middle";
+}
+
 export function auditProgressMessagePool(status: string, percent: number, finalising = false) {
-  if (status === "queued") return auditPreparingMessages;
-  if (finalising || percent >= 82) return auditFinalMessages;
-  if (percent < 32) return auditEarlyMessages;
+  const phase = auditProgressMessagePhase(status, percent, finalising);
+  if (phase === "preparing") return auditPreparingMessages;
+  if (phase === "early") return auditEarlyMessages;
+  if (phase === "final") return auditFinalMessages;
   return auditMiddleMessages;
 }
 
@@ -6624,10 +6632,11 @@ function AuditProgress({ run, onRetry }: { run: AuditRun; onRetry: () => void })
   const finalising = run.execution_stage === "persisting_results" || run.execution_stage === "finalising";
   const progressStartedAt = useRef(Date.now());
   const [displayPercent, setDisplayPercent] = useState(() => auditDisplayProgress(0, actualPercent, genuinelyComplete, 12, 9 + Math.random() * 3));
-  const [messageIndex, setMessageIndex] = useState(() => Math.floor(Math.random() * auditPreparingMessages.length));
+  const messagePhase = auditProgressMessagePhase(run.status, displayPercent, finalising);
+  const messagePool = auditProgressMessagePool(run.status, displayPercent, finalising);
+  const [messageState, setMessageState] = useState(() => ({ runId: run.id, phase: messagePhase, index: 0 }));
   useEffect(() => {
     progressStartedAt.current = Date.now();
-    setMessageIndex(Math.floor(Math.random() * auditPreparingMessages.length));
     setDisplayPercent(auditDisplayProgress(0, actualPercent, genuinelyComplete, 12, 9 + Math.random() * 3));
   }, [run.id]);
   useEffect(() => {
@@ -6655,12 +6664,20 @@ function AuditProgress({ run, onRetry }: { run: AuditRun; onRetry: () => void })
   }, [actualPercent, finalising, genuinelyComplete, run.id, run.status]);
   useEffect(() => {
     if (genuinelyComplete || run.status === "failed") return;
+    setMessageState((current) => current.runId === run.id && current.phase === messagePhase
+      ? current
+      : { runId: run.id, phase: messagePhase, index: 0 });
     let timer = 0;
     let cancelled = false;
     const rotate = () => {
       timer = window.setTimeout(() => {
         if (cancelled) return;
-        setMessageIndex((current) => current + 1);
+        setMessageState((current) => {
+          if (current.runId !== run.id || current.phase !== messagePhase)
+            return { runId: run.id, phase: messagePhase, index: 0 };
+          if (current.index >= messagePool.length - 1) return current;
+          return { ...current, index: current.index + 1 };
+        });
         rotate();
       }, 2_800 + Math.random() * 2_400);
     };
@@ -6669,21 +6686,23 @@ function AuditProgress({ run, onRetry }: { run: AuditRun; onRetry: () => void })
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [genuinelyComplete, run.id, run.status]);
+  }, [genuinelyComplete, messagePhase, messagePool.length, run.id, run.status]);
   const heartbeat = Date.parse(run.heartbeat_at || run.created_at);
   const createdAt = Date.parse(run.created_at);
   const stalled = ["queued", "running"].includes(run.status) && (
     Number.isFinite(heartbeat) && Date.now() - heartbeat > 2 * 60_000 ||
     Number.isFinite(createdAt) && Date.now() - createdAt > 5 * 60_000
   );
-  const messagePool = auditProgressMessagePool(run.status, displayPercent, finalising);
+  const messageIndex = messageState.runId === run.id && messageState.phase === messagePhase
+    ? Math.min(messageState.index, messagePool.length - 1)
+    : 0;
   const statusMessage = genuinelyComplete
     ? "Audit complete"
     : stalled
       ? "Audit stalled"
       : run.status === "failed"
         ? "Audit failed"
-        : messagePool[messageIndex % messagePool.length];
+        : messagePool[messageIndex];
   const statusDetail = genuinelyComplete
     ? "Your latest results are ready."
     : stalled
@@ -6692,7 +6711,7 @@ function AuditProgress({ run, onRetry }: { run: AuditRun; onRetry: () => void })
         ? "The audit could not be completed."
         : run.status === "queued"
           ? "Your audit will start as soon as a worker is ready."
-          : "We’re analysing the page and saving useful evidence as we go.";
+          : "We’re analysing the page and saving the data.";
   return (
     <section className={`audit-progress ${run.status === "failed" || stalled ? "failed" : ""}`} aria-live="polite">
       <div className="audit-progress-copy">
