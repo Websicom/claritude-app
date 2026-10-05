@@ -59,6 +59,7 @@ type Env = {
   RESEND_API_KEY?: string;
   RESEND_FROM?: string;
   APP_ORIGIN: string;
+  DEPLOY_COMMIT_SHA?: string;
   JOBS: Queue<Job>;
   ASSETS: Fetcher;
   BROWSER: Fetcher;
@@ -245,6 +246,9 @@ app.get("/health", (c) =>
     ok: true,
     service: "claritude",
     time: new Date().toISOString(),
+    deployment: {
+      commitSha: c.env.DEPLOY_COMMIT_SHA || null,
+    },
     audit: {
       architectureVersion: "2.0.0",
       catalogueChecks: ACTIVE_AUDIT_CHECKS.length,
