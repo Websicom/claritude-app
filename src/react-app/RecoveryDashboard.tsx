@@ -1245,7 +1245,6 @@ function WorkspaceOverview({
                   </button>
                 </span>
               )}
-              <span className="subtle">Filters affect this property table</span>
             </div>
             <DataTable
               headers={[
@@ -2434,7 +2433,6 @@ function AnalyticsView({
       onChange={changeFilters}
       title={config.title}
       categories={config.categories}
-      scope={config.scope}
     />
   );
   const trackingSnippet = `<script defer src="${window.location.origin}/c.js" data-property="${property.tracking_id}"></script>`;
@@ -5785,14 +5783,12 @@ function AnalyticsPageFilterToolbar({
   onChange,
   title = "Pages",
   categories = ["Exact path / prefix", "Device", "Source", "Country"],
-  scope = "this page table",
 }: {
   filters: AnalyticsPageFilters;
   options: AnalyticsFilterOptions;
   onChange: (filters: AnalyticsPageFilters) => void;
   title?: string;
   categories?: string[];
-  scope?: string;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -5979,7 +5975,6 @@ function AnalyticsPageFilterToolbar({
       {chips.length > 0 && (
         <button className="text-link" onClick={() => onChange({})}>Clear all</button>
       )}
-      <small className="subtle">Filters affect {scope}.</small>
     </div>
   );
 }
@@ -6455,7 +6450,7 @@ function EventsPanel({
       >
         {data && filters && options && onFilterChange ? (
           <>
-            <AnalyticsPageFilterToolbar filters={filters} options={options} onChange={onFilterChange} title="Events" categories={analyticsFilterConfigs.Events.categories} scope="this event table" />
+            <AnalyticsPageFilterToolbar filters={filters} options={options} onChange={onFilterChange} title="Events" categories={analyticsFilterConfigs.Events.categories} />
             <AnalyticsValueTable
               headers={["Event", "Count", "Share"]}
               rows={shownEventBreakdown.map((event: any) => ({
