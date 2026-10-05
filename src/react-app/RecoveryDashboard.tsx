@@ -54,6 +54,7 @@ import {
   type CSSProperties,
   type FormEvent,
   type ReactNode,
+  Fragment,
   useEffect,
   useId,
   useMemo,
@@ -6629,7 +6630,7 @@ function AuditQuickFilter({ kind, count, filters, onChange }: { kind: AuditFilte
   );
 }
 
-function AuditFilterMenu({ results, filters, onChange, kinds }: { results: any[]; filters: AuditBrowseFilters; onChange: (filters: AuditBrowseFilters) => void; kinds: AuditFilterKind[] }) {
+function AuditFilterMenu({ results, filters, onChange, kinds, buttonLabel = "Filters" }: { results: any[]; filters: AuditBrowseFilters; onChange: (filters: AuditBrowseFilters) => void; kinds: AuditFilterKind[]; buttonLabel?: string }) {
   const [open, setOpen] = useState(false);
   const wrapper = useRef<HTMLDivElement>(null);
   const menuId = useId();
@@ -6666,7 +6667,7 @@ function AuditFilterMenu({ results, filters, onChange, kinds }: { results: any[]
     <div className="audit-filter-row">
       <div className="audit-filter-wrap" ref={wrapper}>
         <button className="btn audit-overview-filter" aria-haspopup="dialog" aria-expanded={open} aria-controls={menuId} onClick={() => setOpen((current) => !current)}>
-          <Filter /> Filters
+          <Filter /> {buttonLabel}
         </button>
         {open && (
           <div className="action-menu audit-filter-actions" id={menuId} role="dialog" aria-label="Audit filters">
@@ -6843,17 +6844,9 @@ function auditCheckMetrics(results: any[]) {
   };
 }
 
-function AuditCheckMetrics({ metrics, score }: { metrics: ReturnType<typeof auditCheckMetrics>; score?: number | null }) {
-  return (
-    <small className="audit-check-row-metrics">
-      {metrics.checks} {metrics.checks === 1 ? "check" : "checks"} · {metrics.passed} passed · {metrics.issues} {metrics.issues === 1 ? "issue" : "issues"} · {metrics.informational} info / N/A · {metrics.unable} unable to test · {metrics.passRate == null ? "--" : `${metrics.passRate}%`} pass rate
-      {score != null ? ` · score ${score}` : ""}
-    </small>
-  );
-}
-
 function AuditChecksPanel({ pageName, run, results, onOpenCategory }: { pageName: string; run?: AuditRun; results: any[]; onOpenCategory: (category: string) => void }) {
   const [openCategory, setOpenCategory] = useState<string | null>(null);
+  const [filters, setFilters] = useState<AuditBrowseFilters>({});
   const summary = {
     automated: run?.catalogue_summary?.userFacingGroups ?? results.length,
     passed: results.filter((result) => result.outcome === "passed").length,
@@ -6861,7 +6854,8 @@ function AuditChecksPanel({ pageName, run, results, onOpenCategory }: { pageName
     informational: results.filter((result) => result.outcome === "not_applicable").length,
   };
   const unable = results.filter((result) => result.outcome === "unable_to_test").length;
-  const categoryScores = auditRunCategoryScores(run);
+  const filteredResults = filterUserFacingAuditResults(results, filters);
+  const visibleCategories = auditCategories.filter((category) => filteredResults.some((result) => result.category === category));
   return (
     <>
       <div className="audit-check-summary">
@@ -6871,32 +6865,50 @@ function AuditChecksPanel({ pageName, run, results, onOpenCategory }: { pageName
       </div>
       <section className="panel audit-checks-panel">
         <h2>{pageName} checks</h2>
-        <div className="audit-check-category-list">
-          {auditCategories.map((category) => {
-            const categoryResults = results.filter((result) => result.category === category);
-            const metrics = auditCheckMetrics(categoryResults);
-            const storedScore = categoryScores[category];
-            const visualScore = storedScore ?? metrics.passRate;
-            const status = auditScoreBand(visualScore);
-            const open = openCategory === category;
-            const subcategories = auditDetailedCategoriesFor(categoryResults);
-            return (
-              <section className={`audit-check-category ${status}`} key={category}>
-                <button className="audit-check-category-toggle" aria-expanded={open} onClick={() => setOpenCategory(open ? null : category)}>
-                  <span><b>{category}</b><AuditCheckMetrics metrics={metrics} score={storedScore} /></span>
-                  <ChevronDown />
-                </button>
-                {open && <div className="audit-check-subcategories">{subcategories.map(({ key, subcategory }) => {
-                  const subcategoryResults = categoryResults.filter((result) => result.subcategory === subcategory);
-                  const subcategoryMetrics = auditCheckMetrics(subcategoryResults);
-                  const subcategoryStatus = auditScoreBand(subcategoryMetrics.passRate);
-                  return <button className={subcategoryStatus} key={key} onClick={() => onOpenCategory(key)}><span><b>{subcategory}</b><AuditCheckMetrics metrics={subcategoryMetrics} /></span><ChevronRight /></button>;
-                })}</div>}
-              </section>
-            );
-          })}
+        <div className="audit-checks-toolbar">
+          <AuditFilterMenu
+            results={results}
+            filters={filters}
+            onChange={setFilters}
+            kinds={["critical", "security", "warning", "advisory", "passed", "not_applicable", "unable_to_test"]}
+            buttonLabel="Add filter"
+          />
+          <small className="subtle">Filters affect this checks table.</small>
         </div>
-        <p className="subtle audit-checks-note">Category colours use the stored audit score; subcategory colours use pass rate. {unable} unable-to-test {unable === 1 ? "result is" : "results are"} shown separately from score performance.</p>
+        <div className="table-wrap">
+          <table className="audit-checks-table">
+            <thead><tr><th>Category</th><th>Checks</th><th>Passed</th><th>Issues</th><th>Pass rate</th><th><span className="sr-only">Expand</span></th></tr></thead>
+            <tbody>
+              {visibleCategories.map((category) => {
+                const categoryResults = filteredResults.filter((result) => result.category === category);
+                const metrics = auditCheckMetrics(categoryResults);
+                const visualScore = metrics.passRate;
+                const status = auditScoreBand(visualScore);
+                const open = openCategory === category;
+                const subcategories = auditDetailedCategoriesFor(categoryResults);
+                const toggle = () => setOpenCategory(open ? null : category);
+                return <Fragment key={category}>
+                  <tr className="audit-check-category-row">
+                    <td><button className={`audit-category-bar ${status}`} style={{ "--pass-rate": visualScore ?? 0 } as any} aria-expanded={open} onClick={toggle}>{category}</button></td>
+                    <td>{metrics.checks}</td><td>{metrics.passed}</td><td>{metrics.issues}</td><td>{metrics.passRate == null ? "--" : `${metrics.passRate}%`}</td>
+                    <td><button className="audit-check-expand" aria-label={`${open ? "Collapse" : "Expand"} ${category}`} aria-expanded={open} onClick={toggle}><ChevronDown /></button></td>
+                  </tr>
+                  {open && subcategories.map(({ key, subcategory }) => {
+                    const subcategoryResults = categoryResults.filter((result) => result.subcategory === subcategory);
+                    const subcategoryMetrics = auditCheckMetrics(subcategoryResults);
+                    return <tr className="audit-check-subcategory-row" key={key}>
+                      <td><button className="audit-category-bar subcategory" style={{ "--pass-rate": subcategoryMetrics.passRate ?? 0 } as any} onClick={() => onOpenCategory(key)}>{subcategory}</button></td>
+                      <td>{subcategoryMetrics.checks}</td><td>{subcategoryMetrics.passed}</td><td>{subcategoryMetrics.issues}</td><td>{subcategoryMetrics.passRate == null ? "--" : `${subcategoryMetrics.passRate}%`}</td>
+                      <td><button className="audit-check-open-findings" aria-label={`View ${subcategory} issues`} onClick={() => onOpenCategory(key)}><ChevronRight /></button></td>
+                    </tr>;
+                  })}
+                </Fragment>;
+              })}
+            </tbody>
+          </table>
+          {!visibleCategories.length && <Empty title="No matching checks" detail="Clear the active filters to view the checks table." />}
+        </div>
+        <p className="subtle audit-checks-note">The coloured bars show category pass rates; expanded grey bars show subcategory pass rates. {unable} unable-to-test {unable === 1 ? "result is" : "results are"} shown separately from score performance.</p>
       </section>
     </>
   );
