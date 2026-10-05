@@ -1,17 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   auditDisplayProgress,
+  auditHistoryStatus,
   auditScoreBand,
   buildAuditFixPrompt,
   auditSeverityGroup,
   filterProperties,
+  filterAuditSubfindings,
   filterUserFacingAuditResults,
   filterWorkspaceMemberships,
   isPrimaryAuditPage,
   isFixFirstAuditResult,
   paginateResults,
   prepareAvatarImage,
+  performanceTargetStatus,
   propertyOnboardingChecks,
+  shouldShowAuditQuickFilters,
   propertyFaviconSources,
   squareImageCrop,
   trafficSeriesKey,
@@ -127,6 +131,12 @@ describe("top selector searches", () => {
     expect(isFixFirstAuditResult({ outcome: "unable_to_test", severity: "Critical", category: "SEO" })).toBe(false);
   });
 
+  it("only shows Overview severity shortcuts when more than one type is present", () => {
+    expect(shouldShowAuditQuickFilters({ critical: 0, security: 0, warning: 8 })).toBe(false);
+    expect(shouldShowAuditQuickFilters({ critical: 0, security: 1, warning: 8 })).toBe(true);
+    expect(shouldShowAuditQuickFilters({ critical: 0, security: 0, warning: 0 })).toBe(false);
+  });
+
   it("builds an AI fix prompt from actionable findings and every stored occurrence only", () => {
     const prompt = buildAuditFixPrompt({
       pageName: "Homepage",
@@ -173,6 +183,34 @@ describe("top selector searches", () => {
     expect(auditScoreBand(68)).toBe("moderate");
     expect(auditScoreBand(34)).toBe("poor");
     expect(auditScoreBand(null)).toBe("unknown");
+  });
+
+  it("presents terminal partial runs as successful without changing their stored status", () => {
+    expect(auditHistoryStatus("completed")).toBe("Successful");
+    expect(auditHistoryStatus("partial")).toBe("Successful");
+    expect(auditHistoryStatus("failed")).toBe("Failed");
+    expect(auditHistoryStatus("running")).toBe("In progress");
+  });
+
+  it("keeps expanded technical sub-findings aligned with the active result filter", () => {
+    const subfindings = [
+      { check_id: "failed", outcome: "failed" },
+      { check_id: "passed", outcome: "passed" },
+      { check_id: "advisory", outcome: "advisory" },
+      { check_id: "unable", outcome: "unable_to_test" },
+    ];
+    expect(filterAuditSubfindings(subfindings, ["warning"]).map((item) => item.check_id)).toEqual(["failed"]);
+    expect(filterAuditSubfindings(subfindings, ["passed"]).map((item) => item.check_id)).toEqual(["passed"]);
+    expect(filterAuditSubfindings(subfindings, ["advisory"]).map((item) => item.check_id)).toEqual(["failed", "advisory"]);
+    expect(filterAuditSubfindings(subfindings, [])).toEqual(subfindings);
+  });
+
+  it("uses green, grey and red performance target states", () => {
+    expect(performanceTargetStatus("LCP", "2.5 s")).toBe("good");
+    expect(performanceTargetStatus("LCP", "2.7 s")).toBe("close");
+    expect(performanceTargetStatus("LCP", "3.6 s")).toBe("failed");
+    expect(performanceTargetStatus("INP", "205 ms")).toBe("close");
+    expect(performanceTargetStatus("CLS", "0.00")).toBe("good");
   });
 
   it("keeps critical and security group severity visually distinct", () => {

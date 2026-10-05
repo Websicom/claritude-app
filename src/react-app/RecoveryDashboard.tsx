@@ -28,6 +28,7 @@ import {
   Globe2,
   HelpCircle,
   Home,
+  Info,
   LayoutGrid,
   LogOut,
   Menu,
@@ -2659,7 +2660,7 @@ function AuditView({
   const [runs, setRuns] = useState<AuditRun[]>([]),
     [propertyRuns, setPropertyRuns] = useState<AuditRun[]>([]),
     [tab, setTab] = useState(
-      ["Overview", "Findings", "Checks", "History", "Compare"].includes(requestedTab || "")
+      ["Overview", "Checks", "Findings", "History", "Compare"].includes(requestedTab || "")
         ? requestedTab!
         : "Overview",
     ),
@@ -2987,7 +2988,7 @@ function AuditView({
           <Plus />
         </button>
         <Tabs
-          labels={["Overview", "Findings", "Checks", "History", "Compare"]}
+          labels={["Overview", "Checks", "Findings", "History", "Compare"]}
           value={tab}
           onChange={(nextTab) => { setTab(nextTab); setAuditFilters({}); updateAuditLocation({ auditTab: nextTab }); }}
         />
@@ -3017,38 +3018,33 @@ function AuditView({
       )}
       {tab === "Overview" ? (
         <>
-          <AuditScore run={latest} implementationCoverage={implementationCoverage} />
-          {latest && (
-            <AuditAiFixPrompt
-              pageName={selectedPage?.name || "Selected page"}
-              pageUrl={latest.page_url || property.url}
-              runId={latest.id}
-              results={actionable}
-              notify={notify}
-            />
-          )}
+          <AuditScore run={latest} />
           <div className="grid">
             <div>
               <Panel title={`Fix these first · ${selectedPage?.name || "Selected page"}`}>
-              <div className="audit-summary" aria-label="Finding severity filters">
-                {resultCounts.critical > 0 && <AuditQuickFilter kind="critical" count={resultCounts.critical} filters={auditFilters} onChange={setAuditFilters} />}
-                {resultCounts.security > 0 && <AuditQuickFilter kind="security" count={resultCounts.security} filters={auditFilters} onChange={setAuditFilters} />}
-                {resultCounts.warning > 0 && <AuditQuickFilter kind="warning" count={resultCounts.warning} filters={auditFilters} onChange={setAuditFilters} />}
-              </div>
+              {shouldShowAuditQuickFilters(resultCounts) && (
+                <div className="audit-summary" aria-label="Finding severity filters">
+                  {resultCounts.critical > 0 && <AuditQuickFilter kind="critical" count={resultCounts.critical} filters={auditFilters} onChange={setAuditFilters} />}
+                  {resultCounts.security > 0 && <AuditQuickFilter kind="security" count={resultCounts.security} filters={auditFilters} onChange={setAuditFilters} />}
+                  {resultCounts.warning > 0 && <AuditQuickFilter kind="warning" count={resultCounts.warning} filters={auditFilters} onChange={setAuditFilters} />}
+                </div>
+              )}
               <AuditFilterMenu
                 results={actionable}
                 filters={auditFilters}
                 onChange={setAuditFilters}
                 kinds={["critical", "security", "warning", "unable_to_test"]}
               />
-              <AuditResults results={filteredActionable} />
+              <AuditResults results={filteredActionable} filters={auditFilters} hideOutcome />
               </Panel>
-              <p className="audit-run-meta">
-                {latest
-                  ? `Latest completed result for ${selectedPage?.name}: ${fmtDate(latest.completed_at || latest.created_at)} · run ${latest.id.slice(0, 8)}`
-                  : `${selectedPage?.name || "This page"} has not been audited yet.`}
-                {activeRun && latest ? " · Previous completed result remains visible while the new run is active." : ""}
-              </p>
+              <div className="audit-run-meta">
+                <p>{latest
+                    ? `Latest completed result for ${selectedPage?.name}: ${fmtDate(latest.completed_at || latest.created_at)} · run ${latest.id.slice(0, 8)}`
+                    : `${selectedPage?.name || "This page"} has not been audited yet.`}
+                  {activeRun && latest ? " · Previous completed result remains visible while the new run is active." : ""}</p>
+                <p>Audit coverage: {latest?.coverage != null ? `${latest.coverage}% of enabled checks produced evidence in this run.` : "--"}</p>
+                <p>Implementation coverage: {implementationCoverage != null ? `${implementationCoverage}% of catalogue checks are implemented.` : "--"}</p>
+              </div>
             </div>
             <div>
               <div className="audit-performance-toolbar">
@@ -3069,7 +3065,16 @@ function AuditView({
                   <Panel title={<span className="performance-panel-title"><Smartphone /> Mobile performance</span>}><RealUserPerformanceTable data={realUserPerformance} device="mobile" /></Panel>
                 </>
               )}
-              <p className="audit-performance-note">Lab uses load-based TBT; real-user data uses INP.</p>
+              <div className="audit-performance-note">Lab uses load-based <MetricTerm term="TBT" />; real-user data uses <MetricTerm term="INP" />.</div>
+              {latest && (
+                <AuditAiFixPrompt
+                  pageName={selectedPage?.name || "Selected page"}
+                  pageUrl={latest.page_url || property.url}
+                  runId={latest.id}
+                  results={actionable}
+                  notify={notify}
+                />
+              )}
             </div>
           </div>
         </>
@@ -3103,7 +3108,7 @@ function AuditView({
             rows={runs.map((r) => [
               fmtDate(r.created_at),
               r.page_url || property.url,
-              cap(r.status),
+              auditHistoryStatus(r.status),
               r.score ?? "—",
               r.coverage != null ? `${r.coverage}%` : "—",
               r.duration_ms ? `${r.duration_ms} ms` : "—",
@@ -5016,10 +5021,12 @@ function DataTable({
   headers,
   rows,
   className,
+  headerHelp,
 }: {
   headers: string[];
   rows: ReactNode[][];
   className?: string;
+  headerHelp?: Partial<Record<number, ReactNode>>;
 }) {
   const sorted = useSortableRows(rows, (row, column) => sortableValue(row[column]));
   return (
@@ -5028,7 +5035,7 @@ function DataTable({
         <thead>
           <tr>
             {headers.map((h, column) => (
-              <SortableHeader key={h} label={h} column={column} sort={sorted.sort} onSort={sorted.onSort} />
+              <SortableHeader key={h} label={h} column={column} sort={sorted.sort} onSort={sorted.onSort} help={headerHelp?.[column]} />
             ))}
           </tr>
         </thead>
@@ -5078,10 +5085,10 @@ function useSortableRows<T>(rows: T[], value: (row: T, column: number) => string
     : { column, direction: "asc" });
   return { rows: sortedRows, sort, onSort };
 }
-function SortableHeader({ label, column, sort, onSort }: { label: string; column: number; sort: TableSort; onSort: (column: number) => void }) {
+function SortableHeader({ label, column, sort, onSort, help }: { label: string; column: number; sort: TableSort; onSort: (column: number) => void; help?: ReactNode }) {
   return (
     <th aria-sort={sort?.column === column ? (sort.direction === "asc" ? "ascending" : "descending") : "none"}>
-      <button className="table-sort-button" onClick={() => onSort(column)}>{label}</button>
+      <span className="table-header-content"><button className="table-sort-button" onClick={() => onSort(column)}>{label}</button>{help}</span>
     </th>
   );
 }
@@ -6678,7 +6685,7 @@ function AuditFilterMenu({ results, filters, onChange, kinds }: { results: any[]
   );
 }
 
-function AuditScore({ run, implementationCoverage }: { run?: AuditRun; implementationCoverage: number | null }) {
+function AuditScore({ run }: { run?: AuditRun }) {
   const categoryScores = auditRunCategoryScores(run);
   const complete = isAuditRunComplete(run);
   const score = run?.score;
@@ -6690,24 +6697,13 @@ function AuditScore({ run, implementationCoverage }: { run?: AuditRun; implement
       >
         <span>{score ?? "—"}</span>
       </div>
-      <div className="audit-coverage-stats" aria-label="Audit and implementation coverage">
-        <div><small>Audit coverage</small><b>{run?.coverage != null ? `${run.coverage}%` : "—"}</b><span>Evidence produced in this run</span></div>
-        <div><small>Implementation coverage</small><b>{implementationCoverage != null ? `${implementationCoverage}%` : "—"}</b><span>Catalogue checks implemented</span></div>
-      </div>
       <div className="audit-six-stats">
         {auditCategories.map((x) => {
           const categoryScore = categoryScores[x];
           return (
           <div className="audit-six-stat" key={x}>
             <small>{x}</small>
-            <b>{categoryScore ?? "Pending"}</b>
-            <span className={categoryScore == null ? "subtle pending-data-text" : "trend-up"}>
-              {categoryScore == null
-                ? run
-                  ? "Not implemented in this run"
-                  : "Awaiting audit"
-                : "Evidence-backed checks"}
-            </span>
+            <b>{categoryScore ?? "--"}</b>
           </div>
           );
         })}
@@ -6725,6 +6721,10 @@ export function auditResultFilterKind(result: any): AuditFilterKind {
 
 export function isFixFirstAuditResult(result: any) {
   return result.outcome === "failed" && ["critical", "security", "warning"].includes(auditSeverityGroup(result));
+}
+
+export function shouldShowAuditQuickFilters(counts: Record<string, number>) {
+  return Object.values(counts).filter((count) => count > 0).length > 1;
 }
 
 export function filterUserFacingAuditResults(results: any[], filters: AuditBrowseFilters, options: { hideUnableByDefault?: boolean } = {}) {
@@ -6766,7 +6766,7 @@ function auditGroupIcon(group: string) {
   if (group === "security") return <ShieldAlert />;
   if (group === "warning") return <TriangleAlert />;
   if (group === "advisory") return <Eye />;
-  if (group === "pass") return <CheckCircle2 />;
+  if (["pass", "passed"].includes(group)) return <CheckCircle2 />;
   return <OctagonAlert />;
 }
 
@@ -6788,9 +6788,21 @@ function AuditFindingsPanel({
   const [openResultId, setOpenResultId] = useState<string | null>(null);
   const filtered = filterUserFacingAuditResults(results, filters, { hideUnableByDefault: true });
   const categories = auditDetailedCategoriesFor(filtered);
+  const quickKinds: AuditFilterKind[] = ["critical", "security", "warning", "advisory", "passed"];
   return (
     <section className="panel audit-findings-panel">
       <h2>{pageName} findings</h2>
+      <div className="audit-summary audit-findings-summary" aria-label="Finding type filters">
+        {quickKinds.map((kind) => (
+          <AuditQuickFilter
+            key={kind}
+            kind={kind}
+            count={results.filter((result) => auditResultFilterKind(result) === kind).length}
+            filters={filters}
+            onChange={setFilters}
+          />
+        ))}
+      </div>
       <AuditFilterMenu results={results} filters={filters} onChange={setFilters} kinds={["critical", "security", "warning", "unable_to_test", "advisory", "passed", "not_applicable"]} />
       <div className="audit-findings-divider" />
       {categories.length ? categories.map(({ key, label, category, subcategory }) => {
@@ -6805,7 +6817,7 @@ function AuditFindingsPanel({
             }}>
               <b>{label}</b><span>{categoryResults.length} {categoryResults.length === 1 ? "check" : "checks"}</span><span aria-hidden>{open ? "−" : "+"}</span>
             </button>
-            {open && <AuditResults results={categoryResults} openId={openResultId} onOpenIdChange={setOpenResultId} />}
+            {open && <AuditResults results={categoryResults} filters={filters} openId={openResultId} onOpenIdChange={setOpenResultId} />}
           </section>
         );
       }) : (
@@ -6815,12 +6827,37 @@ function AuditFindingsPanel({
   );
 }
 
+function auditCheckMetrics(results: any[]) {
+  const passed = results.filter((result) => result.outcome === "passed").length;
+  const issues = results.filter((result) => ["failed", "advisory"].includes(result.outcome)).length;
+  const informational = results.filter((result) => result.outcome === "not_applicable").length;
+  const unable = results.filter((result) => result.outcome === "unable_to_test").length;
+  const denominator = passed + issues;
+  return {
+    checks: results.length,
+    passed,
+    issues,
+    informational,
+    unable,
+    passRate: denominator ? Math.round((passed / denominator) * 100) : null,
+  };
+}
+
+function AuditCheckMetrics({ metrics, score }: { metrics: ReturnType<typeof auditCheckMetrics>; score?: number | null }) {
+  return (
+    <small className="audit-check-row-metrics">
+      {metrics.checks} {metrics.checks === 1 ? "check" : "checks"} · {metrics.passed} passed · {metrics.issues} {metrics.issues === 1 ? "issue" : "issues"} · {metrics.informational} info / N/A · {metrics.unable} unable to test · {metrics.passRate == null ? "--" : `${metrics.passRate}%`} pass rate
+      {score != null ? ` · score ${score}` : ""}
+    </small>
+  );
+}
+
 function AuditChecksPanel({ pageName, run, results, onOpenCategory }: { pageName: string; run?: AuditRun; results: any[]; onOpenCategory: (category: string) => void }) {
   const [openCategory, setOpenCategory] = useState<string | null>(null);
   const summary = {
     automated: run?.catalogue_summary?.userFacingGroups ?? results.length,
     passed: results.filter((result) => result.outcome === "passed").length,
-    findings: results.filter((result) => ["failed", "advisory"].includes(result.outcome)).length,
+    issues: results.filter((result) => ["failed", "advisory"].includes(result.outcome)).length,
     informational: results.filter((result) => result.outcome === "not_applicable").length,
   };
   const unable = results.filter((result) => result.outcome === "unable_to_test").length;
@@ -6828,7 +6865,7 @@ function AuditChecksPanel({ pageName, run, results, onOpenCategory }: { pageName
   return (
     <>
       <div className="audit-check-summary">
-        {[["Automated checks", summary.automated], ["Passed", summary.passed], ["Findings", summary.findings], ["Not applicable", summary.informational]].map(([label, value]) => (
+        {[["Automated checks", summary.automated], ["Passed", summary.passed], ["Issues", summary.issues], ["Not applicable", summary.informational]].map(([label, value]) => (
           <div key={String(label)}><small>{label}</small><b>{value}</b></div>
         ))}
       </div>
@@ -6837,29 +6874,29 @@ function AuditChecksPanel({ pageName, run, results, onOpenCategory }: { pageName
         <div className="audit-check-category-list">
           {auditCategories.map((category) => {
             const categoryResults = results.filter((result) => result.category === category);
-            const score = categoryScores[category];
-            const status = auditScoreBand(score);
+            const metrics = auditCheckMetrics(categoryResults);
+            const storedScore = categoryScores[category];
+            const visualScore = storedScore ?? metrics.passRate;
+            const status = auditScoreBand(visualScore);
             const open = openCategory === category;
             const subcategories = auditDetailedCategoriesFor(categoryResults);
             return (
               <section className={`audit-check-category ${status}`} key={category}>
                 <button className="audit-check-category-toggle" aria-expanded={open} onClick={() => setOpenCategory(open ? null : category)}>
-                  <span><b>{category}</b><small>{categoryResults.length} checks</small></span>
-                  <span className="audit-check-category-score">{score == null ? "Pending" : score}</span>
-                  <span className="audit-check-category-track"><i style={{ width: `${score ?? 0}%` }} /></span>
+                  <span><b>{category}</b><AuditCheckMetrics metrics={metrics} score={storedScore} /></span>
                   <ChevronDown />
                 </button>
                 {open && <div className="audit-check-subcategories">{subcategories.map(({ key, subcategory }) => {
                   const subcategoryResults = categoryResults.filter((result) => result.subcategory === subcategory);
-                  const passed = subcategoryResults.filter((result) => result.outcome === "passed").length;
-                  const issues = subcategoryResults.filter((result) => ["failed", "advisory"].includes(result.outcome)).length;
-                  return <button key={key} onClick={() => onOpenCategory(key)}><span><b>{subcategory}</b><small>{subcategoryResults.length} checks</small></span><span>{passed} passed · {issues} issues</span><ChevronRight /></button>;
+                  const subcategoryMetrics = auditCheckMetrics(subcategoryResults);
+                  const subcategoryStatus = auditScoreBand(subcategoryMetrics.passRate);
+                  return <button className={subcategoryStatus} key={key} onClick={() => onOpenCategory(key)}><span><b>{subcategory}</b><AuditCheckMetrics metrics={subcategoryMetrics} /></span><ChevronRight /></button>;
                 })}</div>}
               </section>
             );
           })}
         </div>
-        <p className="subtle audit-checks-note">Category bars use the stored audit score. {unable} unable-to-test {unable === 1 ? "result is" : "results are"} shown separately from score performance.</p>
+        <p className="subtle audit-checks-note">Category colours use the stored audit score; subcategory colours use pass rate. {unable} unable-to-test {unable === 1 ? "result is" : "results are"} shown separately from score performance.</p>
       </section>
     </>
   );
@@ -6970,6 +7007,12 @@ export function auditScoreBand(score: number | null | undefined) {
   return score == null ? "unknown" : score >= 80 ? "healthy" : score >= 50 ? "moderate" : "poor";
 }
 
+export function auditHistoryStatus(status: string) {
+  if (["completed", "partial"].includes(status)) return "Successful";
+  if (status === "failed") return "Failed";
+  return "In progress";
+}
+
 export function buildAuditFixPrompt({ pageName, pageUrl, runId, results }: { pageName: string; pageUrl: string; runId: string; results: any[] }) {
   const findings = results.filter(isFixFirstAuditResult);
   const sections = findings.map((result, index) => {
@@ -6999,7 +7042,6 @@ function AuditAiFixPrompt({ pageName, pageUrl, runId, results, notify }: { pageN
   const eligible = results.filter(isFixFirstAuditResult);
   if (!eligible.length) return null;
   const prompt = buildAuditFixPrompt({ pageName, pageUrl, runId, results: eligible });
-  const preview = prompt.replace(/\s+/g, " ").slice(0, 220);
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(prompt);
@@ -7010,7 +7052,7 @@ function AuditAiFixPrompt({ pageName, pageUrl, runId, results, notify }: { pageN
   };
   return (
     <section className="audit-ai-fix-panel">
-      <span><b>Get your AI to fix all your issues in one click</b><small>{preview}…</small></span>
+      <span><b>Fix with AI</b><small>Copy a ready-made prompt containing every critical, security and warning issue, its evidence, affected items and recommended fix.</small></span>
       <button onClick={() => void copy()}><Copy /> Copy prompt</button>
     </section>
   );
@@ -7022,34 +7064,79 @@ export function auditDisplayProgress(current: number, actual: number, complete: 
   return Math.min(99, Math.max(current, simulated, actual));
 }
 
-function AuditResults({ results, openId: controlledOpenId, onOpenIdChange }: { results: any[]; openId?: string | null; onOpenIdChange?: (id: string | null) => void }) {
+export function filterAuditSubfindings(subfindings: any[] = [], types: AuditFilterKind[] = []) {
+  if (!types.length) return subfindings;
+  const outcomes = new Set<string>();
+  for (const type of types) {
+    if (["critical", "security", "warning"].includes(type)) outcomes.add("failed");
+    else if (type === "advisory") {
+      outcomes.add("advisory");
+      outcomes.add("failed");
+    } else outcomes.add(type);
+  }
+  return subfindings.filter((finding) => outcomes.has(finding.outcome));
+}
+
+function AuditResults({
+  results,
+  filters,
+  hideOutcome = false,
+  openId: controlledOpenId,
+  onOpenIdChange,
+}: {
+  results: any[];
+  filters?: AuditBrowseFilters;
+  hideOutcome?: boolean;
+  openId?: string | null;
+  onOpenIdChange?: (id: string | null) => void;
+}) {
   const [internalOpenId, setInternalOpenId] = useState<string | null>(null);
   const openId = controlledOpenId === undefined ? internalOpenId : controlledOpenId;
   const setOpenId = onOpenIdChange || setInternalOpenId;
+  const itemRefs = useRef(new Map<string, HTMLElement>());
+  useEffect(() => {
+    if (!openId) return;
+    const frame = window.requestAnimationFrame(() => {
+      itemRefs.current.get(openId)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [openId]);
   return (
-    <div className="audit-result-list">
+    <div className={`audit-result-list ${hideOutcome ? "hide-result-outcome" : ""}`}>
       {results.length ? results.map((result, index) => {
         const itemId = String(result.group_id || result.id || index);
         const open = itemId === openId;
         const passed = result.outcome === "passed";
+        const visibleSubfindings = filterAuditSubfindings(result.subfindings || [], filters?.types);
+        const visibleCheckIds = new Set(visibleSubfindings.map((finding: any) => finding.check_id));
+        const visibleOccurrences = filters?.types?.length
+          ? (result.occurrences || []).filter((entry: any) => visibleCheckIds.has(entry.check_id))
+          : result.occurrences || [];
         return (
-          <section className={`audit-item ${open ? "open" : ""}`} key={itemId}>
+          <section
+            className={`audit-item ${open ? "open" : ""}`}
+            key={itemId}
+            ref={(element) => {
+              if (element) itemRefs.current.set(itemId, element);
+              else itemRefs.current.delete(itemId);
+            }}
+          >
             <button className="audit-item-toggle" aria-expanded={open} onClick={() => setOpenId(open ? null : itemId)}>
               <span className={`severity-icon ${auditSeverityGroup(result)}`}>{auditGroupIcon(auditSeverityGroup(result))}</span>
               <span><b>{result.title || result.title_snapshot || result.check_id}</b><small>{result.category || "General"}{result.subcategory && result.subcategory !== "General" ? ` · ${result.subcategory}` : ""}</small></span>
-              <span className={`audit-item-state outcome-${result.outcome}`}>{cap(String(result.outcome || result.status || "Recorded").replaceAll("_", " "))}</span>
+              {!hideOutcome && <span className={`audit-item-state outcome-${result.outcome}`}>{cap(String(result.outcome || result.status || "Recorded").replaceAll("_", " "))}</span>}
               <ChevronDown />
             </button>
             {open && <div className="audit-detail">
               {Array.isArray(result.subfindings) ? <>
                 {result.focus && <section className="audit-information-panel"><b>What Claritude checks</b><p>{result.focus}</p></section>}
                 {!passed && result.result_summary && <section className="audit-result-summary" aria-label="Audit result summary">{result.result_summary}</section>}
-                {!passed && <><b className="audit-detail-label">Technical sub-findings</b><ul className="audit-subfindings">{result.subfindings.map((finding: any) => <li key={finding.check_id}><span className={`audit-subfinding-outcome outcome-${finding.outcome}`}>{cap(String(finding.outcome).replaceAll("_", " "))}</span><span><b>{finding.title}</b><small>{finding.evidence_summary}</small></span></li>)}</ul></>}
-                {!passed && result.occurrence_presentation?.enabled !== false && (result.occurrences || []).length > 0 && <><b className="audit-detail-label">Affected elements or resources</b><AuditOccurrences occurrences={result.occurrences || []} presentation={result.occurrence_presentation} /></>}
+                {!passed && visibleSubfindings.length > 0 && <><b className="audit-detail-label">Technical sub-findings</b><ul className="audit-subfindings">{visibleSubfindings.map((finding: any) => <li key={finding.check_id}><span className={`audit-subfinding-outcome outcome-${finding.outcome}`}>{cap(String(finding.outcome).replaceAll("_", " "))}</span><span><b>{finding.title}</b><small>{finding.evidence_summary}</small></span></li>)}</ul></>}
+                {!passed && result.occurrence_presentation?.enabled !== false && visibleOccurrences.length > 0 && <><b className="audit-detail-label">Affected elements or resources</b><AuditOccurrences occurrences={visibleOccurrences} presentation={result.occurrence_presentation} /></>}
                 {!passed && ["failed", "advisory"].includes(result.outcome) && result.recommendation && <section className="audit-recommendation-panel"><b>How to fix</b><p>{result.recommendation}</p></section>}
                 {!passed && ["failed", "advisory"].includes(result.outcome) && result.example_fix && <section className="audit-example-fix"><b>Example fix</b><pre><code>{result.example_fix}</code></pre></section>}
               </> : <>
-                <p>{result.description || "The audit recorded this result for the selected page."}</p>
+                <p>{result.focus || result.description || "The audit recorded this result for the selected page."}</p>
                 {!passed && <><b className="audit-detail-label">Affected element or resource</b><code>{auditEvidenceText(result.evidence)}</code><b className="audit-detail-label">Recommended fix</b><p>{result.recommendation || "Review the recorded evidence and update the affected implementation."}</p></>}
               </>}
               {!passed && <div className="audit-detail-actions"><a className="text-link audit-more-information" href={auditLearnMoreUrl(result.category, result.source_reference)} target="_blank" rel="noreferrer">More information <ExternalLink /></a></div>}
@@ -7100,7 +7187,14 @@ function PerformanceTable({
     : run?.performance_metrics?.desktop;
   return (
     rows?.length ? (
-      <DataTable headers={["Metric", "Value", "Target"]} rows={rows.map((row) => [row[0], row[1], <PerformanceTarget key={String(row[0])} row={row} />])} />
+      <DataTable
+        headers={["Metric", "Value", "Target"]}
+        rows={rows.map((row) => [
+          <MetricTerm key={String(row[0])} term={String(row[0])} />,
+          row[1],
+          <PerformanceTarget key={String(row[0])} metric={String(row[0])} value={row[1]} target={String(row[2])} />,
+        ])}
+      />
     ) : (
       <EmptyCompact
         title="Browser lab metrics not implemented"
@@ -7131,16 +7225,55 @@ function auditOccurrenceText(occurrence: unknown, configuredFields?: string[]) {
   }
   return details.join(" · ") || "Recorded affected occurrence";
 }
-function PerformanceTarget({ row }: { row: (string | number)[] }) {
-  const metric = String(row[0]);
-  const value = Number.parseFloat(String(row[1]).replace(/[^\d.].*$/, ""));
-  const good = metric === "Performance score" ? value >= 90
-    : metric === "LCP" ? value <= 2.5
-      : metric === "TBT" ? value <= 200
-        : metric === "CLS" ? value <= .1
-          : metric === "FCP" ? value <= 1.8
-            : true;
-  return <span className="performance-target">{String(row[2]).replace(/\s*●\s*$/, "")}<i className={good ? "good" : "warning"} aria-label={good ? "Meets target" : "Needs improvement"} /></span>;
+const performanceTermDescriptions: Record<string, string> = {
+  P75: "The 75th percentile: 75% of recorded visits were at or faster than this value.",
+  LCP: "Largest Contentful Paint measures how quickly the page's main content appears.",
+  TBT: "Total Blocking Time estimates how long the browser's main thread was blocked during a lab test.",
+  INP: "Interaction to Next Paint measures real-user responsiveness after a click, tap or keyboard interaction.",
+  CLS: "Cumulative Layout Shift measures unexpected movement of visible page content.",
+  FCP: "First Contentful Paint measures how quickly the first visible content appears.",
+};
+
+function MetricHelp({ term }: { term: string }) {
+  const key = term.toUpperCase();
+  const description = performanceTermDescriptions[key];
+  if (!description) return null;
+  return (
+    <details className="metric-help">
+      <summary aria-label={`What does ${term} mean?`} title={`What does ${term} mean?`}><Info /></summary>
+      <span role="note"><b>{key}</b> {description}</span>
+    </details>
+  );
+}
+
+function MetricTerm({ term }: { term: string }) {
+  return <span className="metric-term">{term}<MetricHelp term={term} /></span>;
+}
+
+export function performanceTargetStatus(metric: string, formattedValue: string | number) {
+  const value = Number.parseFloat(String(formattedValue).replace(/[^\d.].*$/, ""));
+  const targets: Record<string, { value: number; direction: "min" | "max" }> = {
+    "Performance score": { value: 90, direction: "min" },
+    LCP: { value: 2.5, direction: "max" },
+    TBT: { value: 200, direction: "max" },
+    INP: { value: 200, direction: "max" },
+    CLS: { value: .1, direction: "max" },
+    FCP: { value: 1.8, direction: "max" },
+  };
+  const target = targets[metric];
+  if (!target || !Number.isFinite(value)) return "unknown";
+  if (target.direction === "min") {
+    if (value >= target.value) return "good";
+    return value >= target.value * .95 ? "close" : "failed";
+  }
+  if (value <= target.value) return "good";
+  return value <= target.value * 1.1 ? "close" : "failed";
+}
+
+function PerformanceTarget({ metric, value, target }: { metric: string; value: string | number; target: string }) {
+  const status = performanceTargetStatus(metric, value);
+  const label = status === "good" ? "Meets target" : status === "close" ? "Close to target" : status === "failed" ? "Does not meet target" : "Target status unavailable";
+  return <span className="performance-target">{target.replace(/\s*●\s*$/, "")}<i className={status} aria-label={label} title={label} /></span>;
 }
 function RealUserPerformanceTable({ data, device }: { data: any; device: "desktop" | "mobile" }) {
   const source = data?.[device];
@@ -7156,16 +7289,22 @@ function RealUserPerformanceTable({ data, device }: { data: any; device: "deskto
   return (
     <>
       <DataTable
-        headers={["Metric", "P75 value", "Target", "Samples"]}
+        headers={["Metric", "Value", "Target", "Samples"]}
+        headerHelp={{ 1: <MetricHelp term="P75" /> }}
         rows={vitals.map((vital: any) => [
-          vital.name,
+          <MetricTerm key={vital.name} term={vital.name} />,
           formatVital(vital.name, vital.value),
-          vital.name === "LCP" ? "≤ 2.5 s" : vital.name === "INP" ? "≤ 200 ms" : vital.name === "CLS" ? "≤ 0.1" : "Observed",
+          <PerformanceTarget
+            key={`${vital.name}-target`}
+            metric={vital.name}
+            value={formatVital(vital.name, vital.value)}
+            target={vital.name === "LCP" ? "≤ 2.5 s" : vital.name === "INP" ? "≤ 200 ms" : vital.name === "CLS" ? "≤ 0.1" : "Observed"}
+          />,
           fmt(vital.samples || 0),
         ])}
       />
       {source?.from && source?.to && (
-        <p className="subtle">Reporting range: {fmtDate(source.from)} to {fmtDate(source.to)} · page-specific p75 field observations.</p>
+        <p className="subtle">Reporting range: {fmtDate(source.from)} to {fmtDate(source.to)} · page-specific 75th-percentile field observations.</p>
       )}
       {vitals.some((vital: any) => vital.samples < (performance.minimumSamples || 1)) && (
         <p className="subtle">No valid observation has been received for one or more metrics. INP requires an eligible user interaction.</p>
