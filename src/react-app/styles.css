@@ -538,6 +538,17 @@ main {
 .metric span {
   color: var(--muted);
 }
+.metric-value-link,
+.panel-title-link {
+  color: inherit;
+  text-decoration: none;
+}
+.health-score-total {
+  color: var(--muted);
+  font-size: 0.52em;
+  font-weight: 650;
+  letter-spacing: 0;
+}
 .grid {
   display: grid;
   grid-template-columns: 2fr 1fr;
@@ -2049,6 +2060,9 @@ input[type="checkbox"]:checked:after {
 .property-top-pages-table th:last-child {
   width: 24%;
 }
+.property-top-pages-action {
+  margin-top: 12px;
+}
 .analytics-three-column-table th:first-child {
   width: 58%;
 }
@@ -3053,6 +3067,59 @@ input[type="checkbox"]:checked:after {
 }
 .chart-tooltip small {
   color: var(--muted);
+}
+.visit-time-heatmap-wrap {
+  min-width: 0;
+}
+.visit-time-heatmap-wrap > .subtle {
+  margin: 0 0 12px;
+}
+.visit-time-heatmap-scroll {
+  overflow-x: auto;
+  padding: 0 0 7px;
+  scrollbar-width: thin;
+}
+.visit-time-heatmap {
+  display: grid;
+  grid-template-columns: 74px repeat(24, minmax(35px, 1fr));
+  gap: 4px;
+  min-width: 980px;
+  align-items: center;
+}
+.visit-time-corner,
+.visit-time-hour,
+.visit-time-day {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.visit-time-hour {
+  text-align: center;
+}
+.visit-time-day {
+  padding-right: 7px;
+  text-align: right;
+}
+.visit-time-cell {
+  min-width: 0;
+  height: 28px;
+  padding: 0;
+  border: 1px solid #e7e9eb;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.visit-time-cell:hover,
+.visit-time-cell:focus-visible {
+  border-color: #087a54;
+  outline: 2px solid #087a5433;
+  outline-offset: 1px;
+}
+.visit-time-tooltip {
+  position: fixed;
+  z-index: 100;
+  top: auto;
+  transform: translate(-50%, -100%);
 }
 .response-statistics {
   display: inline-flex;

@@ -16,6 +16,7 @@ import {
   isPrimaryAuditPage,
   isFixFirstAuditResult,
   paginateResults,
+  periodLabel,
   prepareAvatarImage,
   performanceTargetStatus,
   propertyOnboardingChecks,
@@ -111,6 +112,11 @@ describe("top selector searches", () => {
       .toBe("2 of 5 events used");
     expect(customEventUsageText({ plan: "Pro", used: 37, limit: null, remaining: null, unlimited: true, canCreate: true }))
       .toBe("37 events used · Unlimited on Pro");
+  });
+
+  it("spaces date-range separators consistently", () => {
+    expect(periodLabel("2026-09-06", "2026-10-05")).toBe("6 Sep – 5 Oct 2026");
+    expect(periodLabel("2026-10-01", "2026-10-05")).toBe("1 – 5 Oct 2026");
   });
 
   it("filters the rationalised audit catalogue by category, subcategory and outcome", () => {

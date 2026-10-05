@@ -1392,7 +1392,7 @@ function WorkspaceOverview({
                 properties.filter((p) => p.tracking_last_received_at).length,
                 "Active tracking",
               ],
-              ["Period", "30 days", `${shortDate(new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10))}–${shortDate(new Date().toISOString().slice(0, 10))}`],
+              ["Period", "30 days", `${shortDate(new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10))} – ${shortDate(new Date().toISOString().slice(0, 10))}`],
             ]}
           />
           <SeriesChart points={workspaceSeries} emptyTitle="No measured workspace traffic yet" />
@@ -1663,12 +1663,17 @@ function PropertyOverview({
       fmt(vital.samples || 0),
     ]);
   const currentStatus = fixture ? property.demo?.status : monitor?.last_status;
+  const analyticsHref = `/analytics?property=${property.id}&${livePeriod}`;
+  const analyticsTabHref = (analyticsTab: string) => `${analyticsHref}&analyticsTab=${analyticsTab}`;
+  const uptimeHref = `/uptime?property=${property.id}&${livePeriod}`;
   const overviewMetrics: ReactNode[][] = [
     [
       "Uptime",
-      <span className={`property-uptime-status ${currentStatus === "online" ? "online" : currentStatus === "offline" ? "offline" : "pending"}`}>
-        {currentStatus === "online" ? "Online" : currentStatus === "offline" ? "Offline" : cap(currentStatus || "Pending")}
-      </span>,
+      <Link className="metric-value-link" to={uptimeHref}>
+        <span className={`property-uptime-status ${currentStatus === "online" ? "online" : currentStatus === "offline" ? "offline" : "pending"}`}>
+          {currentStatus === "online" ? "Online" : currentStatus === "offline" ? "Offline" : cap(currentStatus || "Pending")}
+        </span>
+      </Link>,
       fixture
         ? "35 min estimated downtime"
         : monitor?.last_checked_at
@@ -1677,18 +1682,18 @@ function PropertyOverview({
     ],
     [
       "Pageviews",
-      fmt(views),
+      <Link className="metric-value-link" to={analyticsHref}>{fmt(views)}</Link>,
       fixture ? "↑ 12.4%" : "Measured in this period",
     ],
     [
       "Unique Visits",
-      fmt(uniqueVisits),
+      <Link className="metric-value-link" to={analyticsHref}>{fmt(uniqueVisits)}</Link>,
       fixture ? "Anonymous visits in this period" : "Anonymous sessions in this period",
     ],
     [
       "Events",
-      fmt(analytics?.events || 0),
-      fixture ? "1.3% of pageviews" : "All accepted events in this period",
+      <Link className="metric-value-link" to={analyticsTabHref("Events")}>{fmt(analytics?.keyEvents || 0)}</Link>,
+      fixture ? "1.3% of pageviews" : "Tracked events in this period",
     ],
   ];
   return (
@@ -1722,7 +1727,7 @@ function PropertyOverview({
           <div className="grid">
             <div>
               <Panel
-                title="Traffic (last 30 days)"
+                title="Traffic"
                 actions={<ChartSwitch notify={notify} events value={trafficMetric} onChange={setTrafficMetric} />}
               >
                 {mobilePageControls}
@@ -1739,11 +1744,11 @@ function PropertyOverview({
               <div className="property-overview-metrics-mobile">
                 <Metrics values={overviewMetrics} />
               </div>
-              <Panel title="Website health">
+              <Panel title={<Link className="panel-title-link" to={`/audit?property=${property.id}`}>Website health</Link>}>
                 <div className="health-metrics">
                   <Metric
                     label="Overall"
-                    value={audit?.score ? `${audit.score} / 100` : "—"}
+                    value={audit?.score == null ? "—" : <>{audit.score}<small className="health-score-total"> /100</small></>}
                   />
                   <Metric label="Mobile" value={scoreState(mobileScore, "Awaiting field data")} />
                   <Metric label="Desktop" value={scoreState(desktopScore, "Awaiting field data")} />
@@ -1755,7 +1760,7 @@ function PropertyOverview({
                   </Link>
                   <Link
                     className="btn"
-                    to={`/analytics?property=${property.id}`}
+                    to={analyticsTabHref("Performance")}
                   >
                     View performance
                   </Link>
@@ -1776,7 +1781,7 @@ function PropertyOverview({
                   />
                 )}
               </Panel>
-              <Panel title="Top pages">
+              <Panel title={<Link className="panel-title-link" to={analyticsTabHref("Pages")}>Top pages</Link>}>
                 {analytics?.pages?.length ? (
                   <DataTable
                     className="property-top-pages-table"
@@ -1791,7 +1796,7 @@ function PropertyOverview({
                     detail="Install tracking to identify top pages."
                   />
                 )}
-                <Link className="btn" to={`/analytics?property=${property.id}`}>
+                <Link className="btn property-top-pages-action" to={analyticsTabHref("Pages")}>
                   View all pages
                 </Link>
               </Panel>
@@ -2636,6 +2641,9 @@ function AnalyticsView({
               {engagingPages.length > 20 && <ResultsPagination page={engagementPage} total={engagingPages.length} label="pages" onPage={(page) => setEngagementPage(Math.min(engagingPageCount, page))} />}
             </Panel>
           </div>
+          <Panel title="Visits by day and time">
+            <VisitTimeHeatmap cells={engagement.visitTimes || []} timeZone={analyticsTimeZone} />
+          </Panel>
           <Panel title="Additional aggregate insights">
             <KeyValues rows={[
               ["Engagement rate", engagement.engagementRate == null ? "Unavailable" : `${engagement.engagementRate.toFixed(1)}%`],
@@ -3269,7 +3277,7 @@ function ReportsView({
         ? await api(session, `/api/properties/${property.id}/report?${livePeriod}`)
         : {
             property,
-            period: "1–30 Sep 2026",
+            period: "1 – 30 Sep 2026",
             periodStart: "2026-09-01",
             periodEnd: "2026-09-30",
             generatedAt: new Date().toISOString(),
@@ -3470,7 +3478,7 @@ function ReportsView({
             <div className="brand-preview">
               <img src="/assets/claritude-logo.svg" />
               <h2>{property?.name || "Website"} performance report</h2>
-              <p>1–30 Sep 2026</p>
+              <p>1 – 30 Sep 2026</p>
               <hr />
               <b>{footerNote || (agencyName ? `Prepared by ${agencyName}` : "Claritude report")}</b>
             </div>
@@ -5079,7 +5087,7 @@ function Metrics({ values }: { values: ReactNode[][] }) {
     </div>
   );
 }
-function Metric({ label, value }: { label: string; value: string }) {
+function Metric({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="metric">
       <small>{label}</small>
@@ -5341,6 +5349,82 @@ function SeriesChart({
           <b>{chartDateLabel(coords[hover].label, timeZone)}</b>
           <small>{formatChartTooltip(coords[hover].value, unit)}</small>
           {previousCoords[hover] && <small>Previous: {formatChartTooltip(previousCoords[hover].value, unit)}</small>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type VisitTimeCell = {
+  weekday: number;
+  hour: number;
+  visitors: number | null;
+  visitorsComplete: boolean;
+  pageCount: number;
+};
+
+function VisitTimeHeatmap({ cells, timeZone }: { cells: VisitTimeCell[]; timeZone: string }) {
+  const [tooltip, setTooltip] = useState<{ cell: VisitTimeCell; x: number; y: number } | null>(null);
+  const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  const cellMap = new Map(cells.map((cell) => [`${cell.weekday}:${cell.hour}`, cell]));
+  const maxPageCount = Math.max(0, ...cells.map((cell) => cell.pageCount));
+  const activate = (cell: VisitTimeCell, target: HTMLElement) => {
+    const bounds = target.getBoundingClientRect();
+    const viewportWidth = typeof window === "undefined" ? 1200 : window.innerWidth;
+    setTooltip({
+      cell,
+      x: Math.min(viewportWidth - 130, Math.max(130, bounds.left + bounds.width / 2)),
+      y: Math.max(100, bounds.top - 8),
+    });
+  };
+  const hourLabel = (hour: number) => `${String(hour).padStart(2, "0")}:00`;
+  const heatStyle = (pageCount: number) => {
+    const density = maxPageCount ? pageCount / maxPageCount : 0;
+    return { backgroundColor: density ? `rgba(0, 169, 110, ${0.16 + density * 0.74})` : "#fff" };
+  };
+  const selected = tooltip?.cell;
+  const visitorValue = selected?.visitors == null
+    ? "Unavailable"
+    : selected.visitorsComplete
+      ? fmt(selected.visitors)
+      : `At least ${fmt(selected.visitors)}`;
+  return (
+    <div className="visit-time-heatmap-wrap" onMouseLeave={() => setTooltip(null)}>
+      <p className="subtle">Visitor activity in {timeZone}. Darker squares indicate busier periods.</p>
+      <div className="visit-time-heatmap-scroll">
+        <div className="visit-time-heatmap" role="grid" aria-label={`Visitor activity by weekday and hour in ${timeZone}`}>
+          <span className="visit-time-corner" aria-hidden="true" />
+          {Array.from({ length: 24 }, (_, hour) => <span className="visit-time-hour" role="columnheader" key={hour}>{hourLabel(hour)}</span>)}
+          {weekdays.flatMap((weekday, weekdayIndex) => {
+            const row: ReactNode[] = [<span className="visit-time-day" role="rowheader" key={`${weekday}-label`}>{weekday}</span>];
+            for (let hour = 0; hour < 24; hour += 1) {
+              const cell = cellMap.get(`${weekdayIndex}:${hour}`) || { weekday: weekdayIndex, hour, visitors: 0, visitorsComplete: true, pageCount: 0 };
+              row.push(
+                <button
+                  type="button"
+                  className="visit-time-cell"
+                  style={heatStyle(cell.pageCount)}
+                  aria-label={`${weekday}, ${hourLabel(hour)}: ${cell.pageCount} pageviews`}
+                  aria-expanded={tooltip?.cell.weekday === weekdayIndex && tooltip?.cell.hour === hour}
+                  onMouseEnter={(event) => activate(cell, event.currentTarget)}
+                  onFocus={(event) => activate(cell, event.currentTarget)}
+                  onClick={(event) => {
+                    if (tooltip?.cell.weekday === weekdayIndex && tooltip?.cell.hour === hour) setTooltip(null);
+                    else activate(cell, event.currentTarget);
+                  }}
+                  key={`${weekday}-${hour}`}
+                />,
+              );
+            }
+            return row;
+          })}
+        </div>
+      </div>
+      {selected && tooltip && (
+        <div className="chart-tooltip visit-time-tooltip" role="tooltip" style={{ left: tooltip.x, top: tooltip.y }}>
+          <b>{weekdays[selected.weekday]} · {hourLabel(selected.hour)} – {hourLabel((selected.hour + 1) % 24)}</b>
+          <small>Visitor count: {visitorValue}</small>
+          <small>Page count: {fmt(selected.pageCount)}</small>
         </div>
       )}
     </div>
@@ -8589,6 +8673,13 @@ function analyticsFixtureSummary() {
         ...Array.from({ length: 21 }, (_, index) => ({ path: `/guide-${index + 1}/`, engagedViews: 300 - index * 8 })),
       ],
       visibleSections: [{ name: "services", count: 13250 }],
+      visitTimes: Array.from({ length: 7 * 24 }, (_, index) => {
+        const weekday = Math.floor(index / 24);
+        const hour = index % 24;
+        const workingHour = hour >= 7 && hour <= 21;
+        const pageCount = workingHour ? 8 + ((weekday * 19 + hour * 13) % 74) : (weekday + hour) % 5;
+        return { weekday, hour, visitors: Math.round(pageCount * 0.72), visitorsComplete: true, pageCount };
+      }),
       collectionStatus: "available",
     },
     vitals: [
@@ -8795,7 +8886,7 @@ function shortDate(x: string) {
     year: new Date(x).getFullYear() === new Date().getFullYear() ? undefined : "numeric",
   }).format(new Date(`${x}T12:00:00`));
 }
-function periodLabel(from: string, to: string) {
+export function periodLabel(from: string, to: string) {
   const start = new Date(`${from}T12:00:00`);
   const end = new Date(`${to}T12:00:00`);
   const day = (value: Date) => value.getDate();
@@ -8804,10 +8895,10 @@ function periodLabel(from: string, to: string) {
   if (from === to) return `${day(start)} ${month(start)} ${start.getFullYear()}`;
   if (start.getFullYear() === end.getFullYear()) {
     if (start.getMonth() === end.getMonth())
-      return `${day(start)}–${day(end)} ${month(end)} ${end.getFullYear()}`;
-    return `${day(start)} ${month(start)}–${day(end)} ${month(end)} ${end.getFullYear()}`;
+      return `${day(start)} – ${day(end)} ${month(end)} ${end.getFullYear()}`;
+    return `${day(start)} ${month(start)} – ${day(end)} ${month(end)} ${end.getFullYear()}`;
   }
-  return `${day(start)} ${month(start)} ${start.getFullYear()}–${day(end)} ${month(end)} ${end.getFullYear()}`;
+  return `${day(start)} ${month(start)} ${start.getFullYear()} – ${day(end)} ${month(end)} ${end.getFullYear()}`;
 }
 function formatDuration(milliseconds: number) {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return "—";

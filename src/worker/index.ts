@@ -2557,7 +2557,7 @@ app.get("/api/properties/:id/report", async (c) => {
   if (property.error) return c.json({ error: "property_not_found" }, 404);
   return c.json({
     generatedAt: new Date().toISOString(),
-    period: `${window.from.slice(0, 10)}–${window.to.slice(0, 10)}`,
+    period: `${window.from.slice(0, 10)} – ${window.to.slice(0, 10)}`,
     periodStart: window.from.slice(0, 10),
     periodEnd: window.to.slice(0, 10),
     property: property.data,
@@ -4496,6 +4496,7 @@ export function buildAnalyticsSummary(
     view.vitals.get("INP")! <= 200 &&
     view.vitals.get("CLS")! <= 0.1,
   ).length;
+  const visitTimes = buildVisitTimeHeatmap(events, historicalViews, timeZone);
   return {
     from,
     to,
@@ -4541,6 +4542,7 @@ export function buildAnalyticsSummary(
       scrollDepth,
       pages: ranked(engagedPageMap).map(({ name, count }) => ({ path: name, engagedViews: count })),
       visibleSections: ranked(visibleSectionMap),
+      visitTimes,
       collectionStatus: eligibleViews.length ? "available" : "historical_view_ids_unavailable",
     },
     vitals: vitalRows,
@@ -4558,6 +4560,80 @@ export function buildAnalyticsSummary(
     },
     performanceByDevice,
   };
+}
+
+export type VisitTimeHeatmapCell = {
+  weekday: number;
+  hour: number;
+  visitors: number | null;
+  visitorsComplete: boolean;
+  pageCount: number;
+};
+
+export function buildVisitTimeHeatmap(
+  rawEvents: any[],
+  historicalViews: any[],
+  timeZone = "UTC",
+): VisitTimeHeatmapCell[] {
+  const buckets = new Map<string, { pageCount: number; sessions: Set<string>; missingSessions: number }>();
+  let formatter: Intl.DateTimeFormat;
+  try {
+    formatter = new Intl.DateTimeFormat("en-GB", {
+      timeZone,
+      weekday: "short",
+      hour: "2-digit",
+      hourCycle: "h23",
+    });
+  } catch {
+    formatter = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "UTC",
+      weekday: "short",
+      hour: "2-digit",
+      hourCycle: "h23",
+    });
+  }
+  const weekdayIndexes: Record<string, number> = {
+    Mon: 0,
+    Tue: 1,
+    Wed: 2,
+    Thu: 3,
+    Fri: 4,
+    Sat: 5,
+    Sun: 6,
+  };
+  const addPageview = (occurredAt: unknown, sessionId: unknown) => {
+    const instant = new Date(String(occurredAt || ""));
+    if (!Number.isFinite(instant.valueOf())) return;
+    const parts = formatter.formatToParts(instant);
+    const weekday = weekdayIndexes[parts.find((part) => part.type === "weekday")?.value || ""];
+    const hour = Number(parts.find((part) => part.type === "hour")?.value);
+    if (!Number.isInteger(weekday) || !Number.isInteger(hour) || hour < 0 || hour > 23) return;
+    const key = `${weekday}:${hour}`;
+    const bucket = buckets.get(key) || { pageCount: 0, sessions: new Set<string>(), missingSessions: 0 };
+    bucket.pageCount += 1;
+    const session = String(sessionId || "").trim();
+    if (session) bucket.sessions.add(session);
+    else bucket.missingSessions += 1;
+    buckets.set(key, bucket);
+  };
+  for (const view of historicalViews)
+    addPageview(view.occurred_at || `${view.day}T00:00:00.000Z`, view.session_id);
+  for (const event of rawEvents)
+    if (event.event_type === "pageview") addPageview(event.occurred_at, event.metadata?.session);
+  return Array.from({ length: 7 * 24 }, (_, index) => {
+    const weekday = Math.floor(index / 24);
+    const hour = index % 24;
+    const bucket = buckets.get(`${weekday}:${hour}`);
+    const knownVisitors = bucket?.sessions.size || 0;
+    const missingSessions = bucket?.missingSessions || 0;
+    return {
+      weekday,
+      hour,
+      visitors: missingSessions > 0 && knownVisitors === 0 ? null : knownVisitors,
+      visitorsComplete: missingSessions === 0,
+      pageCount: bucket?.pageCount || 0,
+    };
+  });
 }
 
 export type AnalyticsFilters = {

@@ -317,6 +317,7 @@ describe("worker evidence pipelines", () => {
       30,
     );
     expect(summary.pageviews).toBe(2);
+    expect(summary.events).toBe(8);
     expect(summary.keyEvents).toBe(2);
     expect(summary.pages.find((page) => page.path === "/")).toMatchObject({
       pageviews: 1,
@@ -335,6 +336,32 @@ describe("worker evidence pipelines", () => {
     expect(summary.vitals).toContainEqual({ name: "INP", value: 180, samples: 1, percentile: 75 });
     expect(summary.performance.minimumSamples).toBe(1);
     expect(summary.performance.goodExperiencesPercent).toBe(100);
+    expect(summary.engagement.visitTimes.find((cell) => cell.weekday === 4 && cell.hour === 0)).toMatchObject({
+      visitors: 2,
+      visitorsComplete: true,
+      pageCount: 2,
+    });
+  });
+
+  it("maps pageview timestamps into property-local weekday/hour cells across raw and rolled views", () => {
+    const summary = buildAnalyticsSummary(
+      [
+        { event_type: "pageview", path: "/pricing/", metadata: { session: "raw-session" }, occurred_at: "2026-10-04T23:30:00Z" },
+        { event_type: "pageview", path: "/contact/", metadata: {}, occurred_at: "2026-10-04T23:45:00Z" },
+      ],
+      30,
+      "2026-09-06T00:00:00Z",
+      "2026-10-05T23:59:59Z",
+      "Europe/London",
+      [],
+      [
+        { day: "2026-10-05", occurred_at: "2026-10-05T00:15:00Z", session_id: "rolled-session", view_key: "rolled-view", path: "/" },
+      ],
+    );
+    const mondayMidnight = summary.engagement.visitTimes.find((cell) => cell.weekday === 0 && cell.hour === 0);
+    const mondayOneAm = summary.engagement.visitTimes.find((cell) => cell.weekday === 0 && cell.hour === 1);
+    expect(mondayMidnight).toMatchObject({ visitors: 1, visitorsComplete: false, pageCount: 2 });
+    expect(mondayOneAm).toMatchObject({ visitors: 1, visitorsComplete: true, pageCount: 1 });
   });
 
   it("keeps prior compatible tracker observations available after a tracker upgrade", () => {
