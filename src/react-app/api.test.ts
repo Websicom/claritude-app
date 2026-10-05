@@ -46,6 +46,25 @@ describe("apiErrorMessage", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("deduplicates and caches compact property overview reads", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ analytics: { pageviews: 7 }, audit: null }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const path = "/api/properties/property-1/overview?days=overview-cache-test";
+    const [first, second] = await Promise.all([
+      apiRequest<any>(session, path),
+      apiRequest<any>(session, path),
+    ]);
+    const cached = await apiRequest<any>(session, path);
+    expect(first.analytics.pageviews).toBe(7);
+    expect(second).toEqual(first);
+    expect(cached).toEqual(first);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("retries transient read failures before surfacing an error", async () => {
     vi.useFakeTimers();
     const fetchMock = vi.spyOn(globalThis, "fetch")

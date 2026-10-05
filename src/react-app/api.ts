@@ -10,7 +10,7 @@ function readKey(session: Session, path: string) {
 }
 
 function isCacheableAnalyticsRead(path: string) {
-  return /^\/api\/properties\/[^/]+\/analytics(?:\?|\/pages\?)/.test(path);
+  return /^\/api\/properties\/[^/]+\/(?:overview\?|analytics(?:\?|\/pages\?))/.test(path);
 }
 
 function retryDelay(attempt: number) {

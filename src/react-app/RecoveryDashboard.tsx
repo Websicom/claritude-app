@@ -793,6 +793,7 @@ export function ClaritudeApplication({
               path="/overview"
               element={
                 <PropertyOverview
+                  key={property?.id || "no-property"}
                   session={session}
                   property={property}
                   fixture={fixture}
@@ -1617,38 +1618,37 @@ function PropertyOverview({
     [trafficMetric, setTrafficMetric] = useState<TrafficMetric>("Pageviews"),
     [analytics, setAnalytics] = useState<any>(null),
     [analyticsLoading, setAnalyticsLoading] = useState(!fixture),
-    [audits, setAudits] = useState<AuditRun[]>([]);
+    [latestAudit, setLatestAudit] = useState<AuditRun | null>(null);
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
     if (session && property) {
       setAnalytics(null);
+      setLatestAudit(null);
       setAnalyticsLoading(true);
-      api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}&view=overview`)
-        .then((all) => {
-          if (!cancelled) setAnalytics(all);
+      api<{ analytics: any; audit: AuditRun | null }>(
+        session,
+        `/api/properties/${property.id}/overview?${livePeriod}`,
+        { signal: controller.signal },
+      )
+        .then((overview) => {
+          setAnalytics(overview.analytics);
+          setLatestAudit(overview.audit);
         })
-        .catch(() => {
-          if (!cancelled) setAnalytics(null);
+        .catch((error) => {
+          if (error instanceof DOMException && error.name === "AbortError") return;
+          setAnalytics(null);
+          setLatestAudit(null);
         })
         .finally(() => {
-          if (!cancelled) setAnalyticsLoading(false);
-        });
-      api<AuditRun[]>(session, `/api/properties/${property.id}/audits?${livePeriod}`)
-        .then((storedAudits) => {
-          if (!cancelled) setAudits(storedAudits);
-        })
-        .catch(() => {
-          if (!cancelled) setAudits([]);
+          if (!controller.signal.aborted) setAnalyticsLoading(false);
         });
     } else if (property && fixture) {
       const fixtureSummary = fixtureAnalytics(property);
       setAnalytics(fixtureSummary);
       setAnalyticsLoading(false);
-      setAudits([fixtureAudit(property)]);
+      setLatestAudit(fixtureAudit(property));
     }
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [property?.id, session, fixture, livePeriod]);
   if (!property)
     return (
@@ -1658,7 +1658,7 @@ function PropertyOverview({
       />
     );
   const monitor = property.uptime_monitors?.[0],
-    audit = audits[0] || property.audit_runs?.[0],
+    audit = latestAudit || property.audit_runs?.[0],
     views = analytics?.pageviews || 0,
     uniqueVisits = fixture ? property.demo?.visitors || 0 : analytics?.sessions || 0,
     mobileScore = fixture
@@ -1695,17 +1695,17 @@ function PropertyOverview({
     ],
     [
       "Pageviews",
-      <Link className="metric-value-link" to={analyticsHref}>{fmt(views)}</Link>,
+      <Link className="metric-value-link" to={analyticsHref}>{analyticsLoading ? "—" : fmt(views)}</Link>,
       fixture ? "↑ 12.4%" : "Measured in this period",
     ],
     [
       "Unique Visits",
-      <Link className="metric-value-link" to={analyticsHref}>{fmt(uniqueVisits)}</Link>,
+      <Link className="metric-value-link" to={analyticsHref}>{analyticsLoading ? "—" : fmt(uniqueVisits)}</Link>,
       fixture ? "Anonymous visits in this period" : "Anonymous sessions in this period",
     ],
     [
       "Events",
-      <Link className="metric-value-link" to={analyticsTabHref("Events")}>{fmt(analytics?.keyEvents || 0)}</Link>,
+      <Link className="metric-value-link" to={analyticsTabHref("Events")}>{analyticsLoading ? "—" : fmt(analytics?.keyEvents || 0)}</Link>,
       fixture ? "1.3% of pageviews" : "Tracked events in this period",
     ],
   ];
@@ -1744,9 +1744,9 @@ function PropertyOverview({
                 actions={<ChartSwitch notify={notify} events value={trafficMetric} onChange={setTrafficMetric} />}
               >
                 {mobilePageControls}
-                {analyticsLoading && Boolean(property.tracking_last_received_at) ? (
+                {analyticsLoading ? (
                   <div className="audit-results-loading" role="status">
-                    <RefreshCw className="audit-spin" /> Loading your analytics
+                    <RefreshCw className="audit-spin" /> Loading {property.name} analytics
                   </div>
                 ) : (
                   <SeriesChart
@@ -1769,8 +1769,8 @@ function PropertyOverview({
                     label="Overall"
                     value={audit?.score == null ? "—" : <>{audit.score}<small className="health-score-total"> /100</small></>}
                   />
-                  <Metric label="Mobile" value={propertyHealthScoreValue(mobileScore, "Awaiting field data")} />
-                  <Metric label="Desktop" value={propertyHealthScoreValue(desktopScore, "Awaiting field data")} />
+                  <Metric label="Mobile" value={analyticsLoading ? "—" : propertyHealthScoreValue(mobileScore, "Awaiting field data")} />
+                  <Metric label="Desktop" value={analyticsLoading ? "—" : propertyHealthScoreValue(desktopScore, "Awaiting field data")} />
                   <Metric label="SEO" value={propertyHealthScoreValue(seoScore, audit ? "Not implemented by this audit run" : "Awaiting audit")} />
                 </div>
                 <div className="settings-actions">
@@ -1788,7 +1788,11 @@ function PropertyOverview({
             </div>
             <div>
               <Panel title="Real-user performance">
-                {vitalRows.length ? (
+                {analyticsLoading ? (
+                  <div className="audit-results-loading" role="status">
+                    <RefreshCw className="audit-spin" /> Loading performance data
+                  </div>
+                ) : vitalRows.length ? (
                   <DataTable
                     headers={["Metric", "Result", "Samples"]}
                     rows={vitalRows}
@@ -1801,7 +1805,11 @@ function PropertyOverview({
                 )}
               </Panel>
               <Panel title={<Link className="panel-title-link" to={analyticsTabHref("Pages")}>Top pages</Link>}>
-                {analytics?.pages?.length ? (
+                {analyticsLoading ? (
+                  <div className="audit-results-loading" role="status">
+                    <RefreshCw className="audit-spin" /> Loading top pages
+                  </div>
+                ) : analytics?.pages?.length ? (
                   <DataTable
                     className="property-top-pages-table"
                     headers={["Page", "Views"]}
@@ -2389,13 +2397,14 @@ function AnalyticsView({
 
   useEffect(() => {
     let cancelled = false;
-    if (session && property) {
+    if (session && property && filterQuery) {
       api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}`)
         .then((next) => !cancelled && setBaseData(next))
         .catch(() => !cancelled && setBaseData(null));
     } else if (fixture) setBaseData(analyticsFixtureSummary());
+    else setBaseData(null);
     return () => { cancelled = true; };
-  }, [fixture, livePeriod, property?.id, reloadToken, session]);
+  }, [filterQuery, fixture, livePeriod, property?.id, reloadToken, session]);
 
   useEffect(() => {
     if (!property) return;
@@ -2416,7 +2425,7 @@ function AnalyticsView({
       setLoading(false);
     }
     return () => { cancelled = true; };
-  }, [filterQuery, fixture, livePeriod, property?.id, reloadToken, session, tab]);
+  }, [filterQuery, fixture, livePeriod, property?.id, reloadToken, session]);
 
   useEffect(() => {
     if (tab !== "Pages" || detailPage || !property) return;

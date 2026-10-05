@@ -2247,6 +2247,48 @@ app.get("/api/account/export", async (c) => {
   });
 });
 
+app.get("/api/properties/:id/overview", async (c) => {
+  const window = requestedWindow(c);
+  if (!window) return c.json({ error: "invalid_date_range" }, 400);
+  const startedAt = performance.now();
+  const db = c.get("db");
+  const [analyticsResult, auditResult] = await Promise.all([
+    db.rpc("analytics_property_overview", {
+      p_property_id: c.req.param("id"),
+      p_from: window.from,
+      p_to: window.to,
+      p_time_zone: window.timeZone,
+    }),
+    db
+      .from("audit_runs")
+      .select("id,status,score,coverage,category_scores,created_at,completed_at")
+      .eq("property_id", c.req.param("id"))
+      .in("status", ["completed", "partial"])
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ]);
+  const failure = analyticsResult.error || auditResult.error;
+  if (failure) return c.json({ error: failure.message }, 400);
+  c.header("Server-Timing", `overview-db;dur=${(performance.now() - startedAt).toFixed(1)}`);
+  c.header("Cache-Control", "private, max-age=15");
+  return c.json({
+    analytics: analyticsResult.data || {
+      from: window.from,
+      to: window.to,
+      timeZone: window.timeZone,
+      pageviews: 0,
+      keyEvents: 0,
+      sessions: 0,
+      series: [],
+      pages: [],
+      vitals: [],
+      performanceByDevice: {},
+    },
+    audit: auditResult.data || null,
+  });
+});
+
 app.get("/api/properties/:id/analytics", async (c) => {
   const window = requestedWindow(c);
   if (!window) return c.json({ error: "invalid_date_range" }, 400);
