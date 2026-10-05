@@ -75,6 +75,38 @@ const LIMITS = {
   analyticsEventsPerPropertyPerDay: 50_000,
 } as const;
 
+export type CustomEventPlan = "Free" | "Essentials" | "Scale" | "Pro";
+
+export function customEventPlan(entitlement: unknown): CustomEventPlan {
+  const normalized = String(entitlement || "")
+    .toLocaleLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+  if (normalized === "proearlyaccess" || normalized.startsWith("pro")) return "Pro";
+  if (normalized.startsWith("scale")) return "Scale";
+  if (normalized.startsWith("essentials")) return "Essentials";
+  return "Free";
+}
+
+export function customEventAllowance(entitlement: unknown, used: number) {
+  const plan = customEventPlan(entitlement);
+  const limits: Record<CustomEventPlan, number | null> = {
+    Free: 2,
+    Essentials: 5,
+    Scale: 20,
+    Pro: null,
+  };
+  const limit = limits[plan];
+  const safeUsed = Math.max(0, Math.floor(Number(used) || 0));
+  return {
+    plan,
+    used: safeUsed,
+    limit,
+    remaining: limit == null ? null : Math.max(0, limit - safeUsed),
+    unlimited: limit == null,
+    canCreate: limit == null || safeUsed < limit,
+  };
+}
+
 export function validAvatarBytes(contentType: string, bytes: Uint8Array) {
   const startsWith = (...signature: number[]) =>
     signature.every((value, index) => bytes[index] === value);
@@ -189,8 +221,8 @@ function fallbackUserFacingSnapshot(technicalSnapshot: AuditRegistrySnapshot[]):
 }
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
-const TRACKER_VERSION = "2.1.4";
-const SUPPORTED_TRACKER_VERSIONS = new Set(["2.0.0", "2.1.0", "2.1.1", "2.1.2", "2.1.3", TRACKER_VERSION]);
+const TRACKER_VERSION = "2.1.5";
+const SUPPORTED_TRACKER_VERSIONS = new Set(["2.0.0", "2.1.0", "2.1.1", "2.1.2", "2.1.3", "2.1.4", TRACKER_VERSION]);
 app.use("*", secureHeaders({ crossOriginResourcePolicy: false }));
 app.use("*", async (c, next) => {
   await next();
@@ -1966,12 +1998,12 @@ app.get("/api/properties/:id/events", async (c) => {
   const db = c.get("db");
   const propertyId = c.req.param("id");
   const from = new Date(Date.now() - 30 * 864e5).toISOString();
-  const [{ data, error }, { data: received, error: receivedError }] = await Promise.all([
+  const [definitionsResponse, receivedResponse, propertyResponse] = await Promise.all([
     db
-    .from("event_definitions")
-    .select("*")
-    .eq("property_id", propertyId)
-    .order("created_at"),
+      .from("event_definitions")
+      .select("*")
+      .eq("property_id", propertyId)
+      .order("created_at"),
     db
       .from("analytics_events")
       .select("name,event_type,occurred_at")
@@ -1979,19 +2011,28 @@ app.get("/api/properties/:id/events", async (c) => {
       .gte("occurred_at", from)
       .not("name", "is", null)
       .limit(50000),
+    db
+      .from("properties")
+      .select("id,workspaces(accounts(entitlement))")
+      .eq("id", propertyId)
+      .single(),
   ]);
-  if (error || receivedError)
-    return c.json({ error: (error || receivedError)?.message }, 400);
+  const requestError = definitionsResponse.error || receivedResponse.error || propertyResponse.error;
+  if (requestError) return c.json({ error: requestError.message }, 400);
+  const definitions = definitionsResponse.data || [];
+  const received = receivedResponse.data || [];
   const counts = new Map<string, { count: number; last: string | null }>();
-  for (const event of received || []) {
+  for (const event of received) {
     const key = `${event.event_type}:${event.name}`;
     const current = counts.get(key) || { count: 0, last: null };
     current.count += 1;
     if (!current.last || event.occurred_at > current.last) current.last = event.occurred_at;
     counts.set(key, current);
   }
-  return c.json(
-    (data || []).map((definition) => {
+  const workspace = (propertyResponse.data as any)?.workspaces;
+  const allowance = customEventAllowance(workspace?.accounts?.entitlement, definitions.length);
+  return c.json({
+    events: definitions.map((definition) => {
       const measured = counts.get(`${definition.event_type}:${definition.name}`);
       return {
         ...definition,
@@ -1999,10 +2040,13 @@ app.get("/api/properties/:id/events", async (c) => {
         last_received_at: measured?.last || null,
       };
     }),
-  );
+    allowance,
+  });
 });
 
 app.post("/api/properties/:id/events", async (c) => {
+  const db = c.get("db");
+  const propertyId = c.req.param("id");
   const body = await c.req.json<{
     name: string;
     eventType: string;
@@ -2022,19 +2066,35 @@ app.post("/api/properties/:id/events", async (c) => {
   if (!name) return c.json({ error: "event_name_required" }, 400);
   const matchSettings = sanitizeEventMatchSettings(eventType, body.matchSettings);
   if (!matchSettings) return c.json({ error: "valid_event_match_settings_required" }, 400);
-  const { data, error } = await c
-    .get("db")
-    .from("event_definitions")
-    .insert({
-      property_id: c.req.param("id"),
-      name,
-      event_type: eventType,
-      description: body.description?.trim().slice(0, 240) || null,
-      match_settings: matchSettings,
-    })
-    .select()
+  const { data: property } = await db
+    .from("properties")
+    .select("id,workspace_id,workspaces(accounts(entitlement))")
+    .eq("id", propertyId)
     .single();
-  return error ? c.json({ error: error.message }, 400) : c.json(data, 201);
+  if (!property) return c.json({ error: "property_not_found" }, 404);
+  if (!(await canManageWorkspace(db, c.get("userId"), property.workspace_id)))
+    return c.json({ error: "property_manage_access_required" }, 403);
+  const { count } = await db
+    .from("event_definitions")
+    .select("id", { count: "exact", head: true })
+    .eq("property_id", propertyId);
+  const workspace = (property as any).workspaces;
+  const allowance = customEventAllowance(workspace?.accounts?.entitlement, count || 0);
+  if (!allowance.canCreate)
+    return c.json({ error: "custom_event_plan_limit_reached", allowance }, 403);
+  const { data, error } = await admin(c.env).rpc("create_event_definition_limited", {
+    p_property_id: propertyId,
+    p_name: name,
+    p_event_type: eventType,
+    p_description: body.description?.trim().slice(0, 240) || null,
+    p_match_settings: matchSettings,
+  });
+  if (error) {
+    if (error.message.includes("custom_event_plan_limit_reached"))
+      return c.json({ error: "custom_event_plan_limit_reached", allowance: { ...allowance, canCreate: false, remaining: 0 } }, 403);
+    return c.json({ error: error.message }, 400);
+  }
+  return c.json(data, 201);
 });
 
 app.patch("/api/properties/:id/events/:eventId", async (c) => {
@@ -4606,7 +4666,14 @@ function buildAnalyticsFilterOptions(events: any[]) {
 }
 
 function analyticsSource(event: any) {
-  return String(event.source || event.metadata?.utm_source || event.referrer_host || "Direct / unknown").trim() || "Direct / unknown";
+  return String(
+    event.metadata?.utm_source
+      || event.metadata?.acquisition_source
+      || event.source
+      || event.metadata?.original_referrer
+      || event.referrer_host
+      || "Direct / unknown",
+  ).trim() || "Direct / unknown";
 }
 
 function analyticsSourceCategory(event: any) {
@@ -4719,11 +4786,33 @@ export function buildAnalyticsOccurrenceContext(
   const sessionRows = chronological(sessionEvents);
   const occurrenceTime = Date.parse(occurrence.occurred_at || "");
   const viewPage = viewRows.find((event) => event.event_type === "pageview");
+  const firstSessionPage = sessionRows
+    .find((event) => event.event_type === "pageview" && Date.parse(event.occurred_at || "") <= occurrenceTime);
   const sessionPage = sessionRows
     .filter((event) => event.event_type === "pageview" && Date.parse(event.occurred_at || "") <= occurrenceTime)
     .at(-1);
-  const acquisitionEvent = viewPage || sessionPage || occurrence;
-  const metadata = { ...(acquisitionEvent.metadata || {}), ...(occurrence.metadata || {}) };
+  const acquisitionEvent = firstSessionPage || viewPage || sessionPage || occurrence;
+  const acquisitionMetadata = acquisitionEvent.metadata || {};
+  const occurrenceMetadata = occurrence.metadata || {};
+  const metadata = { ...acquisitionMetadata, ...occurrenceMetadata };
+  for (const key of [
+    "acquisition_source",
+    "original_referrer",
+    "landing_page",
+    "utm_source",
+    "utm_medium",
+    "utm_campaign",
+    "utm_content",
+    "utm_term",
+  ]) {
+    if (!occurrenceMetadata[key] && acquisitionMetadata[key]) metadata[key] = acquisitionMetadata[key];
+  }
+  const acquisitionSourceEvent = {
+    ...acquisitionEvent,
+    metadata,
+    source: metadata.acquisition_source || metadata.utm_source || acquisitionEvent.source,
+    referrer_host: metadata.original_referrer || acquisitionEvent.referrer_host,
+  };
   const activeSeconds = viewRows
     .filter((event) => event.event_type === "active_time" && Number.isFinite(Number(event.value)))
     .reduce((total, event) => total + Number(event.value), 0);
@@ -4756,7 +4845,7 @@ export function buildAnalyticsOccurrenceContext(
     .map(compact)
     .slice(0, 30);
   const journey: Array<{ type: string; label: string }> = [];
-  journey.push({ type: "source", label: analyticsSourceCategory(acquisitionEvent) });
+  journey.push({ type: "source", label: analyticsSourceCategory(acquisitionSourceEvent) });
   for (const path of pageSequence.filter((path) => Date.parse(sessionRows.find((event) => event.event_type === "pageview" && normalizeAnalyticsPath(event.path) === path)?.occurred_at || "") <= occurrenceTime))
     journey.push({ type: "page", label: path });
   if (maxScroll > 0) journey.push({ type: "behaviour", label: `Scrolled ${Math.round(maxScroll)}%` });
@@ -4768,9 +4857,14 @@ export function buildAnalyticsOccurrenceContext(
     receivedAt: occurrence.received_at,
     path: normalizeAnalyticsPath(occurrence.path),
     acquisition: {
-      source: analyticsSourceCategory(acquisitionEvent),
-      sourceDetail: analyticsSource(acquisitionEvent),
-      referrer: acquisitionEvent.referrer_host || null,
+      source: analyticsSourceCategory(acquisitionSourceEvent),
+      sourceDetail: analyticsSource(acquisitionSourceEvent),
+      referrer: metadata.original_referrer || acquisitionEvent.referrer_host || null,
+      landingPage: metadata.landing_page
+        ? normalizeAnalyticsPath(metadata.landing_page)
+        : firstSessionPage?.path
+          ? normalizeAnalyticsPath(firstSessionPage.path)
+          : null,
       utmSource: metadata.utm_source || null,
       utmMedium: metadata.utm_medium || null,
       utmCampaign: metadata.utm_campaign || null,
@@ -5375,6 +5469,58 @@ function renderReportEmail(snapshot: any) {
     <p>Open Claritude for evidence, filters and the full report.</p>`;
 }
 
+type TrackerSessionStorage = {
+  getItem: (key: string) => string | null;
+  setItem: (key: string, value: string) => void;
+};
+
+export function trackerSessionAcquisition(
+  storage: TrackerSessionStorage,
+  session: string,
+  href: string,
+  referrer: string,
+) {
+  const key = "_claritude_acquisition";
+  try {
+    const existing = JSON.parse(storage.getItem(key) || "null");
+    if (existing && existing.session === session && existing.landingPage)
+      return existing;
+  } catch {
+    // A missing or malformed value starts a fresh tab-session attribution.
+  }
+  let page: URL;
+  try {
+    page = new URL(href);
+  } catch {
+    page = new URL("https://invalid.local/");
+  }
+  let referrerHost = "";
+  try {
+    referrerHost = referrer ? new URL(referrer).hostname.slice(0, 200) : "";
+  } catch {
+    referrerHost = "";
+  }
+  const params = page.searchParams;
+  const value = (name: string) => (params.get(name) || "").slice(0, 200);
+  const attribution = {
+    session,
+    source: value("utm_source") || referrerHost || "Direct / unknown",
+    referrer: referrerHost,
+    landingPage: (page.pathname || "/").slice(0, 500),
+    utmSource: value("utm_source"),
+    utmMedium: value("utm_medium"),
+    utmCampaign: value("utm_campaign"),
+    utmContent: value("utm_content"),
+    utmTerm: value("utm_term"),
+  };
+  try {
+    storage.setItem(key, JSON.stringify(attribution));
+  } catch {
+    // Collection remains functional if sessionStorage is unavailable.
+  }
+  return attribution;
+}
+
 export const TRACKER_SOURCE = `(()=>{
   let s=document.currentScript;if(!s){const scripts=document.getElementsByTagName('script');for(let i=scripts.length-1;i>=0;i--){const candidate=scripts[i],src=candidate.getAttribute('src')||'';if(candidate.getAttribute('data-property')&&/(?:\\/c|\\/tracker)\\.js(?:[?#]|$)/.test(src)){s=candidate;break}}}
   const p=s&&s.getAttribute('data-property'),endpoint=s&&new URL('/collect',s.src).href,base=s&&new URL('/',s.src).href;
@@ -5384,11 +5530,12 @@ export const TRACKER_SOURCE = `(()=>{
   const marks=new Set,visibleSections=new Set,observedSections=new WeakSet;
   const session=sessionStorage.getItem('_claritude_session')||uuid();
   sessionStorage.setItem('_claritude_session',session);
+  const acquisition=(${trackerSessionAcquisition.toString()})(sessionStorage,session,location.href,document.referrer);
   const browser=/Edg\\//.test(navigator.userAgent)?'Edge':/OPR\\//.test(navigator.userAgent)?'Opera':/SamsungBrowser\\//.test(navigator.userAgent)?'Samsung Internet':/Firefox\\//.test(navigator.userAgent)?'Firefox':/Chrome\\//.test(navigator.userAgent)?'Chrome':/Safari\\//.test(navigator.userAgent)?'Safari':/MSIE|Trident/.test(navigator.userAgent)?'Internet Explorer':'Other';
-  const common=()=>{const params=new URLSearchParams(location.search);return{session,view_id:view,browser,screen:innerWidth<768?'small':innerWidth<1280?'medium':'large',language:navigator.language||'',tracker_version:'${TRACKER_VERSION}',utm_source:params.get('utm_source')||'',utm_medium:params.get('utm_medium')||'',utm_campaign:params.get('utm_campaign')||'',utm_content:params.get('utm_content')||'',utm_term:params.get('utm_term')||''}};
+  const common=()=>({session,view_id:view,browser,screen:innerWidth<768?'small':innerWidth<1280?'medium':'large',language:navigator.language||'',tracker_version:'${TRACKER_VERSION}',acquisition_source:acquisition.source,original_referrer:acquisition.referrer,landing_page:acquisition.landingPage,utm_source:acquisition.utmSource,utm_medium:acquisition.utmMedium,utm_campaign:acquisition.utmCampaign,utm_content:acquisition.utmContent,utm_term:acquisition.utmTerm});
   const retry=()=>{if(retryTimer)return;retryTimer=setTimeout(()=>{retryTimer=0;send()},retryDelay);retryDelay=Math.min(retryDelay*2,30000)};
   const send=async()=>{if(sending||!q.length)return;sending=true;const batch=q.splice(0,20),body=JSON.stringify(batch);try{if(navigator.sendBeacon&&document.visibilityState==='hidden'){if(!navigator.sendBeacon(endpoint,new Blob([body],{type:'application/json'})))throw new Error('beacon-rejected')}else{const response=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/json'},body,keepalive:true});if(!response.ok)throw new Error('collect-'+response.status)}retryDelay=1000}catch(sendError){q=batch.concat(q).slice(0,200);retry()}finally{sending=false;if(q.length&&!retryTimer){clearTimeout(timer);timer=setTimeout(send,500)}}};
-  const emit=(type,data={})=>{const supplied=data.meta&&typeof data.meta==='object'?data.meta:{};q.push(Object.assign({},data,{type,property:p,path:location.pathname,referrer:document.referrer,at:new Date().toISOString(),device:innerWidth<768?'mobile':innerWidth<1024?'tablet':'desktop',meta:Object.assign({},common(),supplied,{event_id:uuid()})}));if(q.length>200)q=q.slice(-200);clearTimeout(timer);timer=setTimeout(send,500)};
+  const emit=(type,data={})=>{const supplied=data.meta&&typeof data.meta==='object'?data.meta:{},event_id=uuid(),baseMeta=common();q.push(Object.assign({},data,{type,property:p,path:location.pathname,source:data.source||acquisition.source,referrer:document.referrer,at:new Date().toISOString(),device:innerWidth<768?'mobile':innerWidth<1024?'tablet':'desktop',meta:Object.assign({event_id},baseMeta,supplied,baseMeta,{event_id})}));if(q.length>200)q=q.slice(-200);clearTimeout(timer);timer=setTimeout(send,500)};
   addEventListener('click',e=>{lastActivity=Date.now();const a=e.target.closest('[data-claritude-event],a[href]');if(!a)return;const name=a.dataset.claritudeEvent;if(name)emit('click',{name});if(a.href&&new URL(a.href,location.href).host!==location.host)emit('outbound',{name:new URL(a.href).host})},{passive:true});
   ['keydown','pointerdown','touchstart'].forEach(name=>addEventListener(name,()=>{lastActivity=Date.now()},{passive:true}));
   const checkScroll=()=>{const root=document.documentElement,height=Math.max(root.scrollHeight,document.body&&document.body.scrollHeight||0,1),n=Math.min(100,Math.round((scrollY+innerHeight)/height*100));[25,50,75,90].forEach(x=>{if(n>=x&&!marks.has(x)){marks.add(x);emit('scroll',{value:x})}})};
@@ -5399,7 +5546,7 @@ export const TRACKER_SOURCE = `(()=>{
   const observeSections=()=>{if(!sectionObserver)return;document.querySelectorAll('[data-claritude-section]').forEach(node=>{if(!observedSections.has(node)){observedSections.add(node);sectionObserver.observe(node)}})};
   const initVitals=()=>{if(!window.webVitals)return;const own=generation,record=metric=>{if(own===generation&&metric&&Number.isFinite(metric.value))emit('web_vital',{name:metric.name,value:metric.value,meta:{metric_id:metric.id,navigation_type:metric.navigationType}})};try{webVitals.onLCP(record)}catch(lcpError){}try{webVitals.onINP(record)}catch(inpError){}try{webVitals.onCLS(record)}catch(clsError){}};
   const loadVitals=()=>vitalsReady||(vitalsReady=new Promise(resolve=>{if(window.webVitals){resolve();return}const script=document.createElement('script');script.src=new URL('/vendor/web-vitals.js',base).href;script.async=true;script.crossOrigin='anonymous';script.onload=resolve;script.onerror=resolve;document.head.appendChild(script)}));
-  const page=()=>{const params=new URLSearchParams(location.search);emit('pageview',{source:params.get('utm_source')||''});observeSections();requestAnimationFrame(checkScroll);loadVitals().then(initVitals)};page();
+  const page=()=>{emit('pageview',{source:acquisition.source});observeSections();requestAnimationFrame(checkScroll);loadVitals().then(initVitals)};page();
   const navigation=(forcedPath)=>{if(!forcedPath&&location.href===lastUrl)return;reportActive();send();lastUrl=location.href;view=uuid();generation+=1;active=0;reportedActive=0;lastActivity=Date.now();errorCount=0;marks.clear();visibleSections.clear();page()};
   new MutationObserver(()=>{navigation();observeSections();checkScroll()}).observe(document,{subtree:true,childList:true});
   ['pushState','replaceState'].forEach(k=>{const original=history[k];history[k]=function(){const result=original.apply(this,arguments);Promise.resolve().then(()=>navigation());return result}});

@@ -300,6 +300,25 @@ type EventDefinition = {
   enabled: boolean;
   received?: number;
 };
+type CustomEventAllowance = {
+  plan: "Free" | "Essentials" | "Scale" | "Pro";
+  used: number;
+  limit: number | null;
+  remaining: number | null;
+  unlimited: boolean;
+  canCreate: boolean;
+};
+type EventDefinitionsResponse = {
+  events: EventDefinition[];
+  allowance: CustomEventAllowance;
+};
+
+export function customEventUsageText(allowance: CustomEventAllowance | null) {
+  if (!allowance) return "Loading event allowance…";
+  return allowance.unlimited
+    ? `${allowance.used} events used · Unlimited on Pro`
+    : `${allowance.used} of ${allowance.limit} events used`;
+}
 
 /**
  * Canonical Claritude product surface. Live and deterministic visual-test
@@ -6608,6 +6627,7 @@ function EventOccurrenceDetail({ detail, timeZone }: { detail: any; timeZone?: s
   const behaviour = detail.behaviour || {};
   const acquisitionRows = [
     ["Source", acquisition.source], ["Source detail", acquisition.sourceDetail], ["Referrer", acquisition.referrer],
+    ["Landing page", acquisition.landingPage],
     ["UTM source", acquisition.utmSource], ["UTM medium", acquisition.utmMedium], ["UTM campaign", acquisition.utmCampaign],
     ["UTM content", acquisition.utmContent], ["UTM term", acquisition.utmTerm],
   ];
@@ -6671,7 +6691,7 @@ function analyticsEventDetailFixture(eventName: string) {
     { id: "fixture-1", occurred_at: earlier.toISOString(), path: "/services/", source: "Direct / unknown", source_detail: "Direct / unknown", referrer_host: null, country_code: "GB", device: "mobile", browser: "Safari", active_seconds: 18 },
   ];
   const context = (row: any) => ({
-    ...row, name: eventName, eventType: "click", occurredAt: row.occurred_at, receivedAt: new Date(Date.parse(row.occurred_at) + 250).toISOString(), acquisition: { source: row.source, sourceDetail: row.source_detail, referrer: row.referrer_host, utmSource: null, utmMedium: null, utmCampaign: null, utmContent: null, utmTerm: null },
+    ...row, name: eventName, eventType: "click", occurredAt: row.occurred_at, receivedAt: new Date(Date.parse(row.occurred_at) + 250).toISOString(), acquisition: { source: row.source, sourceDetail: row.source_detail, referrer: row.referrer_host, landingPage: row.path, utmSource: null, utmMedium: null, utmCampaign: null, utmContent: null, utmTerm: null },
     visitor: { country: row.country_code, device: row.device, browser: row.browser, screen: row.device === "mobile" ? "Small · under 768px" : "Large · 1280px+", language: "en-GB" },
     behaviour: { activeSeconds: row.active_seconds, maxScroll: 90, visibleSections: ["contact"], javascriptErrors: 0, relatedKeyEvents: [], previous: { type: "pageview", path: row.path, occurredAt: new Date(Date.parse(row.occurred_at) - 10_000).toISOString() }, next: null, journey: [{ type: "source", label: row.source }, { type: "page", label: row.path }, { type: "behaviour", label: "Scrolled 90%" }, { type: "event", label: eventLabel(eventName) }] },
     webVitals: [{ name: "LCP", value: 1840 }],
@@ -6713,12 +6733,12 @@ function EventsPanel({
   const [eventError, setEventError] = useState("");
   const [instruction, setInstruction] = useState("");
   const [events, setEvents] = useState<EventDefinition[]>([]);
+  const [eventAllowance, setEventAllowance] = useState<CustomEventAllowance | null>(null);
   const [eventsState, setEventsState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [eventsLoadError, setEventsLoadError] = useState("");
   const [eventsReloadToken, setEventsReloadToken] = useState(0);
   const [eventPage, setEventPage] = useState(1);
   useEffect(() => {
-    if (data) return;
     if (fixture) {
       setEvents([
         {
@@ -6734,24 +6754,33 @@ function EventsPanel({
           enabled: true,
         },
       ]);
+      setEventAllowance({ plan: "Scale", used: 2, limit: 20, remaining: 18, unlimited: false, canCreate: true });
       setEventsLoadError("");
       setEventsState("ready");
       return;
     }
     if (!session) {
       setEvents([]);
+      setEventAllowance(null);
       setEventsLoadError("Authentication is required to load configured events.");
       setEventsState("error");
       return;
     }
     let cancelled = false;
     setEvents([]);
+    setEventAllowance(null);
     setEventsLoadError("");
     setEventsState("loading");
-    api<EventDefinition[]>(session, `/api/properties/${property.id}/events`)
+    api<EventDefinitionsResponse | EventDefinition[]>(session, `/api/properties/${property.id}/events`)
       .then((next) => {
         if (cancelled) return;
-        setEvents(next);
+        if (Array.isArray(next)) {
+          setEvents(next);
+          setEventAllowance({ plan: "Pro", used: next.length, limit: null, remaining: null, unlimited: true, canCreate: true });
+        } else {
+          setEvents(next.events);
+          setEventAllowance(next.allowance);
+        }
         setEventsState("ready");
       })
       .catch((reason) => {
@@ -6762,7 +6791,7 @@ function EventsPanel({
     return () => {
       cancelled = true;
     };
-  }, [data, eventsReloadToken, fixture, property.id, session]);
+  }, [eventsReloadToken, fixture, property.id, session]);
   async function saveEvent() {
     try {
       const normalizedName = name.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
@@ -6777,6 +6806,16 @@ function EventsPanel({
           })
         : { name: normalizedName, event_type: eventType, description, match_settings: matchSettings, enabled: true };
       setEvents((current) => [...current, created]);
+      setEventAllowance((current) => {
+        if (!current) return current;
+        const used = current.used + 1;
+        return {
+          ...current,
+          used,
+          remaining: current.limit == null ? null : Math.max(0, current.limit - used),
+          canCreate: current.limit == null || used < current.limit,
+        };
+      });
       setEventsState("ready");
       setOpen(false);
       setEventError("");
@@ -6789,7 +6828,12 @@ function EventsPanel({
       );
       notify("Event configuration saved");
     } catch (error: any) {
-      setEventError(error.message);
+      if (error.message === "custom_event_plan_limit_reached") {
+        setEventAllowance((current) => current ? { ...current, canCreate: false, remaining: 0 } : current);
+        setEventError("This property has reached its custom event allowance. Upgrade the plan to create another event.");
+      } else {
+        setEventError(error.message);
+      }
     }
   }
   async function toggleEvent(event: EventDefinition) {
@@ -6808,6 +6852,8 @@ function EventsPanel({
   const eventBreakdown = data?.eventBreakdown || [];
   const eventPageCount = Math.max(1, Math.ceil(eventBreakdown.length / 20));
   const shownEventBreakdown = paginateResults(eventBreakdown, eventPage);
+  const eventLimitReached = Boolean(eventAllowance && !eventAllowance.canCreate);
+  const eventUsage = customEventUsageText(eventAllowance);
   useEffect(() => setEventPage(1), [eventBreakdown.length, property.id]);
   return (
     <>
@@ -6816,13 +6862,27 @@ function EventsPanel({
         actions={
           <>
             {data && <Link className="btn" to={`/settings?property=${property.id}&settingsTab=Events`}>Event setup instructions</Link>}
-            <button className={data ? "primary" : "btn"} onClick={() => setOpen(true)}>
+            <button
+              className={data ? "primary" : "btn"}
+              onClick={() => setOpen(true)}
+              disabled={eventLimitReached || eventsState === "loading"}
+              title={eventLimitReached ? "Upgrade the property plan to create another custom event" : undefined}
+            >
               {!data && <Plus />}
               Create event
             </button>
           </>
         }
       >
+        <div className={`event-allowance${eventLimitReached ? " limit-reached" : ""}`}>
+          <span>{eventUsage}</span>
+          {eventLimitReached && (
+            <span>
+              Your {eventAllowance?.plan} plan allowance has been reached.{" "}
+              <Link to="/account">Review upgrade options</Link>
+            </span>
+          )}
+        </div>
         {data && filters && options && onFilterChange ? (
           <>
             <AnalyticsPageFilterToolbar filters={filters} options={options} onChange={onFilterChange} title="Events" categories={analyticsFilterConfigs.Events.categories} />
@@ -6872,6 +6932,7 @@ function EventsPanel({
           close={() => setOpen(false)}
           action="Create event"
           onSave={saveEvent}
+          disabled={eventLimitReached}
         >
           <label className="field">
             Event name

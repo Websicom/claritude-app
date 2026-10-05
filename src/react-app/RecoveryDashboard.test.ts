@@ -7,6 +7,7 @@ import {
   auditRunCategoryScores,
   auditScoreBand,
   buildAuditFixPrompt,
+  customEventUsageText,
   auditSeverityGroup,
   filterProperties,
   filterAuditSubfindings,
@@ -103,6 +104,13 @@ describe("top selector searches", () => {
     } as any);
     expect(checks.map((check) => check.complete)).toEqual([true, true, true, true]);
     expect(propertyOnboardingChecks({ verification_status: "pending" } as any).map((check) => check.complete)).toEqual([false, false, false, false]);
+  });
+
+  it("shows finite custom-event usage and Pro's separate unlimited entitlement", () => {
+    expect(customEventUsageText({ plan: "Essentials", used: 2, limit: 5, remaining: 3, unlimited: false, canCreate: true }))
+      .toBe("2 of 5 events used");
+    expect(customEventUsageText({ plan: "Pro", used: 37, limit: null, remaining: null, unlimited: true, canCreate: true }))
+      .toBe("37 events used · Unlimited on Pro");
   });
 
   it("filters the rationalised audit catalogue by category, subcategory and outcome", () => {

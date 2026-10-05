@@ -9,6 +9,8 @@ import {
   canonicalPropertyHost,
   chunkAuditResults,
   compactAuditResult,
+  customEventAllowance,
+  customEventPlan,
   cleanPath,
   editableWorkspaceRole,
   encodeAuditContinuationPayload,
@@ -20,6 +22,7 @@ import {
   normalizeAnalyticsPath,
   normalizePropertyRelations,
   TRACKER_SOURCE,
+  trackerSessionAcquisition,
   uptimeDueHorizon,
   validAvatarBytes,
   validPublicUrl,
@@ -52,6 +55,87 @@ describe("worker evidence pipelines", () => {
   it("emits a tracker script that browsers can parse", () => {
     expect(() => new Function(TRACKER_SOURCE)).not.toThrow();
     expect(TRACKER_SOURCE).toContain("/Chrome\\//.test");
+    expect(TRACKER_SOURCE).toContain("_claritude_acquisition");
+    expect(TRACKER_SOURCE).not.toContain("document.cookie");
+    expect(TRACKER_SOURCE).not.toContain("localStorage");
+  });
+
+  it.each([
+    ["free", 2],
+    ["essentials", 5],
+    ["scale", 20],
+    ["pro", null],
+    ["pro_early_access", null],
+  ])("maps the %s entitlement to its configured custom event limit", (entitlement, limit) => {
+    expect(customEventAllowance(entitlement, 0).limit).toBe(limit);
+  });
+
+  it("blocks event definition creation at finite plan allowances and leaves Pro unlimited", () => {
+    expect(customEventAllowance("free", 2)).toMatchObject({ plan: "Free", canCreate: false, remaining: 0 });
+    expect(customEventAllowance("essentials", 5)).toMatchObject({ plan: "Essentials", canCreate: false, remaining: 0 });
+    expect(customEventAllowance("scale", 20)).toMatchObject({ plan: "Scale", canCreate: false, remaining: 0 });
+    expect(customEventAllowance("pro", 10_000)).toMatchObject({ plan: "Pro", canCreate: true, unlimited: true, limit: null });
+    expect(customEventPlan("unknown-future-plan")).toBe("Free");
+  });
+
+  it("counts configured definitions independently from built-in analytics signals", () => {
+    const configuredDefinitions = [
+      { event_type: "click", name: "need-convincing-clicked" },
+      { event_type: "form_success", name: "contact-success" },
+    ];
+    const builtInSignals = ["pageview", "scroll", "active_time", "web_vital", "js_error"];
+    const allowance = customEventAllowance("free", configuredDefinitions.length);
+    expect(builtInSignals).toHaveLength(5);
+    expect(allowance).toMatchObject({ used: 2, canCreate: false });
+  });
+
+  it("preserves first-page acquisition values through internal navigation in one browser session", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) || null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+    };
+    const first = trackerSessionAcquisition(
+      storage,
+      "session-one",
+      "https://websi.com/?utm_source=google&utm_medium=cpc&utm_campaign=test&utm_content=hero&utm_term=agency",
+      "https://www.google.com/search?q=websi",
+    );
+    const later = trackerSessionAcquisition(
+      storage,
+      "session-one",
+      "https://websi.com/pricing/",
+      "https://websi.com/",
+    );
+    expect(first).toMatchObject({
+      source: "google",
+      referrer: "www.google.com",
+      landingPage: "/",
+      utmSource: "google",
+      utmMedium: "cpc",
+      utmCampaign: "test",
+      utmContent: "hero",
+      utmTerm: "agency",
+    });
+    expect(later).toEqual(first);
+  });
+
+  it("starts fresh acquisition in a new browser session without persistent identity", () => {
+    const storageValues = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => storageValues.get(key) || null,
+      setItem: (key: string, value: string) => { storageValues.set(key, value); },
+    };
+    trackerSessionAcquisition(storage, "session-one", "https://websi.com/?utm_source=google", "");
+    const nextSession = trackerSessionAcquisition(storage, "session-two", "https://websi.com/pricing/", "https://linkedin.com/feed/");
+    expect(nextSession).toMatchObject({
+      session: "session-two",
+      source: "linkedin.com",
+      referrer: "linkedin.com",
+      landingPage: "/pricing/",
+      utmSource: "",
+    });
+    expect([...storageValues.keys()]).toEqual(["_claritude_acquisition"]);
   });
 
   it("uses bounded audit result batches", () => {
@@ -353,6 +437,51 @@ describe("worker evidence pipelines", () => {
     expect(context.behaviour.journey.at(-1)).toEqual({ type: "event", label: "Need Convincing Clicked" });
   });
 
+  it("keeps session acquisition separate from the page where the event occurred", () => {
+    const acquisition = {
+      session: "tab-one",
+      acquisition_source: "google",
+      original_referrer: "www.google.com",
+      landing_page: "/",
+      utm_source: "google",
+      utm_medium: "cpc",
+      utm_campaign: "test",
+    };
+    const occurrence = {
+      id: 3,
+      event_type: "click",
+      name: "need-convincing-clicked",
+      path: "/pricing/",
+      metadata: {
+        ...acquisition,
+        view_id: "view-two",
+        acquisition_source: "",
+        original_referrer: "",
+        landing_page: "",
+        utm_source: "",
+        utm_medium: "",
+        utm_campaign: "",
+      },
+      occurred_at: "2026-10-05T10:01:05Z",
+    };
+    const sessionEvents = [
+      { id: 1, event_type: "pageview", path: "/", metadata: { ...acquisition, view_id: "view-one" }, occurred_at: "2026-10-05T10:00:00Z" },
+      { id: 2, event_type: "pageview", path: "/pricing/", metadata: { ...acquisition, view_id: "view-two" }, occurred_at: "2026-10-05T10:01:00Z" },
+      occurrence,
+    ];
+    const context = buildAnalyticsOccurrenceContext(occurrence, sessionEvents.slice(1), sessionEvents);
+    expect(context.path).toBe("/pricing/");
+    expect(context.acquisition).toMatchObject({
+      source: "Google",
+      sourceDetail: "google",
+      referrer: "www.google.com",
+      landingPage: "/",
+      utmSource: "google",
+      utmMedium: "cpc",
+      utmCampaign: "test",
+    });
+  });
+
   it("does not invent occurrence context when anonymous correlation evidence is absent", () => {
     const context = buildAnalyticsOccurrenceContext({
       id: 9,
@@ -364,6 +493,7 @@ describe("worker evidence pipelines", () => {
       metadata: {},
     });
     expect(context.contextAvailability).toEqual({ view: false, session: false });
+    expect(context.acquisition.landingPage).toBeNull();
     expect(context.behaviour).toMatchObject({ activeSeconds: 0, maxScroll: 0, visibleSections: [], relatedKeyEvents: [] });
     expect(context.webVitals).toEqual([]);
   });

@@ -2866,6 +2866,30 @@ input[type="checkbox"]:checked:after {
 .event-occurrence-detail h4 {
   margin: 0 0 10px;
 }
+.event-allowance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8f8f8;
+  color: var(--muted);
+  font-size: 13px;
+}
+.event-allowance.limit-reached {
+  border-color: #f2cf76;
+  background: #fff8df;
+  color: var(--text);
+}
+.event-allowance a {
+  color: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+}
 .event-context-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
