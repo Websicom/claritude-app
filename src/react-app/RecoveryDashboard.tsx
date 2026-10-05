@@ -2609,12 +2609,12 @@ function AnalyticsView({
       ) : (
         <>
           <Metrics values={[
-            ["LCP", vitalMetricValue(vital("LCP"), minimumSamples), vitalMetricSamples(vital("LCP"), minimumSamples)],
-            ["INP", vitalMetricValue(vital("INP"), minimumSamples), vitalMetricSamples(vital("INP"), minimumSamples)],
-            ["CLS", vitalMetricValue(vital("CLS"), minimumSamples), vitalMetricSamples(vital("CLS"), minimumSamples)],
+            [<MetricTerm term="LCP" />, vitalMetricValue(vital("LCP"), minimumSamples), vitalMetricSamples(vital("LCP"), minimumSamples)],
+            [<MetricTerm term="INP" />, vitalMetricValue(vital("INP"), minimumSamples), vitalMetricSamples(vital("INP"), minimumSamples)],
+            [<MetricTerm term="CLS" />, vitalMetricValue(vital("CLS"), minimumSamples), vitalMetricSamples(vital("CLS"), minimumSamples)],
             ["Good experiences", performance.goodExperiencesPercent == null || performance.eligibleGoodExperienceViews < minimumSamples ? "Unavailable" : `${Math.round(performance.goodExperiencesPercent)}%`, performance.goodExperiencesPercent == null ? "Requires LCP, INP and CLS per view" : `${fmt(performance.eligibleGoodExperienceViews)} eligible pageviews`],
           ]} />
-          <Panel>
+          <Panel className="analytics-performance-panel">
             {filtersToolbar}
             <p className="subtle">Metrics use the 75th percentile of every valid observation received in this period. Sample counts are shown because early, low-volume results are directional.</p>
             <p className="subtle">A good experience is a versioned pageview with all three field measurements: LCP ≤ 2.5 s, INP ≤ 200 ms and CLS ≤ 0.1. Historical observations from the replaced collector are not mixed into these figures.</p>
@@ -2666,6 +2666,7 @@ function AuditView({
         : "Overview",
     ),
     [busy, setBusy] = useState(false),
+    [auditDataLoading, setAuditDataLoading] = useState(true),
     [auditFilters, setAuditFilters] = useState<AuditBrowseFilters>({}),
     [pageMenu, setPageMenu] = useState(false),
     [addPage, setAddPage] = useState(false),
@@ -2724,6 +2725,7 @@ function AuditView({
       fixtureAudit(property, selectedPage, false),
       fixtureAudit(property, selectedPage, true),
     ]);
+    setAuditDataLoading(false);
   }, [fixture, property?.id, selectedPage?.id]);
   useEffect(() => {
     if (!session || !property || !selectedPage) return;
@@ -2733,6 +2735,7 @@ function AuditView({
       loadedAuditScope.current = scope;
       setRuns([]);
       setRealUserPerformance(null);
+      setAuditDataLoading(true);
     }
     Promise.all([
       api<AuditRun[]>(session, `/api/properties/${property.id}/audits?${livePeriod}`),
@@ -2761,6 +2764,9 @@ function AuditView({
         if (requestSequence.current !== sequence) return;
         // Preserve the last completed result during a transient revalidation failure.
         // Active audits continue to poll independently below.
+      })
+      .finally(() => {
+        if (requestSequence.current === sequence) setAuditDataLoading(false);
       });
   }, [property?.id, session, fixture, livePeriod, selectedPage?.id]);
   const latestCompletedCreatedAt = Date.parse(
@@ -2962,6 +2968,7 @@ function AuditView({
                 <button
                   className="audit-page-select"
                   onClick={() => {
+                    setAuditDataLoading(true);
                     setSelectedPage(page);
                     setPageMenu(false);
                     setAuditFilters({});
@@ -3036,7 +3043,11 @@ function AuditView({
                 onChange={setAuditFilters}
                 kinds={["critical", "security", "warning", "unable_to_test"]}
               />
-              <AuditResults results={filteredActionable} filters={auditFilters} hideOutcome />
+              {auditDataLoading && !latest ? (
+                <div className="audit-results-loading" role="status"><RefreshCw className="audit-spin" /> Loading your last audit</div>
+              ) : (
+                <AuditResults results={filteredActionable} filters={auditFilters} hideOutcome />
+              )}
               </Panel>
               <div className="audit-run-meta">
                 <p>{latest
@@ -3057,13 +3068,13 @@ function AuditView({
               </div>
               {performanceMode === "Lab audit" ? (
                 <>
-                  <Panel title={<span className="performance-panel-title"><Monitor /> Desktop performance</span>}><PerformanceTable mobile={false} run={latest} /></Panel>
-                  <Panel title={<span className="performance-panel-title"><Smartphone /> Mobile performance</span>}><PerformanceTable mobile run={latest} /></Panel>
+                  <Panel className="audit-performance-panel" title={<span className="performance-panel-title"><Monitor /> Desktop performance</span>}><PerformanceTable mobile={false} run={latest} /></Panel>
+                  <Panel className="audit-performance-panel" title={<span className="performance-panel-title"><Smartphone /> Mobile performance</span>}><PerformanceTable mobile run={latest} /></Panel>
                 </>
               ) : (
                 <>
-                  <Panel title={<span className="performance-panel-title"><Monitor /> Desktop performance</span>}><RealUserPerformanceTable data={realUserPerformance} device="desktop" /></Panel>
-                  <Panel title={<span className="performance-panel-title"><Smartphone /> Mobile performance</span>}><RealUserPerformanceTable data={realUserPerformance} device="mobile" /></Panel>
+                  <Panel className="audit-performance-panel" title={<span className="performance-panel-title"><Monitor /> Desktop performance</span>}><RealUserPerformanceTable data={realUserPerformance} device="desktop" /></Panel>
+                  <Panel className="audit-performance-panel" title={<span className="performance-panel-title"><Smartphone /> Mobile performance</span>}><RealUserPerformanceTable data={realUserPerformance} device="mobile" /></Panel>
                 </>
               )}
               <div className="audit-performance-note">Lab uses load-based <MetricTerm term="TBT" />; real-user data uses <MetricTerm term="INP" />.</div>
@@ -3096,35 +3107,28 @@ function AuditView({
           onOpenCategory={openFindingCategory}
         />
       ) : tab === "History" ? (
-        <Panel title="Audit history">
-          <DataTable
-            headers={[
-              "Started",
-              "Page",
-              "Status",
-              "Score",
-              "Coverage",
-              "Duration",
-            ]}
-            rows={runs.map((r) => [
-              fmtDate(r.created_at),
-              r.page_url || property.url,
-              auditHistoryStatus(r.status),
-              r.score ?? "—",
-              r.coverage != null ? `${r.coverage}%` : "—",
-              r.duration_ms ? `${r.duration_ms} ms` : "—",
-            ])}
-          />
-        </Panel>
+        <div className="audit-tab-content"><Panel title="Audit history">
+            <DataTable
+              headers={["Started", "Page", "Status", "Score", "Coverage", "Duration"]}
+              rows={runs.map((r) => [
+                fmtDate(r.created_at),
+                r.page_url || property.url,
+                auditHistoryStatus(r.status),
+                r.score ?? "—",
+                r.coverage != null ? `${r.coverage}%` : "—",
+                r.duration_ms ? `${r.duration_ms} ms` : "—",
+              ])}
+            />
+          </Panel></div>
       ) : (
-        <AuditComparePanel
-          pageName={selectedPage?.name || "Selected page"}
-          runs={runs}
-          earlierRunId={earlierRunId}
-          laterRunId={laterRunId}
-          onEarlierChange={(id) => { setEarlierRunId(id); updateAuditLocation({ auditEarlier: id }); }}
-          onLaterChange={(id) => { setLaterRunId(id); updateAuditLocation({ auditLater: id }); }}
-        />
+        <div className="audit-tab-content"><AuditComparePanel
+            pageName={selectedPage?.name || "Selected page"}
+            runs={runs}
+            earlierRunId={earlierRunId}
+            laterRunId={laterRunId}
+            onEarlierChange={(id) => { setEarlierRunId(id); updateAuditLocation({ auditEarlier: id }); }}
+            onLaterChange={(id) => { setLaterRunId(id); updateAuditLocation({ auditLater: id }); }}
+          /></div>
       )}
       {addPage && (
         <Modal title="Add page to audit" close={() => setAddPage(false)}>
@@ -4979,13 +4983,15 @@ function Panel({
   title,
   actions,
   children,
+  className = "",
 }: {
   title?: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
+  className?: string;
 }) {
   return (
-    <section className="panel">
+    <section className={`panel ${className}`.trim()}>
       {(title || actions) && (
         <div className="panel-head">
           <h2>{title}</h2>
@@ -6630,7 +6636,7 @@ function AuditQuickFilter({ kind, count, filters, onChange }: { kind: AuditFilte
   );
 }
 
-function AuditFilterMenu({ results, filters, onChange, kinds, buttonLabel = "Filters" }: { results: any[]; filters: AuditBrowseFilters; onChange: (filters: AuditBrowseFilters) => void; kinds: AuditFilterKind[]; buttonLabel?: string }) {
+function AuditFilterMenu({ results, filters, onChange, kinds }: { results: any[]; filters: AuditBrowseFilters; onChange: (filters: AuditBrowseFilters) => void; kinds: AuditFilterKind[] }) {
   const [open, setOpen] = useState(false);
   const wrapper = useRef<HTMLDivElement>(null);
   const menuId = useId();
@@ -6667,7 +6673,7 @@ function AuditFilterMenu({ results, filters, onChange, kinds, buttonLabel = "Fil
     <div className="audit-filter-row">
       <div className="audit-filter-wrap" ref={wrapper}>
         <button className="btn audit-overview-filter" aria-haspopup="dialog" aria-expanded={open} aria-controls={menuId} onClick={() => setOpen((current) => !current)}>
-          <Filter /> {buttonLabel}
+          <Filter /> Filters
         </button>
         {open && (
           <div className="action-menu audit-filter-actions" id={menuId} role="dialog" aria-label="Audit filters">
@@ -6692,11 +6698,14 @@ function AuditScore({ run }: { run?: AuditRun }) {
   const score = run?.score;
   return (
     <div className="audit-score-row">
-      <div
-        className={`audit-score ${(score || 0) >= 80 ? "good" : "warn"} ${complete ? "" : "partial"}`}
-        style={{ "--score": score || 0 } as any}
-      >
-        <span>{score ?? "—"}</span>
+      <div className="audit-overall-score">
+        <div
+          className={`audit-score ${(score || 0) >= 80 ? "good" : "warn"} ${complete ? "" : "partial"}`}
+          style={{ "--score": score || 0 } as any}
+        >
+          <span>{score ?? "—"}</span>
+        </div>
+        <div className="audit-overall-score-label"><b>Overall audit rating</b><span>/100</span></div>
       </div>
       <div className="audit-six-stats">
         {auditCategories.map((x) => {
@@ -6846,16 +6855,13 @@ function auditCheckMetrics(results: any[]) {
 
 function AuditChecksPanel({ pageName, run, results, onOpenCategory }: { pageName: string; run?: AuditRun; results: any[]; onOpenCategory: (category: string) => void }) {
   const [openCategory, setOpenCategory] = useState<string | null>(null);
-  const [filters, setFilters] = useState<AuditBrowseFilters>({});
   const summary = {
     automated: run?.catalogue_summary?.userFacingGroups ?? results.length,
     passed: results.filter((result) => result.outcome === "passed").length,
     issues: results.filter((result) => ["failed", "advisory"].includes(result.outcome)).length,
     informational: results.filter((result) => result.outcome === "not_applicable").length,
   };
-  const unable = results.filter((result) => result.outcome === "unable_to_test").length;
-  const filteredResults = filterUserFacingAuditResults(results, filters);
-  const visibleCategories = auditCategories.filter((category) => filteredResults.some((result) => result.category === category));
+  const visibleCategories = auditCategories.filter((category) => results.some((result) => result.category === category));
   return (
     <>
       <div className="audit-check-summary">
@@ -6865,22 +6871,12 @@ function AuditChecksPanel({ pageName, run, results, onOpenCategory }: { pageName
       </div>
       <section className="panel audit-checks-panel">
         <h2>{pageName} checks</h2>
-        <div className="audit-checks-toolbar">
-          <AuditFilterMenu
-            results={results}
-            filters={filters}
-            onChange={setFilters}
-            kinds={["critical", "security", "warning", "advisory", "passed", "not_applicable", "unable_to_test"]}
-            buttonLabel="Add filter"
-          />
-          <small className="subtle">Filters affect this checks table.</small>
-        </div>
         <div className="table-wrap">
           <table className="audit-checks-table">
             <thead><tr><th>Category</th><th>Checks</th><th>Passed</th><th>Issues</th><th>Pass rate</th><th><span className="sr-only">Expand</span></th></tr></thead>
             <tbody>
               {visibleCategories.map((category) => {
-                const categoryResults = filteredResults.filter((result) => result.category === category);
+                const categoryResults = results.filter((result) => result.category === category);
                 const metrics = auditCheckMetrics(categoryResults);
                 const visualScore = metrics.passRate;
                 const status = auditScoreBand(visualScore);
@@ -6906,9 +6902,8 @@ function AuditChecksPanel({ pageName, run, results, onOpenCategory }: { pageName
               })}
             </tbody>
           </table>
-          {!visibleCategories.length && <Empty title="No matching checks" detail="Clear the active filters to view the checks table." />}
+          {!visibleCategories.length && <Empty title="No checks available" detail="Run an audit to populate the checks table." />}
         </div>
-        <p className="subtle audit-checks-note">The coloured bars show category pass rates; expanded grey bars show subcategory pass rates. {unable} unable-to-test {unable === 1 ? "result is" : "results are"} shown separately from score performance.</p>
       </section>
     </>
   );
@@ -7249,12 +7244,26 @@ const performanceTermDescriptions: Record<string, string> = {
 function MetricHelp({ term }: { term: string }) {
   const key = term.toUpperCase();
   const description = performanceTermDescriptions[key];
+  const helpId = useId();
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    const closeOther = (event: Event) => {
+      if ((event as CustomEvent<string>).detail !== helpId) setOpen(false);
+    };
+    window.addEventListener("claritude:metric-help-open", closeOther);
+    return () => window.removeEventListener("claritude:metric-help-open", closeOther);
+  }, [helpId]);
   if (!description) return null;
+  const toggle = () => {
+    const next = !open;
+    if (next) window.dispatchEvent(new CustomEvent("claritude:metric-help-open", { detail: helpId }));
+    setOpen(next);
+  };
   return (
-    <details className="metric-help">
-      <summary aria-label={`What does ${term} mean?`} title={`What does ${term} mean?`}><Info /></summary>
-      <span role="note"><b>{key}</b> {description}</span>
-    </details>
+    <span className={`metric-help ${open ? "open" : ""}`}>
+      <button type="button" aria-label={`What does ${term} mean?`} title={`What does ${term} mean?`} aria-expanded={open} onClick={toggle}><Info /></button>
+      {open && <span role="note"><b>{key}</b> {description}</span>}
+    </span>
   );
 }
 

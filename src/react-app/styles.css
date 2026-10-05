@@ -960,9 +960,13 @@ tbody tr:hover {
 .audit-score-row {
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin: 6px 0 14px;
+  gap: 28px;
+  margin: 22px 0 14px;
 }
+.audit-overall-score { display: flex; align-items: center; gap: 14px; flex: 0 0 auto; padding-right: 22px; }
+.audit-overall-score-label { display: grid; gap: 2px; min-width: 116px; }
+.audit-overall-score-label b { font-size: 13px; line-height: 1.25; }
+.audit-overall-score-label span { color: var(--muted); font-size: 11px; }
 .audit-score {
   width: 84px;
   height: 84px;
@@ -1114,6 +1118,7 @@ tbody tr:hover {
 .profile-identity h2 {
   margin: 0;
 }
+.audit-six-stats .audit-six-stat:first-child { padding-left: 24px; }
 .profile-avatar-actions {
   display: flex;
   gap: 8px;
@@ -2390,6 +2395,9 @@ input[type="checkbox"]:checked:after {
 .audit-performance-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
 .audit-performance-toolbar .audit-performance-mode { margin: 0; }
 .audit-performance-note { color: var(--muted); font-size: 11px; margin: -4px 2px 14px; }
+.audit-performance-panel,
+.analytics-performance-panel { overflow: visible; }
+.audit-performance-panel .table-wrap { overflow: visible; }
 .performance-panel-title { display: inline-flex; align-items: center; gap: 9px; }
 .performance-panel-title svg { width: 19px; height: 19px; }
 .performance-target { display: inline-flex; align-items: center; gap: 7px; }
@@ -2400,10 +2408,12 @@ input[type="checkbox"]:checked:after {
 .metric-term,
 .table-header-content { display: inline-flex; align-items: center; gap: 4px; }
 .metric-help { position: relative; display: inline-flex; }
-.metric-help summary { display: inline-grid; width: 15px; height: 15px; place-items: center; color: #7a7f88; cursor: help; list-style: none; }
-.metric-help summary::-webkit-details-marker { display: none; }
-.metric-help summary svg { width: 11px; height: 11px; }
-.metric-help > span { position: absolute; z-index: 60; left: 50%; top: calc(100% + 6px); width: 250px; padding: 9px 10px; border: 1px solid #e9cf72; border-radius: 8px; background: #fffbea; color: var(--ink); box-shadow: 0 10px 25px #0002; font-size: 11px; font-weight: 400; line-height: 1.45; white-space: normal; transform: translateX(-50%); }
+.metric-help > button { display: inline-grid; width: 15px; height: 15px; padding: 0; border: 0; background: transparent; place-items: center; color: #7a7f88; cursor: help; }
+.metric-help > button svg { width: 11px; height: 11px; }
+.metric-help > span { position: absolute; z-index: 60; left: 50%; top: calc(100% + 6px); width: 250px; padding: 9px 10px; border: 1px solid #e9cf72; border-radius: 8px; background: #fffbea; color: var(--ink); box-shadow: 0 10px 25px #0002; font-size: 11px; font-weight: 400; line-height: 1.45; white-space: normal; pointer-events: none; transform: translateX(-50%); }
+.audit-results-loading { display: flex; align-items: center; justify-content: center; gap: 9px; min-height: 110px; color: var(--muted); font-size: 13px; }
+.audit-results-loading svg { width: 17px; height: 17px; }
+.audit-tab-content { margin-top: 14px; }
 .audit-filter-wrap {
   position: relative;
   width: max-content;
@@ -2582,16 +2592,6 @@ input[type="checkbox"]:checked:after {
 .audit-check-summary small { color: var(--muted); }
 .audit-check-summary b { font-size: 22px; line-height: 1; }
 .audit-checks-panel { padding-bottom: 10px; }
-.audit-checks-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 22px 0 10px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--line);
-}
-.audit-checks-toolbar .audit-filter-row { margin: 0; }
 .audit-checks-table { table-layout: fixed; min-width: 760px; }
 .audit-checks-table th:first-child,
 .audit-checks-table td:first-child { width: 55%; }
@@ -2649,7 +2649,6 @@ input[type="checkbox"]:checked:after {
 .audit-check-expand svg,
 .audit-check-open-findings svg { width: 16px; transition: transform .15s ease; }
 .audit-check-expand[aria-expanded="true"] svg { transform: rotate(180deg); }
-.audit-checks-note { margin: 9px 0 0; }
 .audit-run-meta {
   margin: -6px 2px 14px;
   color: var(--muted);
@@ -3811,6 +3810,5 @@ input[type="checkbox"]:checked:after {
   .audit-detail { padding-left: 4px; padding-right: 4px; }
   .audit-subfindings li { grid-template-columns: max-content minmax(0, 1fr); }
   .audit-check-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .audit-checks-toolbar { align-items: flex-start; flex-direction: column; }
   .audit-filter-wrap .audit-filter-actions { position: fixed; top: 70px; left: 10px; right: 10px; width: auto; }
 }
