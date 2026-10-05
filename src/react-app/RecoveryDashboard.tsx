@@ -186,6 +186,20 @@ type Property = {
   demo?: DemoMetrics;
 };
 
+type WorkspacePropertyAccess = "workspace" | "shared";
+
+export function sortWorkspaceProperties(properties: Property[]) {
+  return [...properties].sort((left, right) => {
+    const leftOffline = left.uptime_monitors?.[0]?.last_status === "offline" ? 0 : 1;
+    const rightOffline = right.uptime_monitors?.[0]?.last_status === "offline" ? 0 : 1;
+    return leftOffline - rightOffline || left.name.localeCompare(right.name, "en-GB", { sensitivity: "base" });
+  });
+}
+
+export function workspaceKeyEventCount(summary: any) {
+  return Number(summary?.keyEvents ?? summary?.events ?? 0);
+}
+
 export function propertyOnboardingChecks(property: Property) {
   const monitor = property.uptime_monitors?.[0];
   const completedAudit = property.audit_runs?.find((run) => ["completed", "partial"].includes(run.status));
@@ -609,14 +623,14 @@ export function ClaritudeApplication({
                   to="/"
                 >
                   <Home />
-                  Overview
+                  Workspace Overview
                 </Link>
                 <Link
                   className={section === "notifications" ? "active" : ""}
                   to="/notifications"
                 >
                   <Bell />
-                  Notifications
+                  Workspace Notifications
                 </Link>
               </>
             ) : (
@@ -1111,8 +1125,11 @@ function WorkspaceOverview({
   const livePeriod = periodQuery(workspaceLocation.search);
   const [tab, setTab] = useState("Properties"),
     [query, setQuery] = useState(""),
-    [filter, setFilter] = useState("All"),
+    [monitorFilter, setMonitorFilter] = useState("All"),
+    [trackingFilter, setTrackingFilter] = useState("All"),
+    [accessFilter, setAccessFilter] = useState<"All" | WorkspacePropertyAccess>("All"),
     [page, setPage] = useState(1),
+    [pageSize, setPageSize] = useState(25),
     [filterOpen, setFilterOpen] = useState(false),
     [rowMenu, setRowMenu] = useState<string | null>(null),
     [measured, setMeasured] = useState<Record<string, any>>(() =>
@@ -1136,7 +1153,7 @@ function WorkspaceOverview({
         try {
           const monitor = property.uptime_monitors?.[0];
           const [summary, checks] = await Promise.all([
-            api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}`),
+            api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}&view=overview`),
             monitor
               ? api<any>(session, `/api/monitors/${monitor.id}/checks?${livePeriod}`)
               : Promise.resolve(null),
@@ -1158,16 +1175,23 @@ function WorkspaceOverview({
     });
     return () => { cancelled = true; };
   }, [fixture, session, properties.map((property) => property.id).join(","), livePeriod]);
-  const filtered = properties.filter(
+  const workspaceRoles = new Map(
+    (data.workspaces || []).map((entry: any) => [entry.workspaces?.id, entry.role]),
+  );
+  const propertyAccess = (property: Property): WorkspacePropertyAccess =>
+    workspaceRoles.get(property.workspace_id) === "viewer" ? "shared" : "workspace";
+  const filtered = sortWorkspaceProperties(properties.filter(
     (p) =>
       (p.name + p.canonical_host).toLowerCase().includes(query.toLowerCase()) &&
-      (filter === "All" || p.uptime_monitors?.[0]?.last_status === filter),
-  );
-  const shown = filtered.slice((page - 1) * 7, page * 7);
+      (monitorFilter === "All" || p.uptime_monitors?.[0]?.last_status === monitorFilter) &&
+      (trackingFilter === "All" || (trackingFilter === "receiving" ? Boolean(p.tracking_last_received_at) : !p.tracking_last_received_at)) &&
+      (accessFilter === "All" || propertyAccess(p) === accessFilter),
+  ));
+  const shown = filtered.slice((page - 1) * pageSize, page * pageSize);
   const totals = properties.reduce(
     (a, p) => ({
       views: a.views + (measured[p.id]?.pageviews || 0),
-      events: a.events + (measured[p.id]?.keyEvents || measured[p.id]?.events || 0),
+      events: a.events + workspaceKeyEventCount(measured[p.id]),
     }),
     { views: 0, events: 0 },
   );
@@ -1232,16 +1256,40 @@ function WorkspaceOverview({
                 Add filter
               </button>
               {filterOpen && (
-                <div className="action-menu filter-action-menu">
+                <div className="action-menu filter-action-menu workspace-filter-menu">
                   <b>Monitor status</b>
                   {["All", "online", "offline", "paused", "pending"].map((value) => (
                     <button
                       key={value}
-                      className={filter === value ? "selected" : ""}
-                      onClick={() => { setFilter(value); setPage(1); setFilterOpen(false); }}
+                      className={monitorFilter === value ? "selected" : ""}
+                      onClick={() => { setMonitorFilter(value); setPage(1); setFilterOpen(false); }}
                     >
                       <Status value={value} />
-                      {filter === value && <Check />}
+                      {monitorFilter === value && <Check />}
+                    </button>
+                  ))}
+                  <span className="menu-separator" />
+                  <b>Tracking status</b>
+                  {[["All", "All"], ["receiving", "Receiving data"], ["not_installed", "Not installed"]].map(([value, label]) => (
+                    <button
+                      key={value}
+                      className={trackingFilter === value ? "selected" : ""}
+                      onClick={() => { setTrackingFilter(value); setPage(1); setFilterOpen(false); }}
+                    >
+                      {label}
+                      {trackingFilter === value && <Check />}
+                    </button>
+                  ))}
+                  <span className="menu-separator" />
+                  <b>Property access</b>
+                  {[["All", "All access"], ["workspace", "Workspace properties"], ["shared", "Shared with me"]].map(([value, label]) => (
+                    <button
+                      key={value}
+                      className={accessFilter === value ? "selected" : ""}
+                      onClick={() => { setAccessFilter(value as "All" | WorkspacePropertyAccess); setPage(1); setFilterOpen(false); }}
+                    >
+                      {label}
+                      {accessFilter === value && <Check />}
                     </button>
                   ))}
                 </div>
@@ -1257,12 +1305,24 @@ function WorkspaceOverview({
                   placeholder="Search properties"
                 />
               </div>
-              {filter !== "All" && (
+              {monitorFilter !== "All" && (
                 <span className="filter-chip">
-                  Monitor: {cap(filter)}{" "}
-                  <button onClick={() => setFilter("All")}>
+                  Monitor: {cap(monitorFilter)}{" "}
+                  <button onClick={() => setMonitorFilter("All")}>
                     <X />
                   </button>
+                </span>
+              )}
+              {trackingFilter !== "All" && (
+                <span className="filter-chip">
+                  Tracking: {trackingFilter === "receiving" ? "Receiving data" : "Not installed"}{" "}
+                  <button onClick={() => setTrackingFilter("All")}><X /></button>
+                </span>
+              )}
+              {accessFilter !== "All" && (
+                <span className="filter-chip">
+                  Access: {accessFilter === "workspace" ? "Workspace properties" : "Shared with me"}{" "}
+                  <button onClick={() => setAccessFilter("All")}><X /></button>
                 </span>
               )}
             </div>
@@ -1271,11 +1331,11 @@ function WorkspaceOverview({
                 "Property",
                 "Monitor status",
                 "Uptime",
+                "Tracking status",
                 "Pageviews",
                 "Key events",
                 "Audit",
                 "Performance",
-                "Tracking status",
                 "",
               ]}
               rows={shown.map((p) => [
@@ -1297,9 +1357,10 @@ function WorkspaceOverview({
                 measured[p.id]?.availability != null
                   ? formatPercentage(Number(measured[p.id].availability))
                   : "Pending",
+                <TrackingStatus receiving={Boolean(p.tracking_last_received_at)} />,
                 measured[p.id] ? fmt(measured[p.id].pageviews || 0) : "Pending",
                 measured[p.id]
-                  ? fmt(measured[p.id].keyEvents || measured[p.id].events || 0)
+                  ? fmt(workspaceKeyEventCount(measured[p.id]))
                   : "Pending",
                 p.audit_runs?.[0]?.score
                   ? `${p.audit_runs[0].score} / 100`
@@ -1309,9 +1370,6 @@ function WorkspaceOverview({
                     webVitalsScore(measured[p.id]?.vitals),
                   "Awaiting field data",
                 ),
-                p.tracking_last_received_at
-                  ? "Receiving data"
-                  : "Not installed",
                 <span className="row-action-wrap">
                   <button
                     className="iconbtn"
@@ -1335,15 +1393,16 @@ function WorkspaceOverview({
             />
             <div className="pagination-row">
               <span>
-                Showing {(page - 1) * 7 + 1}–
-                {Math.min(page * 7, filtered.length)} of {filtered.length}
+                Showing {filtered.length ? (page - 1) * pageSize + 1 : 0}–
+                {Math.min(page * pageSize, filtered.length)} of {filtered.length}
               </span>
+              <label className="pagination-size">Show<select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}>{[25, 50, 100].map((size) => <option value={size} key={size}>{size}</option>)}</select></label>
               <div className="pagination">
                 <button onClick={() => setPage(Math.max(1, page - 1))}>
                   <ChevronLeft />
                 </button>
                 {Array.from(
-                  { length: Math.max(1, Math.ceil(filtered.length / 7)) },
+                  { length: Math.max(1, Math.ceil(filtered.length / pageSize)) },
                   (_, i) => (
                     <button
                       className={page === i + 1 ? "active" : ""}
@@ -1356,7 +1415,7 @@ function WorkspaceOverview({
                 )}
                 <button
                   onClick={() =>
-                    setPage(Math.min(Math.ceil(filtered.length / 7), page + 1))
+                    setPage(Math.min(Math.max(1, Math.ceil(filtered.length / pageSize)), page + 1))
                   }
                 >
                   <ChevronRight />
@@ -1920,10 +1979,13 @@ function UptimeView({
         status_code: i === 25 ? 500 : 200,
       }));
       setCheckData({
-        checks,
+        responseSeries: checks.map((check) => ({ label: check.checked_at, value: check.response_ms, samples: 1 })),
+        responseBucket: "day",
+        latestCheck: checks.at(-1),
         summary: { total: 60, successful: 59, availability: 99.92, averageResponseMs: 246, medianResponseMs: 231, highestResponseMs: 357 },
         previous: {
-          checks: checks.map((check) => ({ ...check, response_ms: Math.round(check.response_ms * 1.18) })),
+          responseSeries: checks.map((check) => ({ label: check.checked_at, value: Math.round(check.response_ms * 1.18), samples: 1 })),
+          responseBucket: "day",
           summary: { availability: 99.9, averageResponseMs: 300, medianResponseMs: 284, highestResponseMs: 710 },
         },
         days: Array.from({ length: 30 }, (_, i) => {
@@ -2005,7 +2067,7 @@ function UptimeView({
     checkData?.range?.from || new Date(Date.now() - 29 * 864e5).toISOString(),
     checkData?.range?.to || new Date().toISOString(),
   );
-  const latestCheck = checkData?.checks?.at(-1);
+  const latestCheck = checkData?.latestCheck;
   const availabilityDelta = metricDelta(
     checkData?.summary?.availability,
     checkData?.previous?.summary?.availability,
@@ -2134,9 +2196,9 @@ function UptimeView({
                       </button>
                       <button onClick={() => {
                         downloadSeriesCsv(
-                          (checkData?.checks || []).filter((entry: any) => entry.success && typeof entry.response_ms === "number").map((entry: any) => ({ label: entry.checked_at, value: entry.response_ms })),
+                          checkData?.responseSeries || [],
                           "uptime-response-time.csv",
-                          "Response time (ms)",
+                          `Median response time by ${checkData?.responseBucket || "period"} (ms)`,
                         );
                         setChartMenuOpen(false);
                       }}>Download CSV</button>
@@ -2147,19 +2209,14 @@ function UptimeView({
             }
           >
             <SeriesChart
-              points={(checkData?.checks || []).filter((x: any) => x.success && typeof x.response_ms === "number").map((x: any) => ({
-                label: x.checked_at,
-                value: x.response_ms,
-              }))}
+              points={checkData?.responseSeries || []}
               previousPoints={showPreviousChecks
-                ? (checkData?.previous?.checks || []).filter((x: any) => x.success && typeof x.response_ms === "number").map((x: any) => ({
-                    label: x.checked_at,
-                    value: x.response_ms,
-                  }))
+                ? checkData?.previous?.responseSeries || []
                 : []}
               unit="ms"
-              label="Response time"
+              label={`Median response time by ${checkData?.responseBucket || "period"}`}
               timeZone={reportTimeZone}
+              dateGranularity={checkData?.responseBucket}
               emptyTitle="No uptime checks recorded"
             />
           </Panel>
@@ -2505,7 +2562,7 @@ function AnalyticsView({
           </div>
           <pre className="install-code">{trackingSnippet}</pre>
           <div className="settings-actions">
-            <button className="btn" onClick={() => navigator.clipboard.writeText(trackingSnippet).then(() => notify("Tracking snippet copied"))}><Copy /> Copy tracking code</button>
+            <CopyButton text={trackingSnippet} label="Copy tracking code" successMessage="Tracking snippet copied" notify={notify} />
             <Link className="primary" to={`/settings?property=${property.id}&settingsTab=Tracking`}>Tracking setup guide</Link>
           </div>
         </div>
@@ -3760,17 +3817,7 @@ function PropertySettingsView({
         <>
           <Panel title="Installation">
             <pre className="install-code">{snippet}</pre>
-            <button
-              className="btn"
-              onClick={() =>
-                navigator.clipboard
-                  .writeText(snippet)
-                  .then(() => notify("Tracking snippet copied"))
-              }
-            >
-              <Copy />
-              Copy snippet
-            </button>
+            <CopyButton text={snippet} label="Copy snippet" successMessage="Tracking snippet copied" notify={notify} />
           </Panel>
           <Panel title="Tracking status">
             <KeyValues
@@ -5298,6 +5345,56 @@ function Status({ value }: { value: string }) {
     </span>
   );
 }
+
+function TrackingStatus({ receiving }: { receiving: boolean }) {
+  return (
+    <span className="status-label">
+      <i className={`status-dot ${receiving ? "online" : "down"}`} />
+      {receiving ? "Receiving data" : "Not installed"}
+    </span>
+  );
+}
+
+function CopyButton({
+  text,
+  label,
+  successMessage,
+  notify,
+  className = "btn",
+}: {
+  text: string;
+  label: string;
+  successMessage: string;
+  notify: Notify;
+  className?: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  const resetTimer = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (resetTimer.current != null) window.clearTimeout(resetTimer.current);
+  }, []);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      if (resetTimer.current != null) window.clearTimeout(resetTimer.current);
+      setCopied(false);
+      window.requestAnimationFrame(() => setCopied(true));
+      resetTimer.current = window.setTimeout(() => {
+        setCopied(false);
+        resetTimer.current = null;
+      }, 1800);
+      notify(successMessage);
+    } catch {
+      notify("Clipboard access was unavailable. Try copying again from a secure browser context.");
+    }
+  };
+  return (
+    <button type="button" className={`${className} copy-action ${copied ? "copied" : ""}`.trim()} onClick={() => void copy()}>
+      {copied ? <Check /> : <Copy />}
+      {copied ? "Copied" : label}
+    </button>
+  );
+}
 function ChartSwitch({
   notify,
   events = false,
@@ -5338,6 +5435,7 @@ function SeriesChart({
   unit = "",
   label = "Measured time series",
   timeZone,
+  dateGranularity,
 }: {
   points: { label: string; value: number }[];
   previousPoints?: { label: string; value: number }[];
@@ -5345,6 +5443,7 @@ function SeriesChart({
   unit?: string;
   label?: string;
   timeZone?: string;
+  dateGranularity?: "hour" | "day" | "month";
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const wrapper = useRef<HTMLDivElement>(null);
@@ -5442,7 +5541,7 @@ function SeriesChart({
                   : "translateX(-50%)",
             }}
           >
-            {chartDateLabel(coords[index].label, timeZone)}
+            {chartDateLabel(coords[index].label, timeZone, dateGranularity)}
           </span>
         ))}
       </div>
@@ -5451,7 +5550,7 @@ function SeriesChart({
           className="chart-tooltip"
           style={{ left: `${Math.min(86, Math.max(4, (coords[hover].x / width) * 100))}%` }}
         >
-          <b>{chartDateLabel(coords[hover].label, timeZone)}</b>
+          <b>{chartDateLabel(coords[hover].label, timeZone, dateGranularity)}</b>
           <small>{formatChartTooltip(coords[hover].value, unit)}</small>
           {previousCoords[hover] && <small>Previous: {formatChartTooltip(previousCoords[hover].value, unit)}</small>}
         </div>
@@ -6305,7 +6404,7 @@ function AnalyticsTable({
                 </InCellBar>
                 <td>{fmt(page.views)}</td>
                 <td>{fmt(page.events)}</td>
-                {showActiveTime && <td>{page.activeTime == null ? "Unavailable" : durationLabel(Number(page.activeTime))}</td>}
+                {showActiveTime && <td>{page.activeTime == null ? "Unavailable" : pageActiveTimeLabel(Number(page.activeTime))}</td>}
               </tr>
             ))}
           </tbody>
@@ -6316,7 +6415,7 @@ function AnalyticsTable({
           <p>Lower-volume pages are grouped here instead of being replaced with a fictional row.</p>
           <DataTable
             headers={showActiveTime ? ["Page", "Pageviews", "Events", "Avg. active time"] : ["Page", "Pageviews", "Events"]}
-            rows={groupedPages.map((page) => [page.page, fmt(page.views), fmt(page.events), ...(showActiveTime ? [page.activeTime == null ? "Unavailable" : durationLabel(Number(page.activeTime))] : [])])}
+            rows={groupedPages.map((page) => [page.page, fmt(page.views), fmt(page.events), ...(showActiveTime ? [page.activeTime == null ? "Unavailable" : pageActiveTimeLabel(Number(page.activeTime))] : [])])}
           />
           <div className="dialog-actions">
             <button className="btn" onClick={() => setGroupOpen(false)}>Close</button>
@@ -7787,18 +7886,16 @@ function AuditAiFixPrompt({ pageName, pageUrl, runId, results, notify }: { pageN
   const eligible = results.filter(isFixFirstAuditResult);
   if (!eligible.length) return null;
   const prompt = buildAuditFixPrompt({ pageName, pageUrl, runId, results: eligible });
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(prompt);
-      notify(`AI fix prompt copied with ${eligible.length} ${eligible.length === 1 ? "issue" : "issues"}`);
-    } catch {
-      notify("Clipboard access was unavailable. Try copying again from a secure browser context.");
-    }
-  };
   return (
     <section className="audit-ai-fix-panel">
       <span><b>Fix with AI</b><small>Copy a ready-made prompt containing every critical, security and warning issue, its evidence, affected items and recommended fix.</small></span>
-      <button onClick={() => void copy()}><Copy /> Copy prompt</button>
+      <CopyButton
+        text={prompt}
+        label="Copy prompt"
+        successMessage={`AI fix prompt copied with ${eligible.length} ${eligible.length === 1 ? "issue" : "issues"}`}
+        notify={notify}
+        className=""
+      />
     </section>
   );
 }
@@ -7990,10 +8087,23 @@ const performanceTermDescriptions: Record<string, string> = {
   CLS: "Cumulative Layout Shift measures unexpected movement of visible page content.",
   FCP: "First Contentful Paint measures how quickly the first visible content appears.",
 };
+const performanceTermLabels: Record<string, string> = {
+  "SESSIONS": "Sessions",
+  "BOUNCE RATE": "Bounce rate",
+  "AVERAGE ACTIVE SESSION DURATION": "Average active session duration",
+  "MEDIAN ACTIVE SESSION DURATION": "Median active session duration",
+  P75: "75th percentile (p75)",
+  LCP: "Largest Contentful Paint (LCP)",
+  TBT: "Total Blocking Time (TBT)",
+  INP: "Interaction to Next Paint (INP)",
+  CLS: "Cumulative Layout Shift (CLS)",
+  FCP: "First Contentful Paint (FCP)",
+};
 
 function MetricHelp({ term }: { term: string }) {
   const key = term.toUpperCase();
   const description = performanceTermDescriptions[key];
+  const label = performanceTermLabels[key] || term;
   const helpId = useId();
   const [open, setOpen] = useState(false);
   useEffect(() => {
@@ -8012,7 +8122,7 @@ function MetricHelp({ term }: { term: string }) {
   return (
     <span className={`metric-help ${open ? "open" : ""}`}>
       <button type="button" aria-label={`What does ${term} mean?`} title={`What does ${term} mean?`} aria-expanded={open} onClick={toggle}><Info /></button>
-      {open && <span role="note"><b>{key}</b> {description}</span>}
+      {open && <span role="note"><b>{label}.</b> {description}</span>}
     </span>
   );
 }
@@ -8685,6 +8795,16 @@ function durationLabel(seconds: number) {
     : `${rounded} sec`;
 }
 
+export function pageActiveTimeLabel(seconds: number) {
+  if (!Number.isFinite(seconds)) return "Unavailable";
+  const safe = Math.max(0, seconds);
+  if (safe < 10) return `${safe.toFixed(1)} s`;
+  const rounded = Math.round(safe);
+  return rounded >= 60
+    ? `${Math.floor(rounded / 60)} min ${String(rounded % 60).padStart(2, "0")} s`
+    : `${rounded} s`;
+}
+
 function vitalMetricValue(vital: any, minimumSamples: number) {
   return !vital || vital.samples < minimumSamples ? "Unavailable" : formatVital(vital.name, vital.value);
 }
@@ -8703,7 +8823,7 @@ function formatChartTooltip(value: number, unit: string) {
   return `${Number(value).toLocaleString(undefined, { maximumFractionDigits: unit ? 0 : 2 })}${unit}`;
 }
 
-function chartDateLabel(value: string, timeZone?: string) {
+function chartDateLabel(value: string, timeZone?: string, granularity?: "hour" | "day" | "month") {
   if (value.includes("T")) {
     const instant = new Date(value);
     return Number.isFinite(instant.valueOf())
@@ -8711,7 +8831,10 @@ function chartDateLabel(value: string, timeZone?: string) {
       : value;
   }
   const date = new Date(`${value.slice(0, 10)}T12:00:00`);
-  return Number.isFinite(date.valueOf()) ? new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" }).format(date) : value;
+  if (!Number.isFinite(date.valueOf())) return value;
+  return new Intl.DateTimeFormat("en-GB", granularity === "month"
+    ? { month: "short", year: "numeric" }
+    : { day: "numeric", month: "short" }).format(date);
 }
 
 const ANALYTICS_FIXTURE_PAGES = [

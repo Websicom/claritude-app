@@ -17,6 +17,7 @@ import {
   isPrimaryAuditPage,
   isFixFirstAuditResult,
   paginateResults,
+  pageActiveTimeLabel,
   periodLabel,
   prepareAvatarImage,
   performanceTargetStatus,
@@ -24,7 +25,9 @@ import {
   shouldShowAuditQuickFilters,
   propertyFaviconSources,
   squareImageCrop,
+  sortWorkspaceProperties,
   trafficSeriesKey,
+  workspaceKeyEventCount,
 } from "./RecoveryDashboard";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -106,6 +109,28 @@ describe("top selector searches", () => {
     } as any);
     expect(checks.map((check) => check.complete)).toEqual([true, true, true, true]);
     expect(propertyOnboardingChecks({ verification_status: "pending" } as any).map((check) => check.complete)).toEqual([false, false, false, false]);
+  });
+
+  it("prioritises offline workspace properties and otherwise sorts alphabetically", () => {
+    const ordered = sortWorkspaceProperties([
+      { id: "z", name: "Zulu", uptime_monitors: [{ last_status: "online" }] },
+      { id: "b", name: "Beta", uptime_monitors: [{ last_status: "offline" }] },
+      { id: "a", name: "Alpha", uptime_monitors: [{ last_status: "offline" }] },
+      { id: "e", name: "Echo", uptime_monitors: [{ last_status: "pending" }] },
+    ] as any[]);
+    expect(ordered.map((property) => property.name)).toEqual(["Alpha", "Beta", "Echo", "Zulu"]);
+  });
+
+  it("does not replace a legitimate zero key-event count with broader analytics events", () => {
+    expect(workspaceKeyEventCount({ keyEvents: 0, events: 637 })).toBe(0);
+    expect(workspaceKeyEventCount({ events: 5 })).toBe(5);
+  });
+
+  it("formats page active time with one decimal below ten seconds and compact units", () => {
+    expect(pageActiveTimeLabel(4.24)).toBe("4.2 s");
+    expect(pageActiveTimeLabel(9.96)).toBe("10.0 s");
+    expect(pageActiveTimeLabel(10.2)).toBe("10 s");
+    expect(pageActiveTimeLabel(78)).toBe("1 min 18 s");
   });
 
   it("shows finite custom-event usage and Pro's separate unlimited entitlement", () => {

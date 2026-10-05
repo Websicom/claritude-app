@@ -25,6 +25,7 @@ import {
   TRACKER_SOURCE,
   trackerSessionAcquisition,
   uptimeDueHorizon,
+  uptimeResponseBucket,
   validAvatarBytes,
   validPublicUrl,
   withAuditDeadline,
@@ -37,6 +38,12 @@ import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
 
 describe("worker evidence pipelines", () => {
+  it("buckets uptime response medians by hour, day and month for the selected range", () => {
+    expect(uptimeResponseBucket("2026-10-05T00:00:00.000Z", "2026-10-05T23:59:59.999Z")).toBe("hour");
+    expect(uptimeResponseBucket("2026-10-01T00:00:00.000Z", "2026-10-05T23:59:59.999Z")).toBe("day");
+    expect(uptimeResponseBucket("2026-01-01T00:00:00.000Z", "2026-10-05T23:59:59.999Z")).toBe("month");
+  });
+
   it("renders test alerts from the shared uptime template without implying delivery", () => {
     const html = renderUptimeAlertEmail({
       property: { id: "property-1", name: "Controlled property", url: "https://example.com" },
