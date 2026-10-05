@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   auditDisplayProgress,
   auditHistoryStatus,
+  auditProgressCeiling,
+  auditProgressMessagePool,
   auditScoreBand,
   buildAuditFixPrompt,
   auditSeverityGroup,
@@ -169,13 +171,30 @@ describe("top selector searches", () => {
   });
 
   it("advances display progress smoothly without moving backwards or finishing early", () => {
-    expect(auditDisplayProgress(0, 0, false)).toBe(10);
-    expect(auditDisplayProgress(10, 0, false, true)).toBe(15);
-    expect(auditDisplayProgress(55, 20, false, true)).toBe(60);
-    expect(auditDisplayProgress(60, 82, false, true)).toBe(82);
-    expect(auditDisplayProgress(82, 40, false, true)).toBe(82);
-    expect(auditDisplayProgress(99, 100, false)).toBe(99);
+    expect(auditDisplayProgress(0, 0, false, 12, 10)).toBe(10);
+    expect(auditDisplayProgress(10, 0, false, 28, 1.37)).toBe(11.37);
+    expect(auditDisplayProgress(55, 20, false, 65, 2.2)).toBe(57.2);
+    expect(auditDisplayProgress(60, 82, false, 85, 1)).toBe(82);
+    expect(auditDisplayProgress(82, 40, false, 85, 2.5)).toBe(84.5);
+    expect(auditDisplayProgress(99, 100, false, 90, 2)).toBe(99);
     expect(auditDisplayProgress(87, 100, true)).toBe(100);
+  });
+
+  it("paces simulated audit progress by elapsed time and reserves completion for the backend", () => {
+    expect(auditProgressCeiling(0)).toBe(12);
+    expect(auditProgressCeiling(5_000)).toBe(28);
+    expect(auditProgressCeiling(20_000)).toBe(65);
+    expect(auditProgressCeiling(60_000)).toBe(85);
+    expect(auditProgressCeiling(120_000)).toBe(90);
+    expect(auditProgressCeiling(1_000, true)).toBe(97);
+  });
+
+  it("uses preparing, checking and final status pools as progress advances", () => {
+    expect(auditProgressMessagePool("queued", 70)).toContain("Preparing your audit");
+    expect(auditProgressMessagePool("running", 20)).toContain("Collecting page evidence");
+    expect(auditProgressMessagePool("running", 60)).toContain("Checking under the bonnet");
+    expect(auditProgressMessagePool("running", 85)).toContain("Saving everything for you");
+    expect(auditProgressMessagePool("running", 40, true)).toContain("Doing the final checks");
   });
 
   it("assigns healthy, moderate and poor score-bar states", () => {

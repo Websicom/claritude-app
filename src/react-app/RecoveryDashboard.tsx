@@ -2664,6 +2664,7 @@ function AuditView({
         : "Overview",
     ),
     [busy, setBusy] = useState(false),
+    [completionRun, setCompletionRun] = useState<AuditRun | null>(null),
     [auditDataLoading, setAuditDataLoading] = useState(true),
     [auditFilters, setAuditFilters] = useState<AuditBrowseFilters>({}),
     [pageMenu, setPageMenu] = useState(false),
@@ -2683,6 +2684,10 @@ function AuditView({
     [laterRunId, setLaterRunId] = useState(auditParams.get("auditLater") || "");
   const requestSequence = useRef(0);
   const loadedAuditScope = useRef("");
+  const completionTimer = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (completionTimer.current != null) window.clearTimeout(completionTimer.current);
+  }, []);
   function updateAuditLocation(changes: Record<string, string | null>) {
     const next = new URLSearchParams(window.location.search);
     Object.entries(changes).forEach(([key, value]) => value ? next.set(key, value) : next.delete(key));
@@ -2797,6 +2802,14 @@ function AuditView({
           const finished = nextRuns.find((run) => run.id === activeRunId);
           if (finished && ["completed", "partial", "failed"].includes(finished.status)) {
             setBusy(false);
+            if (["completed", "partial"].includes(finished.status)) {
+              setCompletionRun(finished);
+              if (completionTimer.current != null) window.clearTimeout(completionTimer.current);
+              completionTimer.current = window.setTimeout(() => {
+                setCompletionRun(null);
+                completionTimer.current = null;
+              }, 1_800);
+            }
             notify(finished.status === "failed" ? "Audit failed" : "Audit results are ready");
           }
         })
@@ -2809,6 +2822,13 @@ function AuditView({
     setOpenCategories(new Set());
     setAuditFilters({});
   }, [selectedPage?.id, latestRunId]);
+  useEffect(() => {
+    setCompletionRun(null);
+    if (completionTimer.current != null) {
+      window.clearTimeout(completionTimer.current);
+      completionTimer.current = null;
+    }
+  }, [selectedPage?.id]);
   useEffect(() => {
     const comparable = runs.filter((run) => ["completed", "partial"].includes(run.status));
     if (comparable.length < 2) {
@@ -2848,6 +2868,8 @@ function AuditView({
   };
   async function run() {
     if (!selectedPage) return;
+    setCompletionRun(null);
+    if (completionTimer.current != null) window.clearTimeout(completionTimer.current);
     setBusy(true);
     try {
       if (session)
@@ -2943,6 +2965,7 @@ function AuditView({
     (retryableRun.progress_completed || 0) >= retryableRun.progress_total,
   );
   const failedRun = fullyPersistedStaleRun ? undefined : retryableRun;
+  const progressRun = activeRun || failedRun || completionRun;
   return (
     <Page
       title="Audit"
@@ -3010,7 +3033,7 @@ function AuditView({
           <p>Delete <b>{pageToDelete.name}</b> from this audit and permanently remove all audit runs and findings saved for it?</p>
         </SimpleDialog>
       )}
-      {(activeRun || failedRun) && <AuditProgress run={(activeRun || failedRun)!} onRetry={() => void run()} />}
+      {progressRun && <AuditProgress run={progressRun} onRetry={() => void run()} />}
       {partial && (
         <div className="coverage-note partial">
           <b>Incomplete audit coverage</b>
@@ -6543,50 +6566,138 @@ function EventsPanel({
     </>
   );
 }
+const auditPreparingMessages = [
+  "Preparing your audit",
+  "Getting everything lined up",
+  "Waking up an audit worker",
+  "Loading the audit toolkit",
+  "Getting the checks ready",
+  "Almost ready to get started",
+];
+const auditEarlyMessages = [
+  "Audit running",
+  "Collecting page evidence",
+  "Checking structure and metadata",
+  "Giving the page a proper once-over",
+];
+const auditMiddleMessages = [
+  "Inspecting links and resources",
+  "Testing accessibility",
+  "Checking performance signals",
+  "Reviewing security headers",
+  "Looking through technical details",
+  "Crunching the numbers",
+  "Checking the tricky bits",
+  "No time for a coffee yet",
+  "Checking under the bonnet",
+  "Looking for things worth fixing",
+];
+const auditFinalMessages = [
+  "Pulling the findings together",
+  "Doing the final checks",
+  "Tidying up the evidence",
+  "Saving everything for you",
+  "Almost there",
+];
+
+export function auditProgressCeiling(elapsedMs: number, finalising = false) {
+  if (finalising) return 97;
+  const elapsed = Math.max(0, elapsedMs);
+  if (elapsed <= 5_000) return 12 + (elapsed / 5_000) * 16;
+  if (elapsed <= 20_000) return 28 + ((elapsed - 5_000) / 15_000) * 37;
+  if (elapsed <= 60_000) return 65 + ((elapsed - 20_000) / 40_000) * 20;
+  return Math.min(90, 85 + ((elapsed - 60_000) / 60_000) * 5);
+}
+
+export function auditProgressMessagePool(status: string, percent: number, finalising = false) {
+  if (status === "queued") return auditPreparingMessages;
+  if (finalising || percent >= 82) return auditFinalMessages;
+  if (percent < 32) return auditEarlyMessages;
+  return auditMiddleMessages;
+}
+
 function AuditProgress({ run, onRetry }: { run: AuditRun; onRetry: () => void }) {
   const total = run.progress_total || 0;
   const complete = Math.min(run.progress_completed || 0, total || Number.MAX_SAFE_INTEGER);
-  const actualPercent = total ? Math.round((complete / total) * 100) : 0;
+  const actualPercent = total ? (complete / total) * 100 : 0;
   const genuinelyComplete = ["completed", "partial"].includes(run.status);
-  const [displayPercent, setDisplayPercent] = useState(() => auditDisplayProgress(0, actualPercent, genuinelyComplete));
-  const progressRunId = useRef(run.id);
+  const finalising = run.execution_stage === "persisting_results" || run.execution_stage === "finalising";
+  const progressStartedAt = useRef(Date.now());
+  const [displayPercent, setDisplayPercent] = useState(() => auditDisplayProgress(0, actualPercent, genuinelyComplete, 12, 9 + Math.random() * 3));
+  const [messageIndex, setMessageIndex] = useState(() => Math.floor(Math.random() * auditPreparingMessages.length));
   useEffect(() => {
-    if (progressRunId.current !== run.id) {
-      progressRunId.current = run.id;
-      setDisplayPercent(auditDisplayProgress(0, actualPercent, genuinelyComplete));
-    } else {
-      setDisplayPercent((current) => auditDisplayProgress(current, actualPercent, genuinelyComplete));
-    }
+    progressStartedAt.current = Date.now();
+    setMessageIndex(Math.floor(Math.random() * auditPreparingMessages.length));
+    setDisplayPercent(auditDisplayProgress(0, actualPercent, genuinelyComplete, 12, 9 + Math.random() * 3));
+  }, [run.id]);
+  useEffect(() => {
+    const ceiling = finalising ? 97 : auditProgressCeiling(Date.now() - progressStartedAt.current);
+    setDisplayPercent((current) => auditDisplayProgress(current, actualPercent, genuinelyComplete, ceiling));
+  }, [actualPercent, finalising, genuinelyComplete]);
+  useEffect(() => {
     if (genuinelyComplete || run.status === "failed") return;
-    const interval = window.setInterval(() => {
-      setDisplayPercent((current) => auditDisplayProgress(current, actualPercent, false, true));
-    }, 5_000);
-    return () => window.clearInterval(interval);
-  }, [actualPercent, genuinelyComplete, run.status, run.id]);
+    let timer = 0;
+    let cancelled = false;
+    const schedule = () => {
+      timer = window.setTimeout(() => {
+        if (cancelled) return;
+        const ceiling = auditProgressCeiling(Date.now() - progressStartedAt.current, finalising);
+        const increment = .4 + Math.random() * 2.1;
+        setDisplayPercent((current) => auditDisplayProgress(current, actualPercent, false, ceiling, increment));
+        schedule();
+      }, 700 + Math.random() * 1_800);
+    };
+    schedule();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [actualPercent, finalising, genuinelyComplete, run.id, run.status]);
+  useEffect(() => {
+    if (genuinelyComplete || run.status === "failed") return;
+    let timer = 0;
+    let cancelled = false;
+    const rotate = () => {
+      timer = window.setTimeout(() => {
+        if (cancelled) return;
+        setMessageIndex((current) => current + 1);
+        rotate();
+      }, 2_800 + Math.random() * 2_400);
+    };
+    rotate();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [genuinelyComplete, run.id, run.status]);
   const heartbeat = Date.parse(run.heartbeat_at || run.created_at);
   const createdAt = Date.parse(run.created_at);
   const stalled = ["queued", "running"].includes(run.status) && (
     Number.isFinite(heartbeat) && Date.now() - heartbeat > 2 * 60_000 ||
     Number.isFinite(createdAt) && Date.now() - createdAt > 5 * 60_000
   );
-  const stageLabels: Record<string, string> = {
-    queued: "Waiting for an audit worker",
-    fetching_page: "Collecting the selected page",
-    evaluating_checks: "Evaluating available checks",
-    collecting_browser_evidence: "Measuring desktop and mobile performance in a rendered browser",
-    collecting_network_evidence: "Checking DNS, robots, sitemaps and optional resources",
-    persisting_results: "Saving evidence and scores",
-    failed: "Audit failed",
-  };
+  const messagePool = auditProgressMessagePool(run.status, displayPercent, finalising);
+  const statusMessage = genuinelyComplete
+    ? "Audit complete"
+    : stalled
+      ? "Audit stalled"
+      : run.status === "failed"
+        ? "Audit failed"
+        : messagePool[messageIndex % messagePool.length];
+  const statusDetail = genuinelyComplete
+    ? "Your latest results are ready."
+    : stalled
+      ? "The audit worker stopped reporting progress."
+      : run.status === "failed"
+        ? "The audit could not be completed."
+        : run.status === "queued"
+          ? "Your audit will start as soon as a worker is ready."
+          : "We’re analysing the page and saving useful evidence as we go.";
   return (
     <section className={`audit-progress ${run.status === "failed" || stalled ? "failed" : ""}`} aria-live="polite">
       <div className="audit-progress-copy">
-        <b>{stalled ? "Audit stalled" : run.status === "queued" ? "Queued" : run.status === "failed" ? "Audit failed" : "Audit in progress"}</b>
-        <span>{stalled ? "The audit worker stopped reporting progress." : stageLabels[run.execution_stage || run.status] || cap((run.execution_stage || run.status).replaceAll("_", " "))}</span>
-        <small>
-          {total ? `${complete} of ${total} checks` : "Preparing work total"}
-          {run.created_at ? ` · ${relative(run.created_at)}` : ""}
-        </small>
+        <b>{statusMessage}</b>
+        <span>{statusDetail}</span>
         {run.error && <small className="error-note">{run.error}</small>}
       </div>
       <div
@@ -6594,10 +6705,10 @@ function AuditProgress({ run, onRetry }: { run: AuditRun; onRetry: () => void })
         role="progressbar"
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-valuenow={displayPercent}
-        aria-valuetext={total ? `${complete} of ${total} checks complete` : "Preparing audit checks"}
+        aria-valuenow={Math.round(displayPercent)}
+        aria-valuetext={`${Math.round(displayPercent)} percent · ${statusMessage}`}
       >
-        <span style={{ width: `${displayPercent}%` }} />
+        <span style={{ width: `${displayPercent.toFixed(2)}%` }} />
       </div>
       {(run.status === "failed" || stalled) && <button className="btn" onClick={onRetry}><RefreshCw /> Retry audit</button>}
     </section>
@@ -7060,10 +7171,18 @@ function AuditAiFixPrompt({ pageName, pageUrl, runId, results, notify }: { pageN
   );
 }
 
-export function auditDisplayProgress(current: number, actual: number, complete: boolean, tick = false) {
+export function auditDisplayProgress(
+  current: number,
+  actual: number,
+  complete: boolean,
+  ceiling = 90,
+  increment = 0,
+) {
   if (complete) return 100;
-  const simulated = tick && current < 60 ? Math.min(60, Math.max(10, current) + 5) : Math.max(10, current);
-  return Math.min(99, Math.max(current, simulated, actual));
+  const safeCurrent = Math.max(0, Math.min(99, current));
+  const safeActual = Math.max(0, Math.min(99, actual));
+  const simulated = Math.min(Math.max(0, ceiling), safeCurrent + Math.max(0, increment));
+  return Number(Math.min(99, Math.max(safeCurrent, safeActual, simulated)).toFixed(2));
 }
 
 export function filterAuditSubfindings(subfindings: any[] = [], types: AuditFilterKind[] = []) {

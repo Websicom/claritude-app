@@ -2441,7 +2441,7 @@ input[type="checkbox"]:checked:after {
 }
 .audit-progress {
   display: grid;
-  grid-template-columns: minmax(230px, auto) minmax(180px, 1fr) auto;
+  grid-template-columns: minmax(260px, 340px) minmax(180px, 1fr) auto;
   align-items: center;
   gap: 14px;
   padding: 11px 13px;
@@ -2476,7 +2476,7 @@ input[type="checkbox"]:checked:after {
   min-width: 3px;
   border-radius: inherit;
   background: var(--green);
-  transition: width .35s ease;
+  transition: width .75s cubic-bezier(.22, .61, .36, 1);
 }
 .audit-progress-track.indeterminate > span {
   width: 0;
