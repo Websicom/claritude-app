@@ -2268,43 +2268,53 @@ app.get("/api/properties/:id/analytics", async (c) => {
     utmCampaign: cleanAnalyticsFilter(c.req.query("utm_campaign"), 100),
   };
   const db = c.get("db");
+  const overviewOnly = c.req.query("view") === "overview";
   const span = new Date(window.to).valueOf() - new Date(window.from).valueOf() + 1;
   const previousTo = new Date(new Date(window.from).valueOf() - 1).toISOString();
   const previousFrom = new Date(new Date(window.from).valueOf() - span).toISOString();
   const useRollups = !hasAnalyticsFilters(filters);
   let currentResult: AnalyticsWindowData;
-  let previousResult: AnalyticsWindowData;
+  let previousResult: AnalyticsWindowData | null = null;
   try {
-    [currentResult, previousResult] = await Promise.all([
-      loadAnalyticsWindow(db, c.req.param("id"), window.from, window.to, useRollups),
-      loadAnalyticsWindow(db, c.req.param("id"), previousFrom, previousTo, useRollups),
-    ]);
+    if (overviewOnly) {
+      currentResult = await loadAnalyticsWindow(db, c.req.param("id"), window.from, window.to, useRollups);
+    } else {
+      [currentResult, previousResult] = await Promise.all([
+        loadAnalyticsWindow(db, c.req.param("id"), window.from, window.to, useRollups),
+        loadAnalyticsWindow(db, c.req.param("id"), previousFrom, previousTo, useRollups),
+      ]);
+    }
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : "analytics_query_failed" }, 400);
   }
   const events = currentResult.events;
-  const previousEvents = previousResult.events;
+  const previousEvents = previousResult?.events || [];
   const filtered = filterAnalyticsEvents(events, filters);
   const filteredPrevious = filterAnalyticsEvents(previousEvents, filters);
+  const summary = buildAnalyticsSummary(
+    filtered,
+    window.days,
+    window.from,
+    window.to,
+    window.timeZone,
+    currentResult.rollups,
+    currentResult.views,
+    { includeVisitTimes: !overviewOnly },
+  );
+  const previous = previousResult
+    ? buildAnalyticsSummary(
+        filteredPrevious,
+        window.days,
+        previousFrom,
+        previousTo,
+        window.timeZone,
+        previousResult.rollups,
+        previousResult.views,
+      )
+    : undefined;
   return c.json({
-    ...buildAnalyticsSummary(
-      filtered,
-      window.days,
-      window.from,
-      window.to,
-      window.timeZone,
-      currentResult.rollups,
-      currentResult.views,
-    ),
-    previous: buildAnalyticsSummary(
-      filteredPrevious,
-      window.days,
-      previousFrom,
-      previousTo,
-      window.timeZone,
-      previousResult.rollups,
-      previousResult.views,
-    ),
+    ...summary,
+    ...(previous ? { previous } : {}),
     // Filtering can reduce the returned set below the query ceiling. Preserve
     // whether the underlying property/date result hit that ceiling so the UI
     // never presents a partial result as complete.
@@ -4235,6 +4245,7 @@ export function buildAnalyticsSummary(
   timeZone = "UTC",
   rollups: any[] = [],
   historicalViews: any[] = [],
+  options: { includeVisitTimes?: boolean } = {},
 ) {
   const pageMap = new Map<string, { pageviews: number; events: number }>();
   const seriesMap = new Map<string, { pageviews: number; events: number; sessions: Set<string> }>();
@@ -4496,7 +4507,9 @@ export function buildAnalyticsSummary(
     view.vitals.get("INP")! <= 200 &&
     view.vitals.get("CLS")! <= 0.1,
   ).length;
-  const visitTimes = buildVisitTimeHeatmap(events, historicalViews, timeZone);
+  const visitTimes = options.includeVisitTimes === false
+    ? []
+    : buildVisitTimeHeatmap(events, historicalViews, timeZone);
   return {
     from,
     to,

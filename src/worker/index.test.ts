@@ -364,6 +364,21 @@ describe("worker evidence pipelines", () => {
     expect(mondayOneAm).toMatchObject({ visitors: 1, visitorsComplete: true, pageCount: 1 });
   });
 
+  it("can omit engagement heatmap processing for the lightweight property overview summary", () => {
+    const summary = buildAnalyticsSummary(
+      [{ event_type: "pageview", path: "/", metadata: { session: "session-1" }, occurred_at: "2026-10-05T10:00:00Z" }],
+      30,
+      "2026-09-06T00:00:00Z",
+      "2026-10-05T23:59:59Z",
+      "Europe/London",
+      [],
+      [],
+      { includeVisitTimes: false },
+    );
+    expect(summary.pageviews).toBe(1);
+    expect(summary.engagement.visitTimes).toEqual([]);
+  });
+
   it("keeps prior compatible tracker observations available after a tracker upgrade", () => {
     const summary = buildAnalyticsSummary([
       { event_type: "pageview", path: "/", metadata: { session: "legacy", view_id: "legacy-view", tracker_version: "2.0.0" }, occurred_at: "2026-10-02T09:00:00Z" },

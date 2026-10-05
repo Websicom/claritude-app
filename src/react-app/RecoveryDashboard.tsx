@@ -1616,26 +1616,39 @@ function PropertyOverview({
   const [tab, setTab] = useState("Overview"),
     [trafficMetric, setTrafficMetric] = useState<TrafficMetric>("Pageviews"),
     [analytics, setAnalytics] = useState<any>(null),
+    [analyticsLoading, setAnalyticsLoading] = useState(!fixture),
     [audits, setAudits] = useState<AuditRun[]>([]);
   useEffect(() => {
+    let cancelled = false;
     if (session && property) {
-      Promise.all([
-        api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}`),
-        api<AuditRun[]>(session, `/api/properties/${property.id}/audits?${livePeriod}`),
-      ])
-        .then(([all, storedAudits]) => {
-          setAnalytics(all);
-          setAudits(storedAudits);
+      setAnalytics(null);
+      setAnalyticsLoading(true);
+      api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}&view=overview`)
+        .then((all) => {
+          if (!cancelled) setAnalytics(all);
         })
         .catch(() => {
-          setAnalytics(null);
-          setAudits([]);
+          if (!cancelled) setAnalytics(null);
+        })
+        .finally(() => {
+          if (!cancelled) setAnalyticsLoading(false);
+        });
+      api<AuditRun[]>(session, `/api/properties/${property.id}/audits?${livePeriod}`)
+        .then((storedAudits) => {
+          if (!cancelled) setAudits(storedAudits);
+        })
+        .catch(() => {
+          if (!cancelled) setAudits([]);
         });
     } else if (property && fixture) {
       const fixtureSummary = fixtureAnalytics(property);
       setAnalytics(fixtureSummary);
+      setAnalyticsLoading(false);
       setAudits([fixtureAudit(property)]);
     }
+    return () => {
+      cancelled = true;
+    };
   }, [property?.id, session, fixture, livePeriod]);
   if (!property)
     return (
@@ -1731,15 +1744,21 @@ function PropertyOverview({
                 actions={<ChartSwitch notify={notify} events value={trafficMetric} onChange={setTrafficMetric} />}
               >
                 {mobilePageControls}
-                <SeriesChart
-                  points={(analytics?.series || []).map((point: any) => ({
-                    label: point.day,
-                    value: point[trafficSeriesKey(trafficMetric)] || 0,
-                  }))}
-                  emptyTitle="No measured property traffic yet"
-                  unit={trafficMetric === "Events" ? " events" : ""}
-                  label={`${trafficMetric} by day`}
-                />
+                {analyticsLoading && Boolean(property.tracking_last_received_at) ? (
+                  <div className="audit-results-loading" role="status">
+                    <RefreshCw className="audit-spin" /> Loading your analytics
+                  </div>
+                ) : (
+                  <SeriesChart
+                    points={(analytics?.series || []).map((point: any) => ({
+                      label: point.day,
+                      value: point[trafficSeriesKey(trafficMetric)] || 0,
+                    }))}
+                    emptyTitle="No measured property traffic yet"
+                    unit={trafficMetric === "Events" ? " events" : ""}
+                    label={`${trafficMetric} by day`}
+                  />
+                )}
               </Panel>
               <div className="property-overview-metrics-mobile">
                 <Metrics values={overviewMetrics} />
@@ -1750,9 +1769,9 @@ function PropertyOverview({
                     label="Overall"
                     value={audit?.score == null ? "—" : <>{audit.score}<small className="health-score-total"> /100</small></>}
                   />
-                  <Metric label="Mobile" value={scoreState(mobileScore, "Awaiting field data")} />
-                  <Metric label="Desktop" value={scoreState(desktopScore, "Awaiting field data")} />
-                  <Metric label="SEO" value={scoreState(seoScore, audit ? "Not implemented by this audit run" : "Awaiting audit")} />
+                  <Metric label="Mobile" value={propertyHealthScoreValue(mobileScore, "Awaiting field data")} />
+                  <Metric label="Desktop" value={propertyHealthScoreValue(desktopScore, "Awaiting field data")} />
+                  <Metric label="SEO" value={propertyHealthScoreValue(seoScore, audit ? "Not implemented by this audit run" : "Awaiting audit")} />
                 </div>
                 <div className="settings-actions">
                   <Link className="btn" to={`/audit?property=${property.id}`}>
@@ -8404,6 +8423,10 @@ function webVitalsScore(vitals: any[] | undefined) {
 
 function scoreState(score: number | null, unavailable: string) {
   return score == null ? unavailable : `${score} / 100`;
+}
+
+function propertyHealthScoreValue(score: number | null, unavailable: string) {
+  return score == null ? unavailable : <>{score}<small className="health-score-total"> /100</small></>;
 }
 
 function formatVital(name: string, value: number) {
