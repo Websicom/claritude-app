@@ -1629,8 +1629,10 @@ app.get("/api/properties/:id/audit-coverage", async (c) => {
   });
 });
 
+export const UPTIME_MAXIMUM_DAYS = 730;
+
 app.get("/api/properties/:id/incidents", async (c) => {
-  const window = requestedWindow(c);
+  const window = requestedWindow(c, 30, UPTIME_MAXIMUM_DAYS);
   if (!window) return c.json({ error: "invalid_date_range" }, 400);
   const { data, error } = await c
     .get("db")
@@ -1676,7 +1678,7 @@ export function uptimeResponseBucket(from: string, to: string) {
 }
 
 app.get("/api/monitors/:id/checks", async (c) => {
-  const window = requestedWindow(c, 30, 730);
+  const window = requestedWindow(c, 30, UPTIME_MAXIMUM_DAYS);
   if (!window) return c.json({ error: "invalid_date_range" }, 400);
   const duration = new Date(window.to).valueOf() - new Date(window.from).valueOf() + 1;
   const previousTo = new Date(new Date(window.from).valueOf() - 1);
