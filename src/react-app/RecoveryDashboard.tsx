@@ -2292,6 +2292,7 @@ function AnalyticsView({
   const filters = analyticsPageFiltersFromParams(params);
   const detailPage = params.get("pagePath") || "";
   const detailSource = params.get("sourceDetail") || "";
+  const detailEvent = params.get("eventDetail") || "";
   const countryListOpen = params.get("countryList") === "all";
   const listPage = Math.max(1, Number(params.get("listPage") || 1));
   const listPageSize = [20, 100, 200].includes(Number(params.get("pageSize")))
@@ -2327,7 +2328,7 @@ function AnalyticsView({
     if (nextTab === "Overview") next.delete("analyticsTab");
     else next.set("analyticsTab", nextTab);
     for (const key of analyticsFilterParamKeys) next.delete(key);
-    ["pagePath", "sourceDetail", "countryList", "listPage", "pageSize"].forEach((key) => next.delete(key));
+    ["pagePath", "sourceDetail", "eventDetail", "countryList", "listPage", "pageSize"].forEach((key) => next.delete(key));
     navigate(`${location.pathname}?${next.toString()}`, { replace: true });
   };
   const changeFilters = (nextFilters: AnalyticsPageFilters) => {
@@ -2566,8 +2567,30 @@ function AnalyticsView({
           <AnalyticsSourceTable sources={scoped.sources || []} onDetail={(source) => updateAnalyticsParams({ sourceDetail: source })} />
           <p className="subtle">Source categories are mutually exclusive and total {fmt((scoped.sources || []).reduce((sum: number, source: any) => sum + source.pageviews, 0))} pageviews.</p>
         </Panel>
+      ) : tab === "Events" && detailEvent ? (
+        <AnalyticsEventDetail
+          session={session}
+          property={property}
+          fixture={fixture}
+          eventName={detailEvent}
+          livePeriod={livePeriod}
+          filters={filters}
+          options={options}
+          onFilterChange={changeFilters}
+          onBack={() => updateAnalyticsParams({ eventDetail: null })}
+        />
       ) : tab === "Events" ? (
-        <EventsPanel session={session} property={property} fixture={fixture} notify={notify} data={scoped} filters={filters} options={options} onFilterChange={changeFilters} />
+        <EventsPanel
+          session={session}
+          property={property}
+          fixture={fixture}
+          notify={notify}
+          data={scoped}
+          filters={filters}
+          options={options}
+          onFilterChange={changeFilters}
+          onOpenEvent={(eventName) => updateAnalyticsParams({ eventDetail: eventName })}
+        />
       ) : tab === "Audience" ? (
         <>
           {filtersToolbar}
@@ -6114,19 +6137,20 @@ function AnalyticsSourceTable({ sources, onDetail }: { sources: any[]; onDetail?
   );
 }
 
-function AnalyticsPagination({ page, pageSize, total, pages, onPage, onPageSize }: {
+function AnalyticsPagination({ page, pageSize, total, pages, onPage, onPageSize, label = "pages" }: {
   page: number;
   pageSize: number;
   total: number;
   pages: number;
   onPage: (page: number) => void;
   onPageSize: (size: number) => void;
+  label?: string;
 }) {
   const first = total ? (page - 1) * pageSize + 1 : 0;
   const last = Math.min(total, page * pageSize);
   return (
-    <div className="pagination-row analytics-pagination" aria-label="Pages table pagination">
-      <span>{fmt(first)}–{fmt(last)} of {fmt(total)} pages</span>
+    <div className="pagination-row analytics-pagination" aria-label={`${label} table pagination`}>
+      <span>{fmt(first)}–{fmt(last)} of {fmt(total)} {label}</span>
       <label>Rows<select value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))}>{[20, 100, 200].map((size) => <option value={size} key={size}>{size}</option>)}</select></label>
       <button className="btn" disabled={page <= 1} onClick={() => onPage(page - 1)}>Previous</button>
       <span>Page {page} of {pages}</span>
@@ -6208,7 +6232,7 @@ function AnalyticsValueTable({
   className = "",
 }: {
   headers: string[];
-  rows: { label: ReactNode; value: number; secondary?: ReactNode; iconKind?: string; iconValue?: string }[];
+  rows: { label: ReactNode; value: number; secondary?: ReactNode; iconKind?: string; iconValue?: string; onClick?: () => void }[];
   className?: string;
 }) {
   const sorted = useSortableRows(rows, (row, column) => column === 0 ? sortableValue(row.label) : column === 1 ? row.value : sortableValue(row.secondary));
@@ -6221,11 +6245,13 @@ function AnalyticsValueTable({
         <thead><tr>{headers.map((header, column) => <SortableHeader key={header} label={header} column={column} sort={sorted.sort} onSort={sorted.onSort} />)}</tr></thead>
         <tbody>
           {sorted.rows.map((row, index) => (
-            <tr key={`${String(row.label)}-${index}`}>
+            <tr key={`${String(row.label)}-${index}`} className={row.onClick ? "clickable-table-row" : undefined} onClick={row.onClick}>
               <InCellBar value={row.value} max={max}>
                 <span className="dimension-label">
                   {row.iconKind && <DimensionMark kind={row.iconKind} value={row.iconValue || String(row.label)} />}
-                  <b>{row.label}</b>
+                  {row.onClick
+                    ? <button className="table-detail-link" onClick={(event) => { event.stopPropagation(); row.onClick?.(); }}>{row.label}</button>
+                    : <b>{row.label}</b>}
                 </span>
               </InCellBar>
               <td>{headers.length === 2 && row.secondary != null ? row.secondary : fmt(row.value)}</td>
@@ -6333,6 +6359,330 @@ function sourceIconPath(value: string) {
   return match ? `/assets/source-icons/${match[1]}.svg` : "/assets/globe.svg";
 }
 
+function AnalyticsEventDetail({
+  session,
+  property,
+  fixture,
+  eventName,
+  livePeriod,
+  filters,
+  options,
+  onFilterChange,
+  onBack,
+}: {
+  session: Session | null;
+  property: Property;
+  fixture: boolean;
+  eventName: string;
+  livePeriod: string;
+  filters: AnalyticsPageFilters;
+  options: AnalyticsFilterOptions;
+  onFilterChange: (filters: AnalyticsPageFilters) => void;
+  onBack: () => void;
+}) {
+  const tabs = ["Overview", "Occurrences", "Pages", "Sources", "Devices", "Countries"];
+  const [tab, setTab] = useState("Overview");
+  const [summary, setSummary] = useState<any>(null);
+  const [occurrences, setOccurrences] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [occurrencesLoading, setOccurrencesLoading] = useState(true);
+  const [occurrencesError, setOccurrencesError] = useState("");
+  const [occurrencePage, setOccurrencePage] = useState(1);
+  const [occurrencePageSize, setOccurrencePageSize] = useState(20);
+  const [selectedOccurrence, setSelectedOccurrence] = useState<string | null>(null);
+  const [occurrenceDetail, setOccurrenceDetail] = useState<any>(null);
+  const [occurrenceLoading, setOccurrenceLoading] = useState(false);
+  const filterQuery = analyticsPageFilterQuery(filters);
+  const encodedEventName = encodeURIComponent(eventName);
+
+  useEffect(() => {
+    setOccurrencePage(1);
+    setSelectedOccurrence(null);
+    setOccurrenceDetail(null);
+  }, [eventName, filterQuery, property.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    if (fixture) {
+      const next = analyticsEventDetailFixture(eventName);
+      setSummary(next.summary);
+      setLoading(false);
+      return () => { cancelled = true; };
+    }
+    if (!session) {
+      setError("Authentication is required to load this event.");
+      setLoading(false);
+      return () => { cancelled = true; };
+    }
+    const suffix = filterQuery ? `&${filterQuery}` : "";
+    api<any>(session, `/api/properties/${property.id}/analytics/events/${encodedEventName}?${livePeriod}${suffix}`)
+      .then((nextSummary) => !cancelled && setSummary(nextSummary))
+      .catch((reason) => !cancelled && setError(reason.message || "Event detail could not be loaded"))
+      .finally(() => !cancelled && setLoading(false));
+    return () => { cancelled = true; };
+  }, [encodedEventName, eventName, filterQuery, fixture, livePeriod, property.id, session]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setOccurrencesLoading(true);
+    setOccurrencesError("");
+    if (fixture) {
+      const next = analyticsEventDetailFixture(eventName);
+      const start = (occurrencePage - 1) * occurrencePageSize;
+      setOccurrences({
+        ...next.occurrences,
+        rows: next.occurrences.rows.slice(start, start + occurrencePageSize),
+        page: occurrencePage,
+        pageSize: occurrencePageSize,
+      });
+      setOccurrencesLoading(false);
+      return () => { cancelled = true; };
+    }
+    if (!session) {
+      setOccurrencesError("Authentication is required to load occurrences.");
+      setOccurrencesLoading(false);
+      return () => { cancelled = true; };
+    }
+    const suffix = filterQuery ? `&${filterQuery}` : "";
+    api<any>(session, `/api/properties/${property.id}/analytics/events/${encodedEventName}/occurrences?${livePeriod}&page=${occurrencePage}&page_size=${occurrencePageSize}${suffix}`)
+      .then((next) => !cancelled && setOccurrences(next))
+      .catch((reason) => !cancelled && setOccurrencesError(reason.message || "Occurrences could not be loaded"))
+      .finally(() => !cancelled && setOccurrencesLoading(false));
+    return () => { cancelled = true; };
+  }, [encodedEventName, eventName, filterQuery, fixture, livePeriod, occurrencePage, occurrencePageSize, property.id, session]);
+
+  async function openOccurrence(row: any) {
+    const id = String(row.id);
+    if (selectedOccurrence === id) {
+      setSelectedOccurrence(null);
+      setOccurrenceDetail(null);
+      return;
+    }
+    setSelectedOccurrence(id);
+    setOccurrenceDetail(null);
+    setOccurrenceLoading(true);
+    try {
+      const detail = fixture
+        ? analyticsEventDetailFixture(eventName).contexts[id]
+        : session
+          ? await api<any>(session, `/api/properties/${property.id}/analytics/events/${encodedEventName}/occurrences/${encodeURIComponent(id)}`)
+          : null;
+      setOccurrenceDetail(detail || null);
+    } catch (reason: any) {
+      setOccurrenceDetail({ error: reason.message || "Occurrence context could not be loaded" });
+    } finally {
+      setOccurrenceLoading(false);
+    }
+  }
+
+  if (loading && !summary)
+    return <Empty title="Loading event detail…" detail="Preparing the event totals, breakdowns and recent occurrences." />;
+  if (error)
+    return <div className="analytics-state" role="alert"><Empty title="Event detail could not be loaded" detail={error} /><button className="btn" onClick={onBack}>Back to events</button></div>;
+
+  const eventOptions: AnalyticsFilterOptions = {
+    ...options,
+    paths: summary?.filterOptions?.paths || options.paths,
+    sources: summary?.filterOptions?.sources || options.sources,
+    countries: summary?.filterOptions?.countries || options.countries,
+    devices: summary?.filterOptions?.devices || options.devices,
+    browsers: summary?.filterOptions?.browsers || options.browsers,
+  };
+  const breakdowns = summary?.breakdowns || {};
+  const breakdownForTab: Record<string, { rows: any[]; label: string; kind?: string }> = {
+    Pages: { rows: breakdowns.pages || [], label: "Page" },
+    Sources: { rows: breakdowns.sources || [], label: "Source", kind: "source" },
+    Devices: { rows: breakdowns.devices || [], label: "Device", kind: "device" },
+    Countries: { rows: breakdowns.countries || [], label: "Country", kind: "country" },
+  };
+  const selectedBreakdown = breakdownForTab[tab];
+  const displayBreakdownName = (row: any) => tab === "Countries" ? countryLabel(row.name) : row.name;
+
+  return (
+    <div className="analytics-event-detail">
+      <div className="analytics-detail-heading">
+        <button className="btn" onClick={onBack}><ChevronLeft /> All events</button>
+        <h2>{eventLabel(eventName)}</h2>
+      </div>
+      <Metrics values={[
+        ["Total events", fmt(summary?.totalCount || 0), "Selected date range"],
+        ["Unique sessions", occurrences?.uniqueSessions == null ? "Unavailable" : fmt(occurrences.uniqueSessions), occurrences?.uniqueSessions == null ? "Unavailable outside raw-event retention" : "Anonymous tab sessions"],
+        ["First recorded", summary?.firstRecorded ? formatAnalyticsMoment(summary.firstRecorded, summary.timeZone) : "—", "Within the selected date range"],
+        ["Most recent", summary?.mostRecent ? formatAnalyticsMoment(summary.mostRecent, summary.timeZone) : "—", "Within the selected date range"],
+      ]} />
+      <AnalyticsPageFilterToolbar filters={filters} options={eventOptions} onChange={onFilterChange} title={eventLabel(eventName)} categories={["Page", "Source", "Country", "Device", "Browser"]} />
+      <Tabs labels={tabs} value={tab} onChange={setTab} />
+
+      {summary?.totalCount === 0 ? (
+        <Empty title="No occurrences in this period" detail="Try a wider date range or remove one of the active filters." />
+      ) : tab === "Overview" ? (
+        <>
+          <Panel title="Events over time">
+            <SeriesChart points={(summary.series || []).map((point: any) => ({ label: point.day, value: point.count }))} emptyTitle="No event activity in this period" unit=" events" label={`${eventLabel(eventName)} occurrences by day`} timeZone={summary.timeZone || property.settings?.timezone} />
+          </Panel>
+          <div className="grid equal event-summary-grid">
+            <EventSummaryPanel title="Top pages" columnLabel="Page" rows={breakdowns.pages} />
+            <EventSummaryPanel title="Top sources" columnLabel="Source" rows={breakdowns.sources} kind="source" />
+            <EventSummaryPanel title="Top countries" columnLabel="Country" rows={breakdowns.countries} kind="country" country />
+            <EventSummaryPanel title="Top devices" columnLabel="Device" rows={breakdowns.devices} kind="device" capitalize />
+            <EventSummaryPanel title="Top browsers" columnLabel="Browser" rows={breakdowns.browsers} kind="browser" />
+          </div>
+          {summary.aggregateCoverage !== "raw" && <p className="subtle">Totals and breakdowns include retained daily rollups. Individual occurrence detail is available only while raw events are retained.</p>}
+        </>
+      ) : tab === "Occurrences" ? (
+        <Panel title={`Occurrences · ${fmt(occurrences?.total || 0)}`}>
+          {occurrencesLoading ? <Empty title="Loading occurrences…" detail="Fetching this page of retained event activity." /> : occurrencesError ? (
+            <div className="analytics-state" role="alert"><Empty title="Occurrences could not be loaded" detail={occurrencesError} /></div>
+          ) : occurrences?.rows?.length ? (
+            <>
+              <div className="table-wrap">
+                <table className="event-occurrences-table">
+                  <thead><tr>{["Time", "Page", "Source", "Referrer", "Country", "Device", "Browser", "Active time"].map((header) => <th key={header}>{header}</th>)}</tr></thead>
+                  <tbody>{occurrences.rows.map((row: any) => (
+                    <Fragment key={row.id}>
+                      <tr className="clickable-table-row" onClick={() => void openOccurrence(row)} aria-expanded={selectedOccurrence === String(row.id)}>
+                        <td><button className="table-detail-link" onClick={(event) => { event.stopPropagation(); void openOccurrence(row); }}>{formatAnalyticsMoment(row.occurred_at, summary.timeZone)}</button></td>
+                        <td>{row.path || "/"}</td>
+                        <td>{row.source || "Direct / unknown"}</td>
+                        <td>{row.referrer_host || "—"}</td>
+                        <td>{row.country_code ? countryLabel(row.country_code) : "—"}</td>
+                        <td>{cap(row.device || "Unknown")}</td>
+                        <td>{row.browser || "—"}</td>
+                        <td>{Number(row.active_seconds) > 0 ? durationLabel(Number(row.active_seconds)) : "—"}</td>
+                      </tr>
+                      {selectedOccurrence === String(row.id) && (
+                        <tr className="event-occurrence-expanded"><td colSpan={8}>
+                          {occurrenceLoading ? <span className="subtle">Loading occurrence context…</span> : <EventOccurrenceDetail detail={occurrenceDetail} timeZone={summary.timeZone} />}
+                        </td></tr>
+                      )}
+                    </Fragment>
+                  ))}</tbody>
+                </table>
+              </div>
+              <AnalyticsPagination
+                page={occurrences.page}
+                pageSize={occurrences.pageSize}
+                total={occurrences.total}
+                pages={occurrences.pages}
+                label="occurrences"
+                onPage={setOccurrencePage}
+                onPageSize={(size) => { setOccurrencePageSize(size); setOccurrencePage(1); }}
+              />
+              <p className="subtle">Occurrence-level detail is retained for {occurrences.occurrenceRetentionDays || 120} days. Older totals remain available from daily rollups.</p>
+            </>
+          ) : <Empty title="No retained occurrences" detail="Totals may include older rollups, but there are no raw occurrences in the retained period for these filters." />}
+        </Panel>
+      ) : selectedBreakdown ? (
+        <Panel title={`${tab} · ${fmt(selectedBreakdown.rows.reduce((total: number, row: any) => total + Number(row.count || 0), 0))} events`}>
+          <AnalyticsValueTable
+            headers={[selectedBreakdown.label, "Events"]}
+            rows={selectedBreakdown.rows.map((row: any) => ({ label: displayBreakdownName(row), value: row.count, iconKind: selectedBreakdown.kind, iconValue: row.name }))}
+          />
+        </Panel>
+      ) : null}
+    </div>
+  );
+}
+
+function EventSummaryPanel({ title, columnLabel, rows = [], kind, country = false, capitalize = false }: { title: string; columnLabel: string; rows?: any[]; kind?: string; country?: boolean; capitalize?: boolean }) {
+  return (
+    <Panel title={title}>
+      <AnalyticsValueTable headers={[columnLabel, "Events"]} rows={rows.slice(0, 5).map((row: any) => ({
+        label: country ? countryLabel(row.name) : capitalize ? cap(row.name) : row.name,
+        value: row.count,
+        iconKind: kind,
+        iconValue: row.name,
+      }))} />
+    </Panel>
+  );
+}
+
+function EventOccurrenceDetail({ detail, timeZone }: { detail: any; timeZone?: string }) {
+  if (!detail) return <span className="subtle">No additional context was captured for this occurrence.</span>;
+  if (detail.error) return <span className="error-note">{detail.error}</span>;
+  const acquisition = detail.acquisition || {};
+  const visitor = detail.visitor || {};
+  const behaviour = detail.behaviour || {};
+  const acquisitionRows = [
+    ["Source", acquisition.source], ["Source detail", acquisition.sourceDetail], ["Referrer", acquisition.referrer],
+    ["UTM source", acquisition.utmSource], ["UTM medium", acquisition.utmMedium], ["UTM campaign", acquisition.utmCampaign],
+    ["UTM content", acquisition.utmContent], ["UTM term", acquisition.utmTerm],
+  ];
+  const visitorRows = [
+    ["Country", visitor.country ? countryLabel(visitor.country) : null], ["Device", visitor.device ? cap(visitor.device) : null],
+    ["Browser", visitor.browser], ["Screen", visitor.screen], ["Language", visitor.language],
+  ];
+  return (
+    <div className="event-occurrence-detail">
+      <div className="event-context-grid">
+        <EventContextList title="Occurrence" rows={[
+          ["Event type", detail.eventType ? eventLabel(detail.eventType) : null],
+          ["Page", detail.path],
+          ["Occurred", detail.occurredAt ? formatAnalyticsMoment(detail.occurredAt, timeZone) : null],
+          ["Received", detail.receivedAt ? formatAnalyticsMoment(detail.receivedAt, timeZone) : null],
+        ]} />
+        <EventContextList title="Acquisition" rows={acquisitionRows} />
+        <EventContextList title="Visitor context" rows={visitorRows} />
+        <EventContextList title="Behaviour" rows={[
+          ["Active time", behaviour.activeSeconds ? durationLabel(behaviour.activeSeconds) : null],
+          ["Maximum scroll", behaviour.maxScroll ? `${Math.round(behaviour.maxScroll)}%` : null],
+          ["Visible sections", behaviour.visibleSections?.join(", ")],
+          ["JavaScript errors", behaviour.javascriptErrors == null ? null : fmt(behaviour.javascriptErrors)],
+        ]} />
+      </div>
+      {behaviour.journey?.length ? <section><h4>Session journey</h4><div className="event-journey">{behaviour.journey.map((step: any, index: number) => <Fragment key={`${step.type}-${step.label}-${index}`}><span className={`event-journey-step ${step.type}`}>{step.label}</span>{index < behaviour.journey.length - 1 && <ChevronRight aria-hidden="true" />}</Fragment>)}</div></section> : null}
+      <div className="event-context-grid">
+        <EventContextList title="Nearby activity" rows={[
+          ["Previous", occurrenceActivityLabel(behaviour.previous, timeZone)],
+          ["Next", occurrenceActivityLabel(behaviour.next, timeZone)],
+          ["Related key events", behaviour.relatedKeyEvents?.length ? behaviour.relatedKeyEvents.map((row: any) => eventLabel(row.name || row.type)).join(", ") : null],
+        ]} />
+        <EventContextList title="Page performance" rows={(detail.webVitals || []).map((vital: any) => [vital.name, formatVital(vital.name, vital.value)])} empty="No per-view web vitals were captured." />
+      </div>
+      <p className="subtle">Anonymous session and page-view references are used only to assemble this short journey. Claritude does not collect IP addresses or create a persistent visitor identity.</p>
+    </div>
+  );
+}
+
+function EventContextList({ title, rows, empty = "No compatible context was captured." }: { title: string; rows: any[][]; empty?: string }) {
+  const visible = rows.filter(([, value]) => value !== null && value !== undefined && value !== "");
+  return <section><h4>{title}</h4>{visible.length ? <dl>{visible.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl> : <p className="subtle">{empty}</p>}</section>;
+}
+
+function occurrenceActivityLabel(activity: any, timeZone?: string) {
+  if (!activity) return null;
+  const label = activity.type === "pageview" ? activity.path : eventLabel(activity.name || activity.type);
+  return activity.occurredAt ? `${label} · ${formatAnalyticsMoment(activity.occurredAt, timeZone)}` : label;
+}
+
+function formatAnalyticsMoment(value: string, timeZone?: string) {
+  return new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: timeZone || undefined }).format(new Date(value));
+}
+
+function analyticsEventDetailFixture(eventName: string) {
+  const now = new Date();
+  const earlier = new Date(now.valueOf() - 46 * 60_000);
+  const day = now.toISOString().slice(0, 10);
+  const rows = [
+    { id: "fixture-2", occurred_at: now.toISOString(), path: "/contact/", source: "Google", source_detail: "google", referrer_host: "google.com", country_code: "GB", device: "desktop", browser: "Chrome", active_seconds: 31 },
+    { id: "fixture-1", occurred_at: earlier.toISOString(), path: "/services/", source: "Direct / unknown", source_detail: "Direct / unknown", referrer_host: null, country_code: "GB", device: "mobile", browser: "Safari", active_seconds: 18 },
+  ];
+  const context = (row: any) => ({
+    ...row, name: eventName, eventType: "click", occurredAt: row.occurred_at, receivedAt: new Date(Date.parse(row.occurred_at) + 250).toISOString(), acquisition: { source: row.source, sourceDetail: row.source_detail, referrer: row.referrer_host, utmSource: null, utmMedium: null, utmCampaign: null, utmContent: null, utmTerm: null },
+    visitor: { country: row.country_code, device: row.device, browser: row.browser, screen: row.device === "mobile" ? "Small · under 768px" : "Large · 1280px+", language: "en-GB" },
+    behaviour: { activeSeconds: row.active_seconds, maxScroll: 90, visibleSections: ["contact"], javascriptErrors: 0, relatedKeyEvents: [], previous: { type: "pageview", path: row.path, occurredAt: new Date(Date.parse(row.occurred_at) - 10_000).toISOString() }, next: null, journey: [{ type: "source", label: row.source }, { type: "page", label: row.path }, { type: "behaviour", label: "Scrolled 90%" }, { type: "event", label: eventLabel(eventName) }] },
+    webVitals: [{ name: "LCP", value: 1840 }],
+  });
+  return {
+    summary: { name: eventName, totalCount: 2, uniqueSessions: 2, firstRecorded: earlier.toISOString(), mostRecent: now.toISOString(), timeZone: "Europe/London", series: [{ day, count: 2 }], aggregateCoverage: "raw", breakdowns: { pages: [{ name: "/contact/", count: 1 }, { name: "/services/", count: 1 }], sources: [{ name: "Google", count: 1 }, { name: "Direct / unknown", count: 1 }], countries: [{ name: "GB", count: 2 }], devices: [{ name: "desktop", count: 1 }, { name: "mobile", count: 1 }], browsers: [{ name: "Chrome", count: 1 }, { name: "Safari", count: 1 }] }, filterOptions: { paths: ["/contact/", "/services/"], sources: ["Google", "Direct / unknown"], countries: ["GB"], devices: ["desktop", "mobile"], browsers: ["Chrome", "Safari"] } },
+    occurrences: { rows, page: 1, pageSize: 20, total: 2, pages: 1, uniqueSessions: 2, occurrenceRetentionDays: 120 },
+    contexts: Object.fromEntries(rows.map((row) => [row.id, context(row)])),
+  };
+}
+
 function EventsPanel({
   session,
   property,
@@ -6342,6 +6692,7 @@ function EventsPanel({
   filters,
   options,
   onFilterChange,
+  onOpenEvent,
 }: {
   session: Session | null;
   property: Property;
@@ -6351,6 +6702,7 @@ function EventsPanel({
   filters?: AnalyticsPageFilters;
   options?: AnalyticsFilterOptions;
   onFilterChange?: (filters: AnalyticsPageFilters) => void;
+  onOpenEvent?: (eventName: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("download-brochure");
@@ -6480,6 +6832,7 @@ function EventsPanel({
                 label: eventLabel(event.name),
                 value: event.count,
                 secondary: data.keyEvents ? `${(event.count / data.keyEvents * 100).toFixed(1)}%` : "0.0%",
+                onClick: onOpenEvent ? () => onOpenEvent(event.name) : undefined,
               }))}
             />
             {eventBreakdown.length > 20 && <ResultsPagination page={eventPage} total={eventBreakdown.length} label="events" onPage={(page) => setEventPage(Math.min(eventPageCount, page))} />}
@@ -7945,7 +8298,7 @@ const analyticsFilterConfigs: Record<string, { title: string; categories: string
   Overview: { title: "Analytics overview", categories: ["Device", "Page", "Source", "Country", "Browser", "Event name", "UTM source", "UTM medium", "UTM campaign"], scope: "the whole analytics overview" },
   Pages: { title: "Pages", categories: ["Exact path / prefix", "Device", "Source", "Country"], scope: "this page table" },
   Sources: { title: "Sources", categories: ["Source", "Source type", "UTM source", "UTM medium", "UTM campaign", "Page", "Device"], scope: "this source table" },
-  Events: { title: "Events", categories: ["Event name", "Page", "Source", "Device", "Country"], scope: "this event table" },
+  Events: { title: "Events", categories: ["Event name", "Page", "Source", "Device", "Country", "Browser"], scope: "this event table" },
   Audience: { title: "Audience", categories: ["Device", "Browser", "Country", "Page"], scope: "all audience breakdowns" },
   Engagement: { title: "Engagement", categories: ["Page", "Device", "Source", "Country"], scope: "all engagement panels" },
   Performance: { title: "Visitor performance", categories: ["Page", "Metric", "Device", "Browser", "Country"], scope: "this performance chart" },

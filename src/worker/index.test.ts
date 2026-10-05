@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   analyticsRollupPlan,
   auditOutcomeNotification,
+  buildAnalyticsEventDetailSummary,
+  buildAnalyticsOccurrenceContext,
   buildAnalyticsSummary,
   auditCheckHasExecutableLogic,
   canonicalPropertyHost,
@@ -260,6 +262,110 @@ describe("worker evidence pipelines", () => {
     expect(summary.engagement.eligiblePageviews).toBe(1);
     expect(summary.engagement.medianScrollDepth).toBe(90);
     expect(summary.engagement.medianActiveSeconds).toBe(12);
+  });
+
+  it("builds compact event drill-down summaries from raw and rolled observations", () => {
+    const summary = buildAnalyticsEventDetailSummary([
+      {
+        event_type: "click",
+        name: "Need Convincing Clicked",
+        path: "/pricing/",
+        source: "Google",
+        device: "desktop",
+        country_code: "GB",
+        metadata: { browser: "Chrome" },
+        occurred_at: "2026-10-01T09:00:00Z",
+        _aggregateCount: 3,
+      },
+      {
+        event_type: "click",
+        name: "Need Convincing Clicked",
+        path: "/contact/",
+        source: "LinkedIn",
+        device: "mobile",
+        country_code: "US",
+        metadata: { browser: "Safari", session: "anonymous-tab" },
+        occurred_at: "2026-10-02T10:00:00Z",
+      },
+      { event_type: "click", name: "Other event", path: "/", occurred_at: "2026-10-02T11:00:00Z" },
+    ], "Need Convincing Clicked", "Europe/London");
+    expect(summary.totalCount).toBe(4);
+    expect(summary.uniqueSessions).toBeNull();
+    expect(summary.topPage).toEqual({ name: "/pricing/", count: 3 });
+    expect(summary.topSource).toEqual({ name: "Google", count: 3 });
+    expect(summary.series).toEqual([
+      { day: "2026-10-01", count: 3 },
+      { day: "2026-10-02", count: 1 },
+    ]);
+    expect(summary.aggregateCoverage).toBe("hybrid_rollups_and_raw");
+  });
+
+  it("counts anonymous sessions only when raw event session evidence is complete", () => {
+    const summary = buildAnalyticsEventDetailSummary([
+      { event_type: "click", name: "lead", path: "/", metadata: { session: "one" }, occurred_at: "2026-10-02T10:00:00Z" },
+      { event_type: "click", name: "lead", path: "/", metadata: { session: "two" }, occurred_at: "2026-10-02T10:01:00Z" },
+      { event_type: "click", name: "lead", path: "/", metadata: { session: "one" }, occurred_at: "2026-10-02T10:02:00Z" },
+    ], "lead");
+    expect(summary.totalCount).toBe(3);
+    expect(summary.uniqueSessions).toBe(2);
+    expect(summary.aggregateCoverage).toBe("raw");
+  });
+
+  it("derives occurrence context only from matching anonymous view and session events", () => {
+    const pageview = {
+      id: 1,
+      event_type: "pageview",
+      path: "/pricing/",
+      source: "Google",
+      referrer_host: "google.com",
+      device: "mobile",
+      country_code: "GB",
+      metadata: { session: "tab-one", view_id: "view-one", browser: "Safari", screen: "small", language: "en-GB", utm_campaign: "spring" },
+      occurred_at: "2026-10-02T10:00:00Z",
+    };
+    const occurrence = {
+      id: 5,
+      event_type: "click",
+      name: "Need Convincing Clicked",
+      path: "/pricing/",
+      metadata: { session: "tab-one", view_id: "view-one" },
+      occurred_at: "2026-10-02T10:00:20Z",
+      received_at: "2026-10-02T10:00:21Z",
+    };
+    const viewEvents = [
+      pageview,
+      { id: 2, event_type: "active_time", path: "/pricing/", value: 12, metadata: { view_id: "view-one" }, occurred_at: "2026-10-02T10:00:12Z" },
+      { id: 3, event_type: "scroll", path: "/pricing/", value: 90, metadata: { view_id: "view-one" }, occurred_at: "2026-10-02T10:00:15Z" },
+      { id: 4, event_type: "visible_section", name: "pricing", path: "/pricing/", metadata: { view_id: "view-one" }, occurred_at: "2026-10-02T10:00:16Z" },
+      occurrence,
+      { id: 6, event_type: "web_vital", name: "LCP", value: 2200, path: "/pricing/", metadata: { view_id: "view-one" }, occurred_at: "2026-10-02T10:00:25Z" },
+    ];
+    const sessionEvents = [
+      ...viewEvents,
+      { id: 7, event_type: "pageview", path: "/contact/", metadata: { session: "tab-one", view_id: "view-two" }, occurred_at: "2026-10-02T10:01:00Z" },
+    ];
+    const context = buildAnalyticsOccurrenceContext(occurrence, viewEvents, sessionEvents);
+    expect(context.acquisition).toMatchObject({ source: "Google", referrer: "google.com", utmCampaign: "spring" });
+    expect(context.visitor).toMatchObject({ country: "GB", device: "mobile", browser: "Safari", screen: "Small · under 768px" });
+    expect(context.behaviour).toMatchObject({ activeSeconds: 12, maxScroll: 90, visibleSections: ["pricing"] });
+    expect(context.behaviour.pageSequence).toEqual(["/pricing/", "/contact/"]);
+    expect(context.webVitals).toEqual([{ name: "LCP", value: 2200 }]);
+    expect(context.behaviour.journey.at(-1)).toEqual({ type: "event", label: "Need Convincing Clicked" });
+  });
+
+  it("does not invent occurrence context when anonymous correlation evidence is absent", () => {
+    const context = buildAnalyticsOccurrenceContext({
+      id: 9,
+      event_type: "form_success",
+      name: "lead",
+      path: "/contact/",
+      occurred_at: "2026-10-02T10:00:00Z",
+      received_at: "2026-10-02T10:00:01Z",
+      metadata: {},
+    });
+    expect(context.contextAvailability).toEqual({ view: false, session: false });
+    expect(context.behaviour).toMatchObject({ activeSeconds: 0, maxScroll: 0, visibleSections: [], relatedKeyEvents: [] });
+    expect(context.webVitals).toEqual([]);
   });
 
   it("merges historical rollups with the same analytics result as raw events", () => {

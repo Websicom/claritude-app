@@ -2292,6 +2292,154 @@ app.get("/api/properties/:id/analytics/pages", async (c) => {
   return c.json({ rows, page, pageSize, total, pages: Math.max(1, Math.ceil(total / pageSize)) });
 });
 
+app.get("/api/properties/:id/analytics/events/:name/occurrences", async (c) => {
+  const window = requestedWindow(c);
+  if (!window) return c.json({ error: "invalid_date_range" }, 400);
+  const eventName = cleanAnalyticsFilter(c.req.param("name"), 80);
+  if (!eventName) return c.json({ error: "invalid_event_name" }, 400);
+  const page = Math.max(1, Math.floor(Number(c.req.query("page") || 1)));
+  const pageSize = [20, 50, 100].includes(Number(c.req.query("page_size")))
+    ? Number(c.req.query("page_size"))
+    : 20;
+  const pathMode = ["exact", "prefix"].includes(c.req.query("path_mode") || "")
+    ? c.req.query("path_mode")
+    : null;
+  const pathValue = cleanAnalyticsFilter(c.req.query("path_value"), 500);
+  const { data, error } = await c.get("db").rpc("analytics_event_occurrences_page", {
+    p_property_id: c.req.param("id"),
+    p_event_name: eventName,
+    p_from: window.from,
+    p_to: window.to,
+    p_offset: (page - 1) * pageSize,
+    p_limit: pageSize,
+    p_path_mode: pathMode,
+    p_path_value: pathValue ? normalizeAnalyticsPath(pathValue) : null,
+    p_source: cleanAnalyticsFilter(c.req.query("source"), 255) || null,
+    p_country: cleanAnalyticsFilter(c.req.query("country"), 20) || null,
+    p_device: cleanAnalyticsFilter(c.req.query("device"), 40) || null,
+    p_browser: cleanAnalyticsFilter(c.req.query("browser"), 60) || null,
+  });
+  if (error) return c.json({ error: error.message }, 400);
+  const rows = (data || []).map((row: any) => ({
+    ...row,
+    id: String(row.id),
+    active_seconds: Number(row.active_seconds || 0),
+    unique_sessions: Number(row.unique_sessions || 0),
+    total_rows: Number(row.total_rows || 0),
+  }));
+  const total = rows[0]?.total_rows || 0;
+  return c.json({
+    rows,
+    page,
+    pageSize,
+    total,
+    pages: Math.max(1, Math.ceil(total / pageSize)),
+    uniqueSessions: rows.length ? rows[0].unique_sessions : null,
+    occurrenceRetentionDays: 120,
+  });
+});
+
+app.get("/api/properties/:id/analytics/events/:name/occurrences/:occurrenceId", async (c) => {
+  const eventName = cleanAnalyticsFilter(c.req.param("name"), 80);
+  const occurrenceId = c.req.param("occurrenceId");
+  if (!eventName || !/^\d+$/.test(occurrenceId)) return c.json({ error: "invalid_occurrence" }, 400);
+  const db = c.get("db");
+  const fields = "id,event_type,path,referrer_host,source,device,country_code,name,value,metadata,occurred_at,received_at";
+  const occurrenceResult = await db
+    .from("analytics_events")
+    .select(fields)
+    .eq("property_id", c.req.param("id"))
+    .eq("id", occurrenceId)
+    .eq("name", eventName)
+    .in("event_type", ["click", "outbound", "form_success"])
+    .maybeSingle();
+  if (occurrenceResult.error) return c.json({ error: occurrenceResult.error.message }, 400);
+  if (!occurrenceResult.data) return c.json({ error: "occurrence_not_found" }, 404);
+  const occurrence: any = occurrenceResult.data;
+  const viewId = cleanAnalyticsFilter(occurrence.metadata?.view_id, 200);
+  const sessionId = cleanAnalyticsFilter(occurrence.metadata?.session, 200);
+  const occurredAt = Date.parse(occurrence.occurred_at);
+  const contextFrom = new Date(occurredAt - 24 * 60 * 60_000).toISOString();
+  const contextTo = new Date(occurredAt + 24 * 60 * 60_000).toISOString();
+  const viewPromise = viewId
+    ? db.from("analytics_events").select(fields)
+        .eq("property_id", c.req.param("id"))
+        .eq("metadata->>view_id", viewId)
+        .gte("occurred_at", contextFrom)
+        .lte("occurred_at", contextTo)
+        .order("occurred_at", { ascending: true })
+        .limit(200)
+    : Promise.resolve({ data: [], error: null });
+  const sessionPromise = sessionId
+    ? db.from("analytics_events").select(fields)
+        .eq("property_id", c.req.param("id"))
+        .eq("metadata->>session", sessionId)
+        .gte("occurred_at", contextFrom)
+        .lte("occurred_at", contextTo)
+        .order("occurred_at", { ascending: true })
+        .limit(200)
+    : Promise.resolve({ data: [], error: null });
+  const [viewResult, sessionResult] = await Promise.all([viewPromise, sessionPromise]);
+  const contextError = viewResult.error || sessionResult.error;
+  if (contextError) return c.json({ error: contextError.message }, 400);
+  return c.json(buildAnalyticsOccurrenceContext(occurrence, viewResult.data || [], sessionResult.data || []));
+});
+
+app.get("/api/properties/:id/analytics/events/:name", async (c) => {
+  const window = requestedWindow(c);
+  if (!window) return c.json({ error: "invalid_date_range" }, 400);
+  const eventName = cleanAnalyticsFilter(c.req.param("name"), 80);
+  if (!eventName) return c.json({ error: "invalid_event_name" }, 400);
+  const filters: AnalyticsFilters = {
+    pathMode: ["exact", "prefix"].includes(c.req.query("path_mode") || "")
+      ? (c.req.query("path_mode") as "exact" | "prefix")
+      : undefined,
+    pathValue: cleanAnalyticsFilter(c.req.query("path_value"), 500),
+    device: cleanAnalyticsFilter(c.req.query("device"), 40),
+    source: cleanAnalyticsFilter(c.req.query("source"), 255),
+    country: cleanAnalyticsFilter(c.req.query("country"), 20),
+    browser: cleanAnalyticsFilter(c.req.query("browser"), 60),
+    eventName,
+  };
+  try {
+    const { data, error } = await c.get("db").rpc("analytics_event_summary_rows", {
+      p_property_id: c.req.param("id"),
+      p_event_name: eventName,
+      p_from: window.from,
+      p_to: window.to,
+      p_path_mode: filters.pathMode || null,
+      p_path_value: filters.pathValue ? normalizeAnalyticsPath(filters.pathValue) : null,
+      p_source: filters.source || null,
+      p_country: filters.country || null,
+      p_device: filters.device || null,
+      p_browser: filters.browser || null,
+    });
+    if (error) throw new Error(error.message);
+    const observations = (data || []).map((row: any) => ({
+      event_type: row.event_type,
+      path: row.path,
+      source: row.source,
+      device: row.device,
+      country_code: row.country_code,
+      name: row.name,
+      metadata: { browser: row.browser },
+      occurred_at: row.occurred_at,
+      _lastOccurredAt: row.last_occurred_at,
+      _aggregateCount: Number(row.event_count || 0),
+      _isRollup: Boolean(row.rolled_up),
+    }));
+    return c.json({
+      ...buildAnalyticsEventDetailSummary(observations, eventName, window.timeZone),
+      from: window.from,
+      to: window.to,
+      timeZone: window.timeZone,
+      truncated: false,
+    });
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "event_detail_query_failed" }, 400);
+  }
+});
+
 app.get("/api/properties/:id/tracking-diagnostics", async (c) => {
   const { data, error } = await c.get("db")
     .from("analytics_events")
@@ -4484,6 +4632,175 @@ function analyticsScreenCategory(value: unknown) {
   if (screen === "medium") return "Medium · 768–1279px";
   if (screen === "small") return "Small · under 768px";
   return "Unknown";
+}
+
+const ANALYTICS_KEY_EVENT_TYPES = new Set(["click", "outbound", "form_success"]);
+
+export function buildAnalyticsEventDetailSummary(
+  observations: any[],
+  eventName: string,
+  timeZone = "UTC",
+) {
+  const events = observations.filter((event) =>
+    ANALYTICS_KEY_EVENT_TYPES.has(String(event.event_type)) &&
+    String(event.name || event.event_type).toLocaleLowerCase() === eventName.toLocaleLowerCase(),
+  );
+  const amount = (event: any) => event._aggregateCount == null
+    ? 1
+    : Math.max(0, Number(event._aggregateCount || 0));
+  const rank = (selector: (event: any) => string) => {
+    const counts = new Map<string, number>();
+    for (const event of events) {
+      const name = selector(event).trim() || "Unknown";
+      counts.set(name, (counts.get(name) || 0) + amount(event));
+    }
+    return [...counts]
+      .map(([name, count]) => ({ name, count }))
+      .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name));
+  };
+  const series = new Map<string, number>();
+  const sessions = new Set<string>();
+  let firstRecorded: string | null = null;
+  let mostRecent: string | null = null;
+  let containsRollups = false;
+  let sessionCoverageComplete = true;
+  for (const event of events) {
+    const occurredAt = String(event.occurred_at || "");
+    const lastOccurredAt = String(event._lastOccurredAt || event.occurred_at || "");
+    if (occurredAt) {
+      const day = dateKeyInTimeZone(occurredAt, timeZone);
+      series.set(day, (series.get(day) || 0) + amount(event));
+      if (!firstRecorded || Date.parse(occurredAt) < Date.parse(firstRecorded)) firstRecorded = occurredAt;
+      if (!mostRecent || Date.parse(lastOccurredAt) > Date.parse(mostRecent)) mostRecent = lastOccurredAt;
+    }
+    if (event._aggregateCount != null && event._isRollup !== false) containsRollups = true;
+    if (event._aggregateCount != null && !event.metadata?.session) sessionCoverageComplete = false;
+    if (event.metadata?.session) sessions.add(String(event.metadata.session));
+  }
+  const pages = rank((event) => normalizeAnalyticsPath(event.path));
+  const sources = rank(analyticsSourceCategory);
+  const countries = rank((event) => String(event.country_code || "Unknown"));
+  const devices = rank((event) => String(event.device || "Unknown"));
+  const browsers = rank((event) => String(event.metadata?.browser || "Unknown"));
+  const totalCount = events.reduce((total, event) => total + amount(event), 0);
+  return {
+    name: eventName,
+    eventType: events[0]?.event_type || null,
+    totalCount,
+    uniqueSessions: containsRollups || !sessionCoverageComplete ? null : sessions.size,
+    firstRecorded,
+    mostRecent,
+    topPage: pages[0] || null,
+    topSource: sources[0] || null,
+    topCountry: countries[0] || null,
+    topDevice: devices[0] || null,
+    topBrowser: browsers[0] || null,
+    series: [...series].sort(([left], [right]) => left.localeCompare(right)).map(([day, count]) => ({ day, count })),
+    breakdowns: { pages, sources, countries, devices, browsers },
+    filterOptions: {
+      paths: pages.map((row) => row.name),
+      sources: sources.map((row) => row.name),
+      countries: countries.map((row) => row.name),
+      devices: devices.map((row) => row.name),
+      browsers: browsers.map((row) => row.name),
+    },
+    aggregateCoverage: containsRollups ? "hybrid_rollups_and_raw" : "raw",
+  };
+}
+
+export function buildAnalyticsOccurrenceContext(
+  occurrence: any,
+  viewEvents: any[] = [],
+  sessionEvents: any[] = [],
+) {
+  const chronological = (rows: any[]) => [...rows].sort((left, right) =>
+    Date.parse(left.occurred_at || "") - Date.parse(right.occurred_at || "") || Number(left.id || 0) - Number(right.id || 0));
+  const viewRows = chronological(viewEvents);
+  const sessionRows = chronological(sessionEvents);
+  const occurrenceTime = Date.parse(occurrence.occurred_at || "");
+  const viewPage = viewRows.find((event) => event.event_type === "pageview");
+  const sessionPage = sessionRows
+    .filter((event) => event.event_type === "pageview" && Date.parse(event.occurred_at || "") <= occurrenceTime)
+    .at(-1);
+  const acquisitionEvent = viewPage || sessionPage || occurrence;
+  const metadata = { ...(acquisitionEvent.metadata || {}), ...(occurrence.metadata || {}) };
+  const activeSeconds = viewRows
+    .filter((event) => event.event_type === "active_time" && Number.isFinite(Number(event.value)))
+    .reduce((total, event) => total + Number(event.value), 0);
+  const maxScroll = viewRows
+    .filter((event) => event.event_type === "scroll" && Number.isFinite(Number(event.value)))
+    .reduce((maximum, event) => Math.max(maximum, Number(event.value)), 0);
+  const visibleSections = [...new Set(viewRows
+    .filter((event) => event.event_type === "visible_section" && event.name)
+    .map((event) => String(event.name)))];
+  const vitalMap = new Map<string, number>();
+  for (const event of viewRows)
+    if (event.event_type === "web_vital" && event.name && Number.isFinite(Number(event.value)))
+      vitalMap.set(String(event.name).toUpperCase(), Number(event.value));
+  const meaningful = sessionRows.filter((event) =>
+    event.event_type === "pageview" || ANALYTICS_KEY_EVENT_TYPES.has(String(event.event_type)));
+  const occurrenceIndex = meaningful.findIndex((event) => String(event.id) === String(occurrence.id));
+  const compact = (event: any) => event ? {
+    type: event.event_type,
+    path: normalizeAnalyticsPath(event.path),
+    name: event.name || null,
+    occurredAt: event.occurred_at,
+  } : null;
+  const pageSequence: string[] = [];
+  for (const event of sessionRows.filter((row) => row.event_type === "pageview")) {
+    const path = normalizeAnalyticsPath(event.path);
+    if (pageSequence.at(-1) !== path) pageSequence.push(path);
+  }
+  const relatedKeyEvents = meaningful
+    .filter((event) => ANALYTICS_KEY_EVENT_TYPES.has(String(event.event_type)) && String(event.id) !== String(occurrence.id))
+    .map(compact)
+    .slice(0, 30);
+  const journey: Array<{ type: string; label: string }> = [];
+  journey.push({ type: "source", label: analyticsSourceCategory(acquisitionEvent) });
+  for (const path of pageSequence.filter((path) => Date.parse(sessionRows.find((event) => event.event_type === "pageview" && normalizeAnalyticsPath(event.path) === path)?.occurred_at || "") <= occurrenceTime))
+    journey.push({ type: "page", label: path });
+  if (maxScroll > 0) journey.push({ type: "behaviour", label: `Scrolled ${Math.round(maxScroll)}%` });
+  journey.push({ type: "event", label: String(occurrence.name || occurrence.event_type || "Event") });
+  return {
+    name: occurrence.name || occurrence.event_type,
+    eventType: occurrence.event_type,
+    occurredAt: occurrence.occurred_at,
+    receivedAt: occurrence.received_at,
+    path: normalizeAnalyticsPath(occurrence.path),
+    acquisition: {
+      source: analyticsSourceCategory(acquisitionEvent),
+      sourceDetail: analyticsSource(acquisitionEvent),
+      referrer: acquisitionEvent.referrer_host || null,
+      utmSource: metadata.utm_source || null,
+      utmMedium: metadata.utm_medium || null,
+      utmCampaign: metadata.utm_campaign || null,
+      utmContent: metadata.utm_content || null,
+      utmTerm: metadata.utm_term || null,
+    },
+    visitor: {
+      country: occurrence.country_code || acquisitionEvent.country_code || null,
+      device: occurrence.device || acquisitionEvent.device || null,
+      browser: occurrence.metadata?.browser || acquisitionEvent.metadata?.browser || null,
+      screen: analyticsScreenCategory(occurrence.metadata?.screen || acquisitionEvent.metadata?.screen),
+      language: occurrence.metadata?.language || acquisitionEvent.metadata?.language || null,
+    },
+    behaviour: {
+      activeSeconds,
+      maxScroll,
+      visibleSections,
+      javascriptErrors: viewRows.filter((event) => event.event_type === "js_error").length,
+      pageSequence,
+      relatedKeyEvents,
+      previous: occurrenceIndex > 0 ? compact(meaningful[occurrenceIndex - 1]) : null,
+      next: occurrenceIndex >= 0 && occurrenceIndex < meaningful.length - 1 ? compact(meaningful[occurrenceIndex + 1]) : null,
+      journey,
+    },
+    webVitals: [...vitalMap].map(([name, value]) => ({ name, value })),
+    contextAvailability: {
+      view: Boolean(occurrence.metadata?.view_id && viewRows.length),
+      session: Boolean(occurrence.metadata?.session && sessionRows.length),
+    },
+  };
 }
 
 function cleanAnalyticsFilter(value: string | undefined, maximumLength: number) {

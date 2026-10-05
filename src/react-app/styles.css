@@ -2823,6 +2823,101 @@ input[type="checkbox"]:checked:after {
 .analytics-detail-heading > a:last-child {
   margin-left: auto;
 }
+.analytics-event-detail {
+  display: grid;
+  gap: 14px;
+}
+.analytics-event-detail > .analytics-detail-heading,
+.analytics-event-detail > .metrics,
+.analytics-event-detail > .filter-toolbar,
+.analytics-event-detail > .tabs {
+  margin-bottom: 0;
+}
+.clickable-table-row {
+  cursor: pointer;
+}
+.clickable-table-row:hover td {
+  background-color: #fafafa;
+}
+.event-summary-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.event-summary-grid > :last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
+.event-occurrences-table {
+  min-width: 1060px;
+}
+.event-occurrences-table th,
+.event-occurrences-table td {
+  white-space: nowrap;
+}
+.event-occurrence-expanded > td {
+  padding: 0;
+  white-space: normal;
+  background: #fafafa;
+}
+.event-occurrence-detail {
+  display: grid;
+  gap: 18px;
+  padding: 20px;
+  border-left: 3px solid #b8d9ff;
+}
+.event-occurrence-detail h4 {
+  margin: 0 0 10px;
+}
+.event-context-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.event-context-grid > section {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+.event-context-grid dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+.event-context-grid dl > div {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.42fr) minmax(0, 1fr);
+  gap: 10px;
+}
+.event-context-grid dt {
+  color: var(--muted);
+}
+.event-context-grid dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.event-journey {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.event-journey > svg {
+  width: 14px;
+  color: var(--muted);
+}
+.event-journey-step {
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  font-size: 12px;
+}
+.event-journey-step.event {
+  border-color: #b8d9ff;
+  background: #eef7ff;
+  font-weight: 700;
+}
 .analytics-pagination {
   justify-content: flex-end;
   padding: 14px 8px 4px;
@@ -3294,6 +3389,13 @@ input[type="checkbox"]:checked:after {
   }
   .analytics-detail-heading > a:last-child {
     margin-left: 0;
+  }
+  .event-summary-grid,
+  .event-context-grid {
+    grid-template-columns: 1fr;
+  }
+  .event-summary-grid > :last-child:nth-child(odd) {
+    grid-column: auto;
   }
   .analytics-pagination {
     justify-content: flex-start;
