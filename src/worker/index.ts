@@ -2269,7 +2269,10 @@ app.get("/api/properties/:id/overview", async (c) => {
       .maybeSingle(),
   ]);
   const failure = analyticsResult.error || auditResult.error;
-  if (failure) return c.json({ error: failure.message }, 400);
+  if (failure) {
+    console.error("property overview query failed", failure.message);
+    return c.json({ error: failure.message }, 400);
+  }
   const latestAudit = auditResult.data as any;
   let audit = null;
   if (latestAudit) {
