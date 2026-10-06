@@ -140,4 +140,4 @@ This is an acceptance record, not a marketing checklist. A page or schema founda
 - [x] Replace repeated Platform Health and Infrastructure tab bodies with distinct service, queue, error, incident, release, audit, browser, database, usage and operational-control views.
 - [x] Keep operational controls authoritative under Infrastructure & Usage and remove the duplicate Administration feature-controls tab.
 - [x] Add editable versioned templates plus automation and campaign actions; new outbound execution remains behind the existing safe-recipient and policy gates.
-- [ ] Production migration, deployment workflow and exact-commit health verification for this checkpoint.
+- [x] Production workflow `37456019756` applied migration `20261006120000`, deployed commit `b78b705ec286fbcde0fa7c0f3ff36748df62f346` and passed exact-commit health verification.

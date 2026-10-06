@@ -60,3 +60,4 @@
 - Database size and connection data comes from PostgreSQL through a bounded service-role-only function. Provider CPU, memory, disk quota, billing and backup status are not inferred from relation sizes.
 - Operational pause/resume controls have one authoritative home under Infrastructure & Usage. Administration links to configuration editors and no longer duplicates the controls tab.
 - Directory row menus expose contextual operations while the primary user/property names are direct links to their settings screens. Mutations still require the existing server permission, MFA and reason checks.
+- Production workflow `37456019756` validated, migrated, deployed and health-verified the operational-editor checkpoint at commit `b78b705ec286fbcde0fa7c0f3ff36748df62f346`.
