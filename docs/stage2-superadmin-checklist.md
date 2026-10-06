@@ -128,3 +128,16 @@ This is an acceptance record, not a marketing checklist. A page or schema founda
 - [ ] Deploy and health-verify the containing customer-operations/audit-controls checkpoint and migration `20261006114500`.
 - [ ] Owner signs in, completes AAL2 and verifies staff directory plus a read-only delegated-session smoke test.
 - [ ] Stripe, new outbound automation, automatic deletion, cleanup and unverified provider controls remain off until their individual prerequisites are satisfied.
+
+## 2026-10-06 — operational editor and directory usability checkpoint
+
+- [x] Add consistent table filtering, 50/100/200 page-size selection, visible record totals, pagination and three-dot row actions to SuperAdmin data tables.
+- [x] Remove the Saved view selector at the Owner's direction; the underlying private saved-view records are not surfaced in this release.
+- [x] Link user names to identity/profile settings and property names to property settings, with reasoned server-side edits and administrative activity.
+- [x] Add versioned package allowance/feature/retention/hard-ceiling editing. Published versions are immutable; edits create drafts and publication remains explicit.
+- [x] Add a structured, validated global safety-ceiling editor rather than a raw JSON display.
+- [x] Add PostgreSQL-reported database size, relation size and connection metrics through a service-role-only function. Supabase CPU/memory, quota and backup/PITR telemetry remain explicitly unavailable without provider access.
+- [x] Replace repeated Platform Health and Infrastructure tab bodies with distinct service, queue, error, incident, release, audit, browser, database, usage and operational-control views.
+- [x] Keep operational controls authoritative under Infrastructure & Usage and remove the duplicate Administration feature-controls tab.
+- [x] Add editable versioned templates plus automation and campaign actions; new outbound execution remains behind the existing safe-recipient and policy gates.
+- [ ] Production migration, deployment workflow and exact-commit health verification for this checkpoint.

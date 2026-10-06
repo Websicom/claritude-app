@@ -52,3 +52,11 @@
 - Selected/account/query export filters are applied again inside the asynchronous export worker after the staff permission recheck. Account exports therefore cannot rely on client-only filtering.
 - Customer-facing audit groups now receive the same reviewed configuration discipline as technical checks: an immutable pre-change snapshot, monotonically increasing configuration version, reasoned rollback and package-level availability overrides. Executable audit logic remains repository-owned.
 - Ownership transfer and cross-account property transfer are intentionally not approximated with an unsafe administrator-only reassignment. They remain outstanding until the destination identity can accept a short-lived, account-scoped verification workflow.
+
+## 2026-10-06 — second screenshot review decisions
+
+- The Owner explicitly rejected the Saved view selector. It is removed from the SuperAdmin interface even though the earlier brief requested saved views; this later direction is authoritative.
+- Published package definitions remain immutable. Editing allowances, feature flags, retention or hard ceilings always creates the next draft version, preventing silent changes to existing accounts.
+- Database size and connection data comes from PostgreSQL through a bounded service-role-only function. Provider CPU, memory, disk quota, billing and backup status are not inferred from relation sizes.
+- Operational pause/resume controls have one authoritative home under Infrastructure & Usage. Administration links to configuration editors and no longer duplicates the controls tab.
+- Directory row menus expose contextual operations while the primary user/property names are direct links to their settings screens. Mutations still require the existing server permission, MFA and reason checks.

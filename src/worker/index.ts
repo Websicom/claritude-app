@@ -2227,6 +2227,76 @@ app.get("/api/superadmin/accounts/:id", async (c) => {
   return c.json({ account: account.data, workspaces: workspaces.data || [], properties: properties.data || [], memberships: memberships.data || [], billingMemberships: billingMemberships.data || [], notes: notes.data || [], controls: controls.data || [], activity: activity.data || [], messages: messages.data || [], usage: usage.data || [], assignments: assignments.data || [], grants: grants.data || [], overrides: overrides.data || [], inactivity: inactivity.data, effectiveEntitlements: effective });
 });
 
+app.get("/api/superadmin/users/:id", async (c) => {
+  const authorization = await requireStaff(c, "customers.read");
+  if (authorization.response) return authorization.response;
+  const userId = c.req.param("id");
+  const service = admin(c.env);
+  const [identity, profile, accounts, workspaces, properties, billing] = await Promise.all([
+    service.auth.admin.getUserById(userId),
+    service.from("profiles").select("*").eq("id", userId).maybeSingle(),
+    service.from("account_memberships").select("*,accounts(id,name,access_state)").eq("user_id", userId),
+    service.from("workspace_memberships").select("*,workspaces(id,name,account_id)").eq("user_id", userId),
+    service.from("property_memberships").select("*,properties(id,name,canonical_host,account_id)").eq("user_id", userId),
+    service.from("account_billing_memberships").select("*,accounts(id,name)").eq("user_id", userId),
+  ]);
+  if (identity.error || !identity.data.user) return c.json({ error: "user_not_found" }, 404);
+  return c.json({ identity: { id: identity.data.user.id, email: identity.data.user.email, confirmedAt: identity.data.user.email_confirmed_at, lastSignInAt: identity.data.user.last_sign_in_at, createdAt: identity.data.user.created_at }, profile: profile.data, accountMemberships: accounts.data || [], workspaceMemberships: workspaces.data || [], propertyMemberships: properties.data || [], billingMemberships: billing.data || [] });
+});
+
+app.patch("/api/superadmin/users/:id/profile", async (c) => {
+  const authorization = await requireStaff(c, "customers.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ fullName?: string; reason?: string }>().catch(() => ({} as any));
+  const fullName = String(body.fullName || "").trim();
+  const reason = String(body.reason || "").trim();
+  if (!fullName || fullName.length > 120 || reason.length < 3 || reason.length > 500) return c.json({ error: "name_and_reason_required" }, 400);
+  const service = admin(c.env);
+  const { data: previous } = await service.from("profiles").select("full_name").eq("id", c.req.param("id")).maybeSingle();
+  const { data, error } = await service.from("profiles").upsert({ id: c.req.param("id"), full_name: fullName, updated_at: new Date().toISOString() }).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "user.profile_changed", "success", { targetType: "user", targetId: c.req.param("id"), reason, previousValues: previous, newValues: { full_name: fullName } });
+  return c.json({ profile: data });
+});
+
+app.get("/api/superadmin/properties/:id", async (c) => {
+  const authorization = await requireStaff(c, "customers.read");
+  if (authorization.response) return authorization.response;
+  const propertyId = c.req.param("id");
+  const service = admin(c.env);
+  const [property, monitor, viewers, audits, events, incidents] = await Promise.all([
+    service.from("properties").select("*,workspaces(id,name,account_id),accounts(id,name,access_state)").eq("id", propertyId).maybeSingle(),
+    service.from("uptime_monitors").select("*").eq("property_id", propertyId).maybeSingle(),
+    service.from("property_memberships").select("*").eq("property_id", propertyId),
+    service.from("audit_runs").select("id,status,created_at,completed_at,score,coverage").eq("property_id", propertyId).order("created_at", { ascending: false }).limit(50),
+    service.from("analytics_events").select("id", { count: "exact", head: true }).eq("property_id", propertyId),
+    service.from("incidents").select("*").eq("property_id", propertyId).order("opened_at", { ascending: false }).limit(50),
+  ]);
+  if (property.error || !property.data) return c.json({ error: "property_not_found" }, 404);
+  return c.json({ property: property.data, monitor: monitor.data, viewers: viewers.data || [], audits: audits.data || [], analyticsEventCount: events.count || 0, incidents: incidents.data || [] });
+});
+
+app.patch("/api/superadmin/properties/:id", async (c) => {
+  const authorization = await requireStaff(c, "customers.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ name?: string; workspaceId?: string; accessState?: string; reason?: string }>().catch(() => ({} as any));
+  const name = String(body.name || "").trim();
+  const reason = String(body.reason || "").trim();
+  if (!name || name.length > 160 || reason.length < 3 || reason.length > 500) return c.json({ error: "name_and_reason_required" }, 400);
+  if (body.accessState && !["active", "locked", "paused"].includes(body.accessState)) return c.json({ error: "invalid_property_access_state" }, 400);
+  const service = admin(c.env);
+  const { data: previous } = await service.from("properties").select("id,name,workspace_id,account_id,access_state").eq("id", c.req.param("id")).maybeSingle();
+  if (!previous) return c.json({ error: "property_not_found" }, 404);
+  if (body.workspaceId) {
+    const workspace = await service.from("workspaces").select("id,account_id").eq("id", body.workspaceId).maybeSingle();
+    if (!workspace.data || workspace.data.account_id !== previous.account_id) return c.json({ error: "workspace_must_belong_to_property_account" }, 409);
+  }
+  const { data, error } = await service.from("properties").update({ name, workspace_id: body.workspaceId || previous.workspace_id, access_state: body.accessState || previous.access_state }).eq("id", previous.id).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "property.settings_changed", "success", { targetType: "property", targetId: data.id, accountId: data.account_id, reason, previousValues: previous, newValues: { name: data.name, workspace_id: data.workspace_id, access_state: data.access_state } });
+  return c.json({ property: data });
+});
+
 app.post("/api/superadmin/accounts/:id/deletion-preview", async (c) => {
   const authorization = await requireStaff(c, "customers.write");
   if (authorization.response) return authorization.response;
@@ -2406,7 +2476,7 @@ app.get("/api/superadmin/platform", async (c) => {
   if (authorization.response) return authorization.response;
   const service = admin(c.env);
   const today = new Date().toISOString().slice(0, 10);
-  const [settings, settingHistory, controls, alerts, alertRules, alertHistory, incidents, packages, grants, overrides, inactivity, auditDefinitions, auditGroups, auditGroupHistory, auditPackageAvailability, auditRuns, exports, deletionRequests, templates, automations, campaigns, billingCustomers, billingEvents, promotions, deliveries, suppressions] = await Promise.all([
+  const [settings, settingHistory, controls, alerts, alertRules, alertHistory, incidents, packages, grants, overrides, inactivity, auditDefinitions, auditGroups, auditGroupHistory, auditPackageAvailability, auditRuns, exports, deletionRequests, templates, automations, campaigns, billingCustomers, billingEvents, promotions, deliveries, suppressions, databaseMetrics, operationalEvents, leases] = await Promise.all([
     service.from("platform_settings").select("*").order("key"),
     service.from("platform_setting_history").select("*").order("changed_at", { ascending: false }).limit(250),
     service.from("emergency_controls").select("*").order("key"),
@@ -2433,6 +2503,9 @@ app.get("/api/superadmin/platform", async (c) => {
     service.from("promotion_rules").select("*").order("created_at", { ascending: false }).limit(100),
     service.from("notification_deliveries").select("id,kind,recipient,status,provider,provider_status,provider_id,error,is_test,account_id,property_id,template_id,automation_key,campaign_id,payload,created_at,updated_at").order("created_at", { ascending: false }).limit(250),
     service.from("email_suppressions").select("id,recipient,category,reason,source,created_at,lifted_at").is("lifted_at", null).order("created_at", { ascending: false }).limit(250),
+    service.rpc("superadmin_database_metrics"),
+    service.from("operational_events").select("id,service,metric,value,unit,source,account_id,property_id,metadata,observed_at").gte("observed_at", `${today}T00:00:00.000Z`).order("observed_at", { ascending: false }).limit(2000),
+    service.from("processing_leases").select("id,job_type,job_id,account_id,state,expires_at,created_at,updated_at").order("created_at", { ascending: false }).limit(500),
   ]);
   const runs = auditRuns.data || [];
   const auditStatus = Object.fromEntries(["queued", "running", "completed", "partial", "failed"].map((status) => [status, runs.filter((run) => run.status === status).length]));
@@ -2451,7 +2524,8 @@ app.get("/api/superadmin/platform", async (c) => {
     environment: { name: c.env.APP_ORIGIN.includes("app.claritude.io") ? "Production" : "Preview", commitSha: c.env.DEPLOY_COMMIT_SHA || null, refreshedAt: new Date().toISOString() },
     providers: { stripe: { configured: Boolean(c.env.STRIPE_SECRET_KEY && c.env.STRIPE_WEBHOOK_SECRET), mode: c.env.STRIPE_SECRET_KEY?.startsWith("sk_test_") ? "sandbox" : c.env.STRIPE_SECRET_KEY ? "live" : "unconfigured", tax: "unconfigured" }, resend: { configured: Boolean(c.env.RESEND_API_KEY), from: c.env.RESEND_FROM || null }, cloudflareTelemetry: "unavailable", supabaseBackups: "unverified" },
     settings: settings.data || [], settingHistory: settingHistory.data || [], controls: controls.data || [], featureStates, alerts: alerts.data || [], alertRules: alertRules.data || [], alertHistory: alertHistory.data || [], alertCoverage: { enabledRuleCount: (alertRules.data || []).filter((item) => item.enabled).length, lastEvaluationAt: (alertRules.data || []).map((item) => item.last_evaluated_at).filter(Boolean).sort().at(-1) || null, evaluatorHealth: !(alertRules.data || []).length ? "no_rules" : (alertRules.data || []).some((item) => item.evaluation_state === "failing") ? "failing" : (alertRules.data || []).every((item) => item.evaluation_state === "not_started") ? "not_started" : (alertRules.data || []).some((item) => item.evaluation_state === "telemetry_unavailable") ? "telemetry_unavailable" : "healthy" }, incidents: incidents.data || [], packages: packages.data || [], grants: grants.data || [], overrides: overrides.data || [], inactivity: inactivity.data || [],
-    audits: { technicalChecks: auditDefinitions.data || [], groups: auditGroups.data || [], groupHistory: auditGroupHistory.data || [], packageAvailability: auditPackageAvailability.data || [], today: auditStatus, source: "application_measured", period: "UTC day" },
+    audits: { technicalChecks: auditDefinitions.data || [], groups: auditGroups.data || [], groupHistory: auditGroupHistory.data || [], packageAvailability: auditPackageAvailability.data || [], today: auditStatus, runs: runs, source: "application_measured", period: "UTC day" },
+    infrastructure: { database: databaseMetrics.data || null, databaseError: databaseMetrics.error?.message || null, events: operationalEvents.data || [], leases: leases.data || [], period: "UTC day" },
     exports: exports.data || [], deletionRequests: deletionRequests.data || [], email: { templates: templates.data || [], automations: automations.data || [], campaigns: campaigns.data || [], deliveries: deliveries.data || [], suppressions: suppressions.data || [] },
     billing: { configured: Boolean(c.env.STRIPE_SECRET_KEY && c.env.STRIPE_WEBHOOK_SECRET), customers: billingCustomers.data || [], events: billingEvents.data || [], promotions: promotions.data || [], calculations: { mrr: "Unavailable until Stripe is configured and reconciled", arr: "Unavailable until Stripe is configured and reconciled", cashCollected: "Unavailable until Stripe is configured and reconciled", currencyPolicy: "Currencies remain separate unless an explicit labelled conversion is configured" } },
   });
@@ -2598,6 +2672,56 @@ app.post("/api/superadmin/packages/:id/migration-preview", async (c) => {
   if (error) return c.json({ error: error.message }, 400);
   await recordAdminActivity(c.env, authorization.staff!.userId, "package.migration_previewed", "previewed", { targetType: "package_version", targetId: packageVersion.id, reason, metadata: { changeRequestId: request.id, affectedAccounts: previewRows.length, conflictAccounts: preview.conflictAccounts } });
   return c.json({ request, preview });
+});
+
+app.post("/api/superadmin/packages/:id/versions", async (c) => {
+  const authorization = await requireStaff(c, "packages.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<any>().catch(() => ({}));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3 || reason.length > 500) return c.json({ error: "reason_required" }, 400);
+  const service = admin(c.env);
+  const { data: source } = await service.from("package_versions").select("*").eq("id", c.req.param("id")).maybeSingle();
+  if (!source) return c.json({ error: "package_version_not_found" }, 404);
+  const objects = ["pricing", "allowances", "features", "retention", "hardCeilings"];
+  if (objects.some((key) => body[key] != null && (typeof body[key] !== "object" || Array.isArray(body[key])))) return c.json({ error: "package_configuration_objects_required" }, 400);
+  const numericValues = Object.values({ ...(body.allowances || {}), ...(body.hardCeilings || {}) }).filter((value) => value !== null);
+  if (numericValues.some((value) => typeof value === "number" && (!Number.isFinite(value) || value < 0))) return c.json({ error: "package_limits_must_be_non_negative" }, 400);
+  const latest = await service.from("package_versions").select("version").eq("package_key", source.package_key).order("version", { ascending: false }).limit(1).single();
+  const next = {
+    package_key: source.package_key,
+    version: Number(latest.data?.version || source.version) + 1,
+    display_name: String(body.displayName || source.display_name).trim().slice(0, 120),
+    state: "draft",
+    effective_at: body.effectiveAt || null,
+    pricing: body.pricing ?? source.pricing,
+    allowances: body.allowances ?? source.allowances,
+    features: body.features ?? source.features,
+    retention: body.retention ?? source.retention,
+    hard_ceilings: body.hardCeilings ?? source.hard_ceilings,
+    unresolved_values: Array.isArray(body.unresolvedValues) ? body.unresolvedValues.map(String).slice(0, 100) : source.unresolved_values,
+    created_by: authorization.staff!.userId,
+  };
+  const { data, error } = await service.from("package_versions").insert(next).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "package.version_created", "success", { targetType: "package_version", targetId: data.id, reason, previousValues: source, newValues: data });
+  return c.json({ packageVersion: data }, 201);
+});
+
+app.post("/api/superadmin/packages/:id/publish", async (c) => {
+  const authorization = await requireStaff(c, "packages.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({} as any));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3 || reason.length > 500) return c.json({ error: "reason_required" }, 400);
+  const service = admin(c.env);
+  const { data: draft } = await service.from("package_versions").select("*").eq("id", c.req.param("id")).maybeSingle();
+  if (!draft) return c.json({ error: "package_version_not_found" }, 404);
+  if (draft.state !== "draft") return c.json({ error: "draft_package_version_required" }, 409);
+  const { data, error } = await service.from("package_versions").update({ state: "published", effective_at: draft.effective_at || new Date().toISOString() }).eq("id", draft.id).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "package.version_published", "success", { targetType: "package_version", targetId: data.id, reason, previousValues: draft, newValues: data, metadata: { existingAccountsMigrated: false } });
+  return c.json({ packageVersion: data, existingAccountsMigrated: false });
 });
 
 app.post("/api/superadmin/accounts/:id/overrides", async (c) => {
@@ -2912,9 +3036,16 @@ app.patch("/api/superadmin/email/campaigns/:id", async (c) => {
     if (!scheduledAt || Date.parse(scheduledAt) <= Date.now()) return c.json({ error: "future_schedule_required" }, 400);
     changes = { state: "scheduled", scheduled_at: scheduledAt };
   } else if (body.action === "cancel") changes = { state: "cancelled", cancelled_at: new Date().toISOString() };
-  else return c.json({ error: "valid_campaign_action_required" }, 400);
+  else if (body.action === "edit") {
+    const reason = String(body.reason || "").trim();
+    const name = String(body.name || "").trim();
+    if (previous.state !== "draft") return c.json({ error: "draft_campaign_required" }, 409);
+    if (name.length < 3 || reason.length < 3 || reason.length > 500) return c.json({ error: "campaign_name_and_reason_required" }, 400);
+    changes = { name, subject: String(body.subject || "").trim() || null, template_id: body.templateId || null, segment: body.segment && typeof body.segment === "object" ? body.segment : {} };
+  } else return c.json({ error: "valid_campaign_action_required" }, 400);
   const { data, error } = await service.from("email_campaigns").update(changes).eq("id", previous.id).select().single();
   if (error) return c.json({ error: error.message }, 400);
+  if (body.action === "edit") await recordAdminActivity(c.env, authorization.staff!.userId, "email_campaign.changed", "success", { targetType: "email_campaign", targetId: data.id, reason: String(body.reason || "").trim(), previousValues: previous, newValues: data });
   return c.json({ campaign: data, customerSendActivated: false });
 });
 
