@@ -4340,7 +4340,7 @@ input[type="checkbox"]:checked:after {
 .audit-finding-evidence > span { color: var(--muted); font-size: 11px; font-weight: 650; }
 .audit-finding-evidence > div { display: grid; gap: 6px; }
 .audit-finding-evidence code { display: block; padding: 9px 10px; border: 1px solid #d9dce2; border-radius: 8px; background: #fff; color: #1f2937; white-space: pre-wrap; overflow-wrap: anywhere; }
-.audit-finding-evidence .text-link { display: inline-flex; justify-self: start; align-items: center; gap: 4px; font-size: 12px; }
+.audit-finding-evidence .text-link { display: inline-flex; justify-self: start; align-items: center; gap: 4px; padding: 0; border: 0; background: transparent; color: var(--blue); font-size: 12px; font-weight: 650; cursor: pointer; }
 .audit-finding-evidence .text-link svg { width: 14px; transition: transform .15s ease; }
 .audit-finding-evidence .text-link[aria-expanded="true"] svg { transform: rotate(180deg); }
 .audit-occurrence-group { margin: 8px 0 14px; }
@@ -4349,8 +4349,8 @@ input[type="checkbox"]:checked:after {
 .audit-occurrences li { padding: 9px 10px; background: #fafafa; }
 .audit-occurrences code { padding: 0; border: 0; background: transparent; font-size: 12px; }
 .audit-example-fix { display: grid; gap: 8px; margin-top: 14px; }
-.audit-example-fix pre { margin: 0; max-width: 100%; overflow-x: auto; padding: 13px 14px; border: 1px solid #d9dce2; border-radius: 9px; background: #fff; color: #1f2937; white-space: pre; }
-.audit-example-fix code { padding: 0; border: 0; background: transparent; color: inherit; white-space: pre; overflow: visible; }
+.audit-example-fix pre { margin: 0; max-width: 100%; overflow-x: auto; padding: 13px 14px; border: 1px solid #d9dce2; border-radius: 9px; background: #fff; color: #1f2937; white-space: pre-wrap; overflow-wrap: anywhere; }
+.audit-example-fix code { padding: 0; border: 0; background: transparent; color: inherit; white-space: inherit; overflow: visible; }
 .audit-detail-actions { justify-content: flex-start; }
 .audit-more-information { display: inline-flex; align-items: center; gap: 5px; font-weight: 650; }
 .audit-more-information svg { width: 14px; height: 14px; }
