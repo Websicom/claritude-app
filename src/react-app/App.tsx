@@ -1,18 +1,19 @@
-import { createClient, type Session } from "@supabase/supabase-js";
+import { type Session } from "@supabase/supabase-js";
 import { Check } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { apiRequest as api } from "./api";
 import { ClaritudeApplication } from "./RecoveryDashboard";
-
-const supabase = createClient(
-  import.meta.env.VITE_SUPABASE_URL ||
-    "https://dfaxmxschvzmlozxjaxf.supabase.co",
-  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
-    "sb_publishable_zNc8TQjoFQ-OI2nKbiNOPA_5ukCoCY6",
-);
+import { supabase } from "./supabase";
 type Bootstrap = {
   superadmin: boolean;
+  staff: {
+    role: "owner" | "support" | "finance" | "engineering";
+    status: "active" | "suspended";
+    displayName: string | null;
+    permissions: string[];
+    aal: "aal1" | "aal2";
+  } | null;
   profile: any;
   accounts: any[];
   workspaces: any[];
@@ -22,6 +23,7 @@ type Bootstrap = {
 };
 const fixtureData: Bootstrap = {
   superadmin: true,
+  staff: { role: "owner", status: "active", displayName: "Adam Jordan", permissions: [], aal: "aal2" },
   profile: { full_name: "Adam Jordan", timezone: "Europe/London" },
   accounts: [{ role: "owner", accounts: { name: "Websi" } }],
   workspaces: [

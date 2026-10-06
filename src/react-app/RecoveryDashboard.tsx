@@ -73,6 +73,7 @@ import {
   useNavigate,
 } from "react-router-dom";
 import { apiRequest as api } from "./api";
+import { supabase } from "./supabase";
 import { estimateIncidentDowntime } from "../shared/uptime";
 import { USER_FACING_AUDIT_GROUPS } from "../shared/audit-user-facing-registry.generated";
 
@@ -257,6 +258,13 @@ function ProfileAvatar({ profile, name, className = "" }: { profile: any; name?:
 }
 type Bootstrap = {
   superadmin?: boolean;
+  staff?: {
+    role: "owner" | "support" | "finance" | "engineering";
+    status: "active" | "suspended";
+    displayName: string | null;
+    permissions: string[];
+    aal: "aal1" | "aal2";
+  } | null;
   profile: any;
   accounts: any[];
   workspaces: any[];
@@ -366,6 +374,46 @@ export function customEventUsageText(allowance: CustomEventAllowance | null) {
     : `${allowance.used} of ${allowance.limit} events used`;
 }
 
+const SUPERADMIN_NAVIGATION = [
+  { label: "Command centre", items: [{ id: "overview", label: "Overview" }] },
+  { label: "Customers", items: [
+    { id: "accounts", label: "Accounts" },
+    { id: "users", label: "Users" },
+    { id: "resources", label: "Workspaces & Properties" },
+  ] },
+  { label: "Commercial", items: [
+    { id: "packages", label: "Packages & Rules" },
+    { id: "financials", label: "Financials" },
+    { id: "coupons", label: "Coupons & Promotions" },
+  ] },
+  { label: "Operations", items: [
+    { id: "audits", label: "Audit Controls" },
+    { id: "health", label: "Platform Health" },
+    { id: "infrastructure", label: "Infrastructure & Usage" },
+    { id: "email", label: "Email & Notifications" },
+    { id: "alerts", label: "Alerts" },
+    { id: "data", label: "Data & Exports" },
+    { id: "administration", label: "Administration" },
+  ] },
+] as const;
+
+const SUPERADMIN_TABS: Record<string, string[]> = {
+  overview: ["Summary", "Customer activity", "Revenue", "Service health"],
+  accounts: ["All accounts", "Needs attention", "Scheduled changes"],
+  users: ["All users", "Invitations", "Access issues"],
+  resources: ["Properties", "Workspaces", "Connection health"],
+  packages: ["Packages", "Versions & Grandfathering", "Account overrides", "Subscription rules", "Free account inactivity"],
+  financials: ["Overview", "Subscriptions", "Invoices & Payments", "Recovery", "Refunds & Credits", "Revenue analysis", "Reconciliation"],
+  coupons: ["Codes", "Discounts", "Redemptions"],
+  audits: ["Catalogue", "Configuration", "Check health", "Change history"],
+  health: ["Services", "Jobs & Queues", "Errors", "Incidents", "Releases"],
+  infrastructure: ["Overview", "Audits", "Workers & Queues", "Browser", "Database & Storage", "Account usage", "Safety limits"],
+  email: ["Overview", "Templates", "Automations", "Campaigns", "Delivery", "Preferences"],
+  alerts: ["Active alerts", "Rules", "History", "Weekly digest"],
+  data: ["Exports", "Retention", "Cleanup", "Backups & Recovery", "Deletion requests"],
+  administration: ["Staff & Permissions", "Customer sessions", "Admin activity", "Feature controls", "Settings"],
+};
+
 /**
  * Canonical Claritude product surface. Live and deterministic visual-test
  * modes render this same component tree; fixture mode only substitutes an
@@ -401,6 +449,9 @@ export function ClaritudeApplication({
     );
   const toastTimer = useRef<number | null>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
+  const [delegationBanner, setDelegationBanner] = useState<any>(() => {
+    try { return JSON.parse(localStorage.getItem("claritude-delegation") || "null"); } catch { return null; }
+  });
   const allProperties = data.properties;
   const requestedWorkspace = new URLSearchParams(loc.search).get("workspace");
   const requested = new URLSearchParams(loc.search).get("property");
@@ -472,6 +523,20 @@ export function ClaritudeApplication({
     },
     [],
   );
+  useEffect(() => {
+    const refreshDelegation = () => {
+      try {
+        const value = JSON.parse(localStorage.getItem("claritude-delegation") || "null");
+        if (value?.expires_at && Date.parse(value.expires_at) <= Date.now()) {
+          localStorage.removeItem("claritude-delegation");
+          setDelegationBanner(null);
+        } else setDelegationBanner(value);
+      } catch { setDelegationBanner(null); }
+    };
+    window.addEventListener("claritude-delegation-change", refreshDelegation);
+    const interval = window.setInterval(refreshDelegation, 30_000);
+    return () => { window.removeEventListener("claritude-delegation-change", refreshDelegation); window.clearInterval(interval); };
+  }, []);
   const href = (path: string, id = property?.id) =>
     `/${path}${id ? `?property=${id}` : ""}`;
   const scopedNotifications = property
@@ -680,14 +745,25 @@ export function ClaritudeApplication({
             </button>
             {platformContext ? (
               <>
-                <Link className="active" to="/superadmin">
-                  <ShieldAlert />
-                  SuperAdmin
-                </Link>
-                <Link to="/">
-                  <Home />
-                  My workspace
-                </Link>
+                {SUPERADMIN_NAVIGATION.map((group) => (
+                  <div className="superadmin-nav-group" key={group.label}>
+                    <b>{group.label}</b>
+                    {group.items.map((item) => (
+                      <Link
+                        className={(new URLSearchParams(loc.search).get("view") || "overview") === item.id ? "active" : ""}
+                        to={`/superadmin${item.id === "overview" ? "" : `?view=${item.id}`}`}
+                        key={item.id}
+                      >
+                        <ShieldAlert />
+                        {item.label}
+                      </Link>
+                    ))}
+                  </div>
+                ))}
+                <div className="superadmin-nav-group">
+                  <b>Workspace</b>
+                  <Link to="/"><Home />My workspace</Link>
+                </div>
               </>
             ) : workspaceContext ? (
               <>
@@ -826,6 +902,11 @@ export function ClaritudeApplication({
           </div>
         </aside>
         <main onClick={() => setMobile(false)}>
+          {delegationBanner && <div className="delegation-banner" role="status">
+            <ShieldAlert />
+            <span><b>Customer session · {delegationBanner.accountName || delegationBanner.account_id}</b><small>Representing {delegationBanner.userEmail || delegationBanner.represented_user_id} as {delegationBanner.represented_role} · {delegationBanner.mode === "write" ? "Write enabled" : "Read-only"} · expires {fmtDate(delegationBanner.expires_at)}</small></span>
+            <button className="btn" onClick={() => { localStorage.removeItem("claritude-delegation"); setDelegationBanner(null); }}>Exit customer session</button>
+          </div>}
           {warning && (
             <>
               <div className="warning warning-desktop">
@@ -967,7 +1048,7 @@ export function ClaritudeApplication({
               path="/superadmin"
               element={
                 data.superadmin && (session || fixture) ? (
-                  <SuperAdminView session={session} fixture={fixture} />
+                  <SuperAdminView session={session} fixture={fixture} staff={data.staff || null} />
                 ) : (
                   <Page title="Access denied" showOptions={false}>
                     <Panel>
@@ -3179,6 +3260,7 @@ function AuditView({
           body: JSON.stringify({
             propertyId: property!.id,
             pageId: selectedPage.id,
+            idempotencyKey: crypto.randomUUID(),
           }),
         });
       notify("Audit queued");
@@ -4279,6 +4361,8 @@ type SuperAdminPayload = {
     userCount: number;
     offlineCount: number;
   }>;
+  workspaces: Array<{ id: string; account_id: string; name: string; created_at: string; propertyCount: number }>;
+  properties: Array<{ id: string; accountId: string | null; workspace_id: string; name: string; canonical_host: string; verification_status: string; tracking_last_received_at: string | null; created_at: string; monitor: any }>;
   users: Array<{
     id: string;
     email: string;
@@ -4298,135 +4382,283 @@ const fixtureSuperAdminPayload: SuperAdminPayload = {
     { id: "atlas", name: "Atlas Studio", entitlement: "essentials", created_at: "2026-10-01T11:00:00Z", workspaceCount: 2, propertyCount: 3, userCount: 2, offlineCount: 0 },
     { id: "cedar", name: "Cedar Finance", entitlement: "free", created_at: "2026-10-03T12:00:00Z", workspaceCount: 1, propertyCount: 2, userCount: 2, offlineCount: 0 },
   ],
+  workspaces: [
+    { id: "websi-main", account_id: "websi", name: "Websi workspace", created_at: "2026-09-28T09:00:00Z", propertyCount: 4 },
+  ],
+  properties: [
+    { id: "websi-property", accountId: "websi", workspace_id: "websi-main", name: "Websi", canonical_host: "websi.com", verification_status: "verified", tracking_last_received_at: "2026-10-06T01:00:00Z", created_at: "2026-09-28T09:00:00Z", monitor: { enabled: true, last_status: "online" } },
+  ],
   users: [
     { id: "admin", name: "Claritude Admin", email: "admin@claritude.io", confirmedAt: "2026-09-28T08:00:00Z", lastSignInAt: "2026-10-06T00:30:00Z", createdAt: "2026-09-28T08:00:00Z", accountCount: 1 },
     { id: "adam", name: "Adam Jordan", email: "adam.jordan@websi.com", confirmedAt: "2026-10-01T08:00:00Z", lastSignInAt: "2026-10-05T18:15:00Z", createdAt: "2026-10-01T08:00:00Z", accountCount: 1 },
   ],
 };
 
-function SuperAdminView({ session, fixture = false }: { session: Session | null; fixture?: boolean }) {
+function StaffMfaGate({ staff }: { staff: NonNullable<Bootstrap["staff"]> }) {
+  const [factorId, setFactorId] = useState("");
+  const [qr, setQr] = useState("");
+  const [secret, setSecret] = useState("");
+  const [code, setCode] = useState("");
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    void supabase.auth.mfa.listFactors().then(async ({ data, error }) => {
+      if (!active) return;
+      if (error) return setMessage(error.message);
+      const verified = data.totp.find((factor) => factor.status === "verified");
+      if (verified) {
+        setFactorId(verified.id);
+        return;
+      }
+      const enrolled = await supabase.auth.mfa.enroll({ factorType: "totp", friendlyName: `Claritude ${staff.role}` });
+      if (!active) return;
+      if (enrolled.error) return setMessage(enrolled.error.message);
+      setFactorId(enrolled.data.id);
+      setQr(enrolled.data.totp.qr_code);
+      setSecret(enrolled.data.totp.secret);
+    });
+    return () => { active = false; };
+  }, [staff.role]);
+
+  async function verify() {
+    if (!factorId || !/^\d{6}$/.test(code)) return;
+    setBusy(true);
+    setMessage("");
+    const result = await supabase.auth.mfa.challengeAndVerify({ factorId, code });
+    if (result.error) {
+      setMessage(result.error.message);
+      setBusy(false);
+      return;
+    }
+    await supabase.auth.refreshSession();
+    window.location.reload();
+  }
+
+  return (
+    <Page title="SuperAdmin security check" showOptions={false} status={<span className="tag">{cap(staff.role)}</span>}>
+      <Panel title={qr ? "Set up an authenticator" : "Enter your authenticator code"}>
+        <div className="mfa-gate">
+          <ShieldAlert />
+          <div>
+            <h2>Multi-factor authentication is required</h2>
+            <p>Privileged platform data and controls remain locked until this session reaches AAL2.</p>
+          </div>
+          {qr && <img className="mfa-qr" src={qr} alt="Authenticator QR code" />}
+          {secret && <p className="subtle">Can’t scan? Enter this key in your authenticator: <code>{secret}</code></p>}
+          <label className="field">Six-digit code<input inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, ""))} /></label>
+          {message && <p className="form-error" role="alert">{message}</p>}
+          <button className="btn primary" disabled={busy || !factorId || code.length !== 6} onClick={() => void verify()}>{busy ? "Verifying…" : "Unlock SuperAdmin"}</button>
+          <p className="subtle">For recovery, another platform Owner can reset a lost factor from Staff &amp; Permissions. Owners should enrol a second factor after access is restored.</p>
+        </div>
+      </Panel>
+    </Page>
+  );
+}
+
+const fixturePlatformPayload: any = {
+  environment: { name: "Fixture", commitSha: "fixture", refreshedAt: new Date().toISOString() },
+  providers: { stripe: { configured: false, mode: "unconfigured", tax: "unconfigured" }, resend: { configured: true, from: "alerts@claritude.io" }, cloudflareTelemetry: "unavailable", supabaseBackups: "unverified" },
+  settings: [{ key: "safety_limits", value: { platformAuditStartsPerDay: 200, concurrentAudits: 5, auditWallTimeSeconds: 600 }, description: "Fixture safety limits", source: "application", updated_at: new Date().toISOString() }], controls: [{ key: "new_audits", paused: false }, { key: "analytics_ingestion", paused: false }, { key: "uptime_checks", paused: false }], alerts: [], incidents: [],
+  packages: [{ package_key: "pro_early_access", version: 1, display_name: "Pro early access", state: "published", unresolved_values: ["futurePrice", "auditCreditsPerWeek"] }], overrides: [], inactivity: [],
+  audits: { technicalChecks: [], groups: [], today: { queued: 0, running: 0, completed: 6, partial: 0, failed: 0 }, source: "application_measured", period: "UTC day" },
+  exports: [], deletionRequests: [], email: { templates: [], automations: [], campaigns: [], deliveries: [] },
+  billing: { configured: false, customers: [], events: [], promotions: [], calculations: { mrr: "Unavailable until Stripe is configured and reconciled", arr: "Unavailable until Stripe is configured and reconciled", cashCollected: "Unavailable until Stripe is configured and reconciled", currencyPolicy: "Currencies remain separate" } },
+};
+
+function SuperAdminView({ session, fixture = false, staff }: { session: Session | null; fixture?: boolean; staff: Bootstrap["staff"] }) {
+  if (!fixture && staff && staff.aal !== "aal2") return <StaffMfaGate staff={staff} />;
+  const location = useLocation();
+  const navigate = useNavigate();
+  const params = new URLSearchParams(location.search);
+  const navigationItems = SUPERADMIN_NAVIGATION.flatMap((group) => [...group.items]) as Array<{ id: string; label: string }>;
+  const view = navigationItems.some((item) => item.id === params.get("view")) ? params.get("view")! : "overview";
+  const tabs = SUPERADMIN_TABS[view] || [];
+  const activeTab = tabs.includes(params.get("tab") || "") ? params.get("tab")! : tabs[0];
+  const pageTitle = navigationItems.find((item) => item.id === view)?.label || "Overview";
   const [payload, setPayload] = useState<SuperAdminPayload | null>(fixture ? fixtureSuperAdminPayload : null);
+  const [platform, setPlatform] = useState<any>(fixture ? fixturePlatformPayload : null);
+  const [staffData, setStaffData] = useState<any>(null);
+  const [activity, setActivity] = useState<any[]>([]);
+  const [delegations, setDelegations] = useState<any[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [tab, setTab] = useState<"Accounts" | "Users">("Accounts");
   const [query, setQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<any[]>([]);
 
   async function load() {
     if (fixture || !session) {
       setPayload(fixtureSuperAdminPayload);
+      setPlatform(fixturePlatformPayload);
+      setStaffData({ members: [{ user_id: "admin", display_name: "Claritude Admin", email: "admin@claritude.io", role: "owner", status: "active", mfaFactorCount: 2, lastSignInAt: new Date().toISOString() }], invitations: [] });
       return;
     }
     setBusy(true);
     setError("");
     try {
-      setPayload(await api<SuperAdminPayload>(session, "/api/superadmin/bootstrap"));
+      const [nextPayload, nextPlatform] = await Promise.all([
+        api<SuperAdminPayload>(session, "/api/superadmin/bootstrap"),
+        api<any>(session, "/api/superadmin/platform"),
+      ]);
+      setPayload(nextPayload);
+      setPlatform(nextPlatform);
+      const [staffResult, activityResult, delegationResult] = await Promise.all([
+        api<any>(session, "/api/superadmin/staff").catch(() => null),
+        api<any>(session, "/api/superadmin/activity?limit=100").catch(() => null),
+        api<any>(session, "/api/superadmin/delegations").catch(() => null),
+      ]);
+      setStaffData(staffResult);
+      setActivity(activityResult?.activity || []);
+      setDelegations(delegationResult?.sessions || []);
     } catch (reason: any) {
-      setError(reason.message || "SuperAdmin dashboard could not be loaded");
+      setError(reason.message || "SuperAdmin command centre could not be loaded");
     } finally {
       setBusy(false);
     }
   }
 
+  useEffect(() => { void load(); }, [session?.access_token, fixture]);
   useEffect(() => {
-    void load();
-  }, [session?.access_token, fixture]);
+    if (fixture || !session || query.trim().length < 2) { setSearchResults([]); return; }
+    const timer = window.setTimeout(() => {
+      void api<any>(session, `/api/superadmin/search?q=${encodeURIComponent(query.trim())}`).then((result) => setSearchResults(result.results || [])).catch(() => setSearchResults([]));
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [query, session?.access_token, fixture]);
 
-  const normalizedQuery = query.trim().toLocaleLowerCase();
-  const accounts = (payload?.accounts || []).filter((account) =>
-    !normalizedQuery || `${account.name} ${account.entitlement}`.toLocaleLowerCase().includes(normalizedQuery),
-  );
-  const users = (payload?.users || []).filter((user) =>
-    !normalizedQuery || `${user.name} ${user.email}`.toLocaleLowerCase().includes(normalizedQuery),
-  );
+  function selectTab(tab: string) {
+    const next = new URLSearchParams(location.search);
+    if (tab === tabs[0]) next.delete("tab"); else next.set("tab", tab);
+    navigate(`/superadmin?${next.toString()}`, { replace: true });
+  }
 
-  return (
-    <Page
-      title="SuperAdmin"
-      showOptions={false}
-      status={<span className="tag">Platform-wide</span>}
-      actions={
-        <button className="btn" onClick={() => void load()} disabled={busy}>
-          <RefreshCw className={busy ? "audit-spin" : ""} />
-          Refresh
-        </button>
-      }
-    >
-      {error ? (
-        <Panel>
-          <div className="analytics-state" role="alert">
-            <Empty title="SuperAdmin dashboard could not be loaded" detail={error} />
-            <button className="btn" onClick={() => void load()}>Retry</button>
-          </div>
-        </Panel>
-      ) : !payload ? (
-        <Panel><Empty title="Loading SuperAdmin dashboard…" detail="Collecting platform totals and account health." /></Panel>
-      ) : (
-        <>
-          <Metrics values={[
-            ["Accounts", payload.stats.accounts, "Customer accounts"],
-            ["Users", payload.stats.users, "Authentication users"],
-            ["Workspaces", payload.stats.workspaces, "Across all accounts"],
-            ["Properties", payload.stats.properties, "Websites managed"],
-          ]} />
-          <Metrics values={[
-            ["Active monitors", payload.stats.activeMonitors, "Currently enabled"],
-            ["Offline monitors", payload.stats.offlineMonitors, "Require attention"],
-            ["Open incidents", payload.stats.openIncidents, "Not yet resolved"],
-            ["Audits today", payload.stats.auditsToday, "UTC calendar day"],
-          ]} />
-          <Panel
-            title="Platform directory"
-            actions={
-              <label className="search">
-                <Search />
-                <input
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder={`Search ${tab.toLocaleLowerCase()}`}
-                  aria-label={`Search ${tab.toLocaleLowerCase()}`}
-                />
-              </label>
-            }
-          >
-            <Tabs labels={["Accounts", "Users"]} value={tab} onChange={(value) => setTab(value as "Accounts" | "Users")} />
-            {tab === "Accounts" ? (
-              <DataTable
-                headers={["Account", "Plan", "Users", "Workspaces", "Properties", "Health", "Created"]}
-                rows={accounts.map((account) => [
-                  <b>{account.name}</b>,
-                  cap(account.entitlement.replaceAll("_", " ")),
-                  account.userCount,
-                  account.workspaceCount,
-                  account.propertyCount,
-                  account.offlineCount ? (
-                    <StatusPill tone="danger">{account.offlineCount} offline</StatusPill>
-                  ) : (
-                    <StatusPill tone="success">Healthy</StatusPill>
-                  ),
-                  fmtDate(account.created_at),
-                ])}
-              />
-            ) : (
-              <DataTable
-                headers={["User", "Email", "Accounts", "Status", "Last sign-in", "Created"]}
-                rows={users.map((user) => [
-                  <b>{user.name || "Claritude user"}</b>,
-                  user.email,
-                  user.accountCount,
-                  user.confirmedAt ? <StatusPill tone="success">Active</StatusPill> : <StatusPill tone="neutral">Pending</StatusPill>,
-                  user.lastSignInAt ? fmtDate(user.lastSignInAt) : "Never",
-                  fmtDate(user.createdAt),
-                ])}
-              />
-            )}
-            {(tab === "Accounts" ? accounts : users).length === 0 && (
-              <Empty title={`No ${tab.toLocaleLowerCase()} found`} detail="Try a different search term." />
-            )}
-          </Panel>
-        </>
-      )}
-    </Page>
-  );
+  async function toggleControl(control: any) {
+    if (!session || fixture) return;
+    const reason = window.prompt(`Reason to ${control.paused ? "resume" : "pause"} ${control.key.replaceAll("_", " ")}:`);
+    if (!reason) return;
+    await api(session, `/api/superadmin/emergency-controls/${control.key}`, { method: "PATCH", body: JSON.stringify({ paused: !control.paused, reason }) });
+    await load();
+  }
+
+  async function queueExport(scope: string, format: "csv" | "json") {
+    if (!session || fixture) return;
+    const reason = window.prompt(`Reason for exporting ${scope}:`);
+    if (!reason) return;
+    await api(session, "/api/superadmin/exports", { method: "POST", body: JSON.stringify({ scope, format, reason, filters: {} }) });
+    await load();
+  }
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const accounts = (payload?.accounts || []).filter((account) => !normalizedQuery || `${account.name} ${account.entitlement}`.toLowerCase().includes(normalizedQuery));
+  const users = (payload?.users || []).filter((user) => !normalizedQuery || `${user.name} ${user.email}`.toLowerCase().includes(normalizedQuery));
+  const properties = (payload?.properties || []).filter((property) => !normalizedQuery || `${property.name} ${property.canonical_host}`.toLowerCase().includes(normalizedQuery));
+  const workspaces = (payload?.workspaces || []).filter((workspace) => !normalizedQuery || workspace.name.toLowerCase().includes(normalizedQuery));
+
+  let content: ReactNode = null;
+  if (view === "overview") content = <>
+    <Metrics values={[["Accounts", payload?.stats.accounts || 0, "Customer accounts"], ["Users", payload?.stats.users || 0, "Auth identities"], ["Properties", payload?.stats.properties || 0, "Managed websites"], ["Audits today", payload?.stats.auditsToday || 0, "Application measured · UTC"]]} />
+    <Metrics values={[["Active monitors", payload?.stats.activeMonitors || 0, "Application measured"], ["Offline monitors", payload?.stats.offlineMonitors || 0, "Confirmed down"], ["Open incidents", payload?.stats.openIncidents || 0, "Customer incidents"], ["Platform alerts", platform?.alerts?.filter((item: any) => item.state === "active").length || 0, "Unresolved"]]} />
+    {activeTab === "Revenue" ? <Panel title="Revenue"><UnavailableState title="Financial reporting is not configured" detail={platform?.billing?.calculations?.mrr || "Stripe credentials and reconciled billing state are required."} /></Panel> : null}
+    {activeTab === "Customer activity" ? <Panel title="Recently created accounts"><DataTable headers={["Account", "Package", "Users", "Properties", "Created"]} rows={accounts.slice(0, 20).map((account) => [account.name, cap(account.entitlement.replaceAll("_", " ")), account.userCount, account.propertyCount, fmtDate(account.created_at)])} /></Panel> : null}
+    {activeTab === "Service health" ? <PlatformServices platform={platform} payload={payload} /> : null}
+    {activeTab === "Summary" ? <><PlatformServices platform={platform} payload={payload} /><Panel title="Needs attention"><DataTable headers={["Account", "Offline properties", "Package", "Action"]} rows={accounts.filter((account) => account.offlineCount).map((account) => [account.name, account.offlineCount, cap(account.entitlement), <Link to={`/superadmin?view=accounts&account=${account.id}`}>Open account</Link>])} /></Panel></> : null}
+  </>;
+  else if (view === "accounts") content = <Panel title={activeTab} actions={<button className="btn" onClick={() => void queueExport("accounts", "csv")}>Export CSV</button>}><DataTable headers={["Account", "Package", "Users", "Workspaces", "Properties", "Health", "Created"]} rows={accounts.filter((account) => activeTab !== "Needs attention" || account.offlineCount > 0).map((account) => [<Link to={`/superadmin?view=accounts&account=${account.id}`}><b>{account.name}</b></Link>, cap(account.entitlement.replaceAll("_", " ")), account.userCount, account.workspaceCount, account.propertyCount, account.offlineCount ? <StatusPill tone="danger">{account.offlineCount} offline</StatusPill> : <StatusPill tone="success">Healthy</StatusPill>, fmtDate(account.created_at)])} /></Panel>;
+  else if (view === "users") content = activeTab === "Invitations" ? <Panel title="Staff and customer invitations"><DataTable headers={["Email", "Role", "Expires", "Status"]} rows={(staffData?.invitations || []).map((invite: any) => [invite.email, cap(invite.role), fmtDate(invite.expires_at), invite.accepted_at ? "Accepted" : invite.revoked_at ? "Revoked" : "Pending"])} /></Panel> : <Panel title={activeTab} actions={<button className="btn" onClick={() => void queueExport("users", "csv")}>Export CSV</button>}><DataTable headers={["User", "Email", "Accounts", "Email status", "Last sign-in", "Created"]} rows={users.filter((user) => activeTab !== "Access issues" || !user.confirmedAt).map((user) => [<b>{user.name || "Claritude user"}</b>, user.email, user.accountCount, user.confirmedAt ? <StatusPill tone="success">Confirmed</StatusPill> : <StatusPill tone="neutral">Pending</StatusPill>, user.lastSignInAt ? fmtDate(user.lastSignInAt) : "Never", fmtDate(user.createdAt)])} /></Panel>;
+  else if (view === "resources") content = activeTab === "Workspaces" ? <Panel title="Workspaces"><DataTable headers={["Workspace", "Account", "Properties", "Created"]} rows={workspaces.map((workspace) => [workspace.name, payload?.accounts.find((account) => account.id === workspace.account_id)?.name || workspace.account_id, workspace.propertyCount, fmtDate(workspace.created_at)])} /></Panel> : <Panel title={activeTab}><DataTable headers={["Property", "Domain", "Workspace", "Connection", "Monitor", "Last analytics"]} rows={properties.filter((property) => activeTab !== "Connection health" || property.verification_status !== "verified" || !property.tracking_last_received_at).map((property) => [property.name, property.canonical_host, payload?.workspaces.find((workspace) => workspace.id === property.workspace_id)?.name || property.workspace_id, property.verification_status, property.monitor?.last_status || "Not configured", property.tracking_last_received_at ? fmtDate(property.tracking_last_received_at) : "No data"])} /></Panel>;
+  else if (view === "packages") content = activeTab === "Free account inactivity" ? <Panel title="Free account inactivity"><p className="subtle">Policy: warning day 60, reminder day 90, reversible freeze day 100, deletion eligibility day 121. Automatic irreversible deletion is disabled.</p><DataTable headers={["Account", "State", "Last meaningful activity", "Review hold", "Updated"]} rows={(platform?.inactivity || []).map((item: any) => [payload?.accounts.find((account) => account.id === item.account_id)?.name || item.account_id, item.state, item.last_meaningful_activity_at ? fmtDate(item.last_meaningful_activity_at) : "Not recorded", item.analytics_review_required || item.notice_delivery_failed ? "Required" : "No", fmtDate(item.updated_at)])} /></Panel> : activeTab === "Account overrides" ? <Panel title="Account overrides"><DataTable headers={["Account", "Key", "Value", "Starts", "Expires", "Reason"]} rows={(platform?.overrides || []).map((item: any) => [payload?.accounts.find((account) => account.id === item.account_id)?.name || item.account_id, item.key, JSON.stringify(item.value), fmtDate(item.starts_at), item.expires_at ? fmtDate(item.expires_at) : "No expiry", item.reason])} /></Panel> : <Panel title={activeTab}><DataTable headers={["Package", "Version", "State", "Unresolved commercial values", "Effective"]} rows={(platform?.packages || []).map((item: any) => [item.display_name, item.version, item.state, item.unresolved_values?.join(", ") || "None", item.effective_at ? fmtDate(item.effective_at) : "Draft"])} /></Panel>;
+  else if (view === "financials") content = <Panel title={activeTab}>{!platform?.billing?.configured ? <UnavailableState title="Stripe billing is unconfigured" detail="No server-side Stripe key, webhook secret, product catalogue or reconciled billing state is available. Complimentary and beta access remains unchanged; no paid subscriptions are fabricated." /> : <DataTable headers={["Provider event", "Type", "State", "Provider time"]} rows={(platform.billing.events || []).map((event: any) => [event.provider_event_id, event.event_type, event.processing_state, fmtDate(event.provider_created_at)])} />}<p className="subtle">Currencies remain separate unless a labelled conversion is explicitly configured. Credits, cash refunds, recurring revenue and cash collection are reported independently.</p></Panel>;
+  else if (view === "coupons") content = <Panel title={activeTab}>{!platform?.billing?.configured && <UnavailableState title="Promotion synchronisation unavailable" detail="Stripe sandbox credentials and product/price configuration are required before promotion codes can be enabled." />}<DataTable headers={["Code", "Discount", "Duration", "Packages", "Expires", "Enabled"]} rows={(platform?.billing?.promotions || []).map((item: any) => [item.code || "Provider generated", item.discount_type === "percentage" ? `${item.percentage}%` : `${item.fixed_amount_minor} ${item.currency}`, item.duration_type === "billing_periods" ? `${item.duration_count} billing periods` : item.duration_type, item.eligible_packages?.join(", ") || "All configured", item.expires_at ? fmtDate(item.expires_at) : "No expiry", item.enabled ? "Yes" : "No"])} /></Panel>;
+  else if (view === "audits") content = activeTab === "Check health" ? <Panel title="Audit check health"><Metrics values={[["Technical checks", platform?.audits?.technicalChecks?.length || 0, "Repository-owned execution"], ["Customer groups", platform?.audits?.groups?.length || 0, "Presentation groups"], ["Failed today", platform?.audits?.today?.failed || 0, "Application measured"], ["Partial today", platform?.audits?.today?.partial || 0, "Application measured"]]} /></Panel> : <Panel title={activeTab}><p className="subtle">Executable logic remains in the repository. Database controls can change validated availability and supported configuration only.</p><DataTable headers={["Check", "Category", "Subcategory", "Severity", "Lifecycle", "Config version"]} rows={(platform?.audits?.technicalChecks || []).filter((item: any) => !normalizedQuery || `${item.id} ${item.title} ${item.primary_category}`.toLowerCase().includes(normalizedQuery)).slice(0, 250).map((item: any) => [item.title, item.primary_category, item.subcategory, item.severity, item.lifecycle, item.configuration_version])} /></Panel>;
+  else if (view === "health") content = activeTab === "Incidents" ? <Panel title="Platform incidents"><DataTable headers={["Incident", "State", "Services", "Opened", "Resolved"]} rows={(platform?.incidents || []).map((item: any) => [item.title, item.state, item.affected_services?.join(", "), fmtDate(item.opened_at), item.resolved_at ? fmtDate(item.resolved_at) : "Open"])} /></Panel> : <PlatformServices platform={platform} payload={payload} />;
+  else if (view === "infrastructure") content = activeTab === "Safety limits" ? <><Panel title="Emergency controls"><DataTable headers={["Capability", "State", "Reason", "Changed", "Action"]} rows={(platform?.controls || []).map((item: any) => [cap(item.key.replaceAll("_", " ")), item.paused ? <StatusPill tone="danger">Paused</StatusPill> : <StatusPill tone="success">Running</StatusPill>, item.reason || "—", item.changed_at ? fmtDate(item.changed_at) : "Default", <button className="btn" disabled={fixture || !staff?.permissions.includes("operations.write")} onClick={() => void toggleControl(item)}>{item.paused ? "Resume" : "Pause"}</button>])} /></Panel><Panel title="Configured ceilings"><pre className="json-preview">{JSON.stringify(platform?.settings?.find((item: any) => item.key === "safety_limits")?.value || {}, null, 2)}</pre><p className="subtle">Values are application ceilings, not a provider bill guarantee. Cloudflare CPU, queue and browser billing telemetry is unavailable through the current application configuration.</p></Panel></> : <Panel title={activeTab}><Metrics values={[["Queued audits", platform?.audits?.today?.queued || 0, "Application measured · UTC day"], ["Running audits", platform?.audits?.today?.running || 0, "Application measured"], ["Failed audits", platform?.audits?.today?.failed || 0, "Application measured"], ["Browser/provider telemetry", "Unavailable", "Provider access not configured"]]} /><p className="subtle">Every shown metric identifies its source and period. CPU, memory, exact cost and provider queue backlog are not estimated as invoice figures.</p></Panel>;
+  else if (view === "email") content = activeTab === "Templates" ? <Panel title="Versioned templates"><DataTable headers={["Template", "Version", "Subject", "Variables", "State"]} rows={(platform?.email?.templates || []).map((item: any) => [item.template_key, item.version, item.subject, item.variables?.join(", "), item.state])} /></Panel> : activeTab === "Delivery" ? <Panel title="Delivery"><DataTable headers={["Kind", "Recipient", "Status", "Provider", "Error", "Created"]} rows={(platform?.email?.deliveries || []).map((item: any) => [item.kind, item.recipient, item.status, item.provider_id || "—", item.error || "—", fmtDate(item.created_at)])} /></Panel> : <Panel title={activeTab}><p>Resend: {platform?.providers?.resend?.configured ? <StatusPill tone="success">Configured</StatusPill> : <StatusPill tone="neutral">Unavailable</StatusPill>}</p><p className="subtle">New campaigns, inactivity notices and weekly digests remain disabled until safe recipients and policy are explicitly configured. Existing transactional uptime/report sends are preserved.</p></Panel>;
+  else if (view === "alerts") content = <Panel title={activeTab}><DataTable headers={["Alert", "State", "Created", "Resolved"]} rows={(platform?.alerts || []).filter((item: any) => activeTab !== "Active alerts" || item.state === "active").map((item: any) => [item.title, item.state, fmtDate(item.created_at), item.resolved_at ? fmtDate(item.resolved_at) : "Open"])} />{activeTab === "Weekly digest" && <UnavailableState title="Weekly digest is disabled" detail="Enable it only after recipients and policy have been reviewed in outbound automation settings." />}</Panel>;
+  else if (view === "data") content = activeTab === "Exports" ? <Panel title="Permission-checked exports" actions={<span className="button-row"><button className="btn" onClick={() => void queueExport("accounts", "csv")}>Export accounts</button><button className="btn" onClick={() => void queueExport("admin_activity", "json")}>Export admin log</button></span>}><DataTable headers={["Scope", "Format", "State", "Progress", "Rows", "Expires", "Created"]} rows={(platform?.exports || []).map((item: any) => [item.scope, item.format, item.state, `${item.progress}%`, item.row_count ?? "—", item.expires_at ? fmtDate(item.expires_at) : "—", fmtDate(item.created_at)])} /><p className="subtle">Large exports run through the bounded queue, neutralise CSV formulas and require permission again before a 60-second download URL is issued.</p></Panel> : activeTab === "Backups & Recovery" ? <Panel title="Backups & recovery"><UnavailableState title="Provider backup status is unverified" detail="Account exports are not labelled as backups. Supabase backup/PITR capability and a tested restoration runbook require provider access." /></Panel> : <Panel title={activeTab}><pre className="json-preview">{JSON.stringify(activeTab === "Retention" ? platform?.settings?.find((item: any) => item.key === "retention_policy")?.value || {} : platform?.deletionRequests || [], null, 2)}</pre><p className="subtle">Cleanup and deletion are preview/review workflows. Irreversible automatic production deletion is disabled.</p></Panel>;
+  else if (view === "administration") content = activeTab === "Staff & Permissions" ? <Panel title="Staff & permissions"><DataTable headers={["Staff member", "Email", "Role", "Status", "MFA factors", "Last sign-in"]} rows={(staffData?.members || []).map((item: any) => [item.display_name || "Staff member", item.email, cap(item.role), item.status, item.mfaFactorCount, item.lastSignInAt ? fmtDate(item.lastSignInAt) : "Never"])} />{!staffData && <Empty title="Staff directory unavailable for this role" detail="Only platform Owners can manage staff permissions and MFA recovery." />}</Panel> : activeTab === "Customer sessions" ? <CustomerSessionsPanel session={session} fixture={fixture} payload={payload} sessions={delegations} refresh={load} /> : activeTab === "Admin activity" ? <Panel title="Immutable administrative activity"><DataTable headers={["Action", "Outcome", "Target", "Reason", "Actor", "Correlation", "Time"]} rows={activity.map((item: any) => [item.action, item.outcome, `${item.target_type || "—"} ${item.target_id || ""}`, item.reason || "—", item.actor_staff_id || "System", item.correlation_id, fmtDate(item.created_at)])} /></Panel> : activeTab === "Feature controls" ? <Panel title="Feature controls"><DataTable headers={["Capability", "State", "Reason", "Action"]} rows={(platform?.controls || []).map((item: any) => [cap(item.key.replaceAll("_", " ")), item.paused ? "Paused" : "Running", item.reason || "—", <button className="btn" disabled={fixture || !staff?.permissions.includes("operations.write")} onClick={() => void toggleControl(item)}>{item.paused ? "Resume" : "Pause"}</button>])} /></Panel> : <Panel title="Platform settings"><DataTable headers={["Setting", "Description", "Source", "Updated"]} rows={(platform?.settings || []).map((item: any) => [item.key, item.description, item.source, fmtDate(item.updated_at)])} /></Panel>;
+
+  return <Page title={pageTitle} showOptions={false} status={<span className="tag">{platform?.environment?.name || "Platform"} · {staff ? cap(staff.role) : "Owner"}</span>} actions={<button className="btn" onClick={() => void load()} disabled={busy}><RefreshCw className={busy ? "audit-spin" : ""} />Refresh</button>}>
+    <div className="superadmin-globalbar">
+      <label className="search superadmin-search"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search accounts, users, domains, workspaces, invoices or audit IDs" aria-label="Global SuperAdmin search" /></label>
+      <span><StatusPill tone={payload?.stats.offlineMonitors ? "danger" : "success"}>{payload?.stats.offlineMonitors ? `${payload.stats.offlineMonitors} offline` : "Services healthy"}</StatusPill></span>
+      <span>{platform?.alerts?.filter((item: any) => item.state === "active").length || 0} unresolved alerts</span>
+      {searchResults.length > 0 && <div className="superadmin-search-results">{searchResults.map((item) => <Link key={`${item.type}:${item.id}`} to={item.href} onClick={() => { setQuery(""); setSearchResults([]); }}><small>{cap(item.type.replaceAll("_", " "))}</small><b>{item.label}</b></Link>)}</div>}
+    </div>
+    {tabs.length > 0 && <Tabs labels={tabs} value={activeTab} onChange={selectTab} />}
+    {error ? <Panel><div className="analytics-state" role="alert"><Empty title="SuperAdmin command centre could not be loaded" detail={error} /><button className="btn" onClick={() => void load()}>Retry</button></div></Panel> : !payload || !platform ? <Panel><Empty title="Loading SuperAdmin command centre…" detail="Collecting real platform data and capability status." /></Panel> : content}
+  </Page>;
+}
+
+function UnavailableState({ title, detail }: { title: string; detail: string }) {
+  return <div className="superadmin-unavailable"><ShieldAlert /><span><b>{title}</b><small>{detail}</small></span></div>;
+}
+
+function PlatformServices({ platform, payload }: { platform: any; payload: SuperAdminPayload | null }) {
+  return <Panel title="Service health"><DataTable headers={["Service", "State", "Source", "Period / refreshed"]} rows={[
+    ["Claritude Worker", <StatusPill tone="success">Available</StatusPill>, "Application health", platform?.environment?.refreshedAt ? fmtDate(platform.environment.refreshedAt) : "Now"],
+    ["Audit processing", (platform?.audits?.today?.failed || 0) > 0 ? <StatusPill tone="danger">Failures recorded</StatusPill> : <StatusPill tone="success">Operational</StatusPill>, "Application measured", "UTC day"],
+    ["Uptime monitoring", (payload?.stats.offlineMonitors || 0) > 0 ? <StatusPill tone="danger">Customer incidents</StatusPill> : <StatusPill tone="success">Operational</StatusPill>, "Application measured", "Current monitor state"],
+    ["Resend", platform?.providers?.resend?.configured ? "Configured" : "Unavailable", "Configuration", "Current deployment"],
+    ["Stripe", platform?.providers?.stripe?.configured ? platform.providers.stripe.mode : "Unconfigured", "Configuration", "Current deployment"],
+    ["Cloudflare detailed telemetry", "Unavailable", "Provider access not configured", "—"],
+    ["Supabase backups", "Unverified", "Provider capability not read", "—"],
+  ]} /></Panel>;
+}
+
+function CustomerSessionsPanel({ session, fixture, payload, sessions, refresh }: { session: Session | null; fixture: boolean; payload: SuperAdminPayload | null; sessions: any[]; refresh: () => Promise<void> }) {
+  const [accountId, setAccountId] = useState(payload?.accounts?.[0]?.id || "");
+  const [memberships, setMemberships] = useState<any[]>([]);
+  const [userId, setUserId] = useState("");
+  const [mode, setMode] = useState<"read" | "write">("read");
+  const [duration, setDuration] = useState(30);
+  const [reason, setReason] = useState("");
+  const [preview, setPreview] = useState<any>(null);
+  const [message, setMessage] = useState("");
+  useEffect(() => {
+    if (!session || fixture || !accountId) { setMemberships([]); return; }
+    void api<any>(session, `/api/superadmin/accounts/${accountId}`).then((result) => {
+      setMemberships(result.memberships || []);
+      setUserId((current) => (result.memberships || []).some((item: any) => item.user_id === current) ? current : result.memberships?.[0]?.user_id || "");
+    }).catch((error) => setMessage(error.message));
+  }, [session?.access_token, accountId, fixture]);
+  const user = payload?.users.find((item) => item.id === userId);
+  async function start() {
+    if (!session || !accountId || !userId || reason.trim().length < 3) return;
+    setMessage("");
+    try {
+      const result = await api<any>(session, "/api/superadmin/delegations", { method: "POST", body: JSON.stringify({ accountId, representedUserId: userId, mode, durationMinutes: duration, reason }) });
+      const banner = { ...result.session, accountName: payload?.accounts.find((item) => item.id === accountId)?.name, userEmail: user?.email };
+      localStorage.setItem("claritude-delegation", JSON.stringify(banner));
+      window.dispatchEvent(new Event("claritude-delegation-change"));
+      setPreview(await api(session, `/api/superadmin/delegations/${result.session.id}/bootstrap`));
+      setReason("");
+      await refresh();
+    } catch (error: any) { setMessage(error.message); }
+  }
+  async function revoke(item: any) {
+    if (!session) return;
+    await api(session, `/api/superadmin/delegations/${item.id}`, { method: "DELETE" });
+    const current = JSON.parse(localStorage.getItem("claritude-delegation") || "null");
+    if (current?.id === item.id) { localStorage.removeItem("claritude-delegation"); window.dispatchEvent(new Event("claritude-delegation-change")); setPreview(null); }
+    await refresh();
+  }
+  return <>
+    <Panel title="Start customer session">
+      <p className="subtle">Scoped to one account and represented user. Read-only is the default; write mode requires explicit activation and a reason. Sessions expire after at most 60 minutes and are rechecked on every request.</p>
+      <div className="form-grid delegation-form">
+        <label className="field">Account<select value={accountId} onChange={(event) => setAccountId(event.target.value)}>{(payload?.accounts || []).map((account) => <option value={account.id} key={account.id}>{account.name}</option>)}</select></label>
+        <label className="field">Represented user<select value={userId} onChange={(event) => setUserId(event.target.value)}>{memberships.map((membership) => <option value={membership.user_id} key={membership.user_id}>{payload?.users.find((item) => item.id === membership.user_id)?.email || membership.user_id} · {membership.role}</option>)}</select></label>
+        <label className="field">Mode<select value={mode} onChange={(event) => setMode(event.target.value as "read" | "write")}><option value="read">Read-only</option><option value="write">Write enabled</option></select></label>
+        <label className="field">Duration<select value={duration} onChange={(event) => setDuration(Number(event.target.value))}><option value={15}>15 minutes</option><option value={30}>30 minutes</option><option value={60}>60 minutes</option></select></label>
+      </div>
+      <label className="field">Reason<input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Why customer access is required" /></label>
+      {message && <p className="form-error" role="alert">{message}</p>}
+      <button className="btn primary" disabled={fixture || !userId || reason.trim().length < 3} onClick={() => void start()}>Start scoped session</button>
+    </Panel>
+    {preview && <Panel title={`Customer preview · ${preview.account?.name || "Account"}`}><DataTable headers={["Workspace", "Properties"]} rows={(preview.workspaces || []).map((workspace: any) => [workspace.name, (preview.properties || []).filter((property: any) => property.workspace_id === workspace.id).length])} /><p className="subtle">Sensitive finance, ownership and destructive actions remain outside delegation and require their dedicated privileged workflows.</p></Panel>}
+    <Panel title="Recent customer sessions"><DataTable headers={["Account", "Represented user", "Mode", "Reason", "Expires", "State", "Action"]} rows={sessions.map((item) => [payload?.accounts.find((account) => account.id === item.account_id)?.name || item.account_id, payload?.users.find((candidate) => candidate.id === item.represented_user_id)?.email || item.represented_user_id, item.mode, item.reason, fmtDate(item.expires_at), item.revoked_at ? "Revoked" : Date.parse(item.expires_at) < Date.now() ? "Expired" : "Active", !item.revoked_at && Date.parse(item.expires_at) > Date.now() ? <button className="btn" onClick={() => void revoke(item)}>Exit</button> : "—"])} /></Panel>
+  </>;
 }
 
 function AccountView({
