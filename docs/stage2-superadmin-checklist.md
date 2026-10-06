@@ -2,121 +2,124 @@
 
 Last updated: 6 October 2026
 
-Status key: `[ ]` not started, `[~]` in progress or partially implemented, `[x]` implemented and locally verified, `[!]` blocked or intentionally disabled.
+Status key: `[ ]` not started, `[~]` partially implemented, `[x]` implemented and locally verified, `[!]` intentionally disabled or blocked by missing provider configuration/policy.
+
+This is an acceptance record, not a marketing checklist. A page or schema foundation alone is not marked complete. Provider-backed actions are marked blocked until they can be verified safely against the configured provider.
 
 ## Baseline and release discipline
 
 - [x] Confirm `Websicom/claritude-app`, `main`, Supabase project `dfaxmxschvzmlozxjaxf`, Cloudflare Worker deployment, queues, cron, browser binding and Resend integration.
-- [x] Preserve the clean production baseline; Stage 2 remains local until the complete release gate passes.
-- [x] Read current Supabase MFA/RLS and Stripe billing/security guidance.
-- [x] Add this committed checklist and `docs/stage2-superadmin-decisions.md`.
-- [ ] Reconcile every specification section before release.
-- [ ] Run the full type, unit, build, migration, advisor and browser suites.
-- [ ] Push through the established `main` production workflow and verify the deployed commit and live behaviour.
+- [x] Inspect authentication, database, audit engine, analytics, uptime, email and deployment paths before changing them.
+- [x] Use additive, service-role-only migrations for privileged state and preserve existing customer data.
+- [x] Run type checks, 183 unit tests, production build, production dependency audit and responsive browser smoke tests.
+- [~] Migration dry-run lists the expected three migrations; final SQL execution and linked database lint occur in the production workflow because the local Docker daemon is unavailable.
+- [ ] Push through `main`, observe migration-first deployment, verify the deployed commit and run linked database lint/advisors.
 
 ## Stage A — staff security, MFA and administrative logging
 
-- [~] Replace the initial two-email allowlist with identity-bound staff records and pending verified invitations.
-- [ ] Support Owner, Support, Finance and Engineering permission sets independently of customer roles.
-- [ ] Require AAL2/TOTP for privileged reads and writes, with enrolment, challenge and secure owner-assisted recovery.
-- [ ] Enforce permission checks on every privileged backend operation.
-- [ ] Add immutable administrative activity records with actor, target, reason, before/after snapshots, outcome and correlation ID.
-- [ ] Prevent last-Owner removal and self-escalation.
-- [ ] Implement time-limited customer delegation sessions, read-only by default, with explicit write activation and persistent UI banner.
-- [ ] Test role denial, revocation, MFA, last-owner and delegation expiry paths.
+- [x] Replace the email allowlist with staff records bound to confirmed `auth.users.id` identities and identity-bound pending invitations.
+- [x] Support independent Owner, Support, Finance and Engineering permission sets.
+- [x] Require a live staff record and AAL2/TOTP for every SuperAdmin endpoint, with enrolment/challenge UI and Owner-assisted factor reset.
+- [x] Enforce permissions server-side and keep service credentials server-only.
+- [x] Add append-only administrative activity with actor, delegated identity, target, reason, before/after, outcome and correlation ID.
+- [x] Prevent self-role changes and removal/demotion of the last active Owner.
+- [x] Add time-limited delegated customer sessions, read-only by default, explicit reasoned write activation, request-time rechecks and a persistent exit banner.
+- [~] Unit coverage exists for role permissions and assurance parsing; MFA enrolment/recovery and identity-bound invitation acceptance still require production identity smoke tests after deployment.
 
 ## Stage B — customer administration
 
-- [~] Accounts and users have a read-only aggregate directory from the foundation commit.
-- [ ] Add server-side search, filters, sorting, pagination and saved views for accounts, users, workspaces and properties.
-- [ ] Add account detail tabs and effective-setting sources.
-- [ ] Implement notes, tags, invitations, billing permissions, included editing seats and ownership-transfer workflow.
-- [ ] Implement service pauses, freeze/block/restore and reviewed scheduled deletion.
-- [ ] Implement safe direct messages and asynchronous account exports.
-- [ ] Implement verification resend and restricted logged manual confirmation without membership creation.
-- [ ] Enforce duplicate-property identity rules across an account without cross-account disclosure.
-- [ ] Implement safe within-account moves and explicit cross-account transfer workflow.
+- [x] Add account directory search, state/package filters, sorting, pagination, aggregate counts and account detail aggregation.
+- [x] Add internal notes, tags/state fields, billing-permission data, service controls, scheduled deletion records and activity/communication data foundations.
+- [x] Add freeze/block/restore/pending-deletion operations with required reasons and Owner-only destructive scheduling.
+- [x] Add account deletion dry-run and Owner reactivation without resetting usage.
+- [x] Enforce full normalised URL identity within an account without revealing cross-account matches.
+- [~] Account detail data contains the specified domains, but the first UI release presents compact command-centre panels rather than every requested dedicated detail tab and mutation form.
+- [~] Ownership-transfer, scoped invitation, verification-resend/manual-confirmation and cross-account transfer state are modelled or compatible with existing membership flows, but dedicated reviewed SuperAdmin workflows are not enabled.
+- [!] Direct customer messaging remains disabled until approved templates, recipient policy and safe test recipients exist.
 
 ## Stage C — entitlements, lifecycle and durable usage
 
-- [ ] Add versioned package definitions, package versions, account assignments and expiring overrides.
-- [ ] Implement one effective-entitlements resolver used by UI, API, collectors, schedulers and jobs.
-- [ ] Separate pricing grandfathering, allowance grandfathering, billing state and complimentary access.
-- [ ] Add package publication/migration preview and scheduled changes.
-- [ ] Add downgrade resource selection/locking without deletion or usage reset.
-- [ ] Add account-level page-audit reservation/consumption ledger with idempotency and one-time restoration.
-- [ ] Preserve usage after deletion, replacement and package changes; expose reset schedule.
-- [ ] Add property/domain activation and audit-page replacement limits.
+- [x] Add versioned package definitions, account assignments and expiring account overrides.
+- [x] Resolve effective entitlements with source attribution and hard-ceiling clamping, and use them in property, audit and custom-event paths.
+- [x] Preserve separate package, billing and complimentary-access state; unresolved paid values remain null rather than invented.
+- [x] Add package migration conflict previews and resource-lock data foundations.
+- [x] Add atomic page-credit reservations, one-time consumption/release/restoration and idempotent retry behaviour.
+- [x] Add atomic platform daily/concurrency accounting and expiring processing leases.
+- [x] Preserve account usage independently of property deletion and package changes.
+- [~] Downgrade selection/locking is modelled, but scheduling and Owner selection UI are not enabled without confirmed commercial package transitions.
+- [!] Proration, paid seats, currency changes and payment-gated upgrades are disabled until Stripe products/prices and billing policy are configured.
 
 ## Free-account inactivity
 
-- [ ] Add configurable 60/90/100/121-day policy and per-account meaningful-activity tracking.
-- [ ] Add exemptions, grace extensions, analytics-activity review and delivery holds.
-- [ ] Implement owner export/reactivation while frozen.
-- [ ] Implement warning history, countdown and deletion dry-run preview.
-- [ ] Keep irreversible automatic production deletion disabled pending Owner activation.
+- [x] Add configurable 60/90/100/121-day policy, account-scoped meaningful activity, exemptions, grace, analytics review and delivery-hold states.
+- [x] Add warning/state history, countdown data, reactivation and deletion dry-run.
+- [x] Exclude viewer visits, system activity and automatic jobs from reset activity.
+- [x] Keep irreversible automatic deletion disabled and recheck eligible records in bounded daily evaluation.
+- [!] Real notices remain disabled until lifecycle templates, recipient policy and delivery handling are approved.
 
 ## Stage D — audit controls
 
-- [ ] Preserve the 306 technical checks / 121 customer-facing groups and repository-owned executable logic.
-- [ ] Add search/filtering and effective availability by global, package and account scope.
-- [ ] Add safe threshold, severity and scoring configuration where supported.
-- [ ] Add configuration versions, history, rollback and dependency visibility.
-- [ ] Add runtime, error-rate and outcome-distribution health.
-- [ ] Test disabled checks, snapshot consistency, scoring/coverage and incomplete-collection outcomes.
+- [x] Preserve 306 repository-owned technical checks and 121 customer-facing groups; no arbitrary stored code is executed.
+- [x] Add catalogue search/filtering, lifecycle/configuration versions, change history and rollback.
+- [x] Exclude effectively disabled checks from new execution snapshots while preserving historical snapshots and five-outcome semantics.
+- [~] Check-level lifecycle, weight and supported metadata can be changed safely; group/package availability editors and dependency/runtime distribution views are read-only or not yet exposed.
+- [~] Existing audit suites cover scoring, coverage and incomplete collection; Stage 2 configuration rollback has backend coverage but not a linked-database integration test.
 
 ## Stage E — operations, health and infrastructure safety
 
-- [ ] Add service, job/queue, error, incident and release views with bounded recovery controls.
-- [ ] Add application-measured operational telemetry and honest unavailable provider states.
-- [ ] Add account drilldowns, refresh timestamps, sources, units and periods.
-- [ ] Add configurable hard ceilings and atomic leases/reservations across all expensive paths.
-- [ ] Add per-account fairness and protected read/auth/billing-recovery capacity.
-- [ ] Add independent, logged emergency controls for audits, browser, uptime, analytics, reports, campaigns and scoped resources.
-- [ ] Preserve SSRF, unsafe-port, credential-in-URL and redirect protections.
+- [x] Add application-measured services, audit/job state, incidents, alerts and provider-capability views with explicit unavailable states.
+- [x] Add validated safety settings, atomic reservations/leases and conservative failure when expensive-work safety state is unavailable.
+- [x] Add separately logged emergency controls for new/scheduled audits, browser, uptime checks/notifications, analytics, reports and campaigns.
+- [x] Apply controls to audit submission, analytics collection, uptime, notifications and scheduled reports.
+- [x] Preserve private-network, unsafe-port, credentials-in-URL and redirect protections.
+- [~] Account fairness is bounded by account quota plus global leases; provider queue/browser/CPU and deployment release controls remain observational because provider telemetry/API access is not configured in the application.
 
 ## Uptime incident safety
 
-- [ ] Model Up, Suspected down, Confirmed down, Monitoring unavailable/delayed and Paused.
-- [ ] Add bounded confirmation and platform-wide failure correlation.
-- [ ] Suppress unsupported customer outage mail during platform monitoring failures.
-- [ ] Expose monitoring gaps/coverage and gradual recovery.
-- [ ] Verify incident and recipient deduplication and genuine recovery-only messages.
+- [x] Model pending/up, suspected down, confirmed down, monitoring unavailable/delayed and paused states.
+- [x] Require a bounded failure threshold before confirmed-down state.
+- [x] Correlate unrelated simultaneous failures, suppress unsupported customer outage mail and raise a platform alert.
+- [x] Treat paused/unavailable monitoring as missing coverage rather than downtime and retain existing incident/property/recipient deduplication.
+- [~] Gradual recovery uses the existing bounded scheduler; independent external evidence beyond Claritude collectors is unavailable.
 
-## Stage F — Stripe financials, coupons and billing operations
+## Stage F — Stripe financials and promotions
 
-- [ ] Detect/configure Stripe sandbox and restricted server key; keep unconfigured states honest.
-- [ ] Add verified, idempotent and out-of-order-safe webhook ingestion.
-- [ ] Add subscriptions, invoices/payments, recovery, refunds/credits, revenue analysis and reconciliation views.
-- [ ] Add subscription previews, serialization and scheduled lifecycle changes without fabricated paid access.
-- [ ] Define currency-aware MRR/ARR/cash/refund calculations.
-- [ ] Add coupon and promotion-code management with application eligibility and no stacking by default.
-- [ ] Keep all real charges/refunds disabled during implementation verification.
-- [ ] Document Stripe Tax as unconfigured until registrations and policy are explicitly confirmed.
+- [x] Add current server-side Stripe SDK integration and an unauthenticated, Worker-first `/webhooks/stripe` endpoint with signature verification.
+- [x] Add idempotent event storage, provider-created ordering, local billing projection and permissioned event reprocessing.
+- [x] Add Financials and Coupons navigation/data views with clear currency separation and honest unconfigured states.
+- [x] Preserve complimentary/beta access and never fabricate paid subscriptions.
+- [!] Stripe secret/webhook secret, sandbox account and product/price catalogue are not configured; subscription mutations, previews, retries, refunds/credits, reconciliation and promotion creation are therefore disabled and unverified.
+- [!] Revenue calculations and Stripe Tax remain unconfigured until currencies, product catalogue, registrations and reporting policy are approved.
 
 ## Stage G — email, alerts and digest
 
-- [ ] Add versioned templates, variable validation, previews and safe test sends.
-- [ ] Add automation execution history and preserve existing production sends.
-- [ ] Add bounded campaigns with recipient preview, deduplication, preferences, suppression, scheduling and cancellation.
-- [ ] Add configurable alert rules, cooldowns, acknowledgements, snooze and history.
-- [ ] Add weekly SuperAdmin digest.
-- [ ] Leave new outbound automations disabled until recipient/policy activation.
+- [x] Add versioned template, automation, campaign, alert-rule and alert-history data models.
+- [x] Show existing delivery history and preserve established uptime/report sends.
+- [x] Seed new campaigns, lifecycle notices and weekly digest disabled.
+- [~] The command centre can inspect templates, delivery, campaigns and alerts; editors, audience preview, test-send, acknowledgement/snooze and digest assembly are not enabled.
+- [!] New outbound automation requires approved templates, preferences/suppression policy and safe test recipients.
 
-## Stage H — shared controls, exports and retention
+## Stage H — exports, retention and shared controls
 
-- [ ] Standardise server-side pagination, filters, sorting, saved views and date/numeric ranges.
-- [ ] Add selected/current/all-filtered exports with asynchronous jobs and expiring permission checks.
-- [ ] Prevent CSV spreadsheet formula injection.
-- [ ] Add retention settings, cleanup preview and deletion requests while preserving usage ledgers.
-- [ ] Display real backup status/capability and recovery documentation without calling exports backups.
+- [x] Add server-side account pagination/search/filter/sort and global search across accounts, users, domains, workspaces, billing events and audit IDs.
+- [x] Add queued CSV/JSON exports for accounts, users, properties, audits and admin activity with progress, private storage, seven-day expiry and a new permission check before a 60-second signed download.
+- [x] Neutralise spreadsheet formula injection and omit sensitive before/after payloads from administrative-log export.
+- [x] Add retention settings, cleanup/deletion review data and honest backup-unavailable state.
+- [~] Saved-view storage exists; full saved-view UI and selected/current-page export controls are not yet exposed.
+- [!] Cleanup execution and provider backup/PITR claims remain disabled pending policy and verified provider access.
 
-## Stage I — command centre and complete navigation
+## Stage I — command centre and navigation
 
-- [ ] Build the dedicated grouped SuperAdmin sidebar and every specified page/tab.
-- [ ] Add persistent global search across accounts, users, domains, workspaces, invoices and audit IDs.
-- [ ] Show environment, service health and unresolved alerts globally.
-- [ ] Build summary, customer activity, revenue and service-health overview from the functioning systems.
-- [ ] Link every summary to supporting filtered records and persist relevant filters.
-- [ ] Verify responsive navigation, tabs, long tables, loading, empty, unavailable, denied and error states.
+- [x] Build the dedicated, permission-gated SuperAdmin sidebar with every specified group, page and tab.
+- [x] Add persistent global search, environment, service health and unresolved-alert context.
+- [x] Use live application data and explicit loading, empty, unavailable, denied and error states; fixtures are isolated to `?fixture` visual testing and cannot mutate data.
+- [x] Build overview/customer/revenue/service panels from functioning data sources and show unavailable financial/provider metrics honestly.
+- [x] Verify desktop and 565px layouts, tab/table containment and key Financials, Customer sessions and Safety limits views with zero browser console errors.
+- [~] Some summary rows do not yet deep-link with persisted filters; the overview is operational but not every requested analytic trend is available from existing data.
 
+## Release activation gates
+
+- [ ] Production workflow applies all three migrations, including verified `admin@claritude.io` Owner binding and `adam.jordan@websi.com` verified binding or pending identity-bound invitation.
+- [ ] Cloudflare deploy reports the exact commit and `/health` returns it.
+- [ ] Owner signs in, completes AAL2 and verifies staff directory plus a read-only delegated-session smoke test.
+- [ ] Stripe, new outbound automation, automatic deletion, cleanup and unverified provider controls remain off until their individual prerequisites are satisfied.

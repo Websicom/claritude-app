@@ -20,3 +20,18 @@
 - Resend is configured for existing uptime/report delivery, but safe test recipients and campaign policy are not yet declared.
 - Cloudflare provider-level queue/browser/account analytics access must be verified; application-measured telemetry will be implemented independently.
 - Supabase backup/point-in-time-recovery capability and database CPU/memory access must be read from the provider rather than inferred.
+
+## 2026-10-06 — implementation and release decisions
+
+- Staff access is fail-closed. Every SuperAdmin API request resolves the current Auth identity, the live staff record, role permission and AAL2; browser-visible state never grants authority.
+- `admin@claritude.io` is seeded only when a matching confirmed Auth identity exists. `adam.jordan@websi.com` is activated only if already confirmed; otherwise the migration creates an identity-bound pending Owner invitation which the exact confirmed identity must accept.
+- Delegation is a scoped administrative context, not password impersonation. Sessions expire in at most 60 minutes, default to read-only, are rechecked on each request and cannot enter finance, ownership or destructive workflows.
+- Customer audit quota and platform capacity use separate atomic ledgers. A page execution consumes one customer credit once; retries still consume infrastructure but do not double-charge. Eligible platform failures may restore the customer credit once.
+- The initial daily/concurrent processing values are documented safety candidates, not commercial promises. Overrides are clamped to hard ceilings.
+- URL identity intentionally preserves scheme, host form, path and query while normalising parseable URL representation and a trailing root slash. It does not collapse HTTP/HTTPS or `www` variants.
+- Free-account automatic deletion, cleanup, new lifecycle mail, campaigns and weekly digest remain disabled. The first release provides state, dry-run and review controls only.
+- Stripe uses the current SDK/API configuration, a signature-verified `/webhooks/stripe` route and provider-event ordering. With no Stripe credentials or catalogue available, financial mutations and calculated revenue remain unavailable instead of simulated.
+- Provider metrics are labelled by source. Cloudflare CPU/browser/queue billing, Supabase CPU/memory and backup status remain unavailable until provider access exposes authoritative values.
+- Production Hono and React Router dependencies were upgraded after audit findings. `npm audit --omit=dev` now reports zero vulnerabilities.
+- The normal `agent-browser` executable was unavailable, so the same built fixture route was verified through the controlled browser surface at desktop and 565px widths. Console warnings/errors were zero.
+- Local Docker was unavailable. Supabase CLI dry-run confirmed the pending migration set, while SQL execution, linked lint and post-migration checks are intentionally delegated to the existing migration-first production workflow.
