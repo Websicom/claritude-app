@@ -73,6 +73,18 @@ function fixtureProperty(
     canonical_host: host,
     verification_status: "verified",
     tracking_id: `fixture_${id}`,
+    settings: {
+      timezone: "Europe/London",
+      ...(id === "fixture-property" ? {
+        ai_visibility: {
+          business_name: "Websi",
+          industry: "web-design",
+          industry_custom: "",
+          location: "Cambridge",
+          country: "GB",
+        },
+      } : {}),
+    },
     tracking_last_received_at: pageviews
       ? new Date(Date.now() - 42000).toISOString()
       : undefined,

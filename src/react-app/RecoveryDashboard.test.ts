@@ -26,6 +26,7 @@ import {
   performanceTargetLabel,
   propertyOnboardingChecks,
   shouldShowAuditQuickFilters,
+  suggestedAiPhrase,
   propertyFaviconSources,
   squareImageCrop,
   sortWorkspaceProperties,
@@ -39,6 +40,10 @@ import {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("top selector searches", () => {
+  it("builds unbranded local discovery phrases and a natural property fallback", () => {
+    expect(suggestedAiPhrase({ name: "Websi", settings: { ai_visibility: { industry: "web-design", location: "Cambridge", country: "GB" } } } as any)).toBe("Web design agency in Cambridge");
+    expect(suggestedAiPhrase({ name: "Websi", settings: {} } as any)).toBe("What services does Websi offer?");
+  });
   const workspaces = [
     { role: "owner", workspaces: { id: "one", name: "Websi Agency" } },
     { role: "member", workspaces: { id: "two", name: "Client Sandbox" } },

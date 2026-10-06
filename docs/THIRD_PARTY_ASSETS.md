@@ -24,3 +24,9 @@
 - Upstream tag commit: `01d477f0efaf50ffaed7079b5507ef1a466ccc55`
 - License: Apache-2.0 (retained by the installed package and lockfile).
 - Use: the Worker serves the bundled IIFE from `/vendor/web-vitals.js`; tracked sites never load it from a third-party CDN.
+
+## Analytics and AI platform logos
+
+- Sources: `simple-icons/simple-icons`, `FortAwesome/Font-Awesome`, and `lobehub/lobe-icons` at the pinned package versions in `package-lock.json`.
+- Licences and exact upstream asset URLs are recorded in `public/assets/source-icons/manifest.json`.
+- Use: the assets are copied into the application by `npm run assets:sources`; the application never hotlinks provider logos. Product names and logos remain trademarks of their respective owners.

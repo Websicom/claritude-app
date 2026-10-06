@@ -34,7 +34,7 @@ for (const [name, icon] of Object.entries({ yahoo: faYahoo, linkedin: faLinkedin
   await writeFile(join(output, `${name}.svg`), `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">${paths}</svg>\n`);
   manifest[name] = { file: `/assets/source-icons/${name}.svg`, source: `https://github.com/FortAwesome/Font-Awesome/blob/7.x/js-packages/@fortawesome/free-brands-svg-icons/${icon.iconName}.js`, license: "CC-BY-4.0" };
 }
-const lobe = { google: "google-color", bing: "bing-color", yandex: "yandex", chatgpt: "openai", copilot: "copilot-color" };
+const lobe = { google: "google-color", bing: "bing-color", yandex: "yandex", chatgpt: "openai", copilot: "copilot-color", grok: "grok" };
 for (const [name, slug] of Object.entries(lobe)) {
   const source = join(root, "node_modules", "@lobehub", "icons-static-svg", "icons", `${slug}.svg`);
   if (!existsSync(source)) throw new Error(`Missing Lobe Icons asset: ${slug}`);

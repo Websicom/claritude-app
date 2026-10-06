@@ -9,6 +9,7 @@ import AXE_SOURCE from "../../node_modules/axe-core/axe.min.js?raw";
 import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
 import { USER_FACING_AUDIT_GROUPS } from "../shared/audit-user-facing-registry.generated";
+import { AI_PLATFORMS, identifyAiPlatform } from "../shared/ai-platforms";
 import {
   buildUserFacingGroupSnapshot,
   deriveUserFacingAuditResults,
@@ -5641,6 +5642,60 @@ app.get("/api/properties/:id/analytics/pages", async (c) => {
   return c.json({ rows, page, pageSize, total, pages: Math.max(1, Math.ceil(total / pageSize)) });
 });
 
+app.get("/api/properties/:id/ai-visibility", async (c) => {
+  const window = requestedWindow(c);
+  if (!window) return c.json({ error: "invalid_date_range" }, 400);
+  const db = c.get("db");
+  const propertyId = c.req.param("id");
+  const { data: property, error: propertyError } = await db
+    .from("properties")
+    .select("id,tracking_last_received_at")
+    .eq("id", propertyId)
+    .maybeSingle();
+  if (propertyError) return c.json({ error: propertyError.message }, 400);
+  if (!property) return c.json({ error: "property_not_found" }, 404);
+  const previousWindow = analyticsPreviousPeriodRange(window.from, window.to);
+  try {
+    const [currentData, previousData, auditResult] = await Promise.all([
+      loadAnalyticsWindow(db, propertyId, window.from, window.to, true),
+      loadAnalyticsWindow(db, propertyId, previousWindow.from, previousWindow.to, true),
+      db.from("audit_runs")
+        .select("*,audit_results(*)")
+        .eq("property_id", propertyId)
+        .in("status", ["completed", "partial"])
+        .order("completed_at", { ascending: false })
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ]);
+    if (auditResult.error) throw new Error(auditResult.error.message);
+    const current = buildAiVisibilitySummary(
+      currentData.events,
+      currentData.views,
+      window.from,
+      window.to,
+      window.timeZone,
+    );
+    const previous = buildAiVisibilitySummary(
+      previousData.events,
+      previousData.views,
+      previousWindow.from,
+      previousWindow.to,
+      window.timeZone,
+    );
+    return c.json({
+      ...current,
+      previous,
+      insight: aiVisibilityInsight(current, previous),
+      audit: buildAiAuditSummary(auditResult.data),
+      trackingInstalled: Boolean(property.tracking_last_received_at),
+      truncated: currentData.truncated || previousData.truncated,
+    });
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "ai_visibility_query_failed" }, 400);
+  }
+});
+
 app.get("/api/properties/:id/analytics/events/:name/occurrences", async (c) => {
   const window = requestedWindow(c);
   if (!window) return c.json({ error: "invalid_date_range" }, 400);
@@ -7744,6 +7799,225 @@ async function loadAnalyticsWindow(
   };
 }
 
+type AiVisitState = {
+  id: string;
+  startedAt: string;
+  landingPath: string;
+  platformId: string | null;
+  activeSeconds: number;
+  maxScroll: number;
+  keyEvents: number;
+  measured: boolean;
+};
+
+function aiVisitPlatform(observation: any) {
+  return identifyAiPlatform({
+    campaign: observation.metadata?.utm_source ?? observation.utm_source,
+    referrer: observation.metadata?.original_referrer ?? observation.referrer_host,
+    source: observation.metadata?.acquisition_source ?? observation.source,
+  });
+}
+
+function aiCalendarDays(from: string, to: string, timeZone: string) {
+  const first = dateKeyInTimeZone(from, timeZone);
+  const last = dateKeyInTimeZone(to, timeZone);
+  const values: string[] = [];
+  for (let cursor = new Date(`${first}T00:00:00.000Z`), index = 0;
+    cursor <= new Date(`${last}T00:00:00.000Z`) && index < 92;
+    cursor = new Date(cursor.valueOf() + 864e5), index += 1)
+    values.push(cursor.toISOString().slice(0, 10));
+  return values;
+}
+
+export function buildAiVisibilitySummary(
+  events: any[],
+  historicalViews: any[],
+  from: string,
+  to: string,
+  timeZone: string,
+) {
+  const visits = new Map<string, AiVisitState>();
+  let observedPageviews = 0;
+  let missingSessionPageviews = 0;
+  const ensureVisit = (sessionId: string, startedAt: string, path: unknown, platformId: string | null, measured: boolean) => {
+    const existing = visits.get(sessionId);
+    const normalizedPath = normalizeAnalyticsPath(path);
+    if (!existing) {
+      visits.set(sessionId, {
+        id: sessionId,
+        startedAt,
+        landingPath: normalizedPath,
+        platformId,
+        activeSeconds: 0,
+        maxScroll: 0,
+        keyEvents: 0,
+        measured,
+      });
+      return visits.get(sessionId)!;
+    }
+    if (Date.parse(startedAt) < Date.parse(existing.startedAt)) {
+      existing.startedAt = startedAt;
+      existing.landingPath = normalizedPath;
+    }
+    existing.platformId ||= platformId;
+    existing.measured ||= measured;
+    return existing;
+  };
+
+  for (const view of historicalViews || []) {
+    observedPageviews += 1;
+    const sessionId = String(view.session_id || "").trim();
+    if (!sessionId) {
+      missingSessionPageviews += 1;
+      continue;
+    }
+    const platform = aiVisitPlatform(view);
+    const visit = ensureVisit(
+      sessionId,
+      String(view.occurred_at || `${view.day}T00:00:00.000Z`),
+      view.path,
+      platform?.id || null,
+      true,
+    );
+    visit.activeSeconds += Number(view.active_seconds || 0);
+    visit.maxScroll = Math.max(visit.maxScroll, Number(view.max_scroll || 0));
+    visit.keyEvents += Number(view.key_events || 0);
+  }
+
+  const raw = [...(events || [])].sort((left, right) =>
+    Date.parse(left.occurred_at || "") - Date.parse(right.occurred_at || ""),
+  );
+  for (const event of raw) {
+    if (event.event_type !== "pageview") continue;
+    observedPageviews += 1;
+    const sessionId = String(event.metadata?.session || "").trim();
+    if (!sessionId) {
+      missingSessionPageviews += 1;
+      continue;
+    }
+    const platform = aiVisitPlatform(event);
+    ensureVisit(
+      sessionId,
+      String(event.occurred_at),
+      event.metadata?.landing_page || event.path,
+      platform?.id || null,
+      SUPPORTED_TRACKER_VERSIONS.has(event.metadata?.tracker_version),
+    );
+  }
+  for (const event of raw) {
+    const sessionId = String(event.metadata?.session || "").trim();
+    const visit = sessionId ? visits.get(sessionId) : undefined;
+    if (!visit) continue;
+    if (event.event_type === "active_time" && Number.isFinite(Number(event.value)))
+      visit.activeSeconds += Number(event.value);
+    if (event.event_type === "scroll" && Number.isFinite(Number(event.value)))
+      visit.maxScroll = Math.max(visit.maxScroll, Number(event.value));
+    if (ANALYTICS_KEY_EVENT_TYPES.has(event.event_type)) visit.keyEvents += 1;
+  }
+
+  const allVisits = [...visits.values()];
+  const aiVisits = allVisits.filter((visit) => visit.platformId);
+  const days = aiCalendarDays(from, to, timeZone);
+  const series = new Map(days.map((day) => [day, 0]));
+  const platformCounts = new Map<string, number>();
+  const pageCounts = new Map<string, { visits: number; sources: Set<string> }>();
+  for (const visit of aiVisits) {
+    const day = dateKeyInTimeZone(visit.startedAt, timeZone);
+    if (series.has(day)) series.set(day, (series.get(day) || 0) + 1);
+    platformCounts.set(visit.platformId!, (platformCounts.get(visit.platformId!) || 0) + 1);
+    const page = pageCounts.get(visit.landingPath) || { visits: 0, sources: new Set<string>() };
+    page.visits += 1;
+    page.sources.add(visit.platformId!);
+    pageCounts.set(visit.landingPath, page);
+  }
+  const measuredEngagement = (values: AiVisitState[]) => {
+    const eligible = values.filter((visit) => visit.measured);
+    const engaged = eligible.filter((visit) =>
+      visit.activeSeconds >= 10 || visit.maxScroll >= 50 || visit.keyEvents > 0,
+    );
+    return {
+      eligibleVisits: eligible.length,
+      engagementRate: eligible.length ? engaged.length / eligible.length * 100 : null,
+    };
+  };
+  const platforms = AI_PLATFORMS.map((platform) => ({
+    id: platform.id,
+    name: platform.name,
+    visits: platformCounts.get(platform.id) || 0,
+    share: aiVisits.length ? (platformCounts.get(platform.id) || 0) / aiVisits.length * 100 : 0,
+  })).filter((platform) => platform.visits).sort((left, right) => right.visits - left.visits || left.name.localeCompare(right.name));
+  const pages = [...pageCounts].map(([path, value]) => ({
+    path,
+    title: null,
+    visits: value.visits,
+    sources: [...value.sources].sort(),
+  })).sort((left, right) => right.visits - left.visits || left.path.localeCompare(right.path));
+  const coverage = observedPageviews === 0
+    ? "empty"
+    : visits.size === 0
+      ? "unavailable"
+      : missingSessionPageviews > 0
+        ? "partial"
+        : "available";
+  return {
+    from,
+    to,
+    timeZone,
+    coverage,
+    observedPageviews,
+    missingSessionPageviews,
+    totalVisits: allVisits.length,
+    aiVisits: aiVisits.length,
+    aiSources: platforms.length,
+    trafficShare: allVisits.length ? aiVisits.length / allVisits.length * 100 : null,
+    landingPages: pages.length,
+    series: days.map((day) => ({ day, visits: series.get(day) || 0 })),
+    platforms,
+    pages,
+    engagement: {
+      ai: measuredEngagement(aiVisits),
+      other: measuredEngagement(allVisits.filter((visit) => !visit.platformId)),
+      conversions: null,
+      conversionRate: null,
+      conversionStatus: "No conversion designation is configured for tracked events.",
+    },
+  };
+}
+
+export function aiVisibilityInsight(current: any, previous: any) {
+  if (!current.aiVisits)
+    return "No AI referral visits were recorded in this period. This does not indicate whether the site appeared in AI answers.";
+  const leadingPage = current.pages?.[0];
+  if (leadingPage) return `${leadingPage.path} received the most AI referral visits.`;
+  const leadingPlatform = current.platforms?.[0];
+  if (leadingPlatform && leadingPlatform.share >= 50)
+    return `${leadingPlatform.name} accounted for ${Math.round(leadingPlatform.share)}% of AI referral visits.`;
+  if (previous?.aiVisits > 0) {
+    const change = Math.round((current.aiVisits - previous.aiVisits) / previous.aiVisits * 100);
+    return `AI referral visits ${change >= 0 ? "increased" : "decreased"} by ${Math.abs(change)}% compared with the previous period.`;
+  }
+  return `${current.aiVisits} AI referral ${current.aiVisits === 1 ? "visit was" : "visits were"} recorded in this period.`;
+}
+
+function buildAiAuditSummary(run: any) {
+  if (!run) return null;
+  const technicalSnapshot = Array.isArray(run.registry_snapshot) ? run.registry_snapshot as AuditRegistrySnapshot[] : [];
+  const groupSnapshot = Array.isArray(run.user_facing_snapshot) && run.user_facing_snapshot.length
+    ? run.user_facing_snapshot as UserFacingAuditGroupSnapshot[]
+    : fallbackUserFacingSnapshot(technicalSnapshot);
+  const groups = deriveUserFacingAuditResults(groupSnapshot, run.audit_results || [])
+    .filter((result) => result.category === "AI & Crawler Readiness");
+  return {
+    runId: run.id,
+    pageId: run.audit_page_id,
+    status: run.status,
+    createdAt: run.created_at,
+    completedAt: run.completed_at,
+    findings: groups.filter((result) => ["failed", "advisory"].includes(result.outcome)).length,
+    groups,
+  };
+}
+
 function hasAnalyticsFilters(filters: AnalyticsFilters) {
   return Object.values(filters).some(Boolean);
 }
@@ -8345,6 +8619,8 @@ function analyticsSource(event: any) {
 }
 
 function analyticsSourceCategory(event: any) {
+  const aiPlatform = aiVisitPlatform(event);
+  if (aiPlatform) return aiPlatform.name;
   const source = analyticsSource(event).toLocaleLowerCase();
   if (source === "direct" || source === "direct / unknown") return "Direct / unknown";
   if (source.includes("google")) return "Google";
@@ -8355,6 +8631,7 @@ function analyticsSourceCategory(event: any) {
 
 function analyticsSourceType(event: any) {
   const category = analyticsSourceCategory(event);
+  if (AI_PLATFORMS.some((platform) => platform.name === category)) return "AI referral";
   if (category === "Direct / unknown") return "Direct";
   if (category === "Google") return "Search";
   if (["LinkedIn", "Instagram"].includes(category)) return "Social";
@@ -8921,6 +9198,18 @@ function sanitizePropertySettings(input?: Record<string, unknown>) {
       .map((item) => String(item).toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 40))
       .filter(Boolean)
       .slice(0, 30);
+  if (input.ai_visibility && typeof input.ai_visibility === "object") {
+    const details = input.ai_visibility as Record<string, unknown>;
+    output.ai_visibility = {
+      business_name: String(details.business_name || "").trim().slice(0, 120),
+      industry: String(details.industry || "").toLocaleLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 60),
+      industry_custom: String(details.industry_custom || "").trim().slice(0, 120),
+      location: String(details.location || "").trim().slice(0, 120),
+      country: /^[A-Z]{2}$/.test(String(details.country || "").toUpperCase())
+        ? String(details.country).toUpperCase()
+        : "",
+    };
+  }
   if (input.report_branding && typeof input.report_branding === "object") {
     const branding = input.report_branding as Record<string, unknown>;
     output.report_branding = {

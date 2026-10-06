@@ -6,6 +6,8 @@ import {
   buildAnalyticsEventDetailSummary,
   buildAnalyticsOccurrenceContext,
   buildAnalyticsSummary,
+  buildAiVisibilitySummary,
+  aiVisibilityInsight,
   auditCheckHasExecutableLogic,
   canonicalPropertyHost,
   chunkAuditResults,
@@ -58,6 +60,29 @@ import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
 
 describe("worker evidence pipelines", () => {
+  it("deduplicates AI referral visits, keeps landing pages and excludes AI visits from the comparison group", () => {
+    const events = [
+      { event_type: "pageview", path: "/services/", occurred_at: "2026-10-01T10:00:00Z", source: "chatgpt.com", referrer_host: "chatgpt.com", metadata: { session: "ai-one", tracker_version: "2.1.5", landing_page: "/services/", acquisition_source: "chatgpt.com", original_referrer: "chatgpt.com" } },
+      { event_type: "pageview", path: "/contact/", occurred_at: "2026-10-01T10:05:00Z", source: "chatgpt.com", referrer_host: "chatgpt.com", metadata: { session: "ai-one", tracker_version: "2.1.5", landing_page: "/services/", acquisition_source: "chatgpt.com", original_referrer: "chatgpt.com" } },
+      { event_type: "active_time", path: "/services/", value: 12, occurred_at: "2026-10-01T10:00:12Z", metadata: { session: "ai-one" } },
+      { event_type: "pageview", path: "/", occurred_at: "2026-10-01T11:00:00Z", source: "google.com", referrer_host: "google.com", metadata: { session: "other-one", tracker_version: "2.1.5", landing_page: "/", acquisition_source: "google.com", original_referrer: "google.com" } },
+    ];
+    const summary = buildAiVisibilitySummary(events, [], "2026-10-01T00:00:00Z", "2026-10-01T23:59:59Z", "Europe/London");
+    expect(summary).toMatchObject({ totalVisits: 2, aiVisits: 1, aiSources: 1, trafficShare: 50, landingPages: 1, coverage: "available" });
+    expect(summary.pages).toEqual([{ path: "/services/", title: null, visits: 1, sources: ["chatgpt"] }]);
+    expect(summary.platforms[0]).toMatchObject({ id: "chatgpt", visits: 1, share: 100 });
+    expect(summary.engagement.ai.engagementRate).toBe(100);
+    expect(summary.engagement.other.engagementRate).toBe(0);
+  });
+
+  it("does not classify ordinary Google traffic as Gemini and reports missing visit identifiers", () => {
+    const summary = buildAiVisibilitySummary([
+      { event_type: "pageview", path: "/", occurred_at: "2026-10-01T10:00:00Z", source: "google.com", referrer_host: "google.com", metadata: { tracker_version: "2" } },
+    ], [], "2026-10-01T00:00:00Z", "2026-10-01T23:59:59Z", "UTC");
+    expect(summary.coverage).toBe("unavailable");
+    expect(summary.aiVisits).toBe(0);
+    expect(aiVisibilityInsight(summary, { aiVisits: 0 })).toContain("does not indicate");
+  });
   it("keeps finance calculations currency-separated and excludes non-recurring cash movements from MRR", () => {
     expect(financeMetrics({
       subscriptions: [

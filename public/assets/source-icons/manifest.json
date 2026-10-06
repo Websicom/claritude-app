@@ -139,6 +139,11 @@
     "source": "https://github.com/lobehub/lobe-icons/blob/v1.95.1/packages/static-svg/icons/copilot-color.svg",
     "license": "MIT"
   },
+  "grok": {
+    "file": "/assets/source-icons/grok.svg",
+    "source": "https://github.com/lobehub/lobe-icons/blob/v1.95.1/packages/static-svg/icons/grok.svg",
+    "license": "MIT"
+  },
   "email": {
     "file": "/assets/source-icons/email.svg",
     "source": "Lucide mail",

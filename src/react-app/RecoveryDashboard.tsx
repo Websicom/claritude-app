@@ -41,6 +41,7 @@ import {
   RefreshCw,
   Search,
   Settings,
+  Sparkles,
   ShieldAlert,
   Smartphone,
   Tablet,
@@ -80,6 +81,7 @@ import { apiRequest as api } from "./api";
 import { supabase } from "./supabase";
 import { estimateIncidentDowntime } from "../shared/uptime";
 import { USER_FACING_AUDIT_GROUPS } from "../shared/audit-user-facing-registry.generated";
+import { AI_PLATFORMS, aiPlatformPromptUrl, type AiPlatform } from "../shared/ai-platforms";
 
 type Monitor = {
   id: string;
@@ -819,6 +821,13 @@ export function ClaritudeApplication({
                   Audit
                 </Link>
                 <Link
+                  className={section === "ai-visibility" ? "active" : ""}
+                  to={href("ai-visibility")}
+                >
+                  <Sparkles />
+                  AI Visibility
+                </Link>
+                <Link
                   className={section === "reports" ? "active" : ""}
                   to={href("reports")}
                 >
@@ -1062,6 +1071,17 @@ export function ClaritudeApplication({
                     </Panel>
                   </Page>
                 )
+              }
+            />
+            <Route
+              path="/ai-visibility"
+              element={
+                <AiVisibilityView
+                  session={session}
+                  property={property}
+                  fixture={fixture}
+                  notify={notify}
+                />
               }
             />
             <Route
@@ -2597,6 +2617,211 @@ function UptimeView({
   );
 }
 
+function AiMetricLabel({ children, help }: { children: ReactNode; help: string }) {
+  return <span className="ai-metric-label">{children}<span className="ai-help-icon" title={help} aria-label={help}><Info /></span></span>;
+}
+
+function aiMetricComparison(current: number | null | undefined, previous: number | null | undefined, mode: "count" | "percent" | "points" = "count") {
+  if (current == null || previous == null) return <span className="metric-comparison neutral">Comparison unavailable</span>;
+  const difference = current - previous;
+  if (mode === "points") {
+    const formatted = Math.abs(difference).toFixed(1);
+    return <span className={`metric-comparison ${difference >= 0 ? "favourable" : "unfavourable"}`}>{difference === 0 ? "→" : difference > 0 ? "↑" : "↓"} {difference > 0 ? "+" : difference < 0 ? "−" : ""}{formatted} percentage points</span>;
+  }
+  if (previous === 0) {
+    return <span className={`metric-comparison ${difference > 0 ? "favourable" : "neutral"}`}>{difference > 0 ? `↑ +${fmt(difference)}` : "→ no change"} vs previous period</span>;
+  }
+  const change = difference / Math.abs(previous) * 100;
+  return <span className={`metric-comparison ${change >= 0 ? "favourable" : "unfavourable"}`}>{change === 0 ? "→" : change > 0 ? "↑" : "↓"} {change > 0 ? "+" : ""}{Math.abs(change).toFixed(Math.abs(change) < 10 ? 1 : 0)}% vs previous period</span>;
+}
+
+function AiVisibilityView({
+  session,
+  property,
+  fixture,
+  notify,
+}: {
+  session: Session | null;
+  property?: Property;
+  fixture: boolean;
+  notify: Notify;
+}) {
+  const location = useLocation();
+  const livePeriod = `${periodQuery(location.search)}&time_zone=${encodeURIComponent(property?.settings?.timezone || "Europe/London")}`;
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [reloadToken, setReloadToken] = useState(0);
+  const [phrase, setPhrase] = useState("");
+  const [copyRecovery, setCopyRecovery] = useState("");
+  const phraseInput = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!property) return;
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    setData(null);
+    if (session) {
+      api<any>(session, `/api/properties/${property.id}/ai-visibility?${livePeriod}`)
+        .then((next) => !cancelled && setData(next))
+        .catch((reason) => !cancelled && setError(reason.message || "AI visibility could not be loaded"))
+        .finally(() => !cancelled && setLoading(false));
+    } else if (fixture) {
+      setData(aiVisibilityFixture(property));
+      setLoading(false);
+    } else {
+      setError("Authentication is required to load AI visibility.");
+      setLoading(false);
+    }
+    return () => { cancelled = true; };
+  }, [fixture, livePeriod, property?.id, reloadToken, session]);
+
+  if (!property) return <Empty title="Select a property" detail="AI visibility is property-specific." />;
+  const suggestion = suggestedAiPhrase(property);
+  const current = data || {};
+  const previous = current.previous || {};
+  const incomplete = ["partial", "unavailable"].includes(current.coverage);
+  const metricValue = (value: number | null | undefined, suffix = "") =>
+    current.coverage === "unavailable" ? "Unavailable" : value == null ? "—" : `${fmt(value)}${suffix}`;
+  const maxSourceVisits = Math.max(1, ...(current.platforms || []).map((platform: any) => platform.visits));
+  const maxPageVisits = Math.max(1, ...(current.pages || []).map((page: any) => page.visits));
+  const queryParams = new URLSearchParams(location.search);
+  const analyticsBase = new URLSearchParams({
+    property: property.id,
+    analyticsTab: "Pages",
+    source_type: "AI referral",
+  });
+  if (queryParams.get("from")) analyticsBase.set("from", queryParams.get("from")!);
+  if (queryParams.get("to")) analyticsBase.set("to", queryParams.get("to")!);
+  const analyticsHref = (path?: string) => {
+    const params = new URLSearchParams(analyticsBase);
+    if (path) {
+      params.set("pagePath", path);
+      params.set("path_mode", "exact");
+      params.set("path_value", path);
+    }
+    return `/analytics?${params.toString()}`;
+  };
+  const auditHref = (groupId?: string) => {
+    const params = new URLSearchParams({ property: property.id, auditTab: "Findings" });
+    if (current.audit?.pageId) params.set("auditPage", current.audit.pageId);
+    if (groupId) params.set("auditGroup", groupId);
+    else params.set("auditCategory", "AI & Crawler Readiness");
+    return `/audit?${params.toString()}`;
+  };
+
+  async function copyPhrase(message = "Prompt copied") {
+    const visiblePhrase = phrase.trim();
+    if (!visiblePhrase) {
+      phraseInput.current?.focus();
+      notify("Enter a phrase to check");
+      return false;
+    }
+    try {
+      await navigator.clipboard.writeText(visiblePhrase);
+      setCopyRecovery("");
+      notify(message);
+      return true;
+    } catch {
+      setCopyRecovery(visiblePhrase);
+      notify("Clipboard access was unavailable. Select and copy the phrase shown below.");
+      return false;
+    }
+  }
+
+  function openPlatform(platform: AiPlatform) {
+    const visiblePhrase = phrase.trim();
+    if (!visiblePhrase) {
+      phraseInput.current?.focus();
+      notify("Enter a phrase to check");
+      return;
+    }
+    if (platform.promptMode === "query") {
+      window.open(aiPlatformPromptUrl(platform, visiblePhrase), "_blank", "noopener,noreferrer");
+      notify(`Opening ${platform.name} with your phrase`);
+      return;
+    }
+    window.open(platform.destination, "_blank", "noopener,noreferrer");
+    void copyPhrase(`Prompt copied. Paste it into ${platform.name}.`);
+  }
+
+  return (
+    <Page title="AI Visibility" status={<Period />}>
+      {loading ? (
+        <Empty title="Loading AI visibility…" detail="Reconciling AI-attributed visits, landing pages and the latest audit." />
+      ) : error ? (
+        <div className="analytics-state" role="alert"><Empty title="AI visibility could not be loaded" detail={error} /><button className="btn" onClick={() => setReloadToken((value) => value + 1)}>Retry</button></div>
+      ) : (
+        <>
+          {!current.trackingInstalled && <div className="analytics-install-banner" role="status"><div><b>Install tracking to measure AI referrals</b><p>Referral traffic needs Claritude analytics. Phrase checking and AI Audit remain available without it.</p></div><Link className="primary" to={`/settings?property=${property.id}&settingsTab=Tracking`}>Tracking setup guide</Link></div>}
+          {incomplete && <p className="analytics-data-warning">{current.coverage === "unavailable" ? "Visit-level tracking is unavailable for this period, so AI referral totals cannot be reported reliably." : "Some older pageviews have no visit identifier. Visible totals are directional and may be incomplete."}</p>}
+          <section className="panel ai-kpi-panel" aria-label="AI visibility metrics">
+            <div className="metrics metrics-5">
+              <div className="metric"><small><AiMetricLabel help="Visits whose stored acquisition signal matches a recognised AI platform. Referral traffic cannot measure every AI mention or citation.">AI referral visits</AiMetricLabel></small><b>{metricValue(current.aiVisits)}</b>{aiMetricComparison(current.aiVisits, previous.aiVisits)}</div>
+              <div className="metric"><small><AiMetricLabel help="Recognised AI platforms that sent at least one attributed visit in this period.">AI sources</AiMetricLabel></small><b>{metricValue(current.aiSources)}</b>{aiMetricComparison(current.aiSources, previous.aiSources)}</div>
+              <div className="metric"><small><AiMetricLabel help="AI referral visits divided by all visits in the same property, timezone and date range.">AI traffic share</AiMetricLabel></small><b>{current.coverage === "unavailable" || current.trafficShare == null ? "Unavailable" : `${current.trafficShare.toFixed(1)}%`}</b>{aiMetricComparison(current.trafficShare, previous.trafficShare, "points")}</div>
+              <div className="metric"><small><AiMetricLabel help="Distinct entry-page paths that received an AI-attributed visit.">AI landing pages</AiMetricLabel></small><b>{metricValue(current.landingPages)}</b>{aiMetricComparison(current.landingPages, previous.landingPages)}</div>
+              <div className="metric"><small><AiMetricLabel help="Failed or advisory AI audit groups in the latest completed audit. Each group is counted once.">Audit findings</AiMetricLabel></small><b>{current.audit ? fmt(current.audit.findings) : "—"}</b><span>{current.audit ? `Latest audit ${fmtDate(current.audit.completedAt || current.audit.createdAt)}` : "No completed audit"}</span></div>
+            </div>
+          </section>
+
+          <div className="ai-visibility-columns">
+            <div className="ai-visibility-primary">
+              <Panel className="ai-traffic-panel" title={<span>AI referral traffic <span className="ai-help-icon" title="Visits from recognised AI acquisition sources; this is not a measure of all AI citations."><Info /></span></span>}>
+                <p className="panel-subtitle">Visits from recognised AI sources.</p>
+                <div className="chart-legend ai-chart-legend"><span>Current period</span><span className="previous">Previous period</span></div>
+                <SeriesChart
+                  points={(current.series || []).map((point: any) => ({ label: point.day, value: point.visits }))}
+                  previousPoints={(previous.series || []).map((point: any) => ({ label: point.day, value: point.visits }))}
+                  emptyTitle="No AI referral visits in this period"
+                  label="AI referral visits by day"
+                  timeZone={current.timeZone || property.settings?.timezone}
+                  tone="blue"
+                />
+                <div className="ai-table-heading"><h3>AI sources</h3></div>
+                {(current.platforms || []).length ? <div className="table-wrap"><table className="ai-bar-table"><thead><tr><th>Platform</th><th>Visits</th><th>Share</th></tr></thead><tbody>{current.platforms.map((platform: any) => {
+                  const registry = AI_PLATFORMS.find((item) => item.id === platform.id);
+                  return <tr key={platform.id}><td><span className="ai-bar-cell" style={{ "--bar-size": `${platform.visits / maxSourceVisits * 100}%` } as CSSProperties}>{registry && <img src={registry.icon} alt="" />}<b>{platform.name}</b></span></td><td>{fmt(platform.visits)}</td><td>{platform.share.toFixed(1)}%</td></tr>;
+                })}</tbody></table></div> : <Empty title="No AI sources recorded" detail="Recognised AI referrals will appear here without requiring manual mention checks." />}
+              </Panel>
+
+              <Panel className="ai-audit-panel" title="AI Audit" actions={current.audit ? <><span className="ai-audit-date">Latest audit: {fmtDate(current.audit.completedAt || current.audit.createdAt)}</span><Link className="btn" to={auditHref()}>View AI checks</Link></> : <Link className="primary" to={`/audit?property=${property.id}`}>Run audit</Link>}>
+                {current.audit?.groups?.length ? <AuditResults results={current.audit.groups} resultLink={(result) => auditHref(result.group_id)} /> : <Empty title="No completed AI Audit" detail="Run the existing property audit to populate AI and crawler-readiness checks, including relevant llms.txt findings." />}
+              </Panel>
+            </div>
+
+            <div className="ai-visibility-secondary">
+              <Panel className="ai-phrase-panel" title="Check a phrase">
+                <p className="panel-subtitle">Open a discovery phrase on a supported AI platform. Claritude does not retrieve or record the answer.</p>
+                <label className="ai-phrase-input"><span className="sr-only">Phrase</span><input ref={phraseInput} value={phrase} onChange={(event) => { setPhrase(event.target.value); setCopyRecovery(""); }} placeholder={suggestion} /></label>
+                <button className="text-link ai-use-suggestion" type="button" onClick={() => { if (!phrase) setPhrase(suggestion); phraseInput.current?.focus(); }}>Use suggestion</button>
+                <div className="ai-platform-grid">{AI_PLATFORMS.map((platform) => <button type="button" key={platform.id} onClick={() => openPlatform(platform)}><img src={platform.icon} alt="" /><span>{platform.name}</span></button>)}</div>
+                <button className="btn ai-copy-prompt" type="button" onClick={() => void copyPhrase()}><Copy /> Copy prompt</button>
+                <p className="ai-provider-help">Prompt links are used where verified. Copilot opens separately and copies the visible phrase for pasting.</p>
+                {copyRecovery && <label className="ai-copy-recovery">Copy this phrase manually<textarea readOnly value={copyRecovery} onFocus={(event) => event.currentTarget.select()} /></label>}
+              </Panel>
+
+              <Panel className="ai-pages-panel" title="Top pages from AI">
+                <p className="panel-subtitle">Landing pages receiving AI referral visits.</p>
+                <div className="ai-insight"><Sparkles /><span>{current.insight}</span></div>
+                {(current.pages || []).length ? <div className="table-wrap"><table className="ai-bar-table ai-pages-table"><thead><tr><th>Page</th><th>Visits</th><th>Sources</th></tr></thead><tbody>{current.pages.slice(0, 5).map((page: any) => <tr key={page.path}><td><Link className="ai-bar-cell" style={{ "--bar-size": `${page.visits / maxPageVisits * 100}%` } as CSSProperties} to={analyticsHref(page.path)} title={page.path}><span>{page.title || page.path}</span></Link></td><td>{fmt(page.visits)}</td><td><span className="ai-source-logos">{page.sources.map((source: string) => { const platform = AI_PLATFORMS.find((item) => item.id === source); return platform ? <img key={source} src={platform.icon} alt={platform.name} title={platform.name} /> : null; })}</span></td></tr>)}</tbody></table></div> : <Empty title="No AI landing pages" detail="This does not mean the property has never been mentioned by an AI platform." />}
+                {(current.pages || []).length > 0 && <Link className="text-link ai-view-all" to={analyticsHref()}>View all {fmt(current.landingPages)} pages <ChevronRight /></Link>}
+              </Panel>
+
+              <Panel className="ai-engagement-panel" title="AI visitor engagement">
+                <p className="panel-subtitle">Compared with other traffic.</p>
+                <div className="table-wrap"><table><thead><tr><th>Metric</th><th>AI visits</th><th>Other traffic</th></tr></thead><tbody><tr><td><AiMetricLabel help="The existing Claritude engagement definition: at least 10 seconds active, 50% scroll depth or a tracked key event.">Engagement rate</AiMetricLabel></td><td>{current.engagement?.ai?.engagementRate == null ? "Unavailable" : `${current.engagement.ai.engagementRate.toFixed(1)}%`}</td><td>{current.engagement?.other?.engagementRate == null ? "Unavailable" : `${current.engagement.other.engagementRate.toFixed(1)}%`}</td></tr><tr><td>Tracked conversions</td><td colSpan={2}>Not configured</td></tr><tr><td>Conversion rate</td><td colSpan={2}>Unavailable</td></tr></tbody></table></div>
+                <p className="ai-engagement-foot">Based on tracked visits and configured conversion events. <Link to={`/settings?property=${property.id}&settingsTab=Events`}>Review event setup</Link></p>
+              </Panel>
+            </div>
+          </div>
+        </>
+      )}
+    </Page>
+  );
+}
+
 function AnalyticsView({
   session,
   property,
@@ -3044,6 +3269,8 @@ function AuditView({
   const auditParams = new URLSearchParams(auditLocation.search);
   const requestedTab = auditParams.get("auditTab");
   const requestedPageId = auditParams.get("auditPage");
+  const requestedAuditGroup = auditParams.get("auditGroup");
+  const requestedAuditCategory = auditParams.get("auditCategory");
   const [runs, setRuns] = useState<AuditRun[]>([]),
     [propertyRuns, setPropertyRuns] = useState<AuditRun[]>([]),
     [tab, setTab] = useState(
@@ -3207,9 +3434,27 @@ function AuditView({
   }, [activeRunId, session, property?.id, selectedPage?.id, livePeriod]);
   const latestRunId = runs.find((run) => ["completed", "partial"].includes(run.status))?.id;
   useEffect(() => {
+    const latestRun = runs.find((run) => ["completed", "partial"].includes(run.status));
+    const requestedResult = (latestRun?.user_facing_results || latestRun?.audit_results || [])
+      .find((result: any) => String(result.group_id || result.id) === requestedAuditGroup);
+    if (requestedResult) {
+      const categoryKey = `${requestedResult.category}::${requestedResult.subcategory || "General"}`;
+      setTab("Findings");
+      setAuditFilters({ category: requestedResult.category, subcategory: requestedResult.subcategory });
+      setOpenCategories(new Set([categoryKey]));
+      return;
+    }
+    if (requestedAuditCategory) {
+      const categoryResults = (latestRun?.user_facing_results || latestRun?.audit_results || [])
+        .filter((result: any) => result.category === requestedAuditCategory);
+      setTab("Findings");
+      setAuditFilters({ category: requestedAuditCategory });
+      setOpenCategories(new Set(categoryResults.map((result: any) => `${result.category}::${result.subcategory || "General"}`)));
+      return;
+    }
     setOpenCategories(new Set());
     setAuditFilters({});
-  }, [selectedPage?.id, latestRunId]);
+  }, [selectedPage?.id, latestRunId, requestedAuditGroup, requestedAuditCategory]);
   useEffect(() => {
     setCompletionRun(null);
     if (completionTimer.current != null) {
@@ -3508,6 +3753,7 @@ function AuditView({
           setFilters={setAuditFilters}
           openCategories={openCategories}
           setOpenCategories={setOpenCategories}
+          requestedOpenResult={requestedAuditGroup}
         />
       ) : tab === "Checks" ? (
         <AuditChecksPanel
@@ -3892,6 +4138,42 @@ function ReportsView({
   );
 }
 
+const AI_INDUSTRY_GROUPS = [
+  { group: "Professional services", items: [["web-design", "Web design"], ["recruitment", "Recruitment"], ["accounting", "Accounting"], ["legal", "Legal services"], ["consulting", "Business consulting"], ["marketing", "Marketing agency"]] },
+  { group: "Technology & creative", items: [["software-saas", "Software / SaaS"], ["it-services", "IT services"], ["cybersecurity", "Cybersecurity"], ["app-development", "App development"], ["graphic-design", "Graphic design"], ["photography", "Photography"]] },
+  { group: "Retail & hospitality", items: [["retail", "Retail"], ["ecommerce", "E-commerce"], ["restaurant", "Restaurant"], ["hotel", "Hotel / accommodation"], ["travel", "Travel"], ["events", "Events"]] },
+  { group: "Health & education", items: [["healthcare", "Healthcare"], ["dentistry", "Dentistry"], ["therapy", "Therapy / counselling"], ["fitness", "Fitness"], ["education", "Education"], ["training", "Training provider"]] },
+  { group: "Built environment & industry", items: [["construction", "Construction"], ["architecture", "Architecture"], ["manufacturing", "Manufacturing"], ["engineering", "Engineering"], ["property", "Property / real estate"], ["home-services", "Home services"]] },
+  { group: "Finance, transport & society", items: [["financial-services", "Financial services"], ["insurance", "Insurance"], ["transport", "Transport / logistics"], ["automotive", "Automotive"], ["charity", "Charity / nonprofit"], ["public-services", "Public services"], ["other", "Other"]] },
+] as const;
+
+const AI_INDUSTRIES = AI_INDUSTRY_GROUPS.flatMap((group) =>
+  group.items.map(([value, label]) => ({ value, label, group: group.group })),
+);
+const AI_COUNTRY_CODES = ["AR", "AU", "AT", "BE", "BR", "CA", "CL", "CN", "CO", "CZ", "DK", "EG", "FI", "FR", "DE", "GR", "HK", "HU", "IN", "ID", "IE", "IL", "IT", "JP", "KE", "MY", "MX", "NL", "NZ", "NG", "NO", "PK", "PH", "PL", "PT", "RO", "SA", "SG", "ZA", "KR", "ES", "SE", "CH", "TH", "TR", "AE", "GB", "US", "VN"];
+const AI_COUNTRIES = AI_COUNTRY_CODES.map((value) => ({ value, label: countryLabel(value) }));
+
+export function suggestedAiPhrase(property?: Property) {
+  if (!property) return "";
+  const details = property.settings?.ai_visibility || {};
+  const businessName = String(details.business_name || property.name || "this company").trim();
+  const location = String(details.location || "").trim();
+  const country = details.country ? countryLabel(String(details.country)) : "";
+  const place = location || country;
+  const industry = String(details.industry || "");
+  const label = String(details.industry_custom || AI_INDUSTRIES.find((item) => item.value === industry)?.label || "").trim();
+  if (label && place) {
+    const template: Record<string, string> = {
+      "web-design": `Web design agency in ${place}`,
+      recruitment: `Recruitment agency in ${place}`,
+      accounting: `Accountants in ${place}`,
+      "software-saas": `Software companies in ${place}`,
+    };
+    return template[industry] || `${label} in ${place}`;
+  }
+  return `What services does ${businessName} offer?`;
+}
+
 function PropertySettingsView({
   session,
   property,
@@ -3907,8 +4189,16 @@ function PropertySettingsView({
   const settingsNavigate = useNavigate();
   const requestedSettingsTab = new URLSearchParams(settingsLocation.search).get("settingsTab");
   const settingsTabs = ["General", "Tracking", "Uptime", "Events", "Sharing", "Advanced"];
+  const initialAiDetails = property?.settings?.ai_visibility || {};
   const [tab, setTab] = useState(settingsTabs.includes(requestedSettingsTab || "") ? requestedSettingsTab! : "General"),
     [name, setName] = useState(property?.name || ""),
+    [businessName, setBusinessName] = useState(initialAiDetails.business_name || property?.name || ""),
+    [industry, setIndustry] = useState(initialAiDetails.industry || ""),
+    [industryLabel, setIndustryLabel] = useState(AI_INDUSTRIES.find((item) => item.value === initialAiDetails.industry)?.label || ""),
+    [industryCustom, setIndustryCustom] = useState(initialAiDetails.industry_custom || ""),
+    [businessLocation, setBusinessLocation] = useState(initialAiDetails.location || ""),
+    [country, setCountry] = useState(initialAiDetails.country || ""),
+    [countrySearch, setCountrySearch] = useState(initialAiDetails.country ? countryLabel(initialAiDetails.country) : ""),
     [timezone, setTimezone] = useState(property?.settings?.timezone || "Europe/London"),
     [currency, setCurrency] = useState(property?.settings?.reporting_currency || "GBP"),
     [ipHandling, setIpHandling] = useState(
@@ -3932,6 +4222,14 @@ function PropertySettingsView({
   useEffect(() => {
     if (!session || !property) return;
     setName(property.name || "");
+    const aiDetails = property.settings?.ai_visibility || {};
+    setBusinessName(aiDetails.business_name || property.name || "");
+    setIndustry(aiDetails.industry || "");
+    setIndustryLabel(AI_INDUSTRIES.find((item) => item.value === aiDetails.industry)?.label || "");
+    setIndustryCustom(aiDetails.industry_custom || "");
+    setBusinessLocation(aiDetails.location || "");
+    setCountry(aiDetails.country || "");
+    setCountrySearch(aiDetails.country ? countryLabel(aiDetails.country) : "");
     setTimezone(property.settings?.timezone || "Europe/London");
     setCurrency(property.settings?.reporting_currency || "GBP");
     setIpHandling(property.settings?.ip_address_handling || "discard_after_geolocation");
@@ -3993,6 +4291,13 @@ function PropertySettingsView({
                 .split(",")
                 .map((value: string) => value.trim())
                 .filter(Boolean),
+              ai_visibility: {
+                business_name: businessName,
+                industry,
+                industry_custom: industry === "other" ? industryCustom : "",
+                location: businessLocation,
+                country,
+              },
             },
           }),
         });
@@ -4048,6 +4353,56 @@ function PropertySettingsView({
             >
               Save general settings
             </button>
+          </div>
+          <div className="settings-section-heading">
+            <h3>AI Visibility details</h3>
+            <p>Optional details used to suggest natural discovery phrases. They do not affect traffic attribution.</p>
+          </div>
+          <div className="form-two">
+            <label className="field">
+              Business or brand name
+              <input value={businessName} onChange={(event) => setBusinessName(event.target.value)} placeholder={property.name} />
+            </label>
+            <label className="field">
+              Industry
+              <input
+                list="claritude-industries"
+                value={industryLabel}
+                onChange={(event) => {
+                  const label = event.target.value;
+                  setIndustryLabel(label);
+                  setIndustry(AI_INDUSTRIES.find((item) => item.label.toLocaleLowerCase() === label.trim().toLocaleLowerCase())?.value || "");
+                }}
+                placeholder="Search industries"
+              />
+              <datalist id="claritude-industries">
+                {AI_INDUSTRIES.map((item) => <option key={item.value} value={item.label}>{item.group}</option>)}
+              </datalist>
+            </label>
+            {industry === "other" && <label className="field">
+              Describe your industry
+              <input value={industryCustom} onChange={(event) => setIndustryCustom(event.target.value)} placeholder="e.g. Marine surveying" />
+            </label>}
+            <label className="field">
+              Location
+              <input value={businessLocation} onChange={(event) => setBusinessLocation(event.target.value)} placeholder="City, town or region" />
+            </label>
+            <label className="field">
+              Country
+              <input
+                list="claritude-countries"
+                value={countrySearch}
+                onChange={(event) => {
+                  const label = event.target.value;
+                  setCountrySearch(label);
+                  setCountry(AI_COUNTRIES.find((item) => item.label.toLocaleLowerCase() === label.trim().toLocaleLowerCase() || item.value === label.trim().toUpperCase())?.value || "");
+                }}
+                placeholder="Search countries"
+              />
+              <datalist id="claritude-countries">
+                {AI_COUNTRIES.map((item) => <option key={item.value} value={item.label}>{item.value}</option>)}
+              </datalist>
+            </label>
           </div>
         </Panel>
         <SetupPanel property={property} />
@@ -7139,6 +7494,7 @@ function SeriesChart({
   label = "Measured time series",
   timeZone,
   dateGranularity,
+  tone = "default",
 }: {
   points: { label: string; value: number }[];
   previousPoints?: { label: string; value: number }[];
@@ -7147,6 +7503,7 @@ function SeriesChart({
   label?: string;
   timeZone?: string;
   dateGranularity?: "check" | "hour" | "day" | "month";
+  tone?: "default" | "blue";
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const wrapper = useRef<HTMLDivElement>(null);
@@ -7189,7 +7546,7 @@ function SeriesChart({
     ticks = [max, max * 2 / 3, max / 3, 0],
     xLabelIndexes = [...new Set([0, Math.floor((points.length - 1) / 3), Math.floor((points.length - 1) * 2 / 3), points.length - 1])];
   return (
-    <div className="live-chart-wrap" ref={wrapper} onMouseLeave={() => setHover(null)}>
+    <div className={`live-chart-wrap series-tone-${tone}`} ref={wrapper} onMouseLeave={() => setHover(null)}>
       <svg
         className="chart live-chart"
         viewBox={`0 0 ${width} ${height}`}
@@ -9386,6 +9743,7 @@ function AuditFindingsPanel({
   setFilters,
   openCategories,
   setOpenCategories,
+  requestedOpenResult,
 }: {
   pageName: string;
   results: any[];
@@ -9393,8 +9751,10 @@ function AuditFindingsPanel({
   setFilters: (filters: AuditBrowseFilters) => void;
   openCategories: Set<string>;
   setOpenCategories: (value: Set<string>) => void;
+  requestedOpenResult?: string | null;
 }) {
   const [openResultId, setOpenResultId] = useState<string | null>(null);
+  useEffect(() => setOpenResultId(requestedOpenResult || null), [requestedOpenResult]);
   const filtered = filterUserFacingAuditResults(results, filters, { hideUnableByDefault: true });
   const categories = auditDetailedCategoriesFor(filtered);
   const quickKinds: AuditFilterKind[] = ["critical", "security", "warning", "advisory", "passed"];
@@ -9696,12 +10056,14 @@ function AuditResults({
   hideOutcome = false,
   openId: controlledOpenId,
   onOpenIdChange,
+  resultLink,
 }: {
   results: any[];
   filters?: AuditBrowseFilters;
   hideOutcome?: boolean;
   openId?: string | null;
   onOpenIdChange?: (id: string | null) => void;
+  resultLink?: (result: any) => string;
 }) {
   const [internalOpenId, setInternalOpenId] = useState<string | null>(null);
   const openId = controlledOpenId === undefined ? internalOpenId : controlledOpenId;
@@ -9752,7 +10114,10 @@ function AuditResults({
                 <p>{result.focus || result.description || "The audit recorded this result for the selected page."}</p>
                 {!passed && <><b className="audit-detail-label">Affected element or resource</b><code>{auditEvidenceText(result.evidence)}</code><b className="audit-detail-label">Recommended fix</b><p>{result.recommendation || "Review the recorded evidence and update the affected implementation."}</p></>}
               </>}
-              {!passed && <div className="audit-detail-actions"><a className="text-link audit-more-information" href={auditLearnMoreUrl(result.category, result.source_reference)} target="_blank" rel="noreferrer">More information <ExternalLink /></a></div>}
+              <div className="audit-detail-actions">
+                {!passed && <a className="text-link audit-more-information" href={auditLearnMoreUrl(result.category, result.source_reference)} target="_blank" rel="noreferrer">More information <ExternalLink /></a>}
+                {resultLink && <Link className="btn" to={resultLink(result)}>View this finding in Audit <ChevronRight /></Link>}
+              </div>
             </div>}
           </section>
         );
@@ -10311,6 +10676,70 @@ function fixtureAudit(
     registry_snapshot: auditResults.map((result) => ({ id: result.check_id })),
     audit_results: auditResults,
     user_facing_results: userFacingResults,
+  };
+}
+
+function aiVisibilityFixture(property: Property) {
+  const auditRun = fixtureAudit(property);
+  const auditGroups = (auditRun.user_facing_results || []).filter((result: any) => result.category === "AI & Crawler Readiness");
+  const values = [2, 2, 4, 4, 5, 4, 4, 6, 5, 5, 6, 6, 7, 10, 10, 11, 14, 12, 16, 14, 18, 16, 17, 22, 20, 18, 25, 18, 22, 23];
+  const previousValues = [1, 1, 1, 1, 1, 2, 2, 2, 3, 2, 2, 3, 3, 4, 4, 4, 5, 6, 5, 4, 4, 6, 6, 6, 7, 8, 7, 7, 8, 8];
+  const start = Date.parse("2026-09-07T12:00:00Z");
+  const series = values.map((visits, index) => ({ day: new Date(start + index * 864e5).toISOString().slice(0, 10), visits }));
+  const previousSeries = previousValues.map((visits, index) => ({ day: new Date(start - values.length * 864e5 + index * 864e5).toISOString().slice(0, 10), visits }));
+  const platforms = [
+    { id: "chatgpt", name: "ChatGPT", visits: 76, share: 61.3 },
+    { id: "perplexity", name: "Perplexity", visits: 28, share: 22.6 },
+    { id: "copilot", name: "Copilot", visits: 14, share: 11.3 },
+    { id: "gemini", name: "Gemini", visits: 4, share: 3.2 },
+    { id: "claude", name: "Claude", visits: 2, share: 1.6 },
+  ];
+  const pages = [
+    { path: "/services/web-design/", title: "Web design", visits: 42, sources: ["chatgpt", "perplexity"] },
+    { path: "/articles/website-costs/", title: "Website costs", visits: 28, sources: ["chatgpt"] },
+    { path: "/contact/", title: "Contact", visits: 12, sources: ["copilot"] },
+    { path: "/", title: "Homepage", visits: 10, sources: ["chatgpt", "gemini"] },
+    { path: "/services/seo/", title: "SEO", visits: 9, sources: ["perplexity"] },
+    { path: "/work/", title: "Work", visits: 8, sources: ["chatgpt"] },
+    { path: "/about/", title: "About", visits: 8, sources: ["claude"] },
+    { path: "/articles/ai-search/", title: "AI search", visits: 7, sources: ["claude"] },
+  ];
+  return {
+    trackingInstalled: Boolean(property.tracking_last_received_at),
+    coverage: "available",
+    timeZone: property.settings?.timezone || "Europe/London",
+    totalVisits: 1824,
+    aiVisits: 124,
+    aiSources: 5,
+    trafficShare: 6.8,
+    landingPages: pages.length,
+    series,
+    platforms,
+    pages,
+    insight: "Your web design page received the most AI referral visits.",
+    engagement: {
+      ai: { eligibleVisits: 124, engagementRate: 68 },
+      other: { eligibleVisits: 1700, engagementRate: 54 },
+      conversions: null,
+      conversionRate: null,
+      conversionStatus: "No conversion designation is configured for tracked events.",
+    },
+    previous: {
+      aiVisits: 105,
+      aiSources: 4,
+      trafficShare: 6,
+      landingPages: 7,
+      series: previousSeries,
+    },
+    audit: {
+      runId: auditRun.id,
+      pageId: auditRun.audit_page_id,
+      status: auditRun.status,
+      createdAt: auditRun.created_at,
+      completedAt: auditRun.completed_at,
+      findings: auditGroups.filter((result: any) => ["failed", "advisory"].includes(result.outcome)).length,
+      groups: auditGroups,
+    },
   };
 }
 function severity(value: string) {
