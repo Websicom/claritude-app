@@ -140,6 +140,29 @@ describe("Stage 3 user-facing audit catalogue", () => {
     expect(JSON.stringify(group)).not.toContain("must-not-leak");
   });
 
+  it("shows recorded nested evidence instead of repeating the outcome label", () => {
+    const [group] = deriveUserFacingAuditResults([snapshot()], [
+      {
+        id: 1,
+        check_id: "one",
+        title: "One",
+        outcome: "failed",
+        evidence: {
+          viewports: [
+            { viewport: "desktop", value: 2 },
+            { viewport: "mobile", value: 0 },
+          ],
+          browserLab: { raw: "must-not-leak" },
+        },
+      },
+      { id: 2, check_id: "two", title: "Two", outcome: "passed", evidence: {} },
+    ]);
+    const summary = group.subfindings.find((finding) => finding.check_id === "one")?.evidence_summary;
+    expect(summary).toContain("Viewports: Desktop: 2; Mobile: 0");
+    expect(summary).not.toBe("failed");
+    expect(summary).not.toContain("must-not-leak");
+  });
+
   it("keeps zero-weight advisory groups out of scoring", () => {
     const strict = deriveUserFacingAuditResults([snapshot()], [
       { check_id: "one", outcome: "passed" },

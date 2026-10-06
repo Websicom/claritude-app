@@ -304,19 +304,60 @@ function occurrencesFor(result: PresentableTechnicalAuditResult) {
   return Array.isArray(occurrences) ? occurrences : [];
 }
 
+function evidenceLabel(value: string) {
+  return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function compactEvidenceValue(value: unknown, depth = 0): string | null {
+  if (typeof value === "string") {
+    const compact = value.replace(/\s+/g, " ").trim();
+    return compact ? (compact.length > 180 ? `${compact.slice(0, 177)}…` : compact) : null;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (depth >= 2 || value == null) return null;
+  if (Array.isArray(value)) {
+    const rendered = value.slice(0, 4).flatMap((item) => {
+      if (item && typeof item === "object" && !Array.isArray(item)) {
+        const record = item as Record<string, unknown>;
+        const viewport = typeof record.viewport === "string" ? record.viewport : null;
+        const measured = compactEvidenceValue(record.value, depth + 1);
+        if (viewport && measured != null) return [`${evidenceLabel(viewport)}: ${measured}`];
+      }
+      const summary = compactEvidenceValue(item, depth + 1);
+      return summary == null ? [] : [summary];
+    });
+    if (!rendered.length) return null;
+    return `${rendered.join("; ")}${value.length > rendered.length ? `; +${value.length - rendered.length} more` : ""}`;
+  }
+  if (typeof value === "object") {
+    const blocked = new Set(["browserLab", "raw", "html", "source", "occurrences"]);
+    const rendered = Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => !blocked.has(key))
+      .slice(0, 4)
+      .flatMap(([key, item]) => {
+        const summary = compactEvidenceValue(item, depth + 1);
+        return summary == null ? [] : [`${evidenceLabel(key)}: ${summary}`];
+      });
+    return rendered.length ? rendered.join("; ") : null;
+  }
+  return null;
+}
+
 function compactEvidenceSummary(result: PresentableTechnicalAuditResult) {
   const evidence = result.evidence && typeof result.evidence === "object"
     ? result.evidence as Record<string, unknown>
     : {};
-  const safeKeys = ["reason", "message", "status", "value", "expected", "actual", "count", "url", "path", "resource", "selector", "element"];
-  const values = safeKeys.flatMap((key) => {
-    const value = evidence[key];
-    if (value == null || value === "" || typeof value === "object") return [];
-    return [`${key.replaceAll("_", " ")}: ${String(value)}`];
+  const preferredKeys = ["reason", "message", "status", "value", "expected", "actual", "count", "url", "path", "resource", "selector", "element", "viewports", "desktop", "mobile"];
+  const keys = [...preferredKeys.filter((key) => Object.hasOwn(evidence, key)), ...Object.keys(evidence).filter((key) => !preferredKeys.includes(key))];
+  const values = keys.flatMap((key) => {
+    if (["browserLab", "raw", "html", "source", "occurrences"].includes(key)) return [];
+    const summary = compactEvidenceValue(evidence[key]);
+    return summary == null ? [] : [`${evidenceLabel(key)}: ${summary}`];
   }).slice(0, 3);
   const occurrenceCount = occurrencesFor(result).length;
   if (occurrenceCount) values.push(`${occurrenceCount} affected occurrence${occurrenceCount === 1 ? "" : "s"}`);
-  return values.length ? values.join(" · ") : result.outcome.replaceAll("_", " ");
+  return values.length ? values.join(" · ") : "No additional evidence was recorded.";
 }
 
 export function deriveUserFacingOutcome(
