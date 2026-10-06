@@ -12,6 +12,7 @@ import {
   durationLabel,
   eventLabel,
   auditDisplayOutcome,
+  auditDisplayOccurrences,
   auditSeverityGroup,
   filterProperties,
   filterAuditSubfindings,
@@ -336,6 +337,20 @@ describe("top selector searches", () => {
     expect(filterAuditSubfindings(subfindings, ["passed"]).map((item) => item.check_id)).toEqual(["passed"]);
     expect(filterAuditSubfindings(subfindings, ["advisory"]).map((item) => item.check_id)).toEqual(["failed", "advisory"]);
     expect(filterAuditSubfindings(subfindings, [])).toEqual(subfindings);
+    expect(filterAuditSubfindings(subfindings, [], { overviewMode: true }).map((item) => item.check_id)).toEqual(["failed"]);
+  });
+
+  it("groups useful occurrence evidence without internal collection metadata", () => {
+    const occurrences = [
+      { check_id: "images", occurrence: { html: '<img src="/hero.jpg">', source: "rendered", retained: 12 } },
+      { check_id: "images", occurrence: { html: '<img src="/hero.jpg">', source: "html" } },
+      { check_id: "images", occurrence: { locator: "main > img", source: "rendered" } },
+      { check_id: "links", occurrence: { url: "https://example.com/broken" } },
+    ];
+    expect(auditDisplayOccurrences(occurrences, "images", ["html", "locator", "url", "source"])).toEqual([
+      '<img src="/hero.jpg">',
+      "main > img",
+    ]);
   });
 
   it("uses green, grey and red performance target states", () => {

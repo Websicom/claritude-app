@@ -3723,12 +3723,12 @@ function AuditView({
                 results={actionable}
                 filters={auditFilters}
                 onChange={setAuditFilters}
-                kinds={["critical", "security", "warning", "unable_to_test"]}
+                kinds={["critical", "security", "warning"]}
               />
               {auditDataLoading && !latest ? (
                 <div className="audit-results-loading" role="status"><RefreshCw className="audit-spin" /> Loading your last audit</div>
               ) : (
-                <AuditResults results={filteredActionable} filters={auditFilters} hideOutcome />
+                <AuditResults results={filteredActionable} filters={auditFilters} hideOutcome overviewMode />
               )}
               </Panel>
               <div className="audit-run-meta">
@@ -10072,8 +10072,9 @@ export function auditDisplayProgress(
   return Number(Math.min(99, Math.max(safeCurrent, safeActual, simulated)).toFixed(2));
 }
 
-export function filterAuditSubfindings(subfindings: any[] = [], types: AuditFilterKind[] = []) {
-  if (!types.length) return subfindings;
+export function filterAuditSubfindings(subfindings: any[] = [], types: AuditFilterKind[] = [], options: { overviewMode?: boolean } = {}) {
+  const candidates = options.overviewMode ? subfindings.filter((finding) => finding.outcome === "failed") : subfindings;
+  if (!types.length) return candidates;
   const outcomes = new Set<string>();
   for (const type of types) {
     if (["critical", "security", "warning"].includes(type)) outcomes.add("failed");
@@ -10082,13 +10083,14 @@ export function filterAuditSubfindings(subfindings: any[] = [], types: AuditFilt
       outcomes.add("failed");
     } else outcomes.add(type);
   }
-  return subfindings.filter((finding) => outcomes.has(finding.outcome));
+  return candidates.filter((finding) => outcomes.has(finding.outcome));
 }
 
 function AuditResults({
   results,
   filters,
   hideOutcome = false,
+  overviewMode = false,
   openId: controlledOpenId,
   onOpenIdChange,
   resultLink,
@@ -10096,6 +10098,7 @@ function AuditResults({
   results: any[];
   filters?: AuditBrowseFilters;
   hideOutcome?: boolean;
+  overviewMode?: boolean;
   openId?: string | null;
   onOpenIdChange?: (id: string | null) => void;
   resultLink?: (result: any) => string;
@@ -10117,7 +10120,9 @@ function AuditResults({
         const itemId = String(result.group_id || result.id || index);
         const open = itemId === openId;
         const passed = result.outcome === "passed";
-        const visibleSubfindings = filterAuditSubfindings(result.subfindings || [], filters?.types);
+        const subfindings = result.subfindings || [];
+        const visibleSubfindings = filterAuditSubfindings(subfindings, filters?.types, { overviewMode });
+        const hasAdvisoryChecks = subfindings.some((finding: any) => finding.outcome === "advisory");
         const displayOutcome = auditDisplayOutcome(result);
         return (
           <section
@@ -10137,13 +10142,14 @@ function AuditResults({
             {open && <div className="audit-detail">
               {Array.isArray(result.subfindings) ? <>
                 {result.focus && <section className="audit-information-panel"><b>What Claritude checks</b><p>{result.focus}</p></section>}
-                {!passed && result.result_summary && <section className="audit-result-summary" aria-label="Audit result summary">{result.result_summary}</section>}
-                {visibleSubfindings.length > 0 && <><b className="audit-detail-label">Individual checks</b><ul className="audit-subfindings">{visibleSubfindings.map((finding: any) => {
+                {(visibleSubfindings.length > 0 || hasAdvisoryChecks) && <section className="audit-checks-box"><ul className="audit-subfindings">{visibleSubfindings.map((finding: any) => {
                   const findingOutcome = auditDisplayOutcome(result, finding.outcome);
-                  return <li key={finding.check_id}><span className={`audit-subfinding-outcome outcome-${findingOutcome}`}>{cap(findingOutcome.replaceAll("_", " "))}</span><span><b>{finding.title}</b></span></li>;
-                })}</ul></>}
-                {!passed && ["failed", "advisory"].includes(result.outcome) && result.recommendation && <section className="audit-recommendation-panel"><b>How to fix</b><p>{result.recommendation}</p></section>}
-                {!passed && ["failed", "advisory"].includes(result.outcome) && result.example_fix && <section className="audit-example-fix"><b>Example fix</b><pre><code>{result.example_fix}</code></pre></section>}
+                  return <li key={finding.check_id}>
+                    <div className="audit-subfinding-row"><span className={`audit-subfinding-outcome outcome-${findingOutcome}`}>{cap(findingOutcome.replaceAll("_", " "))}</span><b>{finding.title}</b></div>
+                    {finding.outcome !== "passed" && <AuditFindingEvidence result={result} checkId={finding.check_id} />}
+                  </li>;
+                })}</ul>{hasAdvisoryChecks && <p className="audit-advisory-note">The evidence indicates an opportunity related to {result.title}, but it does not justify treating it as a confirmed failure.</p>}</section>}
+                {!passed && ["failed", "advisory"].includes(result.outcome) && (result.recommendation || result.example_fix) && <section className="audit-recommendation-panel"><b>How to fix</b>{result.recommendation && <p>{result.recommendation}</p>}{result.example_fix && <div className="audit-example-fix"><b>Example fix</b><pre><code>{result.example_fix}</code></pre></div>}</section>}
               </> : <>
                 <p>{result.focus || result.description || "The audit recorded this result for the selected page."}</p>
                 {!passed && result.recommendation && <section className="audit-recommendation-panel"><b>How to fix</b><p>{result.recommendation}</p></section>}
@@ -10158,6 +10164,51 @@ function AuditResults({
       }) : <Empty title="No matching findings" detail="Adjust the active filters or run an audit to generate results." />}
     </div>
   );
+}
+
+function AuditFindingEvidence({ result, checkId }: { result: any; checkId: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const entries = auditDisplayOccurrences(result.occurrences || [], checkId, result.occurrence_presentation?.fields);
+  if (result.occurrence_presentation?.enabled === false || entries.length === 0) return null;
+  const initialLimit = 3;
+  const visible = expanded ? entries : entries.slice(0, initialLimit);
+  return (
+    <div className="audit-finding-evidence">
+      <span>Affected code or resources</span>
+      <div>{visible.map((entry, index) => <code key={`${checkId}-${index}`}>{entry}</code>)}</div>
+      {entries.length > initialLimit && <button className="text-link" type="button" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>{expanded ? "View less" : `View more (${entries.length - initialLimit})`} <ChevronDown /></button>}
+    </div>
+  );
+}
+
+export function auditDisplayOccurrences(occurrences: any[] = [], checkId: string, configuredFields?: string[]) {
+  const seen = new Set<string>();
+  const entries: string[] = [];
+  for (const entry of occurrences) {
+    if (entry?.check_id !== checkId) continue;
+    const text = auditOccurrenceDisplayText(entry.occurrence, configuredFields);
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    entries.push(text);
+  }
+  return entries;
+}
+
+function auditOccurrenceDisplayText(occurrence: unknown, configuredFields?: string[]) {
+  if (typeof occurrence === "string" || typeof occurrence === "number") return String(occurrence);
+  if (!occurrence || typeof occurrence !== "object") return "";
+  const source = occurrence as Record<string, unknown>;
+  const allowed = new Set(configuredFields?.length ? configuredFields : ["html", "snippet", "element", "locator", "selector", "url", "path", "resource", "message", "description", "attribute", "value", "viewport", "status"]);
+  const orderedKeys = ["html", "snippet", "element", "locator", "selector", "url", "path", "resource", "message", "description", "attribute", "value", "viewport", "status"];
+  const values = source.values && typeof source.values === "object" && !Array.isArray(source.values) ? source.values as Record<string, unknown> : {};
+  for (const key of orderedKeys) {
+    if (!allowed.has(key)) continue;
+    const value = source[key] ?? values[key];
+    if (typeof value !== "string" && typeof value !== "number") continue;
+    const compact = String(value).replace(/\s+/g, " ").trim();
+    if (compact) return compact.length > 320 ? `${compact.slice(0, 317)}…` : compact;
+  }
+  return "";
 }
 function auditLearnMoreUrl(category?: string, sourceReference?: string) {
   if (sourceReference) {

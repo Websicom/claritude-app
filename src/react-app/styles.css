@@ -4037,14 +4037,8 @@ input[type="checkbox"]:checked:after {
   list-style: none;
 }
 
-.audit-subfindings li {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: start;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--line);
-}
+.audit-subfindings li { padding: 11px 0; border-bottom: 1px solid var(--line); }
+.audit-subfindings li:last-child { border-bottom: 0; }
 
 .audit-subfindings li span:nth-child(2) {
   display: grid;
@@ -4329,7 +4323,9 @@ input[type="checkbox"]:checked:after {
 .audit-information-panel p,
 .audit-recommendation-panel p { margin: 5px 0 0; color: #3f4652; line-height: 1.55; }
 
-.audit-subfindings li { grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: 10px; }
+.audit-checks-box { margin-top: 2px; padding: 5px 14px 0; border: 1px solid var(--line); border-radius: 10px; background: #f5f6f8; }
+.audit-checks-box .audit-subfindings { margin: 0; }
+.audit-subfinding-row { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: 10px; }
 .audit-subfinding-outcome { width: auto; min-width: 0; padding: 3px 8px; border-radius: 999px; background: #f3f4f6; color: #626872; font-size: 11px; font-weight: 700; line-height: 1.2; white-space: nowrap; }
 .audit-subfinding-outcome.outcome-passed { background: #e8f8f1; color: #087a56; }
 .audit-subfinding-outcome.outcome-failed,
@@ -4339,13 +4335,21 @@ input[type="checkbox"]:checked:after {
 .audit-subfinding-outcome.outcome-advisory,
 .audit-subfinding-outcome.outcome-unable_to_test,
 .audit-subfinding-outcome.outcome-not_applicable { background: #f1f2f4; color: #686e77; }
+.audit-advisory-note { margin: 0 -2px; padding: 12px 2px 14px; border-top: 1px solid var(--line); color: var(--muted); line-height: 1.5; }
+.audit-finding-evidence { display: grid; gap: 7px; margin: 10px 0 0 82px; }
+.audit-finding-evidence > span { color: var(--muted); font-size: 11px; font-weight: 650; }
+.audit-finding-evidence > div { display: grid; gap: 6px; }
+.audit-finding-evidence code { display: block; padding: 9px 10px; border: 1px solid #d9dce2; border-radius: 8px; background: #fff; color: #1f2937; white-space: pre-wrap; overflow-wrap: anywhere; }
+.audit-finding-evidence .text-link { display: inline-flex; justify-self: start; align-items: center; gap: 4px; font-size: 12px; }
+.audit-finding-evidence .text-link svg { width: 14px; transition: transform .15s ease; }
+.audit-finding-evidence .text-link[aria-expanded="true"] svg { transform: rotate(180deg); }
 .audit-occurrence-group { margin: 8px 0 14px; }
 .audit-occurrence-group h4 { margin: 0 0 7px; font-size: 13px; }
 .audit-occurrence-group ol { margin: 0; }
 .audit-occurrences li { padding: 9px 10px; background: #fafafa; }
 .audit-occurrences code { padding: 0; border: 0; background: transparent; font-size: 12px; }
-.audit-example-fix { display: grid; gap: 8px; margin-top: 4px; }
-.audit-example-fix pre { margin: 0; max-width: 100%; overflow-x: auto; padding: 13px 14px; border: 1px solid #d9dce2; border-radius: 9px; background: #f6f7f9; color: #1f2937; white-space: pre; }
+.audit-example-fix { display: grid; gap: 8px; margin-top: 14px; }
+.audit-example-fix pre { margin: 0; max-width: 100%; overflow-x: auto; padding: 13px 14px; border: 1px solid #d9dce2; border-radius: 9px; background: #fff; color: #1f2937; white-space: pre; }
 .audit-example-fix code { padding: 0; border: 0; background: transparent; color: inherit; white-space: pre; overflow: visible; }
 .audit-detail-actions { justify-content: flex-start; }
 .audit-more-information { display: inline-flex; align-items: center; gap: 5px; font-weight: 650; }
@@ -4360,7 +4364,7 @@ input[type="checkbox"]:checked:after {
   .audit-item-state { grid-column: 2; grid-row: 2; justify-self: start; }
   .audit-item-toggle > svg { grid-column: 3; grid-row: 1; }
   .audit-detail { padding-left: 4px; padding-right: 4px; }
-  .audit-subfindings li { grid-template-columns: max-content minmax(0, 1fr); }
+  .audit-finding-evidence { margin-left: 0; }
   .audit-check-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .audit-filter-wrap .audit-filter-actions { position: fixed; top: 70px; left: 10px; right: 10px; width: auto; }
 }
@@ -4718,6 +4722,11 @@ input[type="checkbox"]:checked:after {
   color: var(--ink);
 }
 
+:root[data-theme="dark"] .audit-checks-box {
+  background: var(--soft);
+  border-color: var(--line);
+}
+
 :root[data-theme="dark"] .seg button.active,
 :root[data-theme="dark"] .overview-view-toggle button.active {
   background: var(--control);
@@ -4917,6 +4926,7 @@ input[type="checkbox"]:checked:after {
 
 :root[data-theme="dark"] .install-code,
 :root[data-theme="dark"] .audit-example-fix pre,
+:root[data-theme="dark"] .audit-finding-evidence code,
 :root[data-theme="dark"] .report-summary pre,
 :root[data-theme="dark"] .json-preview,
 :root[data-theme="dark"] .audit-detail > code,
