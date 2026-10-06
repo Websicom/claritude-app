@@ -22,6 +22,20 @@
   --radius-control: 8px;
   --radius-panel: 10px;
   --bar-fill: #eef0f3;
+  --control: #fff;
+  --control-hover: #f7f7f8;
+  --inset: #f7f7f8;
+  --success-bg: #e8f8f1;
+  --success-ink: #087758;
+  --danger-bg: #fff0f1;
+  --danger-ink: #b42335;
+  --warning-bg: #fff8df;
+  --warning-ink: #7a4b00;
+  --info-bg: #eef7ff;
+  --info-ink: #174b8a;
+  --text: var(--ink);
+  --border: var(--line);
+  --danger: var(--red);
   --side: 270px;
 }
 * {
@@ -145,6 +159,24 @@ a {
   --line: #33353a;
   --soft: #27282d;
   --bar-fill: #292b30;
+  --control: #1e2024;
+  --control-hover: #292c32;
+  --inset: #141619;
+  --success-bg: #102d25;
+  --success-ink: #66e0b8;
+  --danger-bg: #35171d;
+  --danger-ink: #ff8998;
+  --warning-bg: #352a14;
+  --warning-ink: #f2c46d;
+  --info-bg: #16283e;
+  --info-ink: #91c9ff;
+  --red: #ff6170;
+  --green: #31d6a0;
+  --amber: #f0b85a;
+  --focus-ring: #60a5fa;
+  --text: var(--ink);
+  --border: var(--line);
+  --danger: var(--red);
   background: var(--bg);
   color: var(--ink);
 }
@@ -4530,4 +4562,363 @@ input[type="checkbox"]:checked:after {
   .ai-kpi-panel .metrics.metrics-5 { grid-template-columns: minmax(0, 1fr); }
   .ai-kpi-panel .metric { border-right: 0; border-bottom: 1px solid var(--line); padding: 12px 14px; }
   .ai-kpi-panel .metric:last-child { border-bottom: 0; }
+}
+
+/* Complete dark theme. Keep this final so legacy light component rules cannot
+   override the semantic dark surfaces above. */
+:root[data-theme="dark"] body,
+:root[data-theme="dark"] .app,
+:root[data-theme="dark"] main {
+  background: var(--bg);
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .top,
+:root[data-theme="dark"] aside,
+:root[data-theme="dark"] .panel,
+:root[data-theme="dark"] .warning,
+:root[data-theme="dark"] .dialog,
+:root[data-theme="dark"] .modal-card,
+:root[data-theme="dark"] .user-popover,
+:root[data-theme="dark"] .selector-menu,
+:root[data-theme="dark"] .action-menu,
+:root[data-theme="dark"] .superadmin-globalbar,
+:root[data-theme="dark"] .superadmin-search-results,
+:root[data-theme="dark"] .audit-progress,
+:root[data-theme="dark"] .audit-category,
+:root[data-theme="dark"] .audit-category-toggle,
+:root[data-theme="dark"] .audit-coverage-stats > div,
+:root[data-theme="dark"] .event-context-grid > section,
+:root[data-theme="dark"] .event-journey-step,
+:root[data-theme="dark"] .brand-preview,
+:root[data-theme="dark"] .report-thumb,
+:root[data-theme="dark"] .login-card,
+:root[data-theme="dark"] .onboarding-shell,
+:root[data-theme="dark"] .onboarding-progress.active,
+:root[data-theme="dark"] .onboarding-progress > span {
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .selector-button,
+:root[data-theme="dark"] .top-selector,
+:root[data-theme="dark"] .btn,
+:root[data-theme="dark"] .iconbtn,
+:root[data-theme="dark"] .pagination button,
+:root[data-theme="dark"] .search,
+:root[data-theme="dark"] .audit-page-picker,
+:root[data-theme="dark"] .notification-filter-row select,
+:root[data-theme="dark"] .audit-compare-selectors select,
+:root[data-theme="dark"] .field input,
+:root[data-theme="dark"] .field select,
+:root[data-theme="dark"] .panel select,
+:root[data-theme="dark"] .overview-controls select,
+:root[data-theme="dark"] .overview-controls input,
+:root[data-theme="dark"] input,
+:root[data-theme="dark"] select,
+:root[data-theme="dark"] textarea {
+  background: var(--control);
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] input::placeholder,
+:root[data-theme="dark"] textarea::placeholder {
+  color: #858b95;
+  opacity: 1;
+}
+
+:root[data-theme="dark"] .btn:hover,
+:root[data-theme="dark"] .iconbtn:hover,
+:root[data-theme="dark"] .selector-button:hover,
+:root[data-theme="dark"] .pagination button:hover,
+:root[data-theme="dark"] .ai-platform-grid button:hover,
+:root[data-theme="dark"] .audit-category-toggle:hover,
+:root[data-theme="dark"] .audit-check-expand:hover,
+:root[data-theme="dark"] .audit-check-open-findings:hover {
+  background: var(--control-hover);
+  border-color: #464a53;
+  color: var(--ink);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .primary,
+:root[data-theme="dark"] .filter-search-apply,
+:root[data-theme="dark"] .analytics-filter-choices .filter-apply {
+  background: #30343b !important;
+  border-color: #4b505a !important;
+  color: var(--ink) !important;
+}
+
+:root[data-theme="dark"] .primary:hover,
+:root[data-theme="dark"] .filter-search-apply:hover,
+:root[data-theme="dark"] .analytics-filter-choices .filter-apply:hover {
+  background: #3a3f47 !important;
+  border-color: #5d636f !important;
+}
+
+:root[data-theme="dark"] button:disabled,
+:root[data-theme="dark"] .btn:disabled,
+:root[data-theme="dark"] .primary:disabled {
+  opacity: .46;
+}
+
+:root[data-theme="dark"] nav a,
+:root[data-theme="dark"] nav button,
+:root[data-theme="dark"] .nav-bottom > a,
+:root[data-theme="dark"] .nav-bottom > button,
+:root[data-theme="dark"] .user-popover a,
+:root[data-theme="dark"] .user-popover button,
+:root[data-theme="dark"] .tabs button {
+  color: var(--muted);
+}
+
+:root[data-theme="dark"] nav a.active,
+:root[data-theme="dark"] nav a:hover,
+:root[data-theme="dark"] nav button:hover,
+:root[data-theme="dark"] .nav-bottom > a:hover,
+:root[data-theme="dark"] .nav-bottom > button:hover,
+:root[data-theme="dark"] .user-popover a:hover,
+:root[data-theme="dark"] .user-popover button:hover,
+:root[data-theme="dark"] .user-popover .selected,
+:root[data-theme="dark"] .tabs button.active {
+  background: var(--soft);
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .tabs button.active {
+  border-bottom-color: var(--ink);
+}
+
+:root[data-theme="dark"] .badge,
+:root[data-theme="dark"] .seg,
+:root[data-theme="dark"] .dimension-mark,
+:root[data-theme="dark"] .field .readonly,
+:root[data-theme="dark"] .report-summary pre,
+:root[data-theme="dark"] .audit-detail code,
+:root[data-theme="dark"] .install-code,
+:root[data-theme="dark"] .event-allowance,
+:root[data-theme="dark"] .event-occurrence-expanded > td,
+:root[data-theme="dark"] .audit-occurrences li,
+:root[data-theme="dark"] .audit-example-fix pre,
+:root[data-theme="dark"] .json-preview {
+  background: var(--inset);
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .seg button.active,
+:root[data-theme="dark"] .overview-view-toggle button.active {
+  background: var(--control);
+  color: var(--ink);
+  box-shadow: 0 1px 2px #0008;
+}
+
+:root[data-theme="dark"] tbody tr:hover,
+:root[data-theme="dark"] .clickable-table-row:hover td {
+  background: var(--soft);
+}
+
+:root[data-theme="dark"] th,
+:root[data-theme="dark"] .chart-axis-label,
+:root[data-theme="dark"] .chart-x-axis,
+:root[data-theme="dark"] .chart-y-axis {
+  color: #9da7b7;
+  fill: #9da7b7;
+}
+
+:root[data-theme="dark"] .chart-grid {
+  stroke: #343840;
+}
+
+:root[data-theme="dark"] .chart-dot,
+:root[data-theme="dark"] .finance-chart circle {
+  stroke: var(--panel);
+}
+
+:root[data-theme="dark"] .status-pill.success,
+:root[data-theme="dark"] .audit-subfinding-outcome.outcome-passed,
+:root[data-theme="dark"] .success-note,
+:root[data-theme="dark"] .notice:not(.danger),
+:root[data-theme="dark"] .coverage-note:not(.partial),
+:root[data-theme="dark"] .analytics-install-banner {
+  background: var(--success-bg);
+  border-color: #256b56;
+  color: var(--success-ink);
+}
+
+:root[data-theme="dark"] .status-pill.danger,
+:root[data-theme="dark"] .audit-subfinding-outcome.outcome-failed,
+:root[data-theme="dark"] .audit-subfinding-outcome.outcome-critical,
+:root[data-theme="dark"] .notice.danger,
+:root[data-theme="dark"] .error-note,
+:root[data-theme="dark"] .audit-progress.failed,
+:root[data-theme="dark"] .audit-page-menu .audit-page-delete {
+  background: var(--danger-bg);
+  border-color: #78313c;
+  color: var(--danger-ink);
+}
+
+:root[data-theme="dark"] .status-pill.neutral,
+:root[data-theme="dark"] .audit-subfinding-outcome.outcome-advisory,
+:root[data-theme="dark"] .audit-subfinding-outcome.outcome-unable_to_test,
+:root[data-theme="dark"] .audit-subfinding-outcome.outcome-not_applicable {
+  background: var(--soft);
+  color: #c1c6cf;
+}
+
+:root[data-theme="dark"] .analytics-data-warning,
+:root[data-theme="dark"] .coverage-note.partial,
+:root[data-theme="dark"] .event-allowance.limit-reached,
+:root[data-theme="dark"] .superadmin-unavailable,
+:root[data-theme="dark"] .delegation-banner,
+:root[data-theme="dark"] .test-environment-banner,
+:root[data-theme="dark"] .audit-information-panel,
+:root[data-theme="dark"] .metric-help > span,
+:root[data-theme="dark"] .ai-copy-recovery textarea {
+  background: var(--warning-bg);
+  border-color: #715b27;
+  color: var(--warning-ink);
+}
+
+:root[data-theme="dark"] .audit-recommendation-panel,
+:root[data-theme="dark"] .event-journey-step.event,
+:root[data-theme="dark"] .ai-insight {
+  background: var(--info-bg);
+  border-color: #31577e;
+  color: var(--info-ink);
+}
+
+:root[data-theme="dark"] .audit-information-panel p,
+:root[data-theme="dark"] .audit-recommendation-panel p,
+:root[data-theme="dark"] .analytics-install-banner p,
+:root[data-theme="dark"] .delegation-banner small {
+  color: inherit;
+}
+
+:root[data-theme="dark"] .audit-category-bar.healthy::before { background: #163f32; }
+:root[data-theme="dark"] .audit-category-bar.moderate::before { background: #4a3917; }
+:root[data-theme="dark"] .audit-category-bar.poor::before { background: #4b2027; }
+:root[data-theme="dark"] .audit-category-bar.subcategory::before { background: #292c32; }
+:root[data-theme="dark"] .audit-check-subcategory-row td { border-bottom-color: var(--line); }
+:root[data-theme="dark"] .audit-score::before { background: var(--panel); }
+:root[data-theme="dark"] .audit-score { background: transparent; }
+
+:root[data-theme="dark"] .report-thumb {
+  background: linear-gradient(145deg, #1d2025, #141619);
+}
+
+:root[data-theme="dark"] .report-thumb svg {
+  color: #9da7b7;
+}
+
+:root[data-theme="dark"] .checkstrip button.missing,
+:root[data-theme="dark"] .checkstrip i.missing {
+  background: #3a3e46;
+}
+
+:root[data-theme="dark"] .checkstrip button.suppressed,
+:root[data-theme="dark"] .checkstrip i.suppressed {
+  background: repeating-linear-gradient(135deg, #7d5b1b 0 4px, #40341f 4px 8px);
+}
+
+:root[data-theme="dark"] .dimension-mark.google,
+:root[data-theme="dark"] .dimension-mark.source {
+  background: var(--soft);
+}
+
+:root[data-theme="dark"] .workspace-identity,
+:root[data-theme="dark"] .project-icon,
+:root[data-theme="dark"] .user-avatar {
+  background: var(--soft);
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .ai-bar-cell::before {
+  background: #292d34;
+}
+
+:root[data-theme="dark"] .ai-platform-grid button {
+  background: var(--control);
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .ai-engagement-foot a,
+:root[data-theme="dark"] .ai-view-all,
+:root[data-theme="dark"] .text-link {
+  color: #8fc5ff;
+}
+
+:root[data-theme="dark"] .auth-preview,
+:root[data-theme="dark"] .onboarding-preview {
+  background: radial-gradient(circle at 50% 0, #1d2228 0, var(--bg) 58%);
+}
+
+:root[data-theme="dark"] .onboarding-side {
+  background: var(--inset);
+  border-color: var(--line);
+}
+
+:root[data-theme="dark"] .onboarding-progress {
+  color: var(--muted);
+}
+
+:root[data-theme="dark"] .onboarding-progress.active {
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] input[type="checkbox"] {
+  background: var(--control);
+  border-color: #666d78;
+}
+
+:root[data-theme="dark"] input[type="checkbox"]:checked {
+  background: var(--ink);
+  border-color: var(--ink);
+}
+
+:root[data-theme="dark"] input[type="checkbox"]:checked::after {
+  color: var(--bg);
+}
+
+:root[data-theme="dark"] .audit-ai-fix-panel {
+  background: #1c1f24;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .audit-ai-fix-panel button {
+  background: #30343b;
+  border-color: #4b505a;
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .brand-logo,
+:root[data-theme="dark"] .auth-top img[src$="claritude-logo.svg"],
+:root[data-theme="dark"] .report-logo[src$="claritude-logo.svg"],
+:root[data-theme="dark"] .selector-chevrons {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+:root[data-theme="dark"] img[src$="/source-icons/chatgpt.svg"],
+:root[data-theme="dark"] img[src$="/source-icons/claude.svg"],
+:root[data-theme="dark"] img[src$="/source-icons/gemini.svg"],
+:root[data-theme="dark"] img[src$="/source-icons/perplexity.svg"],
+:root[data-theme="dark"] img[src$="/source-icons/grok.svg"] {
+  filter: invert(1);
+}
+
+:root[data-theme="dark"] .notif-count {
+  border-color: var(--panel);
+}
+
+:root[data-theme="dark"] .panel:hover,
+:root[data-theme="dark"] .plan.current {
+  border-color: #464a53;
+}
+
+:root[data-theme="dark"] .mfa-qr {
+  background: #fff;
 }
