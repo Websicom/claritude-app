@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
+import Stripe from "stripe";
 import puppeteer from "@cloudflare/puppeteer";
 import WEB_VITALS_SOURCE from "../../node_modules/web-vitals/dist/web-vitals.iife.js?raw";
 import AXE_SOURCE from "../../node_modules/axe-core/axe.min.js?raw";
@@ -57,6 +58,8 @@ type Env = {
   SUPABASE_SECRET_KEY: string;
   RESEND_API_KEY?: string;
   RESEND_FROM?: string;
+  STRIPE_SECRET_KEY?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
   APP_ORIGIN: string;
   DEPLOY_COMMIT_SHA?: string;
   JOBS: Queue<Job>;
@@ -68,10 +71,14 @@ type Variables = {
   userId: string;
   userEmail: string;
   userEmailConfirmed: boolean;
+  accessToken: string;
+  authAal: "aal1" | "aal2";
+  authSessionId: string | null;
 };
 type Job =
   | { type: "audit" | "uptime"; id: string }
-  | { type: "audit-persist"; id: string; payload: string };
+  | { type: "audit-persist"; id: string; payload: string }
+  | { type: "admin-export"; id: string };
 type AuditResult = TypedAuditResult;
 
 const LIMITS = {
@@ -109,6 +116,54 @@ export function customEventAllowance(entitlement: unknown, used: number) {
     remaining: limit == null ? null : Math.max(0, limit - safeUsed),
     unlimited: limit == null,
     canCreate: limit == null || safeUsed < limit,
+  };
+}
+
+function effectiveCustomEventAllowance(effective: Awaited<ReturnType<typeof effectiveEntitlements>>, used: number) {
+  const configured = effective.values.customEventsPerProperty;
+  const limit = configured === null ? null : Number(configured);
+  const safeUsed = Math.max(0, Math.floor(Number(used) || 0));
+  return { plan: customEventPlan(effective.packageKey), used: safeUsed, limit: Number.isFinite(limit) ? limit : null, remaining: Number.isFinite(limit) ? Math.max(0, Number(limit) - safeUsed) : null, unlimited: !Number.isFinite(limit), canCreate: !Number.isFinite(limit) || safeUsed < Number(limit) };
+}
+
+export function resolveEffectiveEntitlements(
+  packageConfiguration: { packageKey: string; version: number; allowances?: Record<string, unknown>; features?: Record<string, unknown>; retention?: Record<string, unknown>; hardCeilings?: Record<string, unknown> },
+  overrides: Array<{ key: string; value: unknown }> = [],
+) {
+  const values: Record<string, unknown> = { ...(packageConfiguration.allowances || {}), ...(packageConfiguration.features || {}), ...(packageConfiguration.retention || {}) };
+  const sources: Record<string, string> = Object.fromEntries(Object.keys(values).map((key) => [key, `package:${packageConfiguration.packageKey}@${packageConfiguration.version}`]));
+  const hardCeilings = packageConfiguration.hardCeilings || {};
+  for (const override of overrides) {
+    let value = override.value;
+    const ceiling = hardCeilings[override.key];
+    if (typeof value === "number" && typeof ceiling === "number") value = Math.min(value, ceiling);
+    values[override.key] = value;
+    sources[override.key] = "account_override";
+  }
+  return { packageKey: packageConfiguration.packageKey, version: packageConfiguration.version, values, sources, hardCeilings };
+}
+
+async function effectiveEntitlements(env: Env, accountId: string) {
+  const db = admin(env);
+  const now = new Date().toISOString();
+  const [assignment, overrides, account] = await Promise.all([
+    db.from("account_package_assignments").select("price_grandfathered,allowances_grandfathered,complimentary,billing_state,starts_at,ends_at,package_versions(package_key,version,allowances,features,retention,hard_ceilings,unresolved_values)").eq("account_id", accountId).is("ends_at", null).maybeSingle(),
+    db.from("account_entitlement_overrides").select("key,value,starts_at,expires_at").eq("account_id", accountId).lte("starts_at", now).or(`expires_at.is.null,expires_at.gt.${now}`),
+    db.from("accounts").select("entitlement").eq("id", accountId).maybeSingle(),
+  ]);
+  if (assignment.error || overrides.error || account.error) throw new Error("effective_entitlements_unavailable");
+  const packageVersion = assignment.data?.package_versions as any;
+  const fallbackKey = account.data?.entitlement || "free";
+  const configuration = packageVersion || {
+    package_key: fallbackKey,
+    version: 0,
+    allowances: { customEventsPerProperty: customEventPlan(fallbackKey) === "Pro" ? null : customEventPlan(fallbackKey) === "Scale" ? 20 : customEventPlan(fallbackKey) === "Essentials" ? 5 : 2 },
+    features: {}, retention: {}, hard_ceilings: { propertiesPerAccount: LIMITS.propertiesPerAccount }, unresolved_values: ["packageVersion"],
+  };
+  return {
+    ...resolveEffectiveEntitlements({ packageKey: configuration.package_key, version: configuration.version, allowances: configuration.allowances, features: configuration.features, retention: configuration.retention, hardCeilings: configuration.hard_ceilings }, overrides.data || []),
+    assignment: assignment.data || null,
+    unresolvedValues: configuration.unresolved_values || [],
   };
 }
 
@@ -217,26 +272,94 @@ async function configuredAuditSnapshots(env: Env, context: AuditAvailabilityCont
   return { technicalSnapshot, userFacingSnapshot };
 }
 
-type SuperAdminIdentity = {
+type StaffIdentity = {
   id: string;
   email?: string | null;
   emailConfirmed: boolean;
 };
 
-type SuperAdminAccessRow = {
-  email: string;
-  user_id?: string | null;
+export type StaffRole = "owner" | "support" | "finance" | "engineering";
+export type StaffPermission =
+  | "overview.read"
+  | "staff.read"
+  | "staff.write"
+  | "customers.read"
+  | "customers.write"
+  | "delegation.read"
+  | "delegation.write"
+  | "packages.read"
+  | "packages.write"
+  | "audits.read"
+  | "audits.write"
+  | "operations.read"
+  | "operations.write"
+  | "financials.read"
+  | "financials.write"
+  | "communications.read"
+  | "communications.write"
+  | "exports.read"
+  | "exports.write"
+  | "settings.read"
+  | "settings.write";
+
+const ALL_STAFF_PERMISSIONS: StaffPermission[] = [
+  "overview.read", "staff.read", "staff.write", "customers.read", "customers.write",
+  "delegation.read", "delegation.write", "packages.read", "packages.write", "audits.read",
+  "audits.write", "operations.read", "operations.write", "financials.read", "financials.write",
+  "communications.read", "communications.write", "exports.read", "exports.write", "settings.read",
+  "settings.write",
+];
+
+const STAFF_ROLE_PERMISSIONS: Record<StaffRole, StaffPermission[]> = {
+  owner: ALL_STAFF_PERMISSIONS,
+  support: [
+    "overview.read", "customers.read", "customers.write", "delegation.read", "delegation.write",
+    "packages.read", "audits.read", "operations.read", "communications.read", "communications.write",
+    "exports.read",
+  ],
+  finance: [
+    "overview.read", "customers.read", "packages.read", "financials.read", "financials.write",
+    "communications.read", "exports.read",
+  ],
+  engineering: [
+    "overview.read", "customers.read", "delegation.read", "packages.read", "packages.write",
+    "audits.read", "audits.write", "operations.read", "operations.write", "communications.read",
+    "exports.read", "exports.write", "settings.read", "settings.write",
+  ],
 };
 
-export function superAdminIdentityMatches(
-  identity: SuperAdminIdentity,
-  access: SuperAdminAccessRow | null,
-) {
-  const email = identity.email?.trim().toLowerCase();
-  if (!identity.emailConfirmed || !email || !access) return false;
-  if (access.email !== email) return false;
-  return !access.user_id || access.user_id === identity.id;
+export function staffPermissions(role: StaffRole) {
+  return [...STAFF_ROLE_PERMISSIONS[role]];
 }
+
+export function staffRoleCan(role: StaffRole, permission: StaffPermission) {
+  return STAFF_ROLE_PERMISSIONS[role].includes(permission);
+}
+
+export function parseAuthAssurance(token: string): {
+  aal: "aal1" | "aal2";
+  sessionId: string | null;
+} {
+  try {
+    const encoded = token.split(".")[1] || "";
+    const normalized = encoded.replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=")));
+    return {
+      aal: payload.aal === "aal2" ? "aal2" : "aal1",
+      sessionId: typeof payload.session_id === "string" ? payload.session_id : null,
+    };
+  } catch {
+    return { aal: "aal1", sessionId: null };
+  }
+}
+
+type StaffAccess = {
+  userId: string;
+  role: StaffRole;
+  status: "active" | "suspended";
+  displayName: string | null;
+  permissions: StaffPermission[];
+};
 
 function fallbackUserFacingSnapshot(technicalSnapshot: AuditRegistrySnapshot[]): UserFacingAuditGroupSnapshot[] {
   return buildUserFacingGroupSnapshot(
@@ -266,53 +389,156 @@ function admin(env: Env) {
   });
 }
 
-async function hasSuperAdminAccess(
-  env: Env,
-  identity: SuperAdminIdentity,
-) {
-  if (!identity.emailConfirmed || !identity.email) return false;
-  const email = identity.email.trim().toLowerCase();
+async function resolveStaffAccess(env: Env, identity: StaffIdentity): Promise<StaffAccess | null> {
+  if (!identity.emailConfirmed || !identity.email) return null;
   const service = admin(env);
-  const { data: access, error } = await service
-    .from("superadmin_access")
-    .select("email,user_id")
-    .eq("email", email)
+  const selectStaff = () => service
+    .from("staff_members")
+    .select("user_id,role,status,display_name")
+    .eq("user_id", identity.id)
     .maybeSingle();
+  let { data: member, error } = await selectStaff();
   if (error) {
-    console.error("superadmin_access_lookup_failed", error);
-    return false;
+    console.error("staff_access_lookup_failed", error);
+    return null;
   }
-  if (!superAdminIdentityMatches(identity, access)) return false;
-  if (!access?.user_id) {
-    const { data: bound, error: bindingError } = await service
-      .from("superadmin_access")
-      .update({ user_id: identity.id, bound_at: new Date().toISOString() })
+
+  if (!member) {
+    const email = identity.email.trim().toLowerCase();
+    const { data: invitation, error: invitationError } = await service
+      .from("staff_invitations")
+      .select("id,role")
       .eq("email", email)
-      .is("user_id", null)
-      .select("user_id")
+      .is("accepted_at", null)
+      .is("revoked_at", null)
+      .gt("expires_at", new Date().toISOString())
+      .order("created_at", { ascending: false })
+      .limit(1)
       .maybeSingle();
-    if (bindingError) {
-      console.error("superadmin_access_binding_failed", bindingError);
-      return false;
+    if (invitationError) {
+      console.error("staff_invitation_lookup_failed", invitationError);
+      return null;
     }
-    if (!bound) {
-      const { data: current } = await service
-        .from("superadmin_access")
-        .select("email,user_id")
-        .eq("email", email)
-        .maybeSingle();
-      return superAdminIdentityMatches(identity, current);
+    if (invitation) {
+      const acceptedAt = new Date().toISOString();
+      const { error: insertError } = await service.from("staff_members").insert({
+        user_id: identity.id,
+        role: invitation.role,
+        status: "active",
+      });
+      if (insertError && insertError.code !== "23505") {
+        console.error("staff_invitation_binding_failed", insertError);
+        return null;
+      }
+      const { error: acceptError } = await service
+        .from("staff_invitations")
+        .update({ accepted_by: identity.id, accepted_at: acceptedAt })
+        .eq("id", invitation.id)
+        .is("accepted_at", null)
+        .is("revoked_at", null);
+      if (acceptError) console.error("staff_invitation_acceptance_failed", acceptError);
+      ({ data: member, error } = await selectStaff());
+      if (error) {
+        console.error("staff_access_refresh_failed", error);
+        return null;
+      }
     }
   }
-  return true;
+  if (!member) return null;
+  const role = member.role as StaffRole;
+  return {
+    userId: member.user_id,
+    role,
+    status: member.status,
+    displayName: member.display_name,
+    permissions: member.status === "active" ? staffPermissions(role) : [],
+  };
 }
 
-async function requestHasSuperAdminAccess(c: any) {
-  return hasSuperAdminAccess(c.env, {
+async function requestStaffAccess(c: any) {
+  return resolveStaffAccess(c.env, {
     id: c.get("userId"),
     email: c.get("userEmail"),
     emailConfirmed: c.get("userEmailConfirmed"),
   });
+}
+
+async function recordAdminActivity(
+  env: Env,
+  actorStaffId: string | null,
+  action: string,
+  outcome: "success" | "denied" | "failed" | "previewed",
+  details: {
+    targetType?: string;
+    targetId?: string;
+    accountId?: string;
+    reason?: string;
+    previousValues?: unknown;
+    newValues?: unknown;
+    metadata?: Record<string, unknown>;
+    delegationSessionId?: string;
+    representedUserId?: string;
+  } = {},
+) {
+  const { error } = await admin(env).from("admin_activity_log").insert({
+    actor_staff_id: actorStaffId,
+    represented_user_id: details.representedUserId,
+    delegation_session_id: details.delegationSessionId,
+    action,
+    outcome,
+    target_type: details.targetType,
+    target_id: details.targetId,
+    account_id: details.accountId,
+    reason: details.reason,
+    previous_values: details.previousValues,
+    new_values: details.newValues,
+    metadata: details.metadata || {},
+  });
+  if (error) console.error("admin_activity_log_failed", error);
+}
+
+async function requireStaff(c: any, permission: StaffPermission) {
+  const staff = await requestStaffAccess(c);
+  if (!staff || staff.status !== "active" || !staffRoleCan(staff.role, permission)) {
+    await recordAdminActivity(c.env, staff?.userId || null, "staff.permission_denied", "denied", {
+      metadata: { permission },
+    });
+    return { staff: null, response: c.json({ error: "staff_permission_required", permission }, 403) };
+  }
+  if (c.get("authAal") !== "aal2") {
+    await recordAdminActivity(c.env, staff.userId, "staff.mfa_required", "denied", {
+      metadata: { permission },
+    });
+    return { staff: null, response: c.json({ error: "mfa_assurance_required", required: "aal2" }, 403) };
+  }
+  return { staff, response: null };
+}
+
+type EmergencyControlKey = "new_audits" | "scheduled_audits" | "browser_collection" | "uptime_checks" | "uptime_notifications" | "analytics_ingestion" | "reports" | "campaigns";
+
+async function processingAccess(env: Env, key: EmergencyControlKey, accountId?: string | null) {
+  const db = admin(env);
+  const [control, account, scoped] = await Promise.all([
+    db.from("emergency_controls").select("paused,reason").eq("key", key).maybeSingle(),
+    accountId ? db.from("accounts").select("access_state").eq("id", accountId).maybeSingle() : Promise.resolve({ data: null, error: null }),
+    accountId ? db.from("account_service_controls").select("paused,reason").eq("account_id", accountId).eq("service", key === "new_audits" || key === "scheduled_audits" || key === "browser_collection" ? "audits" : key === "uptime_checks" || key === "uptime_notifications" ? "uptime" : key === "analytics_ingestion" ? "analytics" : key === "reports" ? "reports" : "email").maybeSingle() : Promise.resolve({ data: null, error: null }),
+  ]);
+  if (control.error || account.error || scoped.error || !control.data)
+    return { allowed: false, error: "safety_configuration_unavailable" };
+  if (control.data.paused) return { allowed: false, error: `${key}_paused` };
+  if (account.data && account.data.access_state !== "active") return { allowed: false, error: "account_processing_paused" };
+  if (scoped.data?.paused) return { allowed: false, error: "account_service_paused" };
+  return { allowed: true, error: null };
+}
+
+async function safetyLimits(env: Env) {
+  const { data, error } = await admin(env).from("platform_settings").select("value").eq("key", "safety_limits").maybeSingle();
+  if (error || !data?.value) return null;
+  const value = data.value as Record<string, unknown>;
+  const daily = Math.floor(Number(value.platformAuditStartsPerDay));
+  const concurrent = Math.floor(Number(value.concurrentAudits));
+  if (!Number.isFinite(daily) || daily < 1 || !Number.isFinite(concurrent) || concurrent < 1) return null;
+  return { daily, concurrent };
 }
 
 app.get("/health", (c) =>
@@ -430,11 +656,14 @@ app.post("/collect", async (c) => {
   const db = admin(c.env);
   const { data: property } = await db
     .from("properties")
-    .select("id,canonical_host,tracking_enabled")
+    .select("id,account_id,canonical_host,tracking_enabled,access_state")
     .eq("tracking_id", trackingId)
     .maybeSingle();
   if (!property?.tracking_enabled)
     return c.json({ error: "unknown_property" }, 404);
+  const collectionAccess = await processingAccess(c.env, "analytics_ingestion", property.account_id);
+  if (!collectionAccess.allowed || property.access_state !== "active")
+    return c.json({ error: collectionAccess.error || "property_processing_paused" }, 503);
   const origin = c.req.header("origin");
   if (origin) {
     try {
@@ -496,6 +725,66 @@ app.post("/collect", async (c) => {
   return c.body(null, 202);
 });
 
+function stripeClient(env: Env) {
+  if (!env.STRIPE_SECRET_KEY) return null;
+  return new Stripe(env.STRIPE_SECRET_KEY, {
+    apiVersion: "2026-08-26.dahlia",
+    httpClient: Stripe.createFetchHttpClient(),
+  });
+}
+
+async function applyVerifiedBillingEvent(env: Env, event: Stripe.Event) {
+  const db = admin(env);
+  const object = event.data.object as any;
+  const providerCustomerId = typeof object.customer === "string" ? object.customer : object.customer?.id;
+  if (!providerCustomerId) return;
+  const { data: customer } = await db.from("billing_customers").select("account_id,metadata").eq("provider_customer_id", providerCustomerId).maybeSingle();
+  if (!customer) return;
+  const previousCreated = Number(customer.metadata?.lastProviderEventCreated || 0);
+  if (event.created < previousCreated) return;
+  const billingState = event.type === "invoice.payment_failed" ? "past_due"
+    : event.type === "invoice.paid" ? "active"
+      : event.type === "customer.subscription.deleted" ? "cancelled"
+        : event.type === "customer.subscription.updated" && object.status === "unpaid" ? "unpaid"
+          : event.type === "customer.subscription.updated" && ["active", "trialing", "past_due"].includes(object.status) ? object.status
+            : null;
+  await db.from("billing_customers").update({ sync_state: "synced", last_synced_at: new Date().toISOString(), currency: object.currency || undefined, metadata: { ...(customer.metadata || {}), lastProviderEventCreated: event.created, lastProviderEventId: event.id } }).eq("account_id", customer.account_id);
+  if (billingState)
+    await db.from("account_package_assignments").update({ billing_state: billingState }).eq("account_id", customer.account_id).is("ends_at", null);
+}
+
+app.post("/webhooks/stripe", async (c) => {
+  const stripe = stripeClient(c.env);
+  if (!stripe || !c.env.STRIPE_WEBHOOK_SECRET) return c.json({ error: "stripe_webhook_unconfigured" }, 503);
+  const signature = c.req.header("stripe-signature");
+  if (!signature) return c.json({ error: "stripe_signature_required" }, 400);
+  const rawBody = await c.req.text();
+  let event: Stripe.Event;
+  try {
+    event = await stripe.webhooks.constructEventAsync(rawBody, signature, c.env.STRIPE_WEBHOOK_SECRET, undefined, Stripe.createSubtleCryptoProvider());
+  } catch (error) {
+    console.error("stripe_webhook_verification_failed", errorMessage(error));
+    return c.json({ error: "invalid_stripe_signature" }, 400);
+  }
+  const db = admin(c.env);
+  const inserted = await db.from("billing_events").insert({
+    provider_event_id: event.id,
+    event_type: event.type,
+    provider_created_at: new Date(event.created * 1000).toISOString(),
+    payload: event,
+  }).select("id").maybeSingle();
+  if (inserted.error?.code === "23505") return c.json({ received: true, duplicate: true });
+  if (inserted.error || !inserted.data) return c.json({ error: "billing_event_persistence_failed" }, 503);
+  try {
+    await applyVerifiedBillingEvent(c.env, event);
+    await db.from("billing_events").update({ processing_state: "processed", attempts: 1, processed_at: new Date().toISOString() }).eq("id", inserted.data.id);
+  } catch (error) {
+    await db.from("billing_events").update({ processing_state: "failed", attempts: 1, error: errorMessage(error).slice(0, 1000) }).eq("id", inserted.data.id);
+    return c.json({ error: "billing_event_processing_failed" }, 503);
+  }
+  return c.json({ received: true });
+});
+
 app.use("/api/*", async (c, next) => {
   const token = c.req.header("authorization")?.replace(/^Bearer\s+/i, "");
   if (!token) return c.json({ error: "authentication_required" }, 401);
@@ -505,16 +794,21 @@ app.use("/api/*", async (c, next) => {
   });
   const { data, error } = await db.auth.getUser(token);
   if (error || !data.user) return c.json({ error: "invalid_session" }, 401);
+  const assurance = parseAuthAssurance(token);
   c.set("db", db);
   c.set("userId", data.user.id);
   c.set("userEmail", data.user.email || "");
   c.set("userEmailConfirmed", Boolean(data.user.email_confirmed_at));
+  c.set("accessToken", token);
+  c.set("authAal", assurance.aal);
+  c.set("authSessionId", assurance.sessionId);
   await next();
 });
 
 app.get("/api/bootstrap", async (c) => {
   const db = c.get("db");
-  const superadmin = await requestHasSuperAdminAccess(c);
+  const staff = await requestStaffAccess(c);
+  const superadmin = staff?.status === "active";
   const { data: accessibleProperties } = await db.from("properties").select("id");
   if (accessibleProperties?.length) {
     await admin(c.env)
@@ -590,6 +884,13 @@ app.get("/api/bootstrap", async (c) => {
     return c.json({ error: sharedWorkspaces.error.message }, 500);
   return c.json({
     superadmin,
+    staff: staff ? {
+      role: staff.role,
+      status: staff.status,
+      displayName: staff.displayName,
+      permissions: staff.permissions,
+      aal: c.get("authAal"),
+    } : null,
     profile: profile.data,
     accounts: accounts.data,
     workspaces: [
@@ -633,6 +934,22 @@ app.post("/api/onboarding", async (c) => {
   return error ? c.json({ error: error.message }, 400) : c.json(data);
 });
 
+app.post("/api/accounts/:id/reactivate", async (c) => {
+  const accountId = c.req.param("id");
+  const db = c.get("db");
+  const { data: membership } = await db.from("account_memberships").select("role").eq("account_id", accountId).eq("user_id", c.get("userId")).maybeSingle();
+  if (membership?.role !== "owner") return c.json({ error: "account_owner_access_required" }, 403);
+  const service = admin(c.env);
+  const { data: account } = await service.from("accounts").select("access_state").eq("id", accountId).maybeSingle();
+  if (!account || !["frozen", "pending_deletion"].includes(account.access_state)) return c.json({ error: "account_is_not_reactivatable" }, 409);
+  const now = new Date().toISOString();
+  const { error } = await service.from("accounts").update({ access_state: "active", access_state_reason: "Owner explicitly reactivated the account", access_state_changed_at: now, scheduled_deletion_at: null }).eq("id", accountId);
+  if (error) return c.json({ error: error.message }, 400);
+  await service.from("account_inactivity").update({ state: "active", last_meaningful_activity_at: now, notice_delivery_failed: false, analytics_review_required: false, updated_at: now }).eq("account_id", accountId);
+  await recordActivity(c.env, c.get("userId"), "account.reactivated", undefined, { accountId });
+  return c.json({ reactivated: true, allowancesReset: false });
+});
+
 app.post("/api/properties", async (c) => {
   const b = await c.req.json<{
     accountId: string;
@@ -665,6 +982,9 @@ app.post("/api/properties", async (c) => {
     return c.json({ error: "workspace_access_denied" }, 403);
   }
   const service = admin(c.env);
+  let entitlements;
+  try { entitlements = await effectiveEntitlements(c.env, accountId); }
+  catch { return c.json({ error: "effective_entitlements_unavailable" }, 503); }
   const { data: accountWorkspaces, error: accountWorkspacesError } = await service
     .from("workspaces")
     .select("id")
@@ -676,20 +996,20 @@ app.post("/api/properties", async (c) => {
   const workspaceIds = (accountWorkspaces || []).map((workspace) => workspace.id);
   const { data: accountProperties, error: accountPropertiesError } = await service
     .from("properties")
-    .select("id,workspace_id,canonical_host")
+    .select("id,workspace_id,canonical_host,url")
     .in("workspace_id", workspaceIds);
   if (accountPropertiesError) {
     console.error("property_create_limit_lookup_failed", accountPropertiesError);
     return c.json({ error: "property_create_failed" }, 500);
   }
-  if ((accountProperties || []).length >= LIMITS.propertiesPerAccount)
+  const configuredPropertyLimit = Number(entitlements.values.propertiesPerAccount ?? entitlements.hardCeilings.propertiesPerAccount ?? LIMITS.propertiesPerAccount);
+  const propertyLimit = Math.min(LIMITS.propertiesPerAccount, Number.isFinite(configuredPropertyLimit) ? configuredPropertyLimit : LIMITS.propertiesPerAccount);
+  if ((accountProperties || []).length >= propertyLimit)
     return c.json({ error: "property_limit_reached" }, 409);
-  const duplicate = (accountProperties || []).find(
-    (property) =>
-      property.workspace_id === b.workspaceId &&
-      canonicalPropertyHost(property.canonical_host) === canonicalHost,
-  );
-  if (duplicate) return c.json({ error: "property_already_exists" }, 409);
+  const duplicate = (accountProperties || []).find((property) => {
+    try { return new URL(property.url).href === target.href; } catch { return false; }
+  });
+  if (duplicate) return c.json({ error: "property_already_exists_in_account", propertyId: duplicate.id, workspaceId: duplicate.workspace_id, canMove: duplicate.workspace_id !== b.workspaceId }, 409);
   const trackingId = `cl_${crypto.randomUUID().replaceAll("-", "")}`;
   // INSERT ... RETURNING also evaluates the SELECT policy before the new row is
   // visible to its relationship-based predicate. Keep both operations under RLS,
@@ -1270,8 +1590,8 @@ app.get("/api/properties/:id/export", async (c) => {
 });
 
 app.get("/api/superadmin/bootstrap", async (c) => {
-  if (!(await requestHasSuperAdminAccess(c)))
-    return c.json({ error: "superadmin_access_required" }, 403);
+  const authorization = await requireStaff(c, "overview.read");
+  if (authorization.response) return authorization.response;
 
   const service = admin(c.env);
   const [
@@ -1361,6 +1681,15 @@ app.get("/api/superadmin/bootstrap", async (c) => {
         offlineCount: monitors.filter((monitor) => propertyIds.has(monitor.property_id) && monitor.enabled && monitor.last_status === "offline").length,
       };
     }),
+    workspaces: workspaces.map((workspace) => ({
+      ...workspace,
+      propertyCount: properties.filter((property) => property.workspace_id === workspace.id).length,
+    })),
+    properties: properties.map((property) => ({
+      ...property,
+      accountId: accounts.find((account) => workspaceIdsByAccount.get(account.id)?.has(property.workspace_id))?.id || null,
+      monitor: monitors.find((monitor) => monitor.property_id === property.id) || null,
+    })),
     users: users.map((user) => ({
       id: user.id,
       email: user.email || "",
@@ -1371,6 +1700,594 @@ app.get("/api/superadmin/bootstrap", async (c) => {
       accountCount: new Set(memberships.filter((membership) => membership.user_id === user.id).map((membership) => membership.account_id)).size,
     })),
   });
+});
+
+app.get("/api/superadmin/staff", async (c) => {
+  const authorization = await requireStaff(c, "staff.read");
+  if (authorization.response) return authorization.response;
+  const service = admin(c.env);
+  const [membersResult, invitationsResult, usersResult] = await Promise.all([
+    service.from("staff_members").select("user_id,role,status,display_name,invited_by,created_at,updated_at").order("created_at"),
+    service.from("staff_invitations").select("id,email,role,invited_by,reason,expires_at,accepted_by,accepted_at,revoked_at,created_at").order("created_at", { ascending: false }).limit(100),
+    service.auth.admin.listUsers({ page: 1, perPage: 1000 }),
+  ]);
+  const firstError = membersResult.error || invitationsResult.error || usersResult.error;
+  if (firstError) return c.json({ error: "staff_directory_unavailable" }, 503);
+  const users = new Map((usersResult.data.users || []).map((user) => [user.id, user]));
+  const members = await Promise.all((membersResult.data || []).map(async (member) => {
+    const user = users.get(member.user_id);
+    const factors = await service.auth.admin.mfa.listFactors({ userId: member.user_id });
+    return {
+      ...member,
+      email: user?.email || "",
+      emailConfirmedAt: user?.email_confirmed_at || null,
+      lastSignInAt: user?.last_sign_in_at || null,
+      mfaFactorCount: factors.data?.factors?.length || 0,
+      mfaError: factors.error ? "factor_status_unavailable" : null,
+    };
+  }));
+  return c.json({ members, invitations: invitationsResult.data || [] });
+});
+
+app.post("/api/superadmin/staff/invitations", async (c) => {
+  const authorization = await requireStaff(c, "staff.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ email?: string; role?: StaffRole; reason?: string }>().catch(() => ({} as { email?: string; role?: StaffRole; reason?: string }));
+  const email = String(body.email || "").trim().toLowerCase();
+  const role = body.role;
+  const reason = String(body.reason || "").trim();
+  if (!/^\S+@\S+\.\S+$/.test(email)) return c.json({ error: "valid_email_required" }, 400);
+  if (!role || !Object.prototype.hasOwnProperty.call(STAFF_ROLE_PERMISSIONS, role))
+    return c.json({ error: "valid_staff_role_required" }, 400);
+  if (reason.length < 3 || reason.length > 500) return c.json({ error: "reason_required" }, 400);
+  const service = admin(c.env);
+  const { data: existing } = await service.from("staff_invitations")
+    .select("id").eq("email", email).is("accepted_at", null).is("revoked_at", null).maybeSingle();
+  const expiresAt = new Date(Date.now() + 7 * 86400_000).toISOString();
+  const result = existing
+    ? await service.from("staff_invitations").update({ role, reason, invited_by: authorization.staff!.userId, expires_at: expiresAt }).eq("id", existing.id).select().single()
+    : await service.from("staff_invitations").insert({ email, role, reason, invited_by: authorization.staff!.userId, expires_at: expiresAt }).select().single();
+  if (result.error) return c.json({ error: result.error.message }, 400);
+
+  const users = await service.auth.admin.listUsers({ page: 1, perPage: 1000 });
+  const existingUser = users.data.users.find((user) => user.email?.toLowerCase() === email);
+  let delivery: "existing_user" | "invite_sent" | "invite_failed" = "existing_user";
+  if (!existingUser) {
+    const invited = await service.auth.admin.inviteUserByEmail(email, {
+      redirectTo: `${c.env.APP_ORIGIN}/`,
+      data: { claritude_staff_invitation: true },
+    });
+    delivery = invited.error ? "invite_failed" : "invite_sent";
+  }
+  await recordAdminActivity(c.env, authorization.staff!.userId, "staff.invitation_created", "success", {
+    targetType: "staff_invitation", targetId: result.data.id, reason,
+    newValues: { email, role, expiresAt }, metadata: { delivery },
+  });
+  return c.json({ invitation: result.data, delivery }, 201);
+});
+
+app.patch("/api/superadmin/staff/:id", async (c) => {
+  const authorization = await requireStaff(c, "staff.write");
+  if (authorization.response) return authorization.response;
+  const targetId = c.req.param("id");
+  if (targetId === authorization.staff!.userId)
+    return c.json({ error: "self_role_changes_are_not_allowed" }, 409);
+  const body = await c.req.json<{ role?: StaffRole; status?: "active" | "suspended"; displayName?: string; reason?: string }>().catch(() => ({} as { role?: StaffRole; status?: "active" | "suspended"; displayName?: string; reason?: string }));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3 || reason.length > 500) return c.json({ error: "reason_required" }, 400);
+  if (body.role && !Object.prototype.hasOwnProperty.call(STAFF_ROLE_PERMISSIONS, body.role))
+    return c.json({ error: "valid_staff_role_required" }, 400);
+  if (body.status && !["active", "suspended"].includes(body.status))
+    return c.json({ error: "valid_staff_status_required" }, 400);
+  const service = admin(c.env);
+  const { data: previous } = await service.from("staff_members").select("role,status,display_name").eq("user_id", targetId).single();
+  if (!previous) return c.json({ error: "staff_member_not_found" }, 404);
+  const changes: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (body.role) changes.role = body.role;
+  if (body.status) changes.status = body.status;
+  if (body.displayName !== undefined) changes.display_name = String(body.displayName).trim().slice(0, 120) || null;
+  const { data, error } = await service.from("staff_members").update(changes).eq("user_id", targetId).select().single();
+  if (error) return c.json({ error: error.message.includes("last_platform_owner") ? "last_platform_owner_is_protected" : error.message }, 409);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "staff.member_updated", "success", {
+    targetType: "staff_member", targetId, reason, previousValues: previous, newValues: data,
+  });
+  return c.json({ member: data });
+});
+
+app.post("/api/superadmin/staff/:id/mfa/reset", async (c) => {
+  const authorization = await requireStaff(c, "staff.write");
+  if (authorization.response) return authorization.response;
+  const targetId = c.req.param("id");
+  if (targetId === authorization.staff!.userId)
+    return c.json({ error: "owner_assisted_reset_requires_another_owner" }, 409);
+  const body = await c.req.json<{ factorId?: string; reason?: string }>().catch(() => ({} as { factorId?: string; reason?: string }));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3 || reason.length > 500) return c.json({ error: "reason_required" }, 400);
+  const service = admin(c.env);
+  const listed = await service.auth.admin.mfa.listFactors({ userId: targetId });
+  if (listed.error) return c.json({ error: "mfa_factors_unavailable" }, 503);
+  const factors = listed.data.factors.filter((factor) => !body.factorId || factor.id === body.factorId);
+  if (!factors.length) return c.json({ error: "mfa_factor_not_found" }, 404);
+  for (const factor of factors) {
+    const deleted = await service.auth.admin.mfa.deleteFactor({ userId: targetId, id: factor.id });
+    if (deleted.error) return c.json({ error: "mfa_factor_reset_failed" }, 503);
+  }
+  await recordAdminActivity(c.env, authorization.staff!.userId, "staff.mfa_factors_reset", "success", {
+    targetType: "staff_member", targetId, reason, metadata: { factorCount: factors.length },
+  });
+  return c.json({ reset: true, factorCount: factors.length });
+});
+
+app.get("/api/superadmin/activity", async (c) => {
+  const authorization = await requireStaff(c, "staff.read");
+  if (authorization.response) return authorization.response;
+  const limit = Math.min(250, Math.max(1, Number(c.req.query("limit")) || 100));
+  const { data, error } = await admin(c.env).from("admin_activity_log").select("*").order("created_at", { ascending: false }).limit(limit);
+  return error ? c.json({ error: "admin_activity_unavailable" }, 503) : c.json({ activity: data || [] });
+});
+
+app.get("/api/superadmin/delegations", async (c) => {
+  const authorization = await requireStaff(c, "delegation.read");
+  if (authorization.response) return authorization.response;
+  const { data, error } = await admin(c.env).from("delegation_sessions").select("*")
+    .eq("staff_user_id", authorization.staff!.userId).order("created_at", { ascending: false }).limit(50);
+  return error ? c.json({ error: "delegation_sessions_unavailable" }, 503) : c.json({ sessions: data || [] });
+});
+
+app.post("/api/superadmin/delegations", async (c) => {
+  const authorization = await requireStaff(c, "delegation.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ accountId?: string; representedUserId?: string; mode?: "read" | "write"; durationMinutes?: number; reason?: string }>().catch(() => ({} as { accountId?: string; representedUserId?: string; mode?: "read" | "write"; durationMinutes?: number; reason?: string }));
+  const reason = String(body.reason || "").trim();
+  const durationMinutes = Math.floor(Number(body.durationMinutes) || 30);
+  const mode = body.mode === "write" ? "write" : "read";
+  if (!body.accountId || !body.representedUserId) return c.json({ error: "account_and_user_required" }, 400);
+  if (reason.length < 3 || reason.length > 500) return c.json({ error: "reason_required" }, 400);
+  if (durationMinutes < 5 || durationMinutes > 60) return c.json({ error: "delegation_duration_out_of_range" }, 400);
+  if (mode === "write" && !staffRoleCan(authorization.staff!.role, "customers.write"))
+    return c.json({ error: "customer_write_permission_required" }, 403);
+  const service = admin(c.env);
+  const { data: membership } = await service.from("account_memberships").select("role")
+    .eq("account_id", body.accountId).eq("user_id", body.representedUserId).maybeSingle();
+  if (!membership) return c.json({ error: "represented_membership_not_found" }, 404);
+  const expiresAt = new Date(Date.now() + durationMinutes * 60_000).toISOString();
+  const { data, error } = await service.from("delegation_sessions").insert({
+    staff_user_id: authorization.staff!.userId,
+    account_id: body.accountId,
+    represented_user_id: body.representedUserId,
+    represented_role: membership.role,
+    mode,
+    reason,
+    expires_at: expiresAt,
+  }).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "delegation.started", "success", {
+    targetType: "account", targetId: body.accountId, accountId: body.accountId, reason,
+    delegationSessionId: data.id, representedUserId: body.representedUserId,
+    metadata: { mode, expiresAt, representedRole: membership.role },
+  });
+  return c.json({ session: data }, 201);
+});
+
+app.delete("/api/superadmin/delegations/:id", async (c) => {
+  const authorization = await requireStaff(c, "delegation.write");
+  if (authorization.response) return authorization.response;
+  const service = admin(c.env);
+  const { data, error } = await service.from("delegation_sessions").update({ revoked_at: new Date().toISOString() })
+    .eq("id", c.req.param("id")).eq("staff_user_id", authorization.staff!.userId).is("revoked_at", null).select().maybeSingle();
+  if (error || !data) return c.json({ error: "delegation_session_not_found" }, 404);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "delegation.ended", "success", {
+    targetType: "account", targetId: data.account_id, accountId: data.account_id,
+    delegationSessionId: data.id, representedUserId: data.represented_user_id,
+  });
+  return c.json({ revoked: true });
+});
+
+app.get("/api/superadmin/delegations/:id/bootstrap", async (c) => {
+  const authorization = await requireStaff(c, "delegation.read");
+  if (authorization.response) return authorization.response;
+  const service = admin(c.env);
+  const now = new Date().toISOString();
+  const { data: session } = await service.from("delegation_sessions").select("*")
+    .eq("id", c.req.param("id")).eq("staff_user_id", authorization.staff!.userId)
+    .is("revoked_at", null).gt("expires_at", now).maybeSingle();
+  if (!session) return c.json({ error: "delegation_session_expired_or_revoked" }, 403);
+  const [account, workspaces, memberships] = await Promise.all([
+    service.from("accounts").select("*").eq("id", session.account_id).single(),
+    service.from("workspaces").select("*").eq("account_id", session.account_id).order("created_at"),
+    service.from("account_memberships").select("user_id,role,created_at").eq("account_id", session.account_id),
+  ]);
+  if (account.error || workspaces.error || memberships.error) return c.json({ error: "delegated_account_unavailable" }, 503);
+  const workspaceIds = (workspaces.data || []).map((workspace) => workspace.id);
+  const properties = workspaceIds.length
+    ? await service.from("properties").select("*").in("workspace_id", workspaceIds).order("created_at")
+    : { data: [], error: null };
+  if (properties.error) return c.json({ error: "delegated_account_unavailable" }, 503);
+  return c.json({ session, account: account.data, workspaces: workspaces.data || [], properties: properties.data || [], memberships: memberships.data || [] });
+});
+
+function adminPageParams(c: any) {
+  const page = Math.max(1, Math.floor(Number(c.req.query("page")) || 1));
+  const pageSize = Math.min(100, Math.max(1, Math.floor(Number(c.req.query("pageSize")) || 25)));
+  return { page, pageSize, from: (page - 1) * pageSize, to: page * pageSize - 1 };
+}
+
+function safeSearchTerm(value: unknown) {
+  return String(value || "").trim().slice(0, 120).replace(/[,%_()]/g, "");
+}
+
+export function validSafetyLimits(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const limits = value as Record<string, unknown>;
+  const ranges: Record<string, [number, number]> = {
+    platformAuditStartsPerDay: [1, 10_000], concurrentAudits: [1, 50], auditWallTimeSeconds: [60, 600],
+    httpResponseBytes: [100_000, 10_000_000], linksPerAudit: [10, 10_000], resourcesPerAudit: [10, 10_000],
+    redirects: [0, 10], queueRetries: [0, 10], analyticsPayloadBytes: [1024, 1_000_000],
+    analyticsEventsPerPropertyPerDay: [100, 1_000_000], exportsPerAccountPerDay: [1, 100],
+  };
+  return Object.entries(ranges).every(([key, [min, max]]) => Number.isInteger(limits[key]) && Number(limits[key]) >= min && Number(limits[key]) <= max);
+}
+
+app.get("/api/superadmin/search", async (c) => {
+  const authorization = await requireStaff(c, "overview.read");
+  if (authorization.response) return authorization.response;
+  const query = safeSearchTerm(c.req.query("q"));
+  if (query.length < 2) return c.json({ results: [] });
+  const service = admin(c.env);
+  const [accounts, workspaces, properties, audits, users, billingEvents] = await Promise.all([
+    service.from("accounts").select("id,name").ilike("name", `%${query}%`).limit(8),
+    service.from("workspaces").select("id,name,account_id").ilike("name", `%${query}%`).limit(8),
+    service.from("properties").select("id,name,canonical_host,account_id").or(`name.ilike.%${query}%,canonical_host.ilike.%${query}%`).limit(8),
+    /^[0-9a-f-]{4,}$/i.test(query) ? service.from("audit_runs").select("id,property_id,status,created_at").ilike("id", `${query}%`).limit(8) : Promise.resolve({ data: [], error: null }),
+    service.auth.admin.listUsers({ page: 1, perPage: 1000 }),
+    service.from("billing_events").select("id,provider_event_id,event_type,processing_state").ilike("provider_event_id", `%${query}%`).limit(8),
+  ]);
+  const matchedUsers = users.data.users.filter((user) => `${user.email || ""} ${user.user_metadata?.full_name || ""}`.toLowerCase().includes(query.toLowerCase())).slice(0, 8);
+  return c.json({ results: [
+    ...(accounts.data || []).map((item) => ({ type: "account", id: item.id, label: item.name, href: `/superadmin?view=accounts&account=${item.id}` })),
+    ...(matchedUsers).map((item) => ({ type: "user", id: item.id, label: item.email || item.id, href: `/superadmin?view=users&user=${item.id}` })),
+    ...(workspaces.data || []).map((item) => ({ type: "workspace", id: item.id, label: item.name, href: `/superadmin?view=resources&workspace=${item.id}` })),
+    ...(properties.data || []).map((item) => ({ type: "property", id: item.id, label: `${item.name} · ${item.canonical_host}`, href: `/superadmin?view=resources&property=${item.id}` })),
+    ...(audits.data || []).map((item) => ({ type: "audit", id: item.id, label: `${item.id} · ${item.status}`, href: `/superadmin?view=audits&audit=${item.id}` })),
+    ...(billingEvents.data || []).map((item) => ({ type: "billing_event", id: item.id, label: `${item.provider_event_id} · ${item.event_type}`, href: `/superadmin?view=financials&event=${item.id}` })),
+  ] });
+});
+
+app.get("/api/superadmin/accounts", async (c) => {
+  const authorization = await requireStaff(c, "customers.read");
+  if (authorization.response) return authorization.response;
+  const { page, pageSize, from, to } = adminPageParams(c);
+  const query = safeSearchTerm(c.req.query("q"));
+  const state = c.req.query("state");
+  const service = admin(c.env);
+  let request = service.from("accounts")
+    .select("id,name,entitlement,access_state,tags,scheduled_deletion_at,created_at", { count: "exact" })
+    .order(["name", "created_at"].includes(c.req.query("sort") || "") ? c.req.query("sort")! : "created_at", { ascending: c.req.query("direction") === "asc" })
+    .range(from, to);
+  if (query) request = request.ilike("name", `%${query}%`);
+  if (state && ["active", "frozen", "blocked", "pending_deletion"].includes(state)) request = request.eq("access_state", state);
+  const result = await request;
+  if (result.error) return c.json({ error: "account_directory_unavailable" }, 503);
+  const ids = (result.data || []).map((account) => account.id);
+  const [workspaces, properties, memberships, inactivity, assignments, overrides] = await Promise.all([
+    ids.length ? service.from("workspaces").select("id,account_id").in("account_id", ids) : Promise.resolve({ data: [] }),
+    ids.length ? service.from("properties").select("id,account_id,access_state").in("account_id", ids) : Promise.resolve({ data: [] }),
+    ids.length ? service.from("account_memberships").select("account_id,user_id,role").in("account_id", ids) : Promise.resolve({ data: [] }),
+    ids.length ? service.from("account_inactivity").select("*").in("account_id", ids) : Promise.resolve({ data: [] }),
+    ids.length ? service.from("account_package_assignments").select("account_id,price_grandfathered,allowances_grandfathered,complimentary,billing_state,starts_at,ends_at,package_versions(package_key,version,display_name)").in("account_id", ids).is("ends_at", null) : Promise.resolve({ data: [] }),
+    ids.length ? service.from("account_entitlement_overrides").select("account_id,key,value,expires_at").in("account_id", ids).lte("starts_at", new Date().toISOString()).or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`) : Promise.resolve({ data: [] }),
+  ]);
+  return c.json({ page, pageSize, total: result.count || 0, rows: (result.data || []).map((account) => ({
+    ...account,
+    workspaceCount: (workspaces.data || []).filter((item) => item.account_id === account.id).length,
+    propertyCount: (properties.data || []).filter((item) => item.account_id === account.id).length,
+    lockedPropertyCount: (properties.data || []).filter((item) => item.account_id === account.id && item.access_state === "locked").length,
+    userCount: new Set((memberships.data || []).filter((item) => item.account_id === account.id).map((item) => item.user_id)).size,
+    inactivity: (inactivity.data || []).find((item) => item.account_id === account.id) || null,
+    packageAssignment: (assignments.data || []).find((item) => item.account_id === account.id) || null,
+    overrides: (overrides.data || []).filter((item) => item.account_id === account.id),
+  })) });
+});
+
+app.get("/api/superadmin/accounts/:id", async (c) => {
+  const authorization = await requireStaff(c, "customers.read");
+  if (authorization.response) return authorization.response;
+  const accountId = c.req.param("id");
+  const service = admin(c.env);
+  const [account, workspaces, properties, memberships, billingMemberships, notes, controls, activity, messages, usage, assignments, overrides, inactivity] = await Promise.all([
+    service.from("accounts").select("*").eq("id", accountId).single(),
+    service.from("workspaces").select("*").eq("account_id", accountId).order("created_at"),
+    service.from("properties").select("*").eq("account_id", accountId).order("created_at"),
+    service.from("account_memberships").select("*").eq("account_id", accountId),
+    service.from("account_billing_memberships").select("*").eq("account_id", accountId),
+    service.from("account_internal_notes").select("*").eq("account_id", accountId).order("created_at", { ascending: false }),
+    service.from("account_service_controls").select("*").eq("account_id", accountId),
+    service.from("activity_log").select("*").eq("account_id", accountId).order("created_at", { ascending: false }).limit(100),
+    service.from("customer_messages").select("*").eq("account_id", accountId).order("created_at", { ascending: false }).limit(100),
+    service.from("account_usage_periods").select("*").eq("account_id", accountId).order("period_start", { ascending: false }).limit(100),
+    service.from("account_package_assignments").select("*,package_versions(*)").eq("account_id", accountId).order("starts_at", { ascending: false }),
+    service.from("account_entitlement_overrides").select("*").eq("account_id", accountId).order("created_at", { ascending: false }),
+    service.from("account_inactivity").select("*").eq("account_id", accountId).maybeSingle(),
+  ]);
+  if (account.error) return c.json({ error: "account_not_found" }, 404);
+  let effective;
+  try { effective = await effectiveEntitlements(c.env, accountId); } catch { effective = null; }
+  return c.json({ account: account.data, workspaces: workspaces.data || [], properties: properties.data || [], memberships: memberships.data || [], billingMemberships: billingMemberships.data || [], notes: notes.data || [], controls: controls.data || [], activity: activity.data || [], messages: messages.data || [], usage: usage.data || [], assignments: assignments.data || [], overrides: overrides.data || [], inactivity: inactivity.data, effectiveEntitlements: effective });
+});
+
+app.post("/api/superadmin/accounts/:id/deletion-preview", async (c) => {
+  const authorization = await requireStaff(c, "customers.write");
+  if (authorization.response) return authorization.response;
+  if (authorization.staff!.role !== "owner") return c.json({ error: "owner_permission_required" }, 403);
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({} as any));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3 || reason.length > 500) return c.json({ error: "reason_required" }, 400);
+  const accountId = c.req.param("id");
+  const service = admin(c.env);
+  const [account, workspaces, properties, members, usage, notices] = await Promise.all([
+    service.from("accounts").select("id,name,access_state,scheduled_deletion_at").eq("id", accountId).single(),
+    service.from("workspaces").select("id", { count: "exact", head: true }).eq("account_id", accountId),
+    service.from("properties").select("id", { count: "exact", head: true }).eq("account_id", accountId),
+    service.from("account_memberships").select("user_id", { count: "exact", head: true }).eq("account_id", accountId),
+    service.from("account_usage_periods").select("consumed,reserved,restored").eq("account_id", accountId),
+    service.from("account_inactivity").select("*").eq("account_id", accountId).maybeSingle(),
+  ]);
+  if (account.error) return c.json({ error: "account_not_found" }, 404);
+  const dryRun = {
+    generatedAt: new Date().toISOString(), account: account.data,
+    accountScopedResources: { workspaces: workspaces.count || 0, properties: properties.count || 0, memberships: members.count || 0 },
+    preserved: { globalUserIdentities: true, usageLedgerRows: usage.data?.length || 0, adminActivity: true },
+    holds: { automaticDeletionEnabled: false, inactivityState: notices.data?.state || "not_evaluated", noticeDeliveryFailed: Boolean(notices.data?.notice_delivery_failed), analyticsReviewRequired: Boolean(notices.data?.analytics_review_required) },
+  };
+  const { data, error } = await service.from("deletion_requests").insert({ account_id: accountId, state: "preview", dry_run: dryRun, reason, requested_by: authorization.staff!.userId }).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "account.deletion_previewed", "previewed", { targetType: "account", targetId: accountId, accountId, reason, metadata: { deletionRequestId: data.id } });
+  return c.json({ request: data, dryRun });
+});
+
+app.patch("/api/superadmin/accounts/:id/state", async (c) => {
+  const authorization = await requireStaff(c, "customers.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ state?: "active" | "frozen" | "blocked" | "pending_deletion"; reason?: string; scheduledDeletionAt?: string | null }>().catch(() => ({} as any));
+  const reason = String(body.reason || "").trim();
+  if (!body.state || !["active", "frozen", "blocked", "pending_deletion"].includes(body.state)) return c.json({ error: "valid_account_state_required" }, 400);
+  if (reason.length < 3 || reason.length > 500) return c.json({ error: "reason_required" }, 400);
+  if (body.state === "pending_deletion" && authorization.staff!.role !== "owner") return c.json({ error: "owner_permission_required" }, 403);
+  const service = admin(c.env);
+  const { data: previous } = await service.from("accounts").select("access_state,access_state_reason,scheduled_deletion_at").eq("id", c.req.param("id")).single();
+  if (!previous) return c.json({ error: "account_not_found" }, 404);
+  const { data, error } = await service.from("accounts").update({ access_state: body.state, access_state_reason: reason, access_state_changed_at: new Date().toISOString(), scheduled_deletion_at: body.state === "pending_deletion" ? body.scheduledDeletionAt || null : null }).eq("id", c.req.param("id")).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "account.state_changed", "success", { targetType: "account", targetId: data.id, accountId: data.id, reason, previousValues: previous, newValues: { access_state: data.access_state, scheduled_deletion_at: data.scheduled_deletion_at } });
+  return c.json({ account: data });
+});
+
+app.post("/api/superadmin/accounts/:id/notes", async (c) => {
+  const authorization = await requireStaff(c, "customers.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ body?: string }>().catch(() => ({} as any));
+  const note = String(body.body || "").trim();
+  if (!note || note.length > 5000) return c.json({ error: "valid_note_required" }, 400);
+  const { data, error } = await admin(c.env).from("account_internal_notes").insert({ account_id: c.req.param("id"), body: note, created_by: authorization.staff!.userId }).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "account.note_added", "success", { targetType: "account", targetId: c.req.param("id"), accountId: c.req.param("id"), metadata: { noteId: data.id } });
+  return c.json({ note: data }, 201);
+});
+
+app.get("/api/superadmin/platform", async (c) => {
+  const authorization = await requireStaff(c, "overview.read");
+  if (authorization.response) return authorization.response;
+  const service = admin(c.env);
+  const today = new Date().toISOString().slice(0, 10);
+  const [settings, controls, alerts, incidents, packages, overrides, inactivity, auditDefinitions, auditGroups, auditRuns, exports, deletionRequests, templates, automations, campaigns, billingCustomers, billingEvents, promotions, deliveries] = await Promise.all([
+    service.from("platform_settings").select("*").order("key"),
+    service.from("emergency_controls").select("*").order("key"),
+    service.from("platform_alerts").select("*").order("created_at", { ascending: false }).limit(100),
+    service.from("platform_incidents").select("*").order("opened_at", { ascending: false }).limit(100),
+    service.from("package_versions").select("*").order("package_key").order("version", { ascending: false }),
+    service.from("account_entitlement_overrides").select("id,account_id,key,value,reason,starts_at,expires_at,created_at").order("created_at", { ascending: false }).limit(250),
+    service.from("account_inactivity").select("*").neq("state", "active").order("updated_at", { ascending: false }).limit(250),
+    service.from("audit_check_definitions").select("id,title,primary_category,subcategory,severity,lifecycle,configuration_version,changed_at").order("id"),
+    service.from("audit_user_facing_groups").select("id,name,category,subcategory,lifecycle,enabled_by_default,configuration_version").order("sort_order"),
+    service.from("audit_runs").select("id,status,duration_ms,error,created_at,execution_telemetry").gte("created_at", `${today}T00:00:00.000Z`).limit(1000),
+    service.from("admin_export_jobs").select("id,scope,format,state,progress,row_count,error,expires_at,created_at,completed_at").order("created_at", { ascending: false }).limit(100),
+    service.from("deletion_requests").select("*").order("created_at", { ascending: false }).limit(100),
+    service.from("email_templates").select("id,template_key,version,subject,variables,state,created_at").order("template_key").order("version", { ascending: false }),
+    service.from("email_automations").select("*").order("key"),
+    service.from("email_campaigns").select("*").order("created_at", { ascending: false }).limit(100),
+    service.from("billing_customers").select("*").limit(1000),
+    service.from("billing_events").select("id,provider_event_id,event_type,provider_created_at,processing_state,attempts,error,received_at,processed_at").order("provider_created_at", { ascending: false }).limit(250),
+    service.from("promotion_rules").select("*").order("created_at", { ascending: false }).limit(100),
+    service.from("notification_deliveries").select("id,kind,recipient,status,provider_id,error,created_at,updated_at").order("created_at", { ascending: false }).limit(250),
+  ]);
+  const runs = auditRuns.data || [];
+  const auditStatus = Object.fromEntries(["queued", "running", "completed", "partial", "failed"].map((status) => [status, runs.filter((run) => run.status === status).length]));
+  return c.json({
+    environment: { name: c.env.APP_ORIGIN.includes("app.claritude.io") ? "Production" : "Preview", commitSha: c.env.DEPLOY_COMMIT_SHA || null, refreshedAt: new Date().toISOString() },
+    providers: { stripe: { configured: Boolean(c.env.STRIPE_SECRET_KEY && c.env.STRIPE_WEBHOOK_SECRET), mode: c.env.STRIPE_SECRET_KEY?.startsWith("sk_test_") ? "sandbox" : c.env.STRIPE_SECRET_KEY ? "live" : "unconfigured", tax: "unconfigured" }, resend: { configured: Boolean(c.env.RESEND_API_KEY), from: c.env.RESEND_FROM || null }, cloudflareTelemetry: "unavailable", supabaseBackups: "unverified" },
+    settings: settings.data || [], controls: controls.data || [], alerts: alerts.data || [], incidents: incidents.data || [], packages: packages.data || [], overrides: overrides.data || [], inactivity: inactivity.data || [],
+    audits: { technicalChecks: auditDefinitions.data || [], groups: auditGroups.data || [], today: auditStatus, source: "application_measured", period: "UTC day" },
+    exports: exports.data || [], deletionRequests: deletionRequests.data || [], email: { templates: templates.data || [], automations: automations.data || [], campaigns: campaigns.data || [], deliveries: deliveries.data || [] },
+    billing: { configured: Boolean(c.env.STRIPE_SECRET_KEY && c.env.STRIPE_WEBHOOK_SECRET), customers: billingCustomers.data || [], events: billingEvents.data || [], promotions: promotions.data || [], calculations: { mrr: "Unavailable until Stripe is configured and reconciled", arr: "Unavailable until Stripe is configured and reconciled", cashCollected: "Unavailable until Stripe is configured and reconciled", currencyPolicy: "Currencies remain separate unless an explicit labelled conversion is configured" } },
+  });
+});
+
+app.post("/api/superadmin/billing/events/:id/reprocess", async (c) => {
+  const authorization = await requireStaff(c, "financials.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({} as any));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3 || reason.length > 500) return c.json({ error: "reason_required" }, 400);
+  const db = admin(c.env);
+  const { data: record } = await db.from("billing_events").select("*").eq("id", c.req.param("id")).maybeSingle();
+  if (!record) return c.json({ error: "billing_event_not_found" }, 404);
+  try {
+    await applyVerifiedBillingEvent(c.env, record.payload as Stripe.Event);
+    const { data, error } = await db.from("billing_events").update({ processing_state: "processed", attempts: Number(record.attempts || 0) + 1, error: null, processed_at: new Date().toISOString() }).eq("id", record.id).select().single();
+    if (error) throw error;
+    await recordAdminActivity(c.env, authorization.staff!.userId, "billing.event_reprocessed", "success", { targetType: "billing_event", targetId: record.id, reason, metadata: { providerEventId: record.provider_event_id } });
+    return c.json({ event: data });
+  } catch (error) {
+    await db.from("billing_events").update({ processing_state: "failed", attempts: Number(record.attempts || 0) + 1, error: errorMessage(error).slice(0, 1000) }).eq("id", record.id);
+    await recordAdminActivity(c.env, authorization.staff!.userId, "billing.event_reprocessed", "failed", { targetType: "billing_event", targetId: record.id, reason, metadata: { providerEventId: record.provider_event_id, error: errorMessage(error) } });
+    return c.json({ error: "billing_event_reprocessing_failed" }, 503);
+  }
+});
+
+app.patch("/api/superadmin/audit-checks/:id", async (c) => {
+  const authorization = await requireStaff(c, "audits.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ lifecycle?: "active" | "disabled"; severity?: string; thresholds?: Record<string, unknown>; weight?: number; reason?: string }>().catch(() => ({} as any));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3 || reason.length > 500) return c.json({ error: "reason_required" }, 400);
+  if (body.lifecycle && !["active", "disabled"].includes(body.lifecycle)) return c.json({ error: "unsupported_check_lifecycle" }, 400);
+  if (body.weight !== undefined && (!Number.isFinite(body.weight) || body.weight < 0 || body.weight > 100)) return c.json({ error: "invalid_check_weight" }, 400);
+  const db = admin(c.env);
+  const { data: previous } = await db.from("audit_check_definitions").select("*").eq("id", c.req.param("id")).maybeSingle();
+  if (!previous) return c.json({ error: "audit_check_not_found" }, 404);
+  const next: Record<string, unknown> = { configuration_version: Number(previous.configuration_version || 0) + 1, changed_by: authorization.staff!.userId, changed_at: new Date().toISOString() };
+  if (body.lifecycle) next.lifecycle = body.lifecycle;
+  if (body.severity) next.severity = String(body.severity).slice(0, 40);
+  if (body.thresholds) next.thresholds = body.thresholds;
+  if (body.weight !== undefined) next.weight = body.weight;
+  const history = await db.from("audit_check_history").insert({ check_id: previous.id, snapshot: previous, changed_by: authorization.staff!.userId, reason }).select("id").single();
+  if (history.error) return c.json({ error: "audit_configuration_history_failed" }, 503);
+  const { data, error } = await db.from("audit_check_definitions").update(next).eq("id", previous.id).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "audit.check_configuration_changed", "success", { targetType: "audit_check", targetId: previous.id, reason, previousValues: { lifecycle: previous.lifecycle, severity: previous.severity, thresholds: previous.thresholds, weight: previous.weight, configurationVersion: previous.configuration_version }, newValues: { lifecycle: data.lifecycle, severity: data.severity, thresholds: data.thresholds, weight: data.weight, configurationVersion: data.configuration_version }, metadata: { historyId: history.data.id } });
+  return c.json({ check: data, historyId: history.data.id });
+});
+
+app.post("/api/superadmin/packages/:id/migration-preview", async (c) => {
+  const authorization = await requireStaff(c, "packages.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ scope?: "new_signups" | "selected_accounts" | "existing_accounts"; accountIds?: string[]; reason?: string; effectiveAt?: string }>().catch(() => ({} as any));
+  const reason = String(body.reason || "").trim();
+  if (!body.scope || !["new_signups", "selected_accounts", "existing_accounts"].includes(body.scope) || reason.length < 3) return c.json({ error: "scope_and_reason_required" }, 400);
+  const db = admin(c.env);
+  const { data: packageVersion } = await db.from("package_versions").select("*").eq("id", c.req.param("id")).maybeSingle();
+  if (!packageVersion) return c.json({ error: "package_version_not_found" }, 404);
+  let accountQuery = db.from("accounts").select("id,name").limit(5000);
+  if (body.scope === "selected_accounts") accountQuery = accountQuery.in("id", [...new Set(body.accountIds || [])].slice(0, 500));
+  const accounts = body.scope === "new_signups" ? { data: [], error: null } : await accountQuery;
+  if (accounts.error) return c.json({ error: "package_migration_preview_unavailable" }, 503);
+  const ids = (accounts.data || []).map((account) => account.id);
+  const [properties, workspaces, memberships] = await Promise.all([
+    ids.length ? db.from("properties").select("account_id,id").in("account_id", ids) : Promise.resolve({ data: [] }),
+    ids.length ? db.from("workspaces").select("account_id,id").in("account_id", ids) : Promise.resolve({ data: [] }),
+    ids.length ? db.from("account_memberships").select("account_id,user_id,role").in("account_id", ids).in("role", ["owner", "member"]) : Promise.resolve({ data: [] }),
+  ]);
+  const allowances = packageVersion.allowances || {};
+  const previewRows = (accounts.data || []).map((account) => {
+    const counts = { properties: (properties.data || []).filter((item) => item.account_id === account.id).length, workspaces: (workspaces.data || []).filter((item) => item.account_id === account.id).length, editingSeats: (memberships.data || []).filter((item) => item.account_id === account.id).length };
+    const conflicts = [
+      typeof allowances.properties === "number" && counts.properties > allowances.properties ? `${counts.properties - allowances.properties} excess properties` : null,
+      typeof allowances.workspaces === "number" && counts.workspaces > allowances.workspaces ? `${counts.workspaces - allowances.workspaces} excess workspaces` : null,
+      typeof allowances.editingSeats === "number" && counts.editingSeats > allowances.editingSeats ? `${counts.editingSeats - allowances.editingSeats} excess editing seats` : null,
+    ].filter(Boolean);
+    return { ...account, counts, conflicts };
+  });
+  const preview = { packageVersionId: packageVersion.id, scope: body.scope, affectedAccounts: previewRows.length, conflictAccounts: previewRows.filter((row) => row.conflicts.length).length, accounts: previewRows, effectiveAt: body.effectiveAt || null, priceGrandfatheringUnaffected: true, usageReset: false };
+  const { data: request, error } = await db.from("package_change_requests").insert({ account_id: body.scope === "selected_accounts" && ids.length === 1 ? ids[0] : null, to_package_version_id: packageVersion.id, scope: body.scope, state: "preview", effective_at: body.effectiveAt || null, preview, selection: { accountIds: ids }, reason, created_by: authorization.staff!.userId }).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "package.migration_previewed", "previewed", { targetType: "package_version", targetId: packageVersion.id, reason, metadata: { changeRequestId: request.id, affectedAccounts: previewRows.length, conflictAccounts: preview.conflictAccounts } });
+  return c.json({ request, preview });
+});
+
+app.post("/api/superadmin/accounts/:id/overrides", async (c) => {
+  const authorization = await requireStaff(c, "packages.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ key?: string; value?: unknown; reason?: string; expiresAt?: string | null }>().catch(() => ({} as any));
+  const key = String(body.key || "").trim().slice(0, 100);
+  const reason = String(body.reason || "").trim();
+  if (!key || body.value === undefined || reason.length < 3 || reason.length > 500) return c.json({ error: "key_value_and_reason_required" }, 400);
+  let effective;
+  try { effective = await effectiveEntitlements(c.env, c.req.param("id")); } catch { return c.json({ error: "effective_entitlements_unavailable" }, 503); }
+  const ceiling = effective.hardCeilings[key];
+  if (typeof ceiling === "number" && typeof body.value === "number" && body.value > ceiling) return c.json({ error: "override_exceeds_platform_ceiling", ceiling }, 409);
+  if (body.expiresAt && Date.parse(body.expiresAt) <= Date.now()) return c.json({ error: "override_expiry_must_be_future" }, 400);
+  const { data, error } = await admin(c.env).from("account_entitlement_overrides").insert({ account_id: c.req.param("id"), key, value: body.value, reason, expires_at: body.expiresAt || null, created_by: authorization.staff!.userId }).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "account.entitlement_override_created", "success", { targetType: "account", targetId: c.req.param("id"), accountId: c.req.param("id"), reason, newValues: { key, value: body.value, expiresAt: body.expiresAt || null } });
+  return c.json({ override: data }, 201);
+});
+
+app.post("/api/superadmin/audit-checks/:id/rollback/:historyId", async (c) => {
+  const authorization = await requireStaff(c, "audits.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({} as any));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3 || reason.length > 500) return c.json({ error: "reason_required" }, 400);
+  const db = admin(c.env);
+  const [current, history] = await Promise.all([
+    db.from("audit_check_definitions").select("*").eq("id", c.req.param("id")).single(),
+    db.from("audit_check_history").select("snapshot").eq("id", c.req.param("historyId")).eq("check_id", c.req.param("id")).single(),
+  ]);
+  if (current.error || history.error) return c.json({ error: "audit_configuration_history_not_found" }, 404);
+  const snapshot = history.data.snapshot as any;
+  await db.from("audit_check_history").insert({ check_id: current.data.id, snapshot: current.data, changed_by: authorization.staff!.userId, reason: `Pre-rollback snapshot: ${reason}` });
+  const { data, error } = await db.from("audit_check_definitions").update({ lifecycle: snapshot.lifecycle, severity: snapshot.severity, thresholds: snapshot.thresholds, weight: snapshot.weight, configuration_version: Number(current.data.configuration_version || 0) + 1, changed_by: authorization.staff!.userId, changed_at: new Date().toISOString() }).eq("id", current.data.id).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "audit.check_configuration_rolled_back", "success", { targetType: "audit_check", targetId: current.data.id, reason, previousValues: current.data, newValues: data, metadata: { sourceHistoryId: c.req.param("historyId") } });
+  return c.json({ check: data });
+});
+
+app.patch("/api/superadmin/emergency-controls/:key", async (c) => {
+  const authorization = await requireStaff(c, "operations.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ paused?: boolean; reason?: string }>().catch(() => ({} as any));
+  const reason = String(body.reason || "").trim();
+  if (typeof body.paused !== "boolean" || reason.length < 3 || reason.length > 500) return c.json({ error: "paused_and_reason_required" }, 400);
+  const service = admin(c.env);
+  const { data: previous } = await service.from("emergency_controls").select("*").eq("key", c.req.param("key")).single();
+  if (!previous) return c.json({ error: "emergency_control_not_found" }, 404);
+  const { data, error } = await service.from("emergency_controls").update({ paused: body.paused, reason, changed_by: authorization.staff!.userId, changed_at: new Date().toISOString() }).eq("key", c.req.param("key")).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "emergency_control.changed", "success", { targetType: "emergency_control", targetId: data.key, reason, previousValues: previous, newValues: data });
+  return c.json({ control: data });
+});
+
+app.patch("/api/superadmin/settings/:key", async (c) => {
+  const authorization = await requireStaff(c, "settings.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ value?: unknown; reason?: string }>().catch(() => ({} as any));
+  const reason = String(body.reason || "").trim();
+  if (body.value === undefined || reason.length < 3 || reason.length > 500) return c.json({ error: "value_and_reason_required" }, 400);
+  if (c.req.param("key") === "safety_limits" && !validSafetyLimits(body.value)) return c.json({ error: "invalid_safety_limits" }, 400);
+  const service = admin(c.env);
+  const { data: previous } = await service.from("platform_settings").select("*").eq("key", c.req.param("key")).single();
+  if (!previous) return c.json({ error: "platform_setting_not_found" }, 404);
+  const { data, error } = await service.from("platform_settings").update({ value: body.value, updated_by: authorization.staff!.userId, updated_at: new Date().toISOString() }).eq("key", c.req.param("key")).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "platform_setting.changed", "success", { targetType: "platform_setting", targetId: data.key, reason, previousValues: previous.value, newValues: data.value });
+  return c.json({ setting: data });
+});
+
+app.post("/api/superadmin/exports", async (c) => {
+  const authorization = await requireStaff(c, "exports.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ scope?: string; format?: "csv" | "json"; filters?: Record<string, unknown>; reason?: string }>().catch(() => ({} as any));
+  const allowedScopes = ["accounts", "users", "properties", "audits", "admin_activity"];
+  if (!body.scope || !allowedScopes.includes(body.scope) || !["csv", "json"].includes(body.format || "")) return c.json({ error: "valid_export_scope_and_format_required" }, 400);
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3 || reason.length > 500) return c.json({ error: "reason_required" }, 400);
+  const { data, error } = await admin(c.env).from("admin_export_jobs").insert({ requested_by: authorization.staff!.userId, scope: body.scope, format: body.format, filters: body.filters || {} }).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await c.env.JOBS.send({ type: "admin-export", id: data.id });
+  await recordAdminActivity(c.env, authorization.staff!.userId, "export.queued", "success", { targetType: "admin_export", targetId: data.id, reason, metadata: { scope: body.scope, format: body.format } });
+  return c.json({ job: data }, 202);
+});
+
+app.get("/api/superadmin/exports/:id/download", async (c) => {
+  const authorization = await requireStaff(c, "exports.read");
+  if (authorization.response) return authorization.response;
+  const service = admin(c.env);
+  const { data: job } = await service.from("admin_export_jobs").select("*").eq("id", c.req.param("id")).single();
+  if (!job || job.state !== "completed" || !job.object_key || !job.expires_at || Date.parse(job.expires_at) <= Date.now()) return c.json({ error: "export_not_available" }, 404);
+  const signed = await service.storage.from("admin-exports").createSignedUrl(job.object_key, 60);
+  if (signed.error) return c.json({ error: "export_download_unavailable" }, 503);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "export.downloaded", "success", { targetType: "admin_export", targetId: job.id });
+  return c.json({ url: signed.data.signedUrl, expiresInSeconds: 60 });
 });
 
 app.post("/api/properties/:id/reset", async (c) => {
@@ -1508,14 +2425,23 @@ app.post("/api/audits", async (c) => {
     propertyId: string;
     pageId: string;
     checkIds?: string[];
+    idempotencyKey?: string;
   }>();
   const db = c.get("db");
   const { data: property } = await db
     .from("properties")
-    .select("id,url,workspaces(account_id,accounts(entitlement))")
+    .select("id,url,account_id,access_state,workspaces(account_id,accounts(entitlement))")
     .eq("id", b.propertyId)
     .single();
   if (!property) return c.json({ error: "property_not_found" }, 404);
+  const processing = await processingAccess(c.env, "new_audits", property.account_id);
+  if (!processing.allowed || property.access_state !== "active")
+    return c.json({ error: processing.error || "property_processing_paused" }, 503);
+  const limits = await safetyLimits(c.env);
+  if (!limits) return c.json({ error: "safety_configuration_unavailable" }, 503);
+  let entitlements;
+  try { entitlements = await effectiveEntitlements(c.env, property.account_id); }
+  catch { return c.json({ error: "effective_entitlements_unavailable" }, 503); }
   const { data: auditPage } = await db
     .from("property_audit_pages")
     .select("id,property_id,name,path")
@@ -1544,7 +2470,7 @@ app.post("/api/audits", async (c) => {
     const workspace = property.workspaces as any;
     const configured = await configuredAuditSnapshots(c.env, {
       accountId: workspace?.account_id || null,
-      entitlement: workspace?.accounts?.entitlement || null,
+      entitlement: entitlements.packageKey || workspace?.accounts?.entitlement || null,
       requestedCheckIds: b.checkIds,
     });
     snapshot = configured.technicalSnapshot;
@@ -1554,9 +2480,45 @@ app.post("/api/audits", async (c) => {
     return c.json({ error: "audit_registry_unavailable" }, 503);
   }
   if (!snapshot.length) return c.json({ error: "audit_registry_empty" }, 503);
+  const service = admin(c.env);
+  const runId = crypto.randomUUID();
+  const idempotencyKey = String(b.idempotencyKey || c.req.header("idempotency-key") || runId).slice(0, 200);
+  const creditResult = await service.rpc("reserve_audit_credits_internal", {
+    p_account_id: property.account_id,
+    p_property_id: property.id,
+    p_idempotency_key: idempotencyKey,
+    p_request_run_id: runId,
+    p_page_count: 1,
+    p_weekly_limit: typeof entitlements.values.auditCreditsPerWeek === "number" ? Math.floor(entitlements.values.auditCreditsPerWeek) : null,
+  });
+  if (creditResult.error)
+    return c.json({ error: creditResult.error.message.includes("weekly_audit") ? "weekly_audit_credit_limit_reached" : "audit_credit_reservation_failed" }, 429);
+  const creditReservation = creditResult.data as any;
+  if (creditReservation.request_run_id !== runId) {
+    const { data: existingRun } = await service.from("audit_runs").select("*").eq("id", creditReservation.request_run_id).maybeSingle();
+    return c.json(existingRun || { id: creditReservation.request_run_id, status: "queued", idempotentReplay: true }, existingRun ? 200 : 202);
+  }
+  if (creditReservation.audit_run_id) {
+    const { data: existingRun } = await service.from("audit_runs").select("*").eq("id", creditReservation.audit_run_id).maybeSingle();
+    if (existingRun) return c.json(existingRun, 200);
+  }
+  const leaseResult = await service.rpc("acquire_audit_processing_slot_internal", {
+    p_job_id: runId,
+    p_account_id: property.account_id,
+    p_daily_limit: limits.daily,
+    p_concurrent_limit: limits.concurrent,
+    p_lease_minutes: 12,
+  });
+  if (leaseResult.error) {
+    await service.rpc("transition_audit_credit_reservation_internal", { p_reservation_id: creditReservation.id, p_target: "released", p_reason: "processing_slot_unavailable" });
+    const error = leaseResult.error.message.includes("daily") ? "platform_daily_audit_limit_reached" : "platform_concurrent_audit_limit_reached";
+    return c.json({ error }, 429);
+  }
+  const lease = leaseResult.data as any;
   const { data: run, error } = await db
     .from("audit_runs")
     .insert({
+      id: runId,
       property_id: property.id,
       audit_page_id: auditPage.id,
       page_url: target.href,
@@ -1569,11 +2531,29 @@ app.post("/api/audits", async (c) => {
       progress_total: snapshot.length,
       heartbeat_at: new Date().toISOString(),
       created_by: c.get("userId"),
+      credit_reservation_id: creditReservation.id,
+      platform_lease_id: lease.id,
     })
     .select()
     .single();
-  if (error) return c.json({ error: error.message }, 400);
-  await c.env.JOBS.send({ type: "audit", id: run.id });
+  if (error) {
+    await Promise.all([
+      service.rpc("transition_audit_credit_reservation_internal", { p_reservation_id: creditReservation.id, p_target: "released", p_reason: "audit_run_insert_failed" }),
+      service.rpc("release_processing_slot_internal", { p_lease_id: lease.id }),
+    ]);
+    return c.json({ error: error.message }, 400);
+  }
+  await service.from("audit_credit_reservations").update({ audit_run_id: run.id }).eq("id", creditReservation.id);
+  try {
+    await c.env.JOBS.send({ type: "audit", id: run.id });
+  } catch {
+    await Promise.all([
+      service.from("audit_runs").update({ status: "failed", error: "queue_submission_failed", completed_at: new Date().toISOString() }).eq("id", run.id),
+      service.rpc("transition_audit_credit_reservation_internal", { p_reservation_id: creditReservation.id, p_target: "released", p_reason: "queue_submission_failed" }),
+      service.rpc("release_processing_slot_internal", { p_lease_id: lease.id }),
+    ]);
+    return c.json({ error: "audit_queue_unavailable" }, 503);
+  }
   await recordActivity(c.env, c.get("userId"), "audit.queued", property.id, {
     auditRunId: run.id,
     pageUrl: target.href,
@@ -2318,7 +3298,7 @@ app.get("/api/properties/:id/events", async (c) => {
       .limit(50000),
     db
       .from("properties")
-      .select("id,workspaces(accounts(entitlement))")
+      .select("id,account_id,workspaces(accounts(entitlement))")
       .eq("id", propertyId)
       .single(),
   ]);
@@ -2334,8 +3314,10 @@ app.get("/api/properties/:id/events", async (c) => {
     if (!current.last || event.occurred_at > current.last) current.last = event.occurred_at;
     counts.set(key, current);
   }
-  const workspace = (propertyResponse.data as any)?.workspaces;
-  const allowance = customEventAllowance(workspace?.accounts?.entitlement, definitions.length);
+  const property = propertyResponse.data as any;
+  let allowance;
+  try { allowance = effectiveCustomEventAllowance(await effectiveEntitlements(c.env, property.account_id), definitions.length); }
+  catch { return c.json({ error: "effective_entitlements_unavailable" }, 503); }
   return c.json({
     events: definitions.map((definition) => {
       const measured = counts.get(`${definition.event_type}:${definition.name}`);
@@ -2373,7 +3355,7 @@ app.post("/api/properties/:id/events", async (c) => {
   if (!matchSettings) return c.json({ error: "valid_event_match_settings_required" }, 400);
   const { data: property } = await db
     .from("properties")
-    .select("id,workspace_id,workspaces(accounts(entitlement))")
+    .select("id,account_id,workspace_id,workspaces(accounts(entitlement))")
     .eq("id", propertyId)
     .single();
   if (!property) return c.json({ error: "property_not_found" }, 404);
@@ -2383,8 +3365,9 @@ app.post("/api/properties/:id/events", async (c) => {
     .from("event_definitions")
     .select("id", { count: "exact", head: true })
     .eq("property_id", propertyId);
-  const workspace = (property as any).workspaces;
-  const allowance = customEventAllowance(workspace?.accounts?.entitlement, count || 0);
+  let allowance;
+  try { allowance = effectiveCustomEventAllowance(await effectiveEntitlements(c.env, property.account_id), count || 0); }
+  catch { return c.json({ error: "effective_entitlements_unavailable" }, 503); }
   if (!allowance.canCreate)
     return c.json({ error: "custom_event_plan_limit_reached", allowance }, 403);
   const { data, error } = await admin(c.env).rpc("create_event_definition_limited", {
@@ -3735,6 +4718,20 @@ async function runAudit(env: Env, id: string) {
     .select()
     .maybeSingle();
   if (!run) return;
+  const { data: propertyState } = await db.from("properties").select("account_id,access_state").eq("id", run.property_id).maybeSingle();
+  const access = propertyState ? await processingAccess(env, "new_audits", propertyState.account_id) : { allowed: false, error: "property_not_found" };
+  if (!propertyState || !access.allowed || propertyState.access_state !== "active") {
+    await Promise.all([
+      db.from("audit_runs").update({ status: "failed", execution_stage: "failed", error: access.error || "property_processing_paused", completed_at: new Date().toISOString() }).eq("id", id),
+      run.credit_reservation_id ? db.rpc("transition_audit_credit_reservation_internal", { p_reservation_id: run.credit_reservation_id, p_target: "released", p_reason: "permission_revoked_before_execution" }) : Promise.resolve(),
+      run.platform_lease_id ? db.rpc("release_processing_slot_internal", { p_lease_id: run.platform_lease_id }) : Promise.resolve(),
+    ]);
+    return;
+  }
+  if (run.credit_reservation_id)
+    await db.rpc("transition_audit_credit_reservation_internal", { p_reservation_id: run.credit_reservation_id, p_target: "consumed", p_reason: null });
+  if (run.platform_lease_id)
+    await db.from("processing_leases").update({ state: "running", expires_at: new Date(Date.now() + 12 * 60_000).toISOString(), updated_at: new Date().toISOString() }).eq("id", run.platform_lease_id).in("state", ["reserved", "running"]);
   const updateRun = async (values: Record<string, unknown>) => {
     let failure: string | null = null;
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -3875,7 +4872,15 @@ async function runAudit(env: Env, id: string) {
         ...notification,
         dedupeKey: `audit:${id}:${notification.kind}`,
       }).catch(() => undefined);
+    if (run.credit_reservation_id && eligiblePlatformAuditFailure(message))
+      await Promise.resolve(db.rpc("transition_audit_credit_reservation_internal", { p_reservation_id: run.credit_reservation_id, p_target: "restored", p_reason: message.slice(0, 500) })).catch(() => undefined);
+    if (run.platform_lease_id)
+      await Promise.resolve(db.rpc("release_processing_slot_internal", { p_lease_id: run.platform_lease_id })).catch(() => undefined);
   }
+}
+
+export function eligiblePlatformAuditFailure(message: string) {
+  return /(worker|browser|queue|persist|timeout|timed out|internal|storage|database|continuation)/i.test(message);
 }
 
 type AuditContinuationPayload = {
@@ -4014,6 +5019,9 @@ async function persistAuditContinuation(env: Env, id: string, encodedPayload: st
       score: payload.score,
       coverage: payload.coverage,
     });
+  const { data: completedRun } = await db.from("audit_runs").select("platform_lease_id").eq("id", id).maybeSingle();
+  if (completedRun?.platform_lease_id)
+    await db.rpc("release_processing_slot_internal", { p_lease_id: completedRun.platform_lease_id });
 }
 
 export function auditOutcomeNotification(status: string, score: number | null, coverage: number, error?: string) {
@@ -4087,6 +5095,16 @@ async function runUptime(env: Env, id: string) {
     .eq("id", id)
     .single();
   if (!monitor?.enabled) return;
+  const accountId = monitor.properties?.account_id;
+  const processing = await processingAccess(env, "uptime_checks", accountId);
+  if (!processing.allowed || monitor.properties?.access_state !== "active") {
+    await db.from("uptime_monitors").update({
+      last_status: "monitoring_unavailable",
+      next_check_at: new Date(Date.now() + Math.max(5, monitor.interval_minutes) * 60_000).toISOString(),
+    }).eq("id", id);
+    await db.from("operational_events").insert({ service: "uptime", metric: "check_suppressed", value: 1, unit: "check", source: "application_measured", account_id: accountId, property_id: monitor.property_id, metadata: { reason: processing.error || "property_processing_paused" } });
+    return;
+  }
   const now = new Date().toISOString();
   const { data: maintenance } = await db
     .from("maintenance_windows")
@@ -4130,11 +5148,12 @@ async function runUptime(env: Env, id: string) {
     : ok
       ? 0
       : (monitor.consecutive_failures || 0) + 1;
+  const monitorStatus = ok ? "online" : failures >= monitor.failure_threshold ? "offline" : "suspected_down";
   await db
     .from("uptime_monitors")
     .update({
       last_checked_at: checkedAt,
-      last_status: ok ? "online" : "offline",
+      last_status: monitorStatus,
       last_response_ms: Date.now() - started,
       consecutive_failures: failures,
       next_check_at: new Date(
@@ -4149,6 +5168,20 @@ async function runUptime(env: Env, id: string) {
     .is("resolved_at", null)
     .maybeSingle();
   if (maintenance) return;
+  let platformFailure = false;
+  if (!ok && failures >= monitor.failure_threshold) {
+    const since = new Date(Date.now() - 3 * 60_000).toISOString();
+    const { data: recentFailures } = await db.from("uptime_checks").select("monitor_id").eq("success", false).gte("checked_at", since).limit(100);
+    platformFailure = new Set((recentFailures || []).map((check) => check.monitor_id)).size >= 5;
+    if (platformFailure) {
+      await db.from("uptime_monitors").update({ last_status: "monitoring_unavailable" }).eq("id", id);
+      await db.from("platform_alerts").insert({
+        title: "Uptime monitoring failures span unrelated properties",
+        details: { distinctMonitors: new Set((recentFailures || []).map((check) => check.monitor_id)).size, windowMinutes: 3, notificationSuppressedForProperty: monitor.property_id },
+      });
+    }
+  }
+  if (platformFailure) return;
   if (!ok && failures >= monitor.failure_threshold && !open) {
     const { data: incident } = await db
       .from("incidents")
@@ -4181,6 +5214,12 @@ async function sendAlert(
     .select("id,name,url,workspaces(account_id)")
     .eq("id", incident.property_id)
     .single();
+  const accountId = (property?.workspaces as any)?.account_id;
+  const notificationAccess = await processingAccess(env, "uptime_notifications", accountId);
+  if (!notificationAccess.allowed) {
+    await db.from("platform_alerts").insert({ title: "Uptime customer notification suppressed", details: { incidentId: incident.id, kind, reason: notificationAccess.error, accountId } });
+    return;
+  }
   await createPropertyNotification(env, incident.property_id, {
     category: kind === "down" ? "monitor_incidents" : "recoveries",
     title: kind === "down" ? "Website unavailable" : "Website recovered",
@@ -4275,6 +5314,11 @@ export function renderUptimeAlertEmail({
 async function scheduled(env: Env, cron: string) {
   const db = admin(env);
   if (cron === "*/5 * * * *") {
+    const access = await processingAccess(env, "uptime_checks");
+    if (!access.allowed) {
+      await db.from("operational_events").insert({ service: "uptime", metric: "scheduler_suppressed", value: 1, unit: "run", source: "application_measured", metadata: { reason: access.error } });
+      return;
+    }
     const { data } = await db
       .from("uptime_monitors")
       .select("id")
@@ -4297,6 +5341,61 @@ async function scheduled(env: Env, cron: string) {
     });
     if (pruneResult.error) throw pruneResult.error;
     await runDueReportSchedules(env, db);
+    await evaluateFreeAccountInactivity(env, db);
+  }
+}
+
+export function meaningfulAccountActivity(action: string) {
+  return !/^(audit\.completed|uptime\.|report\.generated|analytics\.|system\.)/.test(action);
+}
+
+export function inactivityLifecycleState(days: number, options: { exempt?: boolean; noticesReady?: boolean; analyticsReview?: boolean } = {}) {
+  if (options.exempt) return "exempt";
+  if (days < 60) return "active";
+  if (days < 90) return "warning_60";
+  if (days < 100) return "warning_90";
+  if (!options.noticesReady || options.analyticsReview) return "review_hold";
+  if (days < 121) return "frozen";
+  return "deletion_eligible";
+}
+
+async function evaluateFreeAccountInactivity(env: Env, db: SupabaseClient) {
+  const [accountsResult, outboundResult] = await Promise.all([
+    db.from("accounts").select("id,created_at,entitlement_started_at").eq("entitlement", "free").limit(500),
+    db.from("platform_settings").select("value").eq("key", "outbound_automation").maybeSingle(),
+  ]);
+  if (accountsResult.error || outboundResult.error || !outboundResult.data?.value) {
+    await db.from("platform_alerts").insert({ title: "Free-account inactivity evaluation unavailable", details: { accountsError: accountsResult.error?.message, policyError: outboundResult.error?.message } });
+    return;
+  }
+  const accounts = accountsResult.data || [];
+  if (!accounts.length) return;
+  const accountIds = accounts.map((account) => account.id);
+  const [memberships, activity, currentStates, properties] = await Promise.all([
+    db.from("account_memberships").select("account_id,user_id,role").in("account_id", accountIds).in("role", ["owner", "member"]),
+    db.from("activity_log").select("account_id,actor_id,action,created_at").in("account_id", accountIds).not("actor_id", "is", null).order("created_at", { ascending: false }).limit(50_000),
+    db.from("account_inactivity").select("*").in("account_id", accountIds),
+    db.from("properties").select("id,account_id").in("account_id", accountIds).limit(10_000),
+  ]);
+  const propertyAccount = new Map((properties.data || []).map((property) => [property.id, property.account_id]));
+  const recentAnalytics = propertyAccount.size ? await db.from("analytics_events").select("property_id").in("property_id", [...propertyAccount.keys()]).gte("received_at", new Date(Date.now() - 7 * 86400_000).toISOString()).limit(10_000) : { data: [] };
+  const activeAnalyticsAccounts = new Set((recentAnalytics.data || []).map((event) => propertyAccount.get(event.property_id)).filter(Boolean));
+  const automations = outboundResult.data.value as Record<string, unknown>;
+  const noticesReady = automations.inactivityNoticesEnabled === true && Array.isArray(automations.safeTestRecipients) && automations.safeTestRecipients.length > 0;
+  const now = Date.now();
+  for (const account of accounts) {
+    const editors = new Set((memberships.data || []).filter((item) => item.account_id === account.id).map((item) => item.user_id));
+    const lastActivity = (activity.data || []).find((item) => item.account_id === account.id && item.actor_id && editors.has(item.actor_id) && meaningfulAccountActivity(item.action))?.created_at || account.entitlement_started_at || account.created_at;
+    const days = Math.max(0, Math.floor((now - Date.parse(lastActivity)) / 86400_000));
+    const previous = (currentStates.data || []).find((item) => item.account_id === account.id);
+    const exempt = Boolean(previous?.exempt_until && Date.parse(previous.exempt_until) > now);
+    const grace = previous?.grace_until && Date.parse(previous.grace_until) > now;
+    const analyticsReview = activeAnalyticsAccounts.has(account.id) && days >= 100;
+    const state = grace ? "active" : inactivityLifecycleState(days, { exempt, noticesReady, analyticsReview });
+    const row = { account_id: account.id, free_since: previous?.free_since || account.entitlement_started_at || account.created_at, last_meaningful_activity_at: lastActivity, state, analytics_review_required: analyticsReview, notice_delivery_failed: days >= 100 && !noticesReady, updated_at: new Date().toISOString() };
+    await db.from("account_inactivity").upsert(row, { onConflict: "account_id" });
+    if (previous?.state !== state)
+      await db.from("account_inactivity_events").insert({ account_id: account.id, event: "lifecycle_state_changed", effective_state: state, details: { previousState: previous?.state || null, inactiveDays: days, noticesReady, analyticsReview } });
   }
 }
 
@@ -4308,14 +5407,18 @@ export function uptimeDueHorizon(now = Date.now()) {
 }
 
 async function runDueReportSchedules(env: Env, db: SupabaseClient) {
+  const globalAccess = await processingAccess(env, "reports");
+  if (!globalAccess.allowed) return;
   const now = new Date();
   const { data: schedules } = await db
     .from("report_schedules")
-    .select("*,properties(id,name,canonical_host)")
+    .select("*,properties(id,name,canonical_host,account_id,access_state)")
     .eq("enabled", true)
     .lte("next_run_at", now.toISOString())
     .limit(100);
   for (const schedule of schedules || []) {
+    const reportAccess = await processingAccess(env, "reports", schedule.properties?.account_id);
+    if (!reportAccess.allowed || schedule.properties?.access_state !== "active") continue;
     const nextRun = new Date(
       now.getTime() + (schedule.cadence === "weekly" ? 7 : 30) * 864e5,
     ).toISOString();
@@ -5927,6 +7030,8 @@ async function recordActivity(
       .eq("id", metadata.workspaceId)
       .maybeSingle();
     accountId = workspace?.account_id;
+  } else if (typeof metadata.accountId === "string") {
+    accountId = metadata.accountId;
   } else {
     const { data: membership } = await db
       .from("account_memberships")
@@ -5944,6 +7049,66 @@ async function recordActivity(
     property_id: propertyId || null,
     metadata,
   });
+}
+
+export function escapeCsvCell(value: unknown) {
+  let text = value == null ? "" : typeof value === "object" ? JSON.stringify(value) : String(value);
+  if (/^[\s]*[=+\-@]/.test(text)) text = `'${text}`;
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function rowsToCsv(rows: Array<Record<string, unknown>>) {
+  const headers = [...new Set(rows.flatMap((row) => Object.keys(row)))];
+  return [headers.map(escapeCsvCell).join(","), ...rows.map((row) => headers.map((header) => escapeCsvCell(row[header])).join(","))].join("\r\n");
+}
+
+async function runAdminExport(env: Env, id: string) {
+  const db = admin(env);
+  const { data: job } = await db.from("admin_export_jobs").select("*").eq("id", id).maybeSingle();
+  if (!job || ["completed", "cancelled", "expired"].includes(job.state)) return;
+  const { data: member } = await db.from("staff_members").select("role,status").eq("user_id", job.requested_by).maybeSingle();
+  if (!member || member.status !== "active" || !staffRoleCan(member.role as StaffRole, "exports.write")) {
+    await db.from("admin_export_jobs").update({ state: "cancelled", error: "staff_permission_revoked", completed_at: new Date().toISOString() }).eq("id", id);
+    return;
+  }
+  await db.from("admin_export_jobs").update({ state: "running", progress: 5, error: null }).eq("id", id);
+  try {
+    let rows: Array<Record<string, unknown>> = [];
+    if (job.scope === "accounts") {
+      const result = await db.from("accounts").select("id,name,entitlement,access_state,tags,scheduled_deletion_at,created_at").limit(50_000);
+      if (result.error) throw result.error;
+      rows = result.data || [];
+    } else if (job.scope === "properties") {
+      const result = await db.from("properties").select("id,account_id,workspace_id,name,url,canonical_host,verification_status,access_state,tracking_last_received_at,created_at").limit(50_000);
+      if (result.error) throw result.error;
+      rows = result.data || [];
+    } else if (job.scope === "audits") {
+      const result = await db.from("audit_runs").select("id,property_id,page_url,status,score,coverage,duration_ms,error,created_at,completed_at").order("created_at", { ascending: false }).limit(50_000);
+      if (result.error) throw result.error;
+      rows = result.data || [];
+    } else if (job.scope === "admin_activity") {
+      const result = await db.from("admin_activity_log").select("id,actor_staff_id,represented_user_id,delegation_session_id,action,outcome,target_type,target_id,account_id,reason,metadata,correlation_id,created_at").order("created_at", { ascending: false }).limit(50_000);
+      if (result.error) throw result.error;
+      rows = result.data || [];
+    } else if (job.scope === "users") {
+      const result = await db.auth.admin.listUsers({ page: 1, perPage: 1000 });
+      if (result.error) throw result.error;
+      rows = result.data.users.map((user) => ({ id: user.id, email: user.email || "", email_confirmed_at: user.email_confirmed_at || null, last_sign_in_at: user.last_sign_in_at || null, created_at: user.created_at }));
+    } else {
+      throw new Error("unsupported_export_scope");
+    }
+    await db.from("admin_export_jobs").update({ progress: 70, row_count: rows.length }).eq("id", id);
+    const content = job.format === "json" ? JSON.stringify({ exportedAt: new Date().toISOString(), scope: job.scope, rows }) : rowsToCsv(rows);
+    const objectKey = `${job.requested_by}/${job.id}.${job.format}`;
+    const uploaded = await db.storage.from("admin-exports").upload(objectKey, content, { contentType: job.format === "json" ? "application/json" : "text/csv", upsert: false });
+    if (uploaded.error) throw uploaded.error;
+    const completedAt = new Date().toISOString();
+    await db.from("admin_export_jobs").update({ state: "completed", progress: 100, row_count: rows.length, object_key: objectKey, completed_at: completedAt, expires_at: new Date(Date.now() + 7 * 86400_000).toISOString() }).eq("id", id);
+    await recordAdminActivity(env, job.requested_by, "export.completed", "success", { targetType: "admin_export", targetId: job.id, metadata: { scope: job.scope, format: job.format, rowCount: rows.length } });
+  } catch (error) {
+    await db.from("admin_export_jobs").update({ state: "failed", error: errorMessage(error).slice(0, 1000) }).eq("id", id);
+    throw error;
+  }
 }
 
 async function createPropertyNotification(
@@ -6122,6 +7287,7 @@ export default {
       try {
         if (message.body.type === "audit") await runAudit(env, message.body.id);
         else if (message.body.type === "audit-persist") await persistAuditContinuation(env, message.body.id, message.body.payload);
+        else if (message.body.type === "admin-export") await runAdminExport(env, message.body.id);
         else await runUptime(env, message.body.id);
         message.ack();
       } catch (error) {

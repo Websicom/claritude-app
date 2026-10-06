@@ -18,42 +18,84 @@ import {
   decodeAuditContinuationPayload,
   filterAnalyticsEvents,
   isFreshAuditRun,
+  inactivityLifecycleState,
   isPrivateHost,
   isProtectedAuditPagePath,
   normalizeAnalyticsPath,
   normalizePropertyRelations,
+  meaningfulAccountActivity,
   TRACKER_SOURCE,
   trackerSessionAcquisition,
   uptimeDueHorizon,
   uptimeCheckResponseSeries,
   uptimeResponseBucket,
   validAvatarBytes,
+  validSafetyLimits,
   validPublicUrl,
   withAuditDeadline,
   closeBrowserWithDeadline,
   workspaceDeletionError,
   renderUptimeAlertEmail,
+  resolveEffectiveEntitlements,
   schemaCompatibleSharedEvidenceRows,
-  superAdminIdentityMatches,
+  escapeCsvCell,
+  parseAuthAssurance,
+  staffPermissions,
+  staffRoleCan,
 } from "./index";
 import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
 
 describe("worker evidence pipelines", () => {
-  it("requires a confirmed, exact and bound SuperAdmin identity", () => {
-    const pendingAccess = { email: "adam.jordan@websi.com", user_id: null };
-    expect(superAdminIdentityMatches(
-      { id: "adam-user", email: "Adam.Jordan@websi.com", emailConfirmed: true },
-      pendingAccess,
-    )).toBe(true);
-    expect(superAdminIdentityMatches(
-      { id: "attacker", email: "adam.jordan@websi.com", emailConfirmed: true },
-      { email: "adam.jordan@websi.com", user_id: "adam-user" },
-    )).toBe(false);
-    expect(superAdminIdentityMatches(
-      { id: "adam-user", email: "adam.jordan@websi.com", emailConfirmed: false },
-      pendingAccess,
-    )).toBe(false);
+  it("enforces the staff role permission boundary", () => {
+    expect(staffRoleCan("owner", "staff.write")).toBe(true);
+    expect(staffRoleCan("support", "delegation.write")).toBe(true);
+    expect(staffRoleCan("support", "financials.write")).toBe(false);
+    expect(staffRoleCan("finance", "financials.write")).toBe(true);
+    expect(staffRoleCan("engineering", "operations.write")).toBe(true);
+    expect(staffPermissions("owner")).toContain("settings.write");
+  });
+
+  it("neutralises spreadsheet formulas in CSV exports", () => {
+    expect(escapeCsvCell("=HYPERLINK(\"https://bad.example\")")).toBe("\"'=HYPERLINK(\"\"https://bad.example\"\")\"");
+    expect(escapeCsvCell("normal")).toBe("\"normal\"");
+    expect(escapeCsvCell("  +SUM(1,2)")).toBe("\"'  +SUM(1,2)\"");
+  });
+
+  it("keeps free-account inactivity scoped to meaningful editor activity and review holds", () => {
+    expect(meaningfulAccountActivity("property.settings_updated")).toBe(true);
+    expect(meaningfulAccountActivity("audit.completed")).toBe(false);
+    expect(meaningfulAccountActivity("uptime.checked_manually")).toBe(false);
+    expect(inactivityLifecycleState(59)).toBe("active");
+    expect(inactivityLifecycleState(60)).toBe("warning_60");
+    expect(inactivityLifecycleState(90)).toBe("warning_90");
+    expect(inactivityLifecycleState(100, { noticesReady: false })).toBe("review_hold");
+    expect(inactivityLifecycleState(100, { noticesReady: true })).toBe("frozen");
+    expect(inactivityLifecycleState(121, { noticesReady: true })).toBe("deletion_eligible");
+    expect(inactivityLifecycleState(130, { noticesReady: true, analyticsReview: true })).toBe("review_hold");
+    expect(inactivityLifecycleState(130, { exempt: true })).toBe("exempt");
+  });
+
+  it("rejects incomplete or unsafe processing ceilings", () => {
+    const valid = { platformAuditStartsPerDay: 200, concurrentAudits: 5, auditWallTimeSeconds: 600, httpResponseBytes: 5_000_000, linksPerAudit: 5000, resourcesPerAudit: 5000, redirects: 5, queueRetries: 3, analyticsPayloadBytes: 262_144, analyticsEventsPerPropertyPerDay: 50_000, exportsPerAccountPerDay: 10 };
+    expect(validSafetyLimits(valid)).toBe(true);
+    expect(validSafetyLimits({ ...valid, concurrentAudits: 0 })).toBe(false);
+    expect(validSafetyLimits({ ...valid, auditWallTimeSeconds: 3600 })).toBe(false);
+    expect(validSafetyLimits({ platformAuditStartsPerDay: 200 })).toBe(false);
+  });
+
+  it("resolves package defaults and clamps account overrides to platform ceilings", () => {
+    expect(resolveEffectiveEntitlements({ packageKey: "scale", version: 2, allowances: { propertiesPerAccount: 10, auditCreditsPerWeek: 50 }, hardCeilings: { propertiesPerAccount: 25 } }, [
+      { key: "propertiesPerAccount", value: 100 },
+      { key: "auditCreditsPerWeek", value: 80 },
+    ])).toMatchObject({ packageKey: "scale", version: 2, values: { propertiesPerAccount: 25, auditCreditsPerWeek: 80 }, sources: { propertiesPerAccount: "account_override", auditCreditsPerWeek: "account_override" } });
+  });
+
+  it("reads MFA assurance only from a validated session token payload", () => {
+    const encode = (value: unknown) => btoa(JSON.stringify(value)).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+    const token = `${encode({ alg: "none" })}.${encode({ aal: "aal2", session_id: "session-one" })}.signature`;
+    expect(parseAuthAssurance(token)).toEqual({ aal: "aal2", sessionId: "session-one" });
+    expect(parseAuthAssurance("malformed")).toEqual({ aal: "aal1", sessionId: null });
   });
 
   it("buckets uptime response medians by hour, day and month for the selected range", () => {
