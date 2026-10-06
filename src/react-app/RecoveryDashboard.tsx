@@ -3383,7 +3383,7 @@ function AuditView({
       setAuditDataLoading(true);
     }
     Promise.all([
-      api<AuditRun[]>(session, `/api/properties/${property.id}/audits?${livePeriod}`),
+      api<AuditRun[]>(session, `/api/properties/${property.id}/audits?${livePeriod}&pageId=${encodeURIComponent(selectedPage.id)}`),
       api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}&pathMode=exact&pathValue=${encodeURIComponent(selectedPage.path)}`),
       api<any>(session, `/api/properties/${property.id}/audit-coverage`),
     ])
@@ -3436,7 +3436,7 @@ function AuditView({
     if (!activeRunId || !session || !property || !selectedPage) return;
     const interval = window.setInterval(() => {
       const sequence = ++requestSequence.current;
-      api<AuditRun[]>(session, `/api/properties/${property.id}/audits?${livePeriod}`)
+      api<AuditRun[]>(session, `/api/properties/${property.id}/audits?${livePeriod}&pageId=${encodeURIComponent(selectedPage.id)}`)
         .then((nextRuns) => {
           if (requestSequence.current !== sequence) return;
           setPropertyRuns(nextRuns);
@@ -3543,7 +3543,7 @@ function AuditView({
         });
       notify("Audit queued");
       if (session) {
-        const next = await api<AuditRun[]>(session, `/api/properties/${property!.id}/audits?${livePeriod}`);
+        const next = await api<AuditRun[]>(session, `/api/properties/${property!.id}/audits?${livePeriod}&pageId=${encodeURIComponent(selectedPage.id)}`);
         setPropertyRuns(next);
         setRuns(next.filter((candidate) => candidate.audit_page_id === selectedPage.id));
         setBusy(next.some(isFreshActiveRun));
