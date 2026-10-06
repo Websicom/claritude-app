@@ -63,7 +63,12 @@ type Env = {
   ASSETS: Fetcher;
   BROWSER: Fetcher;
 };
-type Variables = { db: SupabaseClient; userId: string };
+type Variables = {
+  db: SupabaseClient;
+  userId: string;
+  userEmail: string;
+  userEmailConfirmed: boolean;
+};
 type Job =
   | { type: "audit" | "uptime"; id: string }
   | { type: "audit-persist"; id: string; payload: string };
@@ -212,6 +217,27 @@ async function configuredAuditSnapshots(env: Env, context: AuditAvailabilityCont
   return { technicalSnapshot, userFacingSnapshot };
 }
 
+type SuperAdminIdentity = {
+  id: string;
+  email?: string | null;
+  emailConfirmed: boolean;
+};
+
+type SuperAdminAccessRow = {
+  email: string;
+  user_id?: string | null;
+};
+
+export function superAdminIdentityMatches(
+  identity: SuperAdminIdentity,
+  access: SuperAdminAccessRow | null,
+) {
+  const email = identity.email?.trim().toLowerCase();
+  if (!identity.emailConfirmed || !email || !access) return false;
+  if (access.email !== email) return false;
+  return !access.user_id || access.user_id === identity.id;
+}
+
 function fallbackUserFacingSnapshot(technicalSnapshot: AuditRegistrySnapshot[]): UserFacingAuditGroupSnapshot[] {
   return buildUserFacingGroupSnapshot(
     GENERATED_USER_FACING_ROWS.groups,
@@ -237,6 +263,55 @@ app.use(
 function admin(env: Env) {
   return createClient(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
+async function hasSuperAdminAccess(
+  env: Env,
+  identity: SuperAdminIdentity,
+) {
+  if (!identity.emailConfirmed || !identity.email) return false;
+  const email = identity.email.trim().toLowerCase();
+  const service = admin(env);
+  const { data: access, error } = await service
+    .from("superadmin_access")
+    .select("email,user_id")
+    .eq("email", email)
+    .maybeSingle();
+  if (error) {
+    console.error("superadmin_access_lookup_failed", error);
+    return false;
+  }
+  if (!superAdminIdentityMatches(identity, access)) return false;
+  if (!access?.user_id) {
+    const { data: bound, error: bindingError } = await service
+      .from("superadmin_access")
+      .update({ user_id: identity.id, bound_at: new Date().toISOString() })
+      .eq("email", email)
+      .is("user_id", null)
+      .select("user_id")
+      .maybeSingle();
+    if (bindingError) {
+      console.error("superadmin_access_binding_failed", bindingError);
+      return false;
+    }
+    if (!bound) {
+      const { data: current } = await service
+        .from("superadmin_access")
+        .select("email,user_id")
+        .eq("email", email)
+        .maybeSingle();
+      return superAdminIdentityMatches(identity, current);
+    }
+  }
+  return true;
+}
+
+async function requestHasSuperAdminAccess(c: any) {
+  return hasSuperAdminAccess(c.env, {
+    id: c.get("userId"),
+    email: c.get("userEmail"),
+    emailConfirmed: c.get("userEmailConfirmed"),
   });
 }
 
@@ -432,11 +507,14 @@ app.use("/api/*", async (c, next) => {
   if (error || !data.user) return c.json({ error: "invalid_session" }, 401);
   c.set("db", db);
   c.set("userId", data.user.id);
+  c.set("userEmail", data.user.email || "");
+  c.set("userEmailConfirmed", Boolean(data.user.email_confirmed_at));
   await next();
 });
 
 app.get("/api/bootstrap", async (c) => {
   const db = c.get("db");
+  const superadmin = await requestHasSuperAdminAccess(c);
   const { data: accessibleProperties } = await db.from("properties").select("id");
   if (accessibleProperties?.length) {
     await admin(c.env)
@@ -511,6 +589,7 @@ app.get("/api/bootstrap", async (c) => {
   if (sharedWorkspaces.error)
     return c.json({ error: sharedWorkspaces.error.message }, 500);
   return c.json({
+    superadmin,
     profile: profile.data,
     accounts: accounts.data,
     workspaces: [
@@ -1187,6 +1266,110 @@ app.get("/api/properties/:id/export", async (c) => {
     reports: reports.data,
     reportSchedules: schedules.data,
     propertyViewers: viewers.data,
+  });
+});
+
+app.get("/api/superadmin/bootstrap", async (c) => {
+  if (!(await requestHasSuperAdminAccess(c)))
+    return c.json({ error: "superadmin_access_required" }, 403);
+
+  const service = admin(c.env);
+  const [
+    accountResult,
+    workspaceResult,
+    propertyResult,
+    membershipResult,
+    profileResult,
+    monitorResult,
+    activeMonitorResult,
+    offlineMonitorResult,
+    openIncidentResult,
+    auditTodayResult,
+    userResult,
+  ] = await Promise.all([
+    service.from("accounts").select("id,name,entitlement,created_at", { count: "exact" }).order("created_at", { ascending: false }).limit(500),
+    service.from("workspaces").select("id,account_id,name,created_at", { count: "exact" }).limit(2000),
+    service.from("properties").select("id,workspace_id,name,canonical_host,verification_status,tracking_last_received_at,created_at", { count: "exact" }).limit(5000),
+    service.from("account_memberships").select("account_id,user_id,role,created_at").limit(5000),
+    service.from("profiles").select("id,full_name,created_at").limit(5000),
+    service.from("uptime_monitors").select("property_id,enabled,last_status,last_checked_at").limit(5000),
+    service.from("uptime_monitors").select("id", { count: "exact", head: true }).eq("enabled", true),
+    service.from("uptime_monitors").select("id", { count: "exact", head: true }).eq("enabled", true).eq("last_status", "offline"),
+    service.from("incidents").select("id", { count: "exact", head: true }).is("resolved_at", null),
+    service.from("audit_runs").select("id", { count: "exact", head: true }).gte("created_at", `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`),
+    service.auth.admin.listUsers({ page: 1, perPage: 1000 }),
+  ]);
+  const databaseError = [
+    accountResult,
+    workspaceResult,
+    propertyResult,
+    membershipResult,
+    profileResult,
+    monitorResult,
+    activeMonitorResult,
+    offlineMonitorResult,
+    openIncidentResult,
+    auditTodayResult,
+  ].find((result) => result.error)?.error;
+  if (databaseError || userResult.error) {
+    console.error("superadmin_bootstrap_failed", databaseError || userResult.error);
+    return c.json({ error: "superadmin_dashboard_unavailable" }, 503);
+  }
+
+  const accounts = accountResult.data || [];
+  const workspaces = workspaceResult.data || [];
+  const properties = propertyResult.data || [];
+  const memberships = membershipResult.data || [];
+  const profiles = new Map((profileResult.data || []).map((profile) => [profile.id, profile]));
+  const monitors = monitorResult.data || [];
+  const workspaceIdsByAccount = new Map<string, Set<string>>();
+  for (const workspace of workspaces) {
+    const ids = workspaceIdsByAccount.get(workspace.account_id) || new Set<string>();
+    ids.add(workspace.id);
+    workspaceIdsByAccount.set(workspace.account_id, ids);
+  }
+  const propertyIdsByAccount = new Map<string, Set<string>>();
+  for (const account of accounts) {
+    const workspaceIds = workspaceIdsByAccount.get(account.id) || new Set<string>();
+    propertyIdsByAccount.set(
+      account.id,
+      new Set(properties.filter((property) => workspaceIds.has(property.workspace_id)).map((property) => property.id)),
+    );
+  }
+  const users = userResult.data.users || [];
+  const userTotal = Number((userResult.data as any).total ?? users.length);
+
+  return c.json({
+    stats: {
+      accounts: accountResult.count ?? accounts.length,
+      workspaces: workspaceResult.count ?? workspaces.length,
+      properties: propertyResult.count ?? properties.length,
+      users: userTotal,
+      activeMonitors: activeMonitorResult.count || 0,
+      offlineMonitors: offlineMonitorResult.count || 0,
+      openIncidents: openIncidentResult.count || 0,
+      auditsToday: auditTodayResult.count || 0,
+    },
+    accounts: accounts.map((account) => {
+      const workspaceIds = workspaceIdsByAccount.get(account.id) || new Set<string>();
+      const propertyIds = propertyIdsByAccount.get(account.id) || new Set<string>();
+      return {
+        ...account,
+        workspaceCount: workspaceIds.size,
+        propertyCount: propertyIds.size,
+        userCount: new Set(memberships.filter((membership) => membership.account_id === account.id).map((membership) => membership.user_id)).size,
+        offlineCount: monitors.filter((monitor) => propertyIds.has(monitor.property_id) && monitor.enabled && monitor.last_status === "offline").length,
+      };
+    }),
+    users: users.map((user) => ({
+      id: user.id,
+      email: user.email || "",
+      name: profiles.get(user.id)?.full_name || "",
+      confirmedAt: user.email_confirmed_at || null,
+      lastSignInAt: user.last_sign_in_at || null,
+      createdAt: user.created_at,
+      accountCount: new Set(memberships.filter((membership) => membership.user_id === user.id).map((membership) => membership.account_id)).size,
+    })),
   });
 });
 

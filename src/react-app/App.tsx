@@ -12,6 +12,7 @@ const supabase = createClient(
     "sb_publishable_zNc8TQjoFQ-OI2nKbiNOPA_5ukCoCY6",
 );
 type Bootstrap = {
+  superadmin: boolean;
   profile: any;
   accounts: any[];
   workspaces: any[];
@@ -20,6 +21,7 @@ type Bootstrap = {
   notifications: any[];
 };
 const fixtureData: Bootstrap = {
+  superadmin: true,
   profile: { full_name: "Adam Jordan", timezone: "Europe/London" },
   accounts: [{ role: "owner", accounts: { name: "Websi" } }],
   workspaces: [
@@ -190,7 +192,7 @@ function Workspace({ session }: { session: Session }) {
       </main>
     );
   if (!data) return <Splash />;
-  if (!data.accounts?.length && !data.properties?.length)
+  if (!data.superadmin && !data.accounts?.length && !data.properties?.length)
     return <Onboarding session={session} done={load} />;
   return (
     <ClaritudeApplication

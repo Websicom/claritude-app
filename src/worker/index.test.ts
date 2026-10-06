@@ -34,11 +34,28 @@ import {
   workspaceDeletionError,
   renderUptimeAlertEmail,
   schemaCompatibleSharedEvidenceRows,
+  superAdminIdentityMatches,
 } from "./index";
 import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
 
 describe("worker evidence pipelines", () => {
+  it("requires a confirmed, exact and bound SuperAdmin identity", () => {
+    const pendingAccess = { email: "adam.jordan@websi.com", user_id: null };
+    expect(superAdminIdentityMatches(
+      { id: "adam-user", email: "Adam.Jordan@websi.com", emailConfirmed: true },
+      pendingAccess,
+    )).toBe(true);
+    expect(superAdminIdentityMatches(
+      { id: "attacker", email: "adam.jordan@websi.com", emailConfirmed: true },
+      { email: "adam.jordan@websi.com", user_id: "adam-user" },
+    )).toBe(false);
+    expect(superAdminIdentityMatches(
+      { id: "adam-user", email: "adam.jordan@websi.com", emailConfirmed: false },
+      pendingAccess,
+    )).toBe(false);
+  });
+
   it("buckets uptime response medians by hour, day and month for the selected range", () => {
     expect(uptimeResponseBucket("2026-10-05T00:00:00.000Z", "2026-10-05T23:59:59.999Z")).toBe("hour");
     expect(uptimeResponseBucket("2026-10-01T00:00:00.000Z", "2026-10-05T23:59:59.999Z")).toBe("day");

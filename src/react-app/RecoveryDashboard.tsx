@@ -256,6 +256,7 @@ function ProfileAvatar({ profile, name, className = "" }: { profile: any; name?:
   );
 }
 type Bootstrap = {
+  superadmin?: boolean;
   profile: any;
   accounts: any[];
   workspaces: any[];
@@ -403,9 +404,10 @@ export function ClaritudeApplication({
   const allProperties = data.properties;
   const requestedWorkspace = new URLSearchParams(loc.search).get("workspace");
   const requested = new URLSearchParams(loc.search).get("property");
+  const platformContext = loc.pathname === "/superadmin";
   const property =
     allProperties.find((p) => p.id === requested) ||
-    (loc.pathname !== "/" && loc.pathname !== "/notifications"
+    (!platformContext && loc.pathname !== "/" && loc.pathname !== "/notifications"
       ? allProperties[0]
       : undefined);
   activeDisplayTimezone = property?.settings?.timezone || data.profile?.timezone || "Europe/London";
@@ -477,6 +479,8 @@ export function ClaritudeApplication({
     : data.notifications;
   const title = workspaceContext
     ? loc.pathname === "/" ? "Workspace Overview" : "Workspace Notifications"
+    : platformContext
+      ? "SuperAdmin"
     : section === "account"
       ? "Account settings"
       : section === "settings"
@@ -486,7 +490,7 @@ export function ClaritudeApplication({
     data.profile?.alerts_snoozed_until &&
     new Date(data.profile.alerts_snoozed_until).valueOf() > Date.now(),
   );
-  const warning = alertsSnoozed
+  const warning = platformContext || alertsSnoozed
     ? null
     : fixture
     ? {
@@ -596,27 +600,29 @@ export function ClaritudeApplication({
           <span className="workspace-identity">
             <img src="/assets/building-complex.svg" alt="" />
           </span>
-          <b>{fixture ? "Websi workspace" : workspace.name || "Shared properties"}</b>
-          <span className="badge">{fixture ? "Scale" : "Pro"}</span>
+          <b>{platformContext ? "Claritude platform" : fixture ? "Websi workspace" : workspace.name || "Shared properties"}</b>
+          <span className="badge">{platformContext ? "SuperAdmin" : fixture ? "Scale" : "Pro"}</span>
           <img className="selector-chevrons" src="/assets/chevrons-up-down.svg" alt="" />
         </button>
         <button
           className="selector selector-button"
           aria-expanded={propertyMenu}
+          disabled={platformContext}
           onClick={() => {
+            if (platformContext) return;
             setMobile(false);
             setWorkspaceMenu(false);
             setPropertyMenu((v) => !v);
           }}
         >
           <span className="favicon">
-            {property ? (
+            {property && !platformContext ? (
               <PropertyFavicon property={property} />
             ) : (
               <Globe2 />
             )}
           </span>
-          <b>{property ? property.name : "Your properties"}</b>
+          <b>{platformContext ? "All accounts" : property ? property.name : "Your properties"}</b>
           <span className="spacer" />
           <img className="selector-chevrons" src="/assets/chevrons-up-down.svg" alt="" />
         </button>
@@ -672,7 +678,18 @@ export function ClaritudeApplication({
               <LayoutGrid />
               Switch workspace
             </button>
-            {workspaceContext ? (
+            {platformContext ? (
+              <>
+                <Link className="active" to="/superadmin">
+                  <ShieldAlert />
+                  SuperAdmin
+                </Link>
+                <Link to="/">
+                  <Home />
+                  My workspace
+                </Link>
+              </>
+            ) : workspaceContext ? (
               <>
                 <Link
                   className={section === "workspace" ? "active" : ""}
@@ -748,6 +765,11 @@ export function ClaritudeApplication({
             {userMenu && (
               <div className="user-popover">
                 <b className="user-popover-heading">Account</b>
+                {data.superadmin && (
+                  <Link to="/superadmin" onClick={() => setUserMenu(false)}>
+                    <ShieldAlert /> SuperAdmin
+                  </Link>
+                )}
                 <Link to={href("account")} onClick={() => setUserMenu(false)}>
                   <Settings /> Account settings
                 </Link>
@@ -939,6 +961,20 @@ export function ClaritudeApplication({
                   reload={reload}
                   notify={notify}
                 />
+              }
+            />
+            <Route
+              path="/superadmin"
+              element={
+                data.superadmin && (session || fixture) ? (
+                  <SuperAdminView session={session} fixture={fixture} />
+                ) : (
+                  <Page title="Access denied" showOptions={false}>
+                    <Panel>
+                      <Empty title="SuperAdmin access required" detail="This area is restricted to authorised platform administrators." />
+                    </Panel>
+                  </Page>
+                )
               }
             />
             <Route
@@ -4217,6 +4253,177 @@ function PropertySettingsView({
           <p className="subtle">The property, workspace/account membership, property viewers, monitor configuration, alert recipients and report schedules are retained.</p>
           <label className="field">Type <b>{property.name}</b> to confirm<input autoFocus value={resetConfirmation} onChange={(event) => setResetConfirmation(event.target.value)} /></label>
         </SimpleDialog>
+      )}
+    </Page>
+  );
+}
+
+type SuperAdminPayload = {
+  stats: {
+    accounts: number;
+    workspaces: number;
+    properties: number;
+    users: number;
+    activeMonitors: number;
+    offlineMonitors: number;
+    openIncidents: number;
+    auditsToday: number;
+  };
+  accounts: Array<{
+    id: string;
+    name: string;
+    entitlement: string;
+    created_at: string;
+    workspaceCount: number;
+    propertyCount: number;
+    userCount: number;
+    offlineCount: number;
+  }>;
+  users: Array<{
+    id: string;
+    email: string;
+    name: string;
+    confirmedAt: string | null;
+    lastSignInAt: string | null;
+    createdAt: string;
+    accountCount: number;
+  }>;
+};
+
+const fixtureSuperAdminPayload: SuperAdminPayload = {
+  stats: { accounts: 4, workspaces: 7, properties: 12, users: 9, activeMonitors: 11, offlineMonitors: 1, openIncidents: 1, auditsToday: 6 },
+  accounts: [
+    { id: "websi", name: "Websi", entitlement: "pro_early_access", created_at: "2026-09-28T09:00:00Z", workspaceCount: 2, propertyCount: 4, userCount: 3, offlineCount: 0 },
+    { id: "north", name: "North Commerce", entitlement: "scale", created_at: "2026-09-29T10:00:00Z", workspaceCount: 2, propertyCount: 3, userCount: 2, offlineCount: 1 },
+    { id: "atlas", name: "Atlas Studio", entitlement: "essentials", created_at: "2026-10-01T11:00:00Z", workspaceCount: 2, propertyCount: 3, userCount: 2, offlineCount: 0 },
+    { id: "cedar", name: "Cedar Finance", entitlement: "free", created_at: "2026-10-03T12:00:00Z", workspaceCount: 1, propertyCount: 2, userCount: 2, offlineCount: 0 },
+  ],
+  users: [
+    { id: "admin", name: "Claritude Admin", email: "admin@claritude.io", confirmedAt: "2026-09-28T08:00:00Z", lastSignInAt: "2026-10-06T00:30:00Z", createdAt: "2026-09-28T08:00:00Z", accountCount: 1 },
+    { id: "adam", name: "Adam Jordan", email: "adam.jordan@websi.com", confirmedAt: "2026-10-01T08:00:00Z", lastSignInAt: "2026-10-05T18:15:00Z", createdAt: "2026-10-01T08:00:00Z", accountCount: 1 },
+  ],
+};
+
+function SuperAdminView({ session, fixture = false }: { session: Session | null; fixture?: boolean }) {
+  const [payload, setPayload] = useState<SuperAdminPayload | null>(fixture ? fixtureSuperAdminPayload : null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [tab, setTab] = useState<"Accounts" | "Users">("Accounts");
+  const [query, setQuery] = useState("");
+
+  async function load() {
+    if (fixture || !session) {
+      setPayload(fixtureSuperAdminPayload);
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      setPayload(await api<SuperAdminPayload>(session, "/api/superadmin/bootstrap"));
+    } catch (reason: any) {
+      setError(reason.message || "SuperAdmin dashboard could not be loaded");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, [session?.access_token, fixture]);
+
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const accounts = (payload?.accounts || []).filter((account) =>
+    !normalizedQuery || `${account.name} ${account.entitlement}`.toLocaleLowerCase().includes(normalizedQuery),
+  );
+  const users = (payload?.users || []).filter((user) =>
+    !normalizedQuery || `${user.name} ${user.email}`.toLocaleLowerCase().includes(normalizedQuery),
+  );
+
+  return (
+    <Page
+      title="SuperAdmin"
+      showOptions={false}
+      status={<span className="tag">Platform-wide</span>}
+      actions={
+        <button className="btn" onClick={() => void load()} disabled={busy}>
+          <RefreshCw className={busy ? "audit-spin" : ""} />
+          Refresh
+        </button>
+      }
+    >
+      {error ? (
+        <Panel>
+          <div className="analytics-state" role="alert">
+            <Empty title="SuperAdmin dashboard could not be loaded" detail={error} />
+            <button className="btn" onClick={() => void load()}>Retry</button>
+          </div>
+        </Panel>
+      ) : !payload ? (
+        <Panel><Empty title="Loading SuperAdmin dashboard…" detail="Collecting platform totals and account health." /></Panel>
+      ) : (
+        <>
+          <Metrics values={[
+            ["Accounts", payload.stats.accounts, "Customer accounts"],
+            ["Users", payload.stats.users, "Authentication users"],
+            ["Workspaces", payload.stats.workspaces, "Across all accounts"],
+            ["Properties", payload.stats.properties, "Websites managed"],
+          ]} />
+          <Metrics values={[
+            ["Active monitors", payload.stats.activeMonitors, "Currently enabled"],
+            ["Offline monitors", payload.stats.offlineMonitors, "Require attention"],
+            ["Open incidents", payload.stats.openIncidents, "Not yet resolved"],
+            ["Audits today", payload.stats.auditsToday, "UTC calendar day"],
+          ]} />
+          <Panel
+            title="Platform directory"
+            actions={
+              <label className="search">
+                <Search />
+                <input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder={`Search ${tab.toLocaleLowerCase()}`}
+                  aria-label={`Search ${tab.toLocaleLowerCase()}`}
+                />
+              </label>
+            }
+          >
+            <Tabs labels={["Accounts", "Users"]} value={tab} onChange={(value) => setTab(value as "Accounts" | "Users")} />
+            {tab === "Accounts" ? (
+              <DataTable
+                headers={["Account", "Plan", "Users", "Workspaces", "Properties", "Health", "Created"]}
+                rows={accounts.map((account) => [
+                  <b>{account.name}</b>,
+                  cap(account.entitlement.replaceAll("_", " ")),
+                  account.userCount,
+                  account.workspaceCount,
+                  account.propertyCount,
+                  account.offlineCount ? (
+                    <StatusPill tone="danger">{account.offlineCount} offline</StatusPill>
+                  ) : (
+                    <StatusPill tone="success">Healthy</StatusPill>
+                  ),
+                  fmtDate(account.created_at),
+                ])}
+              />
+            ) : (
+              <DataTable
+                headers={["User", "Email", "Accounts", "Status", "Last sign-in", "Created"]}
+                rows={users.map((user) => [
+                  <b>{user.name || "Claritude user"}</b>,
+                  user.email,
+                  user.accountCount,
+                  user.confirmedAt ? <StatusPill tone="success">Active</StatusPill> : <StatusPill tone="neutral">Pending</StatusPill>,
+                  user.lastSignInAt ? fmtDate(user.lastSignInAt) : "Never",
+                  fmtDate(user.createdAt),
+                ])}
+              />
+            )}
+            {(tab === "Accounts" ? accounts : users).length === 0 && (
+              <Empty title={`No ${tab.toLocaleLowerCase()} found`} detail="Try a different search term." />
+            )}
+          </Panel>
+        </>
       )}
     </Page>
   );
