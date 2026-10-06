@@ -37,6 +37,8 @@ import {
   workspaceDeletionError,
   renderUptimeAlertEmail,
   resolveEffectiveEntitlements,
+  validateComplimentaryGrantInput,
+  packageLimitConflicts,
   schemaCompatibleSharedEvidenceRows,
   escapeCsvCell,
   parseAuthAssurance,
@@ -89,6 +91,33 @@ describe("worker evidence pipelines", () => {
       { key: "propertiesPerAccount", value: 100 },
       { key: "auditCreditsPerWeek", value: 80 },
     ])).toMatchObject({ packageKey: "scale", version: 2, values: { propertiesPerAccount: 25, auditCreditsPerWeek: 80 }, sources: { propertiesPerAccount: "account_override", auditCreditsPerWeek: "account_override" } });
+  });
+
+  it("validates permanent and temporary complimentary grants without billing side effects", () => {
+    const permanent = validateComplimentaryGrantInput({
+      packageVersionId: "12345678-1234-1234-1234-123456789abc",
+      permanent: true,
+      reason: "Long-term partner access",
+      overrides: { propertiesPerAccount: "12", editingSeats: 4 },
+    }, Date.parse("2026-10-06T09:00:00Z"));
+    expect(permanent).toEqual({ value: {
+      packageVersionId: "12345678-1234-1234-1234-123456789abc",
+      permanent: true,
+      expiresAt: null,
+      expiryBehavior: "return_to_standard",
+      reason: "Long-term partner access",
+      overrides: { propertiesPerAccount: 12, editingSeats: 4 },
+    } });
+    expect(validateComplimentaryGrantInput({ packageVersionId: "12345678-1234-1234-1234-123456789abc", permanent: false, expiresAt: "2026-10-06T08:59:00Z", reason: "Temporary trial" }, Date.parse("2026-10-06T09:00:00Z"))).toMatchObject({ error: "grant_expiry_must_be_future" });
+    expect(validateComplimentaryGrantInput({ packageVersionId: "12345678-1234-1234-1234-123456789abc", reason: "Unsafe override", overrides: { propertiesPerAccount: -1 } })).toMatchObject({ error: "override_must_be_non_negative_integer" });
+  });
+
+  it("previews deterministic excess-resource warnings", () => {
+    expect(packageLimitConflicts({ propertiesPerAccount: 5, editingSeats: 2 }, { properties: 9, editingSeats: 3 })).toEqual([
+      "4 properties exceed the effective allowance",
+      "1 editing seats exceed the effective allowance",
+    ]);
+    expect(packageLimitConflicts({ propertiesPerAccount: 10 }, { properties: 9, editingSeats: 30 })).toEqual([]);
   });
 
   it("reads MFA assurance only from a validated session token payload", () => {

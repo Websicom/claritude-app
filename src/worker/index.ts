@@ -143,16 +143,59 @@ export function resolveEffectiveEntitlements(
   return { packageKey: packageConfiguration.packageKey, version: packageConfiguration.version, values, sources, hardCeilings };
 }
 
+const COMPLIMENTARY_OVERRIDE_KEYS = new Set([
+  "propertiesPerAccount",
+  "editingSeats",
+  "auditCreditsPerWeek",
+]);
+
+export function validateComplimentaryGrantInput(input: any, now = Date.now()) {
+  const packageVersionId = String(input?.packageVersionId || "").trim();
+  const reason = String(input?.reason || "").trim();
+  const permanent = input?.permanent !== false;
+  const expiresAt = permanent ? null : String(input?.expiresAt || "").trim();
+  const rawOverrides = input?.overrides && typeof input.overrides === "object" && !Array.isArray(input.overrides) ? input.overrides : {};
+  if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(packageVersionId)) return { error: "package_version_required" as const };
+  if (reason.length < 3 || reason.length > 500) return { error: "reason_required" as const };
+  if (!permanent && (!expiresAt || !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= now)) return { error: "grant_expiry_must_be_future" as const };
+  const overrides: Record<string, number> = {};
+  for (const [key, rawValue] of Object.entries(rawOverrides)) {
+    if (!COMPLIMENTARY_OVERRIDE_KEYS.has(key)) return { error: "unsupported_override_key" as const, key };
+    if (rawValue === "" || rawValue === null || rawValue === undefined) continue;
+    const value = Number(rawValue);
+    if (!Number.isSafeInteger(value) || value < 0) return { error: "override_must_be_non_negative_integer" as const, key };
+    overrides[key] = value;
+  }
+  return { value: { packageVersionId, reason, permanent, expiresAt, expiryBehavior: "return_to_standard" as const, overrides } };
+}
+
+export function packageLimitConflicts(
+  values: Record<string, unknown>,
+  counts: { properties: number; editingSeats: number },
+) {
+  return [
+    typeof values.propertiesPerAccount === "number" && counts.properties > values.propertiesPerAccount
+      ? `${counts.properties - values.propertiesPerAccount} properties exceed the effective allowance`
+      : null,
+    typeof values.editingSeats === "number" && counts.editingSeats > values.editingSeats
+      ? `${counts.editingSeats - values.editingSeats} editing seats exceed the effective allowance`
+      : null,
+  ].filter((value): value is string => Boolean(value));
+}
+
 async function effectiveEntitlements(env: Env, accountId: string) {
   const db = admin(env);
   const now = new Date().toISOString();
-  const [assignment, overrides, account] = await Promise.all([
+  const [assignment, grant, overrides, account] = await Promise.all([
     db.from("account_package_assignments").select("price_grandfathered,allowances_grandfathered,complimentary,billing_state,starts_at,ends_at,package_versions(package_key,version,allowances,features,retention,hard_ceilings,unresolved_values)").eq("account_id", accountId).is("ends_at", null).maybeSingle(),
-    db.from("account_entitlement_overrides").select("key,value,starts_at,expires_at").eq("account_id", accountId).lte("starts_at", now).or(`expires_at.is.null,expires_at.gt.${now}`),
+    db.from("account_package_grants").select("id,arrangement,status,starts_at,expires_at,expiry_behavior,reason,created_at,package_versions(package_key,version,display_name,allowances,features,retention,hard_ceilings,unresolved_values)").eq("account_id", accountId).eq("status", "active").lte("starts_at", now).or(`expires_at.is.null,expires_at.gt.${now}`).maybeSingle(),
+    db.from("account_entitlement_overrides").select("key,value,starts_at,expires_at,grant_id").eq("account_id", accountId).is("revoked_at", null).lte("starts_at", now).or(`expires_at.is.null,expires_at.gt.${now}`),
     db.from("accounts").select("entitlement").eq("id", accountId).maybeSingle(),
   ]);
-  if (assignment.error || overrides.error || account.error) throw new Error("effective_entitlements_unavailable");
-  const packageVersion = assignment.data?.package_versions as any;
+  if (assignment.error || grant.error || overrides.error || account.error) throw new Error("effective_entitlements_unavailable");
+  const grantPackageVersion = grant.data?.package_versions as any;
+  const standardPackageVersion = assignment.data?.package_versions as any;
+  const packageVersion = grantPackageVersion || standardPackageVersion;
   const fallbackKey = account.data?.entitlement || "free";
   const configuration = packageVersion || {
     package_key: fallbackKey,
@@ -162,6 +205,8 @@ async function effectiveEntitlements(env: Env, accountId: string) {
   };
   return {
     ...resolveEffectiveEntitlements({ packageKey: configuration.package_key, version: configuration.version, allowances: configuration.allowances, features: configuration.features, retention: configuration.retention, hardCeilings: configuration.hard_ceilings }, overrides.data || []),
+    arrangement: grant.data ? "complimentary" : "standard",
+    grant: grant.data || null,
     assignment: assignment.data || null,
     unresolvedValues: configuration.unresolved_values || [],
   };
@@ -882,6 +927,11 @@ app.get("/api/bootstrap", async (c) => {
     : { data: [], error: null };
   if (sharedWorkspaces.error)
     return c.json({ error: sharedWorkspaces.error.message }, 500);
+  const accessibleAccountIds = [...new Set((accounts.data || []).map((membership: any) => membership.accounts?.id).filter(Boolean))] as string[];
+  const accountEntitlements = Object.fromEntries(await Promise.all(accessibleAccountIds.map(async (accountId) => {
+    try { return [accountId, await effectiveEntitlements(c.env, accountId)]; }
+    catch { return [accountId, null]; }
+  })));
   return c.json({
     superadmin,
     staff: staff ? {
@@ -893,6 +943,7 @@ app.get("/api/bootstrap", async (c) => {
     } : null,
     profile: profile.data,
     accounts: accounts.data,
+    accountEntitlements,
     workspaces: [
       ...(workspaces.data || []),
       ...(sharedWorkspaces.data || []).map((workspace: any) => ({ role: "viewer", workspaces: workspace })),
@@ -1606,6 +1657,8 @@ app.get("/api/superadmin/bootstrap", async (c) => {
     openIncidentResult,
     auditTodayResult,
     userResult,
+    packageAssignmentResult,
+    packageGrantResult,
   ] = await Promise.all([
     service.from("accounts").select("id,name,entitlement,created_at", { count: "exact" }).order("created_at", { ascending: false }).limit(500),
     service.from("workspaces").select("id,account_id,name,created_at", { count: "exact" }).limit(2000),
@@ -1618,6 +1671,8 @@ app.get("/api/superadmin/bootstrap", async (c) => {
     service.from("incidents").select("id", { count: "exact", head: true }).is("resolved_at", null),
     service.from("audit_runs").select("id", { count: "exact", head: true }).gte("created_at", `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`),
     service.auth.admin.listUsers({ page: 1, perPage: 1000 }),
+    service.from("account_package_assignments").select("account_id,billing_state,package_versions(package_key,display_name,version)").is("ends_at", null).limit(1000),
+    service.from("account_package_grants").select("account_id,status,expires_at,package_versions(package_key,display_name,version)").eq("status", "active").lte("starts_at", new Date().toISOString()).or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`).limit(1000),
   ]);
   const databaseError = [
     accountResult,
@@ -1630,6 +1685,8 @@ app.get("/api/superadmin/bootstrap", async (c) => {
     offlineMonitorResult,
     openIncidentResult,
     auditTodayResult,
+    packageAssignmentResult,
+    packageGrantResult,
   ].find((result) => result.error)?.error;
   if (databaseError || userResult.error) {
     console.error("superadmin_bootstrap_failed", databaseError || userResult.error);
@@ -1673,8 +1730,14 @@ app.get("/api/superadmin/bootstrap", async (c) => {
     accounts: accounts.map((account) => {
       const workspaceIds = workspaceIdsByAccount.get(account.id) || new Set<string>();
       const propertyIds = propertyIdsByAccount.get(account.id) || new Set<string>();
+      const packageGrant = (packageGrantResult.data || []).find((item) => item.account_id === account.id);
+      const packageAssignment = (packageAssignmentResult.data || []).find((item) => item.account_id === account.id);
+      const packageVersion = (packageGrant?.package_versions || packageAssignment?.package_versions) as any;
       return {
         ...account,
+        effectivePackageKey: packageVersion?.package_key || account.entitlement,
+        effectivePackageName: packageVersion?.display_name || String(account.entitlement).replaceAll("_", " "),
+        billingArrangement: packageGrant ? "complimentary" : "standard",
         workspaceCount: workspaceIds.size,
         propertyCount: propertyIds.size,
         userCount: new Set(memberships.filter((membership) => membership.account_id === account.id).map((membership) => membership.user_id)).size,
@@ -1994,7 +2057,7 @@ app.get("/api/superadmin/accounts/:id", async (c) => {
   if (authorization.response) return authorization.response;
   const accountId = c.req.param("id");
   const service = admin(c.env);
-  const [account, workspaces, properties, memberships, billingMemberships, notes, controls, activity, messages, usage, assignments, overrides, inactivity] = await Promise.all([
+  const [account, workspaces, properties, memberships, billingMemberships, notes, controls, activity, messages, usage, assignments, grants, overrides, inactivity] = await Promise.all([
     service.from("accounts").select("*").eq("id", accountId).single(),
     service.from("workspaces").select("*").eq("account_id", accountId).order("created_at"),
     service.from("properties").select("*").eq("account_id", accountId).order("created_at"),
@@ -2006,13 +2069,14 @@ app.get("/api/superadmin/accounts/:id", async (c) => {
     service.from("customer_messages").select("*").eq("account_id", accountId).order("created_at", { ascending: false }).limit(100),
     service.from("account_usage_periods").select("*").eq("account_id", accountId).order("period_start", { ascending: false }).limit(100),
     service.from("account_package_assignments").select("*,package_versions(*)").eq("account_id", accountId).order("starts_at", { ascending: false }),
+    service.from("account_package_grants").select("*,package_versions(*)").eq("account_id", accountId).order("created_at", { ascending: false }),
     service.from("account_entitlement_overrides").select("*").eq("account_id", accountId).order("created_at", { ascending: false }),
     service.from("account_inactivity").select("*").eq("account_id", accountId).maybeSingle(),
   ]);
   if (account.error) return c.json({ error: "account_not_found" }, 404);
   let effective;
   try { effective = await effectiveEntitlements(c.env, accountId); } catch { effective = null; }
-  return c.json({ account: account.data, workspaces: workspaces.data || [], properties: properties.data || [], memberships: memberships.data || [], billingMemberships: billingMemberships.data || [], notes: notes.data || [], controls: controls.data || [], activity: activity.data || [], messages: messages.data || [], usage: usage.data || [], assignments: assignments.data || [], overrides: overrides.data || [], inactivity: inactivity.data, effectiveEntitlements: effective });
+  return c.json({ account: account.data, workspaces: workspaces.data || [], properties: properties.data || [], memberships: memberships.data || [], billingMemberships: billingMemberships.data || [], notes: notes.data || [], controls: controls.data || [], activity: activity.data || [], messages: messages.data || [], usage: usage.data || [], assignments: assignments.data || [], grants: grants.data || [], overrides: overrides.data || [], inactivity: inactivity.data, effectiveEntitlements: effective });
 });
 
 app.post("/api/superadmin/accounts/:id/deletion-preview", async (c) => {
@@ -2079,13 +2143,14 @@ app.get("/api/superadmin/platform", async (c) => {
   if (authorization.response) return authorization.response;
   const service = admin(c.env);
   const today = new Date().toISOString().slice(0, 10);
-  const [settings, controls, alerts, incidents, packages, overrides, inactivity, auditDefinitions, auditGroups, auditRuns, exports, deletionRequests, templates, automations, campaigns, billingCustomers, billingEvents, promotions, deliveries] = await Promise.all([
+  const [settings, controls, alerts, incidents, packages, grants, overrides, inactivity, auditDefinitions, auditGroups, auditRuns, exports, deletionRequests, templates, automations, campaigns, billingCustomers, billingEvents, promotions, deliveries] = await Promise.all([
     service.from("platform_settings").select("*").order("key"),
     service.from("emergency_controls").select("*").order("key"),
     service.from("platform_alerts").select("*").order("created_at", { ascending: false }).limit(100),
     service.from("platform_incidents").select("*").order("opened_at", { ascending: false }).limit(100),
     service.from("package_versions").select("*").order("package_key").order("version", { ascending: false }),
-    service.from("account_entitlement_overrides").select("id,account_id,key,value,reason,starts_at,expires_at,created_at").order("created_at", { ascending: false }).limit(250),
+    service.from("account_package_grants").select("id,account_id,package_version_id,status,starts_at,expires_at,reason,created_at,package_versions(display_name,package_key,version)").order("created_at", { ascending: false }).limit(250),
+    service.from("account_entitlement_overrides").select("id,account_id,key,value,reason,starts_at,expires_at,created_at,grant_id,revoked_at").order("created_at", { ascending: false }).limit(250),
     service.from("account_inactivity").select("*").neq("state", "active").order("updated_at", { ascending: false }).limit(250),
     service.from("audit_check_definitions").select("id,title,primary_category,subcategory,severity,lifecycle,configuration_version,changed_at").order("id"),
     service.from("audit_user_facing_groups").select("id,name,category,subcategory,lifecycle,enabled_by_default,configuration_version").order("sort_order"),
@@ -2105,7 +2170,7 @@ app.get("/api/superadmin/platform", async (c) => {
   return c.json({
     environment: { name: c.env.APP_ORIGIN.includes("app.claritude.io") ? "Production" : "Preview", commitSha: c.env.DEPLOY_COMMIT_SHA || null, refreshedAt: new Date().toISOString() },
     providers: { stripe: { configured: Boolean(c.env.STRIPE_SECRET_KEY && c.env.STRIPE_WEBHOOK_SECRET), mode: c.env.STRIPE_SECRET_KEY?.startsWith("sk_test_") ? "sandbox" : c.env.STRIPE_SECRET_KEY ? "live" : "unconfigured", tax: "unconfigured" }, resend: { configured: Boolean(c.env.RESEND_API_KEY), from: c.env.RESEND_FROM || null }, cloudflareTelemetry: "unavailable", supabaseBackups: "unverified" },
-    settings: settings.data || [], controls: controls.data || [], alerts: alerts.data || [], incidents: incidents.data || [], packages: packages.data || [], overrides: overrides.data || [], inactivity: inactivity.data || [],
+    settings: settings.data || [], controls: controls.data || [], alerts: alerts.data || [], incidents: incidents.data || [], packages: packages.data || [], grants: grants.data || [], overrides: overrides.data || [], inactivity: inactivity.data || [],
     audits: { technicalChecks: auditDefinitions.data || [], groups: auditGroups.data || [], today: auditStatus, source: "application_measured", period: "UTC day" },
     exports: exports.data || [], deletionRequests: deletionRequests.data || [], email: { templates: templates.data || [], automations: automations.data || [], campaigns: campaigns.data || [], deliveries: deliveries.data || [] },
     billing: { configured: Boolean(c.env.STRIPE_SECRET_KEY && c.env.STRIPE_WEBHOOK_SECRET), customers: billingCustomers.data || [], events: billingEvents.data || [], promotions: promotions.data || [], calculations: { mrr: "Unavailable until Stripe is configured and reconciled", arr: "Unavailable until Stripe is configured and reconciled", cashCollected: "Unavailable until Stripe is configured and reconciled", currencyPolicy: "Currencies remain separate unless an explicit labelled conversion is configured" } },
@@ -2210,6 +2275,101 @@ app.post("/api/superadmin/accounts/:id/overrides", async (c) => {
   if (error) return c.json({ error: error.message }, 400);
   await recordAdminActivity(c.env, authorization.staff!.userId, "account.entitlement_override_created", "success", { targetType: "account", targetId: c.req.param("id"), accountId: c.req.param("id"), reason, newValues: { key, value: body.value, expiresAt: body.expiresAt || null } });
   return c.json({ override: data }, 201);
+});
+
+app.post("/api/superadmin/accounts/:id/package-preview", async (c) => {
+  const authorization = await requireStaff(c, "packages.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = validateComplimentaryGrantInput(body);
+  if ("error" in parsed) return c.json({ error: parsed.error, key: parsed.key }, 400);
+  const accountId = c.req.param("id");
+  const db = admin(c.env);
+  const [account, packageVersion, properties, memberships, billingCustomer] = await Promise.all([
+    db.from("accounts").select("id,name").eq("id", accountId).maybeSingle(),
+    db.from("package_versions").select("*").eq("id", parsed.value.packageVersionId).eq("state", "published").maybeSingle(),
+    db.from("properties").select("id", { count: "exact", head: true }).eq("account_id", accountId),
+    db.from("account_memberships").select("user_id", { count: "exact", head: true }).eq("account_id", accountId).in("role", ["owner", "member"]),
+    db.from("billing_customers").select("provider_customer_id,sync_state,last_synced_at").eq("account_id", accountId).maybeSingle(),
+  ]);
+  if (!account.data) return c.json({ error: "account_not_found" }, 404);
+  if (!packageVersion.data) return c.json({ error: "published_package_version_required" }, 400);
+  const proposed = resolveEffectiveEntitlements({
+    packageKey: packageVersion.data.package_key,
+    version: packageVersion.data.version,
+    allowances: packageVersion.data.allowances,
+    features: packageVersion.data.features,
+    retention: packageVersion.data.retention,
+    hardCeilings: packageVersion.data.hard_ceilings,
+  }, Object.entries(parsed.value.overrides).map(([key, value]) => ({ key, value })));
+  for (const [key, value] of Object.entries(parsed.value.overrides)) {
+    const ceiling = proposed.hardCeilings[key];
+    if (typeof ceiling === "number" && value > ceiling) return c.json({ error: "override_exceeds_platform_ceiling", key, ceiling }, 409);
+  }
+  let current;
+  try { current = await effectiveEntitlements(c.env, accountId); }
+  catch { return c.json({ error: "effective_entitlements_unavailable" }, 503); }
+  const counts = { properties: properties.count || 0, editingSeats: memberships.count || 0 };
+  return c.json({ preview: {
+    account: account.data,
+    current,
+    proposed: { ...proposed, displayName: packageVersion.data.display_name, unresolvedValues: packageVersion.data.unresolved_values || [] },
+    arrangement: "complimentary",
+    permanent: parsed.value.permanent,
+    expiresAt: parsed.value.expiresAt,
+    expiryOutcome: "Returns to the underlying standard package and billing state. No charge, subscription creation or cancellation is triggered.",
+    conflicts: packageLimitConflicts(proposed.values, counts),
+    counts,
+    stripe: billingCustomer.data ? { connected: true, state: billingCustomer.data.sync_state, lastSyncedAt: billingCustomer.data.last_synced_at, unaffected: true } : { connected: false, unaffected: true },
+  } });
+});
+
+app.put("/api/superadmin/accounts/:id/package", async (c) => {
+  const authorization = await requireStaff(c, "packages.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = validateComplimentaryGrantInput(body);
+  if ("error" in parsed) return c.json({ error: parsed.error, key: parsed.key }, 400);
+  const accountId = c.req.param("id");
+  const db = admin(c.env);
+  const [packageVersion, previousGrant] = await Promise.all([
+    db.from("package_versions").select("id,package_key,version,display_name,hard_ceilings").eq("id", parsed.value.packageVersionId).eq("state", "published").maybeSingle(),
+    db.from("account_package_grants").select("*,package_versions(package_key,version,display_name)").eq("account_id", accountId).eq("status", "active").maybeSingle(),
+  ]);
+  if (!packageVersion.data) return c.json({ error: "published_package_version_required" }, 400);
+  for (const [key, value] of Object.entries(parsed.value.overrides)) {
+    const ceiling = (packageVersion.data.hard_ceilings as Record<string, unknown> || {})[key];
+    if (typeof ceiling === "number" && value > ceiling) return c.json({ error: "override_exceeds_platform_ceiling", key, ceiling }, 409);
+  }
+  const { data: grant, error } = await db.rpc("apply_complimentary_package_grant_internal", {
+    p_account_id: accountId,
+    p_package_version_id: parsed.value.packageVersionId,
+    p_expires_at: parsed.value.expiresAt,
+    p_reason: parsed.value.reason,
+    p_overrides: parsed.value.overrides,
+    p_actor: authorization.staff!.userId,
+  });
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "account.complimentary_package_granted", "success", {
+    targetType: "account", targetId: accountId, accountId, reason: parsed.value.reason,
+    previousValues: previousGrant.data || null,
+    newValues: { grant, package: packageVersion.data, permanent: parsed.value.permanent, expiresAt: parsed.value.expiresAt, overrides: parsed.value.overrides },
+    metadata: { stripeUnaffected: true, expiryBehavior: parsed.value.expiryBehavior },
+  });
+  return c.json({ grant });
+});
+
+app.delete("/api/superadmin/accounts/:id/package", async (c) => {
+  const authorization = await requireStaff(c, "packages.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({} as { reason?: string }));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3 || reason.length > 500) return c.json({ error: "reason_required" }, 400);
+  const accountId = c.req.param("id");
+  const { data, error } = await admin(c.env).rpc("revoke_complimentary_package_grant_internal", { p_account_id: accountId, p_reason: reason, p_actor: authorization.staff!.userId });
+  if (error) return c.json({ error: error.message }, error.message.includes("not_found") ? 404 : 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "account.complimentary_package_revoked", "success", { targetType: "account", targetId: accountId, accountId, reason, previousValues: data, metadata: { stripeUnaffected: true } });
+  return c.json({ grant: data });
 });
 
 app.post("/api/superadmin/audit-checks/:id/rollback/:historyId", async (c) => {
@@ -5341,7 +5501,24 @@ async function scheduled(env: Env, cron: string) {
     });
     if (pruneResult.error) throw pruneResult.error;
     await runDueReportSchedules(env, db);
+    await expireComplimentaryPackageGrants(db);
     await evaluateFreeAccountInactivity(env, db);
+  }
+}
+
+async function expireComplimentaryPackageGrants(db: SupabaseClient) {
+  const now = new Date().toISOString();
+  const { data: expired, error } = await db.from("account_package_grants")
+    .select("id,account_id,package_versions(display_name)")
+    .eq("status", "active").not("expires_at", "is", null).lte("expires_at", now).limit(500);
+  if (error) {
+    await db.from("platform_alerts").insert({ title: "Complimentary package expiry evaluation unavailable", details: { error: error.message } });
+    return;
+  }
+  for (const grant of expired || []) {
+    await db.from("account_package_grants").update({ status: "expired", revoked_at: now, revoked_reason: "Grant reached its configured expiry" }).eq("id", grant.id).eq("status", "active");
+    await db.from("account_entitlement_overrides").update({ revoked_at: now }).eq("grant_id", grant.id).is("revoked_at", null);
+    await db.from("platform_alerts").insert({ title: "Complimentary package grant expired", details: { accountId: grant.account_id, grantId: grant.id, package: (grant.package_versions as any)?.display_name || null, outcome: "Returned to underlying standard package; billing provider unchanged", reviewRequired: true } });
   }
 }
 
@@ -5368,7 +5545,10 @@ async function evaluateFreeAccountInactivity(env: Env, db: SupabaseClient) {
     await db.from("platform_alerts").insert({ title: "Free-account inactivity evaluation unavailable", details: { accountsError: accountsResult.error?.message, policyError: outboundResult.error?.message } });
     return;
   }
-  const accounts = accountsResult.data || [];
+  const candidateAccounts = accountsResult.data || [];
+  const activeGrantAccounts = candidateAccounts.length ? await db.from("account_package_grants").select("account_id").in("account_id", candidateAccounts.map((account) => account.id)).eq("status", "active").lte("starts_at", new Date().toISOString()).or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`) : { data: [] };
+  const grantedAccountIds = new Set((activeGrantAccounts.data || []).map((grant) => grant.account_id));
+  const accounts = candidateAccounts.filter((account) => !grantedAccountIds.has(account.id));
   if (!accounts.length) return;
   const accountIds = accounts.map((account) => account.id);
   const [memberships, activity, currentStates, properties] = await Promise.all([

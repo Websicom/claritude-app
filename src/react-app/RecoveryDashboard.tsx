@@ -267,6 +267,7 @@ type Bootstrap = {
   } | null;
   profile: any;
   accounts: any[];
+  accountEntitlements?: Record<string, any>;
   workspaces: any[];
   properties: Property[];
   incidents: any[];
@@ -4355,6 +4356,9 @@ type SuperAdminPayload = {
     id: string;
     name: string;
     entitlement: string;
+    effectivePackageKey?: string;
+    effectivePackageName?: string;
+    billingArrangement?: "standard" | "complimentary";
     created_at: string;
     workspaceCount: number;
     propertyCount: number;
@@ -4461,7 +4465,7 @@ const fixturePlatformPayload: any = {
   environment: { name: "Fixture", commitSha: "fixture", refreshedAt: new Date().toISOString() },
   providers: { stripe: { configured: false, mode: "unconfigured", tax: "unconfigured" }, resend: { configured: true, from: "alerts@claritude.io" }, cloudflareTelemetry: "unavailable", supabaseBackups: "unverified" },
   settings: [{ key: "safety_limits", value: { platformAuditStartsPerDay: 200, concurrentAudits: 5, auditWallTimeSeconds: 600 }, description: "Fixture safety limits", source: "application", updated_at: new Date().toISOString() }], controls: [{ key: "new_audits", paused: false }, { key: "analytics_ingestion", paused: false }, { key: "uptime_checks", paused: false }], alerts: [], incidents: [],
-  packages: [{ package_key: "pro_early_access", version: 1, display_name: "Pro early access", state: "published", unresolved_values: ["futurePrice", "auditCreditsPerWeek"] }], overrides: [], inactivity: [],
+  packages: [{ id: "12345678-1234-1234-1234-123456789abc", package_key: "pro_early_access", version: 1, display_name: "Pro early access", state: "published", allowances: { customEventsPerProperty: null }, features: { complimentaryEarlyAccess: true }, hard_ceilings: { propertiesPerAccount: 25 }, unresolved_values: ["futurePrice", "auditCreditsPerWeek"] }], grants: [], overrides: [], inactivity: [],
   audits: { technicalChecks: [], groups: [], today: { queued: 0, running: 0, completed: 6, partial: 0, failed: 0 }, source: "application_measured", period: "UTC day" },
   exports: [], deletionRequests: [], email: { templates: [], automations: [], campaigns: [], deliveries: [] },
   billing: { configured: false, customers: [], events: [], promotions: [], calculations: { mrr: "Unavailable until Stripe is configured and reconciled", arr: "Unavailable until Stripe is configured and reconciled", cashCollected: "Unavailable until Stripe is configured and reconciled", currencyPolicy: "Currencies remain separate" } },
@@ -4476,6 +4480,7 @@ function SuperAdminView({ session, fixture = false, staff }: { session: Session 
   const view = navigationItems.some((item) => item.id === params.get("view")) ? params.get("view")! : "overview";
   const tabs = SUPERADMIN_TABS[view] || [];
   const activeTab = tabs.includes(params.get("tab") || "") ? params.get("tab")! : tabs[0];
+  const accountId = params.get("account");
   const pageTitle = navigationItems.find((item) => item.id === view)?.label || "Overview";
   const [payload, setPayload] = useState<SuperAdminPayload | null>(fixture ? fixtureSuperAdminPayload : null);
   const [platform, setPlatform] = useState<any>(fixture ? fixturePlatformPayload : null);
@@ -4486,6 +4491,7 @@ function SuperAdminView({ session, fixture = false, staff }: { session: Session 
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [accountDetail, setAccountDetail] = useState<any>(null);
 
   async function load() {
     if (fixture || !session) {
@@ -4520,6 +4526,17 @@ function SuperAdminView({ session, fixture = false, staff }: { session: Session 
 
   useEffect(() => { void load(); }, [session?.access_token, fixture]);
   useEffect(() => {
+    if (view !== "accounts" || !accountId) { setAccountDetail(null); return; }
+    if (fixture) {
+      const account = fixtureSuperAdminPayload.accounts.find((item) => item.id === accountId);
+      setAccountDetail(account ? { account, workspaces: fixtureSuperAdminPayload.workspaces.filter((item) => item.account_id === accountId), properties: fixtureSuperAdminPayload.properties.filter((item) => item.accountId === accountId), memberships: [], assignments: [], grants: [], overrides: [], activity: [], usage: [], effectiveEntitlements: { packageKey: account.entitlement, version: 1, arrangement: "complimentary", values: { customEventsPerProperty: null }, sources: {}, hardCeilings: { propertiesPerAccount: 25 }, unresolvedValues: [] } } : null);
+      return;
+    }
+    if (!session) return;
+    setBusy(true);
+    api<any>(session, `/api/superadmin/accounts/${accountId}`).then(setAccountDetail).catch((reason) => setError(reason.message)).finally(() => setBusy(false));
+  }, [view, accountId, session?.access_token, fixture]);
+  useEffect(() => {
     if (fixture || !session || query.trim().length < 2) { setSearchResults([]); return; }
     const timer = window.setTimeout(() => {
       void api<any>(session, `/api/superadmin/search?q=${encodeURIComponent(query.trim())}`).then((result) => setSearchResults(result.results || [])).catch(() => setSearchResults([]));
@@ -4550,7 +4567,7 @@ function SuperAdminView({ session, fixture = false, staff }: { session: Session 
   }
 
   const normalizedQuery = query.trim().toLowerCase();
-  const accounts = (payload?.accounts || []).filter((account) => !normalizedQuery || `${account.name} ${account.entitlement}`.toLowerCase().includes(normalizedQuery));
+  const accounts = (payload?.accounts || []).filter((account) => !normalizedQuery || `${account.name} ${account.effectivePackageName || account.entitlement}`.toLowerCase().includes(normalizedQuery));
   const users = (payload?.users || []).filter((user) => !normalizedQuery || `${user.name} ${user.email}`.toLowerCase().includes(normalizedQuery));
   const properties = (payload?.properties || []).filter((property) => !normalizedQuery || `${property.name} ${property.canonical_host}`.toLowerCase().includes(normalizedQuery));
   const workspaces = (payload?.workspaces || []).filter((workspace) => !normalizedQuery || workspace.name.toLowerCase().includes(normalizedQuery));
@@ -4560,14 +4577,14 @@ function SuperAdminView({ session, fixture = false, staff }: { session: Session 
     <Metrics values={[["Accounts", payload?.stats.accounts || 0, "Customer accounts"], ["Users", payload?.stats.users || 0, "Auth identities"], ["Properties", payload?.stats.properties || 0, "Managed websites"], ["Audits today", payload?.stats.auditsToday || 0, "Application measured · UTC"]]} />
     <Metrics values={[["Active monitors", payload?.stats.activeMonitors || 0, "Application measured"], ["Offline monitors", payload?.stats.offlineMonitors || 0, "Confirmed down"], ["Open incidents", payload?.stats.openIncidents || 0, "Customer incidents"], ["Platform alerts", platform?.alerts?.filter((item: any) => item.state === "active").length || 0, "Unresolved"]]} />
     {activeTab === "Revenue" ? <Panel title="Revenue"><UnavailableState title="Financial reporting is not configured" detail={platform?.billing?.calculations?.mrr || "Stripe credentials and reconciled billing state are required."} /></Panel> : null}
-    {activeTab === "Customer activity" ? <Panel title="Recently created accounts"><DataTable headers={["Account", "Package", "Users", "Properties", "Created"]} rows={accounts.slice(0, 20).map((account) => [account.name, cap(account.entitlement.replaceAll("_", " ")), account.userCount, account.propertyCount, fmtDate(account.created_at)])} /></Panel> : null}
+    {activeTab === "Customer activity" ? <Panel title="Recently created accounts"><DataTable headers={["Account", "Package", "Arrangement", "Users", "Properties", "Created"]} rows={accounts.slice(0, 20).map((account) => [account.name, account.effectivePackageName || cap(account.entitlement.replaceAll("_", " ")), cap(account.billingArrangement || "standard"), account.userCount, account.propertyCount, fmtDate(account.created_at)])} /></Panel> : null}
     {activeTab === "Service health" ? <PlatformServices platform={platform} payload={payload} /> : null}
     {activeTab === "Summary" ? <><PlatformServices platform={platform} payload={payload} /><Panel title="Needs attention"><DataTable headers={["Account", "Offline properties", "Package", "Action"]} rows={accounts.filter((account) => account.offlineCount).map((account) => [account.name, account.offlineCount, cap(account.entitlement), <Link to={`/superadmin?view=accounts&account=${account.id}`}>Open account</Link>])} /></Panel></> : null}
   </>;
-  else if (view === "accounts") content = <Panel title={activeTab} actions={<button className="btn" onClick={() => void queueExport("accounts", "csv")}>Export CSV</button>}><DataTable headers={["Account", "Package", "Users", "Workspaces", "Properties", "Health", "Created"]} rows={accounts.filter((account) => activeTab !== "Needs attention" || account.offlineCount > 0).map((account) => [<Link to={`/superadmin?view=accounts&account=${account.id}`}><b>{account.name}</b></Link>, cap(account.entitlement.replaceAll("_", " ")), account.userCount, account.workspaceCount, account.propertyCount, account.offlineCount ? <StatusPill tone="danger">{account.offlineCount} offline</StatusPill> : <StatusPill tone="success">Healthy</StatusPill>, fmtDate(account.created_at)])} /></Panel>;
+  else if (view === "accounts") content = accountId && accountDetail ? <SuperAdminAccountDetail detail={accountDetail} packages={platform?.packages || []} session={session} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("packages.write"))} refresh={async () => { if (!session || fixture) return; setAccountDetail(await api<any>(session, `/api/superadmin/accounts/${accountId}`)); await load(); }} /> : <Panel title={activeTab} actions={<button className="btn" onClick={() => void queueExport("accounts", "csv")}>Export CSV</button>}><DataTable headers={["Account", "Package", "Arrangement", "Users", "Workspaces", "Properties", "Health", "Created"]} rows={accounts.filter((account) => activeTab !== "Needs attention" || account.offlineCount > 0).map((account) => [<Link to={`/superadmin?view=accounts&account=${account.id}`}><b>{account.name}</b></Link>, account.effectivePackageName || cap(account.entitlement.replaceAll("_", " ")), account.billingArrangement === "complimentary" ? <StatusPill tone="success">Complimentary</StatusPill> : "Standard", account.userCount, account.workspaceCount, account.propertyCount, account.offlineCount ? <StatusPill tone="danger">{account.offlineCount} offline</StatusPill> : <StatusPill tone="success">Healthy</StatusPill>, fmtDate(account.created_at)])} /></Panel>;
   else if (view === "users") content = activeTab === "Invitations" ? <Panel title="Staff and customer invitations"><DataTable headers={["Email", "Role", "Expires", "Status"]} rows={(staffData?.invitations || []).map((invite: any) => [invite.email, cap(invite.role), fmtDate(invite.expires_at), invite.accepted_at ? "Accepted" : invite.revoked_at ? "Revoked" : "Pending"])} /></Panel> : <Panel title={activeTab} actions={<button className="btn" onClick={() => void queueExport("users", "csv")}>Export CSV</button>}><DataTable headers={["User", "Email", "Accounts", "Email status", "Last sign-in", "Created"]} rows={users.filter((user) => activeTab !== "Access issues" || !user.confirmedAt).map((user) => [<b>{user.name || "Claritude user"}</b>, user.email, user.accountCount, user.confirmedAt ? <StatusPill tone="success">Confirmed</StatusPill> : <StatusPill tone="neutral">Pending</StatusPill>, user.lastSignInAt ? fmtDate(user.lastSignInAt) : "Never", fmtDate(user.createdAt)])} /></Panel>;
   else if (view === "resources") content = activeTab === "Workspaces" ? <Panel title="Workspaces"><DataTable headers={["Workspace", "Account", "Properties", "Created"]} rows={workspaces.map((workspace) => [workspace.name, payload?.accounts.find((account) => account.id === workspace.account_id)?.name || workspace.account_id, workspace.propertyCount, fmtDate(workspace.created_at)])} /></Panel> : <Panel title={activeTab}><DataTable headers={["Property", "Domain", "Workspace", "Connection", "Monitor", "Last analytics"]} rows={properties.filter((property) => activeTab !== "Connection health" || property.verification_status !== "verified" || !property.tracking_last_received_at).map((property) => [property.name, property.canonical_host, payload?.workspaces.find((workspace) => workspace.id === property.workspace_id)?.name || property.workspace_id, property.verification_status, property.monitor?.last_status || "Not configured", property.tracking_last_received_at ? fmtDate(property.tracking_last_received_at) : "No data"])} /></Panel>;
-  else if (view === "packages") content = activeTab === "Free account inactivity" ? <Panel title="Free account inactivity"><p className="subtle">Policy: warning day 60, reminder day 90, reversible freeze day 100, deletion eligibility day 121. Automatic irreversible deletion is disabled.</p><DataTable headers={["Account", "State", "Last meaningful activity", "Review hold", "Updated"]} rows={(platform?.inactivity || []).map((item: any) => [payload?.accounts.find((account) => account.id === item.account_id)?.name || item.account_id, item.state, item.last_meaningful_activity_at ? fmtDate(item.last_meaningful_activity_at) : "Not recorded", item.analytics_review_required || item.notice_delivery_failed ? "Required" : "No", fmtDate(item.updated_at)])} /></Panel> : activeTab === "Account overrides" ? <Panel title="Account overrides"><DataTable headers={["Account", "Key", "Value", "Starts", "Expires", "Reason"]} rows={(platform?.overrides || []).map((item: any) => [payload?.accounts.find((account) => account.id === item.account_id)?.name || item.account_id, item.key, JSON.stringify(item.value), fmtDate(item.starts_at), item.expires_at ? fmtDate(item.expires_at) : "No expiry", item.reason])} /></Panel> : <Panel title={activeTab}><DataTable headers={["Package", "Version", "State", "Unresolved commercial values", "Effective"]} rows={(platform?.packages || []).map((item: any) => [item.display_name, item.version, item.state, item.unresolved_values?.join(", ") || "None", item.effective_at ? fmtDate(item.effective_at) : "Draft"])} /></Panel>;
+  else if (view === "packages") content = activeTab === "Free account inactivity" ? <Panel title="Free account inactivity"><p className="subtle">Policy: warning day 60, reminder day 90, reversible freeze day 100, deletion eligibility day 121. Accounts with a current complimentary non-Free grant are excluded. Automatic irreversible deletion is disabled.</p><DataTable headers={["Account", "State", "Last meaningful activity", "Review hold", "Updated"]} rows={(platform?.inactivity || []).map((item: any) => [payload?.accounts.find((account) => account.id === item.account_id)?.name || item.account_id, item.state, item.last_meaningful_activity_at ? fmtDate(item.last_meaningful_activity_at) : "Not recorded", item.analytics_review_required || item.notice_delivery_failed ? "Required" : "No", fmtDate(item.updated_at)])} /></Panel> : activeTab === "Account overrides" ? <><Panel title="Complimentary package grants"><DataTable headers={["Account", "Package", "Status", "Starts", "Expires", "Reason"]} rows={(platform?.grants || []).map((item: any) => [<Link to={`/superadmin?view=accounts&account=${item.account_id}`}>{payload?.accounts.find((account) => account.id === item.account_id)?.name || item.account_id}</Link>, item.package_versions?.display_name || item.package_version_id, cap(item.status), fmtDate(item.starts_at), item.expires_at ? fmtDate(item.expires_at) : "Never", item.reason])} /></Panel><Panel title="Allocation overrides"><DataTable headers={["Account", "Key", "Value", "Source", "Starts", "Expires", "Reason"]} rows={(platform?.overrides || []).map((item: any) => [payload?.accounts.find((account) => account.id === item.account_id)?.name || item.account_id, item.key, JSON.stringify(item.value), item.grant_id ? "Complimentary grant" : "Manual", fmtDate(item.starts_at), item.expires_at ? fmtDate(item.expires_at) : "No expiry", item.reason])} /></Panel></> : activeTab === "Subscription rules" ? <Panel title="Subscription rules"><p>Complimentary grants are resolved before the underlying standard assignment.</p><p className="subtle">Granting or revoking complimentary access never creates, changes or cancels a Stripe subscription. Temporary grants return to the underlying standard package on expiry. Package and allocation changes preserve all customer data.</p></Panel> : <Panel title={activeTab}><DataTable headers={["Package", "Version", "State", "Allowances", "Features", "Unresolved commercial values", "Effective"]} rows={(platform?.packages || []).map((item: any) => [item.display_name, item.version, item.state, JSON.stringify(item.allowances || {}), JSON.stringify(item.features || {}), item.unresolved_values?.join(", ") || "None", item.effective_at ? fmtDate(item.effective_at) : "Draft"])} /></Panel>;
   else if (view === "financials") content = <Panel title={activeTab}>{!platform?.billing?.configured ? <UnavailableState title="Stripe billing is unconfigured" detail="No server-side Stripe key, webhook secret, product catalogue or reconciled billing state is available. Complimentary and beta access remains unchanged; no paid subscriptions are fabricated." /> : <DataTable headers={["Provider event", "Type", "State", "Provider time"]} rows={(platform.billing.events || []).map((event: any) => [event.provider_event_id, event.event_type, event.processing_state, fmtDate(event.provider_created_at)])} />}<p className="subtle">Currencies remain separate unless a labelled conversion is explicitly configured. Credits, cash refunds, recurring revenue and cash collection are reported independently.</p></Panel>;
   else if (view === "coupons") content = <Panel title={activeTab}>{!platform?.billing?.configured && <UnavailableState title="Promotion synchronisation unavailable" detail="Stripe sandbox credentials and product/price configuration are required before promotion codes can be enabled." />}<DataTable headers={["Code", "Discount", "Duration", "Packages", "Expires", "Enabled"]} rows={(platform?.billing?.promotions || []).map((item: any) => [item.code || "Provider generated", item.discount_type === "percentage" ? `${item.percentage}%` : `${item.fixed_amount_minor} ${item.currency}`, item.duration_type === "billing_periods" ? `${item.duration_count} billing periods` : item.duration_type, item.eligible_packages?.join(", ") || "All configured", item.expires_at ? fmtDate(item.expires_at) : "No expiry", item.enabled ? "Yes" : "No"])} /></Panel>;
   else if (view === "audits") content = activeTab === "Check health" ? <Panel title="Audit check health"><Metrics values={[["Technical checks", platform?.audits?.technicalChecks?.length || 0, "Repository-owned execution"], ["Customer groups", platform?.audits?.groups?.length || 0, "Presentation groups"], ["Failed today", platform?.audits?.today?.failed || 0, "Application measured"], ["Partial today", platform?.audits?.today?.partial || 0, "Application measured"]]} /></Panel> : <Panel title={activeTab}><p className="subtle">Executable logic remains in the repository. Database controls can change validated availability and supported configuration only.</p><DataTable headers={["Check", "Category", "Subcategory", "Severity", "Lifecycle", "Config version"]} rows={(platform?.audits?.technicalChecks || []).filter((item: any) => !normalizedQuery || `${item.id} ${item.title} ${item.primary_category}`.toLowerCase().includes(normalizedQuery)).slice(0, 250).map((item: any) => [item.title, item.primary_category, item.subcategory, item.severity, item.lifecycle, item.configuration_version])} /></Panel>;
@@ -4588,6 +4605,97 @@ function SuperAdminView({ session, fixture = false, staff }: { session: Session 
     {tabs.length > 0 && <Tabs labels={tabs} value={activeTab} onChange={selectTab} />}
     {error ? <Panel><div className="analytics-state" role="alert"><Empty title="SuperAdmin command centre could not be loaded" detail={error} /><button className="btn" onClick={() => void load()}>Retry</button></div></Panel> : !payload || !platform ? <Panel><Empty title="Loading SuperAdmin command centre…" detail="Collecting real platform data and capability status." /></Panel> : content}
   </Page>;
+}
+
+function SuperAdminAccountDetail({ detail, packages, session, fixture, canWrite, refresh }: { detail: any; packages: any[]; session: Session | null; fixture: boolean; canWrite: boolean; refresh: () => Promise<void> }) {
+  const labels = ["Overview", "Workspaces & Properties", "Users & Permissions", "Package & Billing", "Usage", "Communications", "Activity", "Data & Access"];
+  const [tab, setTab] = useState("Overview");
+  const activeGrant = (detail.grants || []).find((item: any) => item.status === "active" && (!item.expires_at || Date.parse(item.expires_at) > Date.now()));
+  const standardAssignment = (detail.assignments || []).find((item: any) => !item.ends_at);
+  const [arrangement, setArrangement] = useState(activeGrant ? "complimentary" : "standard");
+  const [packageVersionId, setPackageVersionId] = useState(activeGrant?.package_version_id || standardAssignment?.package_version_id || packages.find((item) => item.state === "published")?.id || "");
+  const [permanent, setPermanent] = useState(!activeGrant?.expires_at);
+  const [expiresAt, setExpiresAt] = useState(activeGrant?.expires_at ? new Date(activeGrant.expires_at).toISOString().slice(0, 16) : "");
+  const [reason, setReason] = useState(activeGrant?.reason || "");
+  const [properties, setProperties] = useState("");
+  const [editingSeats, setEditingSeats] = useState("");
+  const [auditCredits, setAuditCredits] = useState("");
+  const [preview, setPreview] = useState<any>(null);
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const effective = detail.effectiveEntitlements;
+  const publishedPackages = packages.filter((item) => item.state === "published");
+
+  function requestBody() {
+    return {
+      packageVersionId,
+      permanent,
+      expiresAt: permanent || !expiresAt ? null : new Date(expiresAt).toISOString(),
+      reason,
+      overrides: { propertiesPerAccount: properties, editingSeats, auditCreditsPerWeek: auditCredits },
+    };
+  }
+
+  async function previewChange() {
+    if (!session || fixture || arrangement !== "complimentary") return;
+    setBusy(true); setMessage("");
+    try { setPreview((await api<any>(session, `/api/superadmin/accounts/${detail.account.id}/package-preview`, { method: "POST", body: JSON.stringify(requestBody()) })).preview); }
+    catch (error: any) { setMessage(error.message); }
+    finally { setBusy(false); }
+  }
+
+  async function saveChange() {
+    if (!session || fixture) return;
+    setBusy(true); setMessage("");
+    try {
+      if (arrangement === "standard") {
+        await api(session, `/api/superadmin/accounts/${detail.account.id}/package`, { method: "DELETE", body: JSON.stringify({ reason }) });
+        setMessage("Complimentary access revoked. The underlying standard package is effective; Stripe was not changed.");
+      } else {
+        await api(session, `/api/superadmin/accounts/${detail.account.id}/package`, { method: "PUT", body: JSON.stringify(requestBody()) });
+        setMessage("Complimentary package saved. No Stripe charge or subscription change was made.");
+      }
+      setPreview(null);
+      await refresh();
+    } catch (error: any) { setMessage(error.message); }
+    finally { setBusy(false); }
+  }
+
+  const packageName = activeGrant?.package_versions?.display_name || standardAssignment?.package_versions?.display_name || cap(effective?.packageKey?.replaceAll("_", " ") || detail.account.entitlement);
+  return <>
+    <div className="button-row"><Link className="btn" to="/superadmin?view=accounts">← All accounts</Link><span><b>{detail.account.name}</b> · {packageName} · <StatusPill tone={activeGrant ? "success" : "neutral"}>{activeGrant ? "Complimentary" : "Standard"}</StatusPill></span></div>
+    <Tabs labels={labels} value={tab} onChange={setTab} />
+    {tab === "Overview" ? <><Metrics values={[["Workspaces", detail.workspaces.length, "Account resources"], ["Properties", detail.properties.length, "Preserved on package changes"], ["Users", new Set(detail.memberships.map((item: any) => item.user_id)).size, "Account identities"], ["Access", cap(detail.account.access_state || "active"), "Account state"]]} /><Panel title="Effective access"><p><b>{packageName}</b> · {activeGrant ? "Complimentary" : `Standard billing state: ${standardAssignment?.billing_state || "unconfigured"}`}</p><p className="subtle">Package changes do not delete workspaces, properties, reports, audits or analytics history.</p></Panel></> : null}
+    {tab === "Workspaces & Properties" ? <Panel title="Workspaces & properties"><DataTable headers={["Property", "Domain", "Workspace", "State"]} rows={detail.properties.map((property: any) => [property.name, property.canonical_host, detail.workspaces.find((workspace: any) => workspace.id === property.workspace_id)?.name || property.workspace_id, property.access_state])} /></Panel> : null}
+    {tab === "Users & Permissions" ? <Panel title="Users & permissions"><DataTable headers={["User ID", "Role", "Created"]} rows={detail.memberships.map((item: any) => [item.user_id, cap(item.role), fmtDate(item.created_at)])} /></Panel> : null}
+    {tab === "Package & Billing" ? <>
+      <Panel title="Current package & billing"><Metrics values={[["Effective package", packageName, activeGrant ? "Complimentary grant" : "Standard assignment"], ["Billing arrangement", activeGrant ? "Complimentary" : "Standard", activeGrant ? "No payment required" : cap(standardAssignment?.billing_state || "unconfigured")], ["Grant expiry", activeGrant?.expires_at ? fmtDate(activeGrant.expires_at) : activeGrant ? "Never" : "Not applicable", activeGrant?.expiry_behavior === "return_to_standard" ? "Returns to standard package" : ""], ["Stripe", standardAssignment?.billing_state || "Unconfigured", "Unaffected by complimentary access"]]} />
+        {activeGrant?.expires_at && <UnavailableState title="Temporary complimentary access" detail={`This grant ends ${fmtDate(activeGrant.expires_at)}. The account will return to its underlying standard package without an automatic charge.`} />}
+      </Panel>
+      <Panel title="Edit package access">
+        <div className="settings-grid">
+          <label className="field">Billing arrangement<select value={arrangement} onChange={(event) => { setArrangement(event.target.value); setPreview(null); }}><option value="complimentary">Complimentary</option><option value="standard">Standard (underlying billing)</option></select></label>
+          <label className="field">Package<select value={packageVersionId} disabled={arrangement === "standard"} onChange={(event) => { setPackageVersionId(event.target.value); setPreview(null); }}>{publishedPackages.map((item) => <option key={item.id} value={item.id}>{item.display_name} · v{item.version}</option>)}</select></label>
+          {arrangement === "complimentary" && <label className="field">Duration<select value={permanent ? "permanent" : "temporary"} onChange={(event) => setPermanent(event.target.value === "permanent")}><option value="permanent">Permanent</option><option value="temporary">Temporary</option></select></label>}
+          {arrangement === "complimentary" && !permanent && <label className="field">Expires<input type="datetime-local" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} /></label>}
+          <label className="field settings-span-2">Reason<input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Required for the immutable admin audit log" /></label>
+        </div>
+        {arrangement === "complimentary" ? <>
+          <h3>Optional allocation overrides</h3>
+          <div className="settings-grid"><label className="field">Properties<input inputMode="numeric" value={properties} onChange={(event) => setProperties(event.target.value)} placeholder="Package default" /></label><label className="field">Editing seats<input inputMode="numeric" value={editingSeats} onChange={(event) => setEditingSeats(event.target.value)} placeholder="Package default" /></label><label className="field">Audit credits / week<input inputMode="numeric" value={auditCredits} onChange={(event) => setAuditCredits(event.target.value)} placeholder="Package default" /></label></div>
+          <p className="subtle">Blank values inherit the package. Overrides cannot exceed platform safety ceilings. Temporary grants return to the underlying standard package at expiry; they never start a charge.</p>
+          <div className="button-row"><button className="btn" disabled={busy || !canWrite} onClick={() => void previewChange()}>Preview effective access</button><button className="primary" disabled={busy || !canWrite || !preview} onClick={() => void saveChange()}>Save complimentary access</button></div>
+        </> : <><p className="subtle">Selecting Standard removes only the complimentary overlay. It does not create, alter or cancel a Stripe subscription.</p><button className="danger-solid" disabled={busy || !canWrite || !activeGrant || reason.trim().length < 3} onClick={() => void saveChange()}>Return to standard package</button></>}
+        {preview && <div className="analytics-state"><h3>Preview</h3><p><b>{preview.proposed.displayName}</b> · Complimentary · {preview.permanent ? "Permanent" : `Until ${fmtDate(preview.expiresAt)}`}</p><p>{preview.expiryOutcome}</p><DataTable headers={["Entitlement", "Effective value", "Source"]} rows={Object.entries(preview.proposed.values || {}).map(([key, value]) => [cap(key.replace(/([A-Z])/g, " $1")), value === null ? "Unlimited" : JSON.stringify(value), preview.proposed.sources?.[key] || "Package"])} />{preview.conflicts?.length ? <UnavailableState title="Existing use exceeds the proposed allowance" detail={preview.conflicts.join("; ")} /> : <p className="subtle">No existing property or editing-seat conflicts detected.</p>}</div>}
+        {message && <p className="subtle" role="status">{message}</p>}
+      </Panel>
+      <Panel title="Grant history"><DataTable headers={["Package", "Arrangement", "Status", "Starts", "Expires", "Reason"]} rows={(detail.grants || []).map((item: any) => [item.package_versions?.display_name || item.package_version_id, "Complimentary", cap(item.status), fmtDate(item.starts_at), item.expires_at ? fmtDate(item.expires_at) : "Never", item.reason])} /></Panel>
+    </> : null}
+    {tab === "Usage" ? <Panel title="Usage"><DataTable headers={["Period", "Metric", "Included", "Consumed", "Reserved"]} rows={(detail.usage || []).map((item: any) => [`${fmtDate(item.period_start)} – ${fmtDate(item.period_end)}`, item.metric, item.included ?? "—", item.consumed, item.reserved])} /></Panel> : null}
+    {tab === "Communications" ? <Panel title="Communications"><DataTable headers={["Channel", "Subject", "State", "Created"]} rows={(detail.messages || []).map((item: any) => [item.channel, item.subject || item.kind, item.state, fmtDate(item.created_at)])} /></Panel> : null}
+    {tab === "Activity" ? <Panel title="Account activity"><DataTable headers={["Action", "Actor", "Time"]} rows={(detail.activity || []).map((item: any) => [item.action, item.actor_id || "System", fmtDate(item.created_at)])} /></Panel> : null}
+    {tab === "Data & Access" ? <Panel title="Data & access"><p>Account state: <b>{cap(detail.account.access_state || "active")}</b></p><p className="subtle">Package changes preserve customer data. Data export and deletion remain separate permission-checked workflows.</p></Panel> : null}
+  </>;
 }
 
 function UnavailableState({ title, detail }: { title: string; detail: string }) {
@@ -5221,8 +5329,11 @@ function AccountView({
 function Billing({ fixture, notify, data, session }: { fixture: boolean; notify: Notify; data: Bootstrap; session: Session | null }) {
   const [annual, setAnnual] = useState(true);
   const [eventUsage, setEventUsage] = useState<{ used: number; limit: number | null } | null>(fixture ? { used: 2, limit: 20 } : null);
-  const entitlement = String(data.accounts?.[0]?.accounts?.entitlement || (fixture ? "Scale" : "Pro"));
+  const accountId = data.accounts?.[0]?.accounts?.id;
+  const effective = accountId ? data.accountEntitlements?.[accountId] : null;
+  const entitlement = String(effective?.packageKey || data.accounts?.[0]?.accounts?.entitlement || (fixture ? "Scale" : "Pro"));
   const plan = /essentials/i.test(entitlement) ? "Essentials" : /scale/i.test(entitlement) ? "Scale" : /pro/i.test(entitlement) ? "Pro" : "Free";
+  const complimentary = effective?.arrangement === "complimentary" || (!effective && /early.?access/i.test(entitlement));
   useEffect(() => {
     if (!session || !data.properties.length) return;
     let cancelled = false;
@@ -5250,9 +5361,9 @@ function Billing({ fixture, notify, data, session }: { fixture: boolean; notify:
     <>
       <div className="grid equal">
         <Panel title="Subscription">
-          <StatusPill tone="success">{fixture ? "Active" : "Early access"}</StatusPill>
+          <StatusPill tone="success">{complimentary ? "Complimentary" : "Active"}</StatusPill>
           <div className="price">{plan}</div>
-          <p className="subtle">No billable Stripe subscription is connected to this account. No charge, renewal date or billing action is represented here.</p>
+          <p className="subtle">{complimentary ? `This package is complimentary${effective?.grant?.expires_at ? ` until ${fmtDate(effective.grant.expires_at)}` : " with no expiry"}. No payment is required and no Stripe subscription is changed.` : "This is the effective standard package. Billing state is shown only when reconciled from Stripe."}</p>
           <button className="btn" disabled title="Stripe plan changes are not connected">Change plan</button>{" "}
           <button className="btn" disabled title="Stripe billing management is not connected">Manage billing</button>
         </Panel>
