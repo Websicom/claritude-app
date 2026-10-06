@@ -30,6 +30,7 @@ import {
   Home,
   Info,
   LayoutGrid,
+  Landmark,
   LogOut,
   Menu,
   MoreHorizontal,
@@ -48,6 +49,9 @@ import {
   Upload,
   Users,
   Eye,
+  Moon,
+  SquareDashedMousePointer,
+  Sun,
   X,
 } from "lucide-react";
 import {
@@ -277,6 +281,33 @@ type DemoMetrics = {
   status?: string;
 };
 type Notify = (message: string) => void;
+let activeDisplayTimezone = "Europe/London";
+let activeDateFormat: "DD/MM/YYYY" | "MM/DD/YYYY" | "YYYY-MM-DD" = "DD/MM/YYYY";
+
+const FALLBACK_TIMEZONES = [
+  "UTC", "Europe/London", "Europe/Dublin", "Europe/Paris", "Europe/Berlin", "Europe/Madrid", "Europe/Rome",
+  "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "America/Toronto", "America/Vancouver",
+  "Asia/Dubai", "Asia/Kolkata", "Asia/Singapore", "Asia/Hong_Kong", "Asia/Tokyo", "Australia/Sydney", "Pacific/Auckland",
+];
+
+export function supportedTimezones() {
+  try {
+    const values = (Intl as typeof Intl & { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf?.("timeZone");
+    return values?.length ? ["UTC", ...values.filter((value) => value !== "UTC")] : FALLBACK_TIMEZONES;
+  } catch {
+    return FALLBACK_TIMEZONES;
+  }
+}
+
+function TimezoneSelect({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const zones = useMemo(() => supportedTimezones(), []);
+  return (
+    <select value={value} onChange={(event) => onChange(event.target.value)}>
+      {!zones.includes(value) && <option value={value}>{value}</option>}
+      {zones.map((zone) => <option key={zone} value={zone}>{zone.replaceAll("_", " ")}</option>)}
+    </select>
+  );
+}
 type AnalyticsPageFilters = {
   pageSearch?: string;
   pathMode?: "exact" | "prefix";
@@ -363,8 +394,12 @@ export function ClaritudeApplication({
     [addOpen, setAddOpen] = useState(false),
     [workspaceOpen, setWorkspaceOpen] = useState(false),
     [workspaceName, setWorkspaceName] = useState(""),
-    [helpOpen, setHelpOpen] = useState(false);
+    [helpOpen, setHelpOpen] = useState(false),
+    [appearance, setAppearance] = useState<"light" | "dark">(() =>
+      typeof localStorage !== "undefined" && localStorage.getItem("claritude-appearance") === "dark" ? "dark" : "light",
+    );
   const toastTimer = useRef<number | null>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
   const allProperties = data.properties;
   const requestedWorkspace = new URLSearchParams(loc.search).get("workspace");
   const requested = new URLSearchParams(loc.search).get("property");
@@ -373,6 +408,10 @@ export function ClaritudeApplication({
     (loc.pathname !== "/" && loc.pathname !== "/notifications"
       ? allProperties[0]
       : undefined);
+  activeDisplayTimezone = property?.settings?.timezone || data.profile?.timezone || "Europe/London";
+  activeDateFormat = ["DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD"].includes(data.profile?.date_format)
+    ? data.profile.date_format
+    : "DD/MM/YYYY";
   const allWorkspaceMemberships = data.workspaces || [];
   const selectedWorkspaceMembership =
     allWorkspaceMemberships.find(
@@ -489,15 +528,32 @@ export function ClaritudeApplication({
     );
   }
   useEffect(() => {
-    if (!workspaceMenu && !propertyMenu) return;
+    if (!workspaceMenu && !propertyMenu && !userMenu) return;
     const dismiss = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       setWorkspaceMenu(false);
       setPropertyMenu(false);
+      setUserMenu(false);
+    };
+    const dismissOutside = (event: PointerEvent) => {
+      const target = event.target as Element;
+      if (target.closest(".top-selector, .workspace-menu, .property-menu")) return;
+      if (userMenuRef.current?.contains(target)) return;
+      setWorkspaceMenu(false);
+      setPropertyMenu(false);
+      setUserMenu(false);
     };
     window.addEventListener("keydown", dismiss);
-    return () => window.removeEventListener("keydown", dismiss);
-  }, [workspaceMenu, propertyMenu]);
+    window.addEventListener("pointerdown", dismissOutside);
+    return () => {
+      window.removeEventListener("keydown", dismiss);
+      window.removeEventListener("pointerdown", dismissOutside);
+    };
+  }, [workspaceMenu, propertyMenu, userMenu]);
+  useEffect(() => {
+    document.documentElement.dataset.theme = appearance;
+    localStorage.setItem("claritude-appearance", appearance);
+  }, [appearance]);
   async function snoozeAlerts() {
     setAlertsSnoozedLocally(true);
     if (!session) {
@@ -673,7 +729,7 @@ export function ClaritudeApplication({
               </>
             )}
           </nav>
-          <div className="nav-bottom">
+          <div className="nav-bottom" ref={userMenuRef}>
             <nav>
               {!workspaceContext && property && canManageWorkspace && (
                 <Link
@@ -691,13 +747,26 @@ export function ClaritudeApplication({
             </nav>
             {userMenu && (
               <div className="user-popover">
+                <b className="user-popover-heading">Account</b>
                 <Link to={href("account")} onClick={() => setUserMenu(false)}>
-                  <Users />
-                  Account settings
+                  <Settings /> Account settings
                 </Link>
+                <Link to="/account?accountTab=Billing%20%26%20plan" onClick={() => setUserMenu(false)}>
+                  <Landmark /> Billing &amp; plan
+                </Link>
+                <b className="user-popover-heading">Appearance</b>
+                <button className={appearance === "light" ? "selected" : ""} onClick={() => { setAppearance("light"); setUserMenu(false); }}>
+                  <Sun /> Light mode
+                </button>
+                <button className={appearance === "dark" ? "selected" : ""} onClick={() => { setAppearance("dark"); setUserMenu(false); }}>
+                  <Moon /> Dark mode
+                </button>
+                <b className="user-popover-heading">Other</b>
+                <button onClick={() => { setUserMenu(false); setHelpOpen(true); }}>
+                  <HelpCircle /> Help
+                </button>
                 <button onClick={onSignOut}>
-                  <LogOut />
-                  Sign out
+                  <LogOut /> Logout
                 </button>
               </div>
             )}
@@ -1146,6 +1215,23 @@ function WorkspaceOverview({
         : {},
     );
   useEffect(() => {
+    if (!filterOpen && !rowMenu) return;
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target as Element;
+      if (!target.closest(".filter-action-menu, .toolbar > .btn")) setFilterOpen(false);
+      if (!target.closest(".row-action-wrap")) setRowMenu(null);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { setFilterOpen(false); setRowMenu(null); }
+    };
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [filterOpen, rowMenu]);
+  useEffect(() => {
     if (fixture || !session || !properties.length) return;
     let cancelled = false;
     Promise.all(
@@ -1225,24 +1311,24 @@ function WorkspaceOverview({
               [
                 "Properties",
                 properties.length,
-                `${properties.filter((p) => p.uptime_monitors?.[0]?.last_status === "online").length} online · ${properties.filter((p) => p.uptime_monitors?.[0]?.last_status === "offline").length} down · ${properties.filter((p) => p.uptime_monitors?.[0]?.last_status === "paused").length} paused`,
+                "",
               ],
               [
                 "Properties down",
                 properties.filter(
                   (p) => p.uptime_monitors?.[0]?.last_status === "offline",
                 ).length,
-                fixture ? "North Commerce" : "Latest state",
+                fixture ? "North Commerce" : "",
               ],
               [
                 "Pageviews",
                 fmt(totals.views),
-                fixture ? "↗ 12.8%" : "Accepted pageviews across this workspace",
+                fixture ? "↗ 12.8%" : "",
               ],
               [
                 "Key events",
                 fmt(totals.events),
-                fixture ? "↗ 8.2%" : "Configured events across this workspace",
+                fixture ? "↗ 8.2%" : "",
               ],
             ]}
           />
@@ -1396,8 +1482,7 @@ function WorkspaceOverview({
                 Showing {filtered.length ? (page - 1) * pageSize + 1 : 0}–
                 {Math.min(page * pageSize, filtered.length)} of {filtered.length}
               </span>
-              <label className="pagination-size">Show<select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}>{[25, 50, 100].map((size) => <option value={size} key={size}>{size}</option>)}</select></label>
-              <div className="pagination">
+              <div className="pagination pagination-controls">
                 <button onClick={() => setPage(Math.max(1, page - 1))}>
                   <ChevronLeft />
                 </button>
@@ -1421,6 +1506,7 @@ function WorkspaceOverview({
                   <ChevronRight />
                 </button>
               </div>
+              <label className="pagination-size">Show<select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}>{[25, 50, 100].map((size) => <option value={size} key={size}>{size}</option>)}</select></label>
             </div>
           </Panel>
           <Panel
@@ -3703,9 +3789,13 @@ function PropertySettingsView({
     [viewerOpen, setViewerOpen] = useState(false),
     [viewerEmail, setViewerEmail] = useState(""),
     [viewers, setViewers] = useState<any[]>([]),
+    [workspaceAccess, setWorkspaceAccess] = useState<any[]>([]),
+    [viewerMenu, setViewerMenu] = useState<string | null>(null),
     [viewerToRemove, setViewerToRemove] = useState<any | null>(null),
     [deleteOpen, setDeleteOpen] = useState(false),
     [deleteConfirmation, setDeleteConfirmation] = useState(""),
+    [resetOpen, setResetOpen] = useState(false),
+    [resetConfirmation, setResetConfirmation] = useState(""),
     [trackingDiagnostics, setTrackingDiagnostics] = useState<any>(null);
   useEffect(() => {
     if (!session || !property) return;
@@ -3722,10 +3812,30 @@ function PropertySettingsView({
     api<any>(session, `/api/properties/${property.id}/tracking-diagnostics`)
       .then(setTrackingDiagnostics)
       .catch(() => setTrackingDiagnostics(null));
+    api<any>(session, "/api/users")
+      .then((result) => setWorkspaceAccess((result.workspaceMemberships || []).filter((membership: any) => membership.workspace_id === property.workspace_id).map((membership: any) => ({
+        ...membership,
+        source: "Workspace",
+        user: result.users?.find((user: any) => user.id === membership.user_id),
+      }))))
+      .catch(() => setWorkspaceAccess([]));
   }, [property?.id, session]);
   useEffect(() => {
     if (requestedSettingsTab && settingsTabs.includes(requestedSettingsTab)) setTab(requestedSettingsTab);
   }, [requestedSettingsTab]);
+  useEffect(() => {
+    if (!viewerMenu) return;
+    const dismiss = (event: PointerEvent) => {
+      if (!(event.target as Element).closest(".viewer-row-menu")) setViewerMenu(null);
+    };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setViewerMenu(null); };
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [viewerMenu]);
   if (!property)
     return (
       <Empty
@@ -3787,10 +3897,7 @@ function PropertySettingsView({
           <div className="form-two">
             <label className="field">
               Timezone
-              <select value={timezone} onChange={(event) => setTimezone(event.target.value)}>
-                <option>Europe/London</option>
-                <option>UTC</option>
-              </select>
+              <TimezoneSelect value={timezone} onChange={setTimezone} />
             </label>
             <label className="field">
               Reporting currency
@@ -3815,13 +3922,15 @@ function PropertySettingsView({
         </>
       ) : tab === "Tracking" ? (
         <>
-          <Panel title="Installation">
-            <pre className="install-code">{snippet}</pre>
+          <Panel title="Install analytics code">
+            <p className="settings-intro">Add the script to the site-wide <code>&lt;head&gt;</code> template so it loads once on every measured page. Claritude automatically detects common browser history navigation in single-page applications; call <code>claritude.pageview()</code> only when a router does not update browser history.</p>
+            <pre className="install-code install-code-dark">{snippet}</pre>
             <CopyButton text={snippet} label="Copy snippet" successMessage="Tracking snippet copied" notify={notify} />
           </Panel>
           <Panel title="Tracking status">
             <KeyValues
               rows={[
+                ["Status", <StatusPill tone={property.tracking_last_received_at ? "success" : "danger"}>{property.tracking_last_received_at ? "Online" : "Offline"}</StatusPill>],
                 ["Public property ID", property.tracking_id],
                 ["Allowed host", property.canonical_host],
                 [
@@ -3891,63 +4000,43 @@ function PropertySettingsView({
           notify={notify}
         />
       ) : tab === "Sharing" ? (
-        <Panel title="Property access">
+        <Panel title="Property access" actions={<button className="btn" onClick={() => setViewerOpen(true)}><Plus /> Invite user</button>}>
           <DataTable
             headers={[
               "User",
-              "Role",
+              "Access source",
+              "Status",
               "Analytics",
               "Audit",
               "Uptime",
-              "Settings",
               "",
             ]}
             rows={[
-              ["Account holder", "Owner", "Allowed", "Allowed", "Allowed", "Allowed", ""],
+              ["Account holder", "Account owner", <StatusPill tone="success">Active</StatusPill>, "Allowed", "Allowed", "Allowed", ""],
+              ...workspaceAccess.map((access) => [
+                access.user?.name || access.user?.email || "Workspace user",
+                `${cap(access.role)} · inherited from workspace`,
+                <StatusPill tone={access.user?.confirmedAt ? "success" : "neutral"}>{access.user?.confirmedAt ? "Active" : "Invited"}</StatusPill>,
+                "Allowed",
+                "Allowed",
+                "Allowed",
+                <span className="subtle">Managed in Account settings</span>,
+              ]),
               ...viewers.map((viewer) => [
                 viewer.name || viewer.email,
-                cap(viewer.role),
+                "Direct property viewer",
+                <StatusPill tone={viewer.confirmedAt ? "success" : "neutral"}>{viewer.confirmedAt ? "Active" : "Invited"}</StatusPill>,
                 "View only",
                 "View only",
                 "View only",
-                "Not allowed",
-                <button className="btn" onClick={() => setViewerToRemove(viewer)}>Remove access</button>,
+                <span className="row-action-wrap viewer-row-menu"><button className="iconbtn" aria-label={`${viewer.name || viewer.email} actions`} onClick={() => setViewerMenu(viewerMenu === viewer.user_id ? null : viewer.user_id)}><MoreHorizontal /></button>{viewerMenu === viewer.user_id && <span className="action-menu row-action-menu"><button onClick={() => { setViewerMenu(null); setViewerToRemove(viewer); }}><Trash2 /> Remove access</button></span>}</span>,
               ]),
             ]}
           />
-          <button className="btn" onClick={() => setViewerOpen(true)}>
-            <Plus />
-            Invite viewer
-          </button>
+          <p className="subtle settings-footnote">Property invitations are view-only. Workspace access is inherited and managed from Account settings.</p>
         </Panel>
       ) : (
         <>
-        <Panel title="Privacy & data collection">
-          <div className="form-two">
-            <label className="field">
-              Analytics cookies
-              <select value="disabled" disabled><option value="disabled">Disabled — cookieless</option></select>
-            </label>
-            <label className="field">
-              Visitor profiles
-              <select value="anonymous" disabled><option value="anonymous">Anonymous</option></select>
-            </label>
-            <label className="field">
-              Sensitive query parameters
-              <input value={sensitiveParams} onChange={(event) => setSensitiveParams(event.target.value)} />
-            </label>
-            <label className="field">
-              IP address handling
-              <select value={ipHandling} onChange={(event) => setIpHandling(event.target.value)}>
-                <option value="discard_after_geolocation">Discard after geolocation</option>
-                <option value="discard_immediately">Discard immediately</option>
-              </select>
-            </label>
-          </div>
-          <div className="settings-actions right">
-            <button className="primary" disabled={busy} onClick={save}>Save privacy options</button>
-          </div>
-        </Panel>
         <Panel title="Advanced actions">
           <AdvancedRow
             title="Property verification"
@@ -3977,9 +4066,26 @@ function PropertySettingsView({
             }
           />
           <AdvancedRow
-            title="Website URL"
-            detail={`${property.url} · fixed after setup`}
-            action={<Status value={property.verification_status} />}
+            title="Export property data"
+            detail="Download analytics, audits and configuration."
+            action={<button className="btn" onClick={() => {
+              if (!session) return;
+              void api<any>(session, `/api/properties/${property.id}/export`).then((exported) => {
+                const url = URL.createObjectURL(new Blob([JSON.stringify(exported, null, 2)], { type: "application/json" }));
+                const link = document.createElement("a");
+                link.href = url;
+                link.download = `${property.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-claritude-export.json`;
+                link.click();
+                URL.revokeObjectURL(url);
+                notify("Property export downloaded");
+              }).catch((error) => notify(error.message));
+            }}>Export data</button>}
+          />
+          <AdvancedRow
+            danger
+            title="Reset property"
+            detail="Restore measured property data to its initial state."
+            action={<button className="danger-solid" onClick={() => setResetOpen(true)}>Reset property</button>}
           />
           <AdvancedRow
             danger
@@ -4076,6 +4182,34 @@ function PropertySettingsView({
           </label>
         </SimpleDialog>
       )}
+      {resetOpen && (
+        <SimpleDialog
+          title="Reset property"
+          close={() => { setResetOpen(false); setResetConfirmation(""); }}
+          action="Reset property"
+          danger
+          disabled={resetConfirmation !== property.name || busy}
+          onSave={async () => {
+            if (!session || resetConfirmation !== property.name) return;
+            setBusy(true);
+            try {
+              await api(session, `/api/properties/${property.id}/reset`, { method: "POST" });
+              setResetOpen(false);
+              setResetConfirmation("");
+              reload();
+              notify("Property data reset");
+            } catch (error: any) {
+              notify(error.message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          <p>This permanently removes analytics observations, uptime checks and incidents, audits, configured custom events, saved reports and property notifications.</p>
+          <p className="subtle">The property, workspace/account membership, property viewers, monitor configuration, alert recipients and report schedules are retained.</p>
+          <label className="field">Type <b>{property.name}</b> to confirm<input autoFocus value={resetConfirmation} onChange={(event) => setResetConfirmation(event.target.value)} /></label>
+        </SimpleDialog>
+      )}
     </Page>
   );
 }
@@ -4093,12 +4227,15 @@ function AccountView({
   reload: () => void;
   notify: Notify;
 }) {
-  const [tab, setTab] = useState("Profile"),
+  const accountLocation = useLocation();
+  const requestedAccountTab = new URLSearchParams(accountLocation.search).get("accountTab");
+  const [tab, setTab] = useState(requestedAccountTab || "Profile"),
     [name, setName] = useState(data.profile?.full_name || ""),
     [avatarBusy, setAvatarBusy] = useState(false),
     [timezone, setTimezone] = useState(
       data.profile?.timezone || "Europe/London",
     ),
+    [dateFormat, setDateFormat] = useState(data.profile?.date_format || "DD/MM/YYYY"),
     [workspaceDrafts, setWorkspaceDrafts] = useState<Record<string, string>>(() =>
       Object.fromEntries(data.workspaces.map((entry: any) => [entry.workspaces?.id, entry.workspaces?.name || ""])),
     ),
@@ -4111,6 +4248,11 @@ function AccountView({
     [memberToEdit, setMemberToEdit] = useState<any | null>(null),
     [memberRole, setMemberRole] = useState<"member" | "viewer">("member"),
     [memberToRemove, setMemberToRemove] = useState<any | null>(null),
+    [workspaceToEdit, setWorkspaceToEdit] = useState<any | null>(null),
+    [propertyToMove, setPropertyToMove] = useState<Property | null>(null),
+    [propertyMoveWorkspaceId, setPropertyMoveWorkspaceId] = useState(""),
+    [propertyToDelete, setPropertyToDelete] = useState<Property | null>(null),
+    [propertyDeleteConfirmation, setPropertyDeleteConfirmation] = useState(""),
     [workspaceToDelete, setWorkspaceToDelete] = useState<any | null>(null),
     [workspaceDeleteConfirmation, setWorkspaceDeleteConfirmation] = useState("");
   const role = data.accounts?.[0]?.role || data.workspaces?.[0]?.role || "viewer";
@@ -4119,6 +4261,7 @@ function AccountView({
     : [
         "Profile",
         "Workspace",
+        "Properties",
         "Billing & plan",
         "Users",
         "Notification preferences",
@@ -4146,12 +4289,15 @@ function AccountView({
         : data.workspaces?.[0]?.workspaces?.id || "",
     );
   }, [data.workspaces]);
+  useEffect(() => {
+    if (requestedAccountTab && tabs.includes(requestedAccountTab)) setTab(requestedAccountTab);
+  }, [requestedAccountTab, tabs.join("|")]);
   async function save() {
     try {
       if (session)
         await api(session, "/api/profile", {
           method: "PATCH",
-          body: JSON.stringify({ full_name: name, timezone }),
+          body: JSON.stringify({ full_name: name, timezone, date_format: dateFormat }),
         });
       notify("Profile saved");
       reload();
@@ -4262,12 +4408,14 @@ function AccountView({
           </label>
           <label className="field">
             Timezone
-            <select
-              value={timezone}
-              onChange={(e) => setTimezone(e.target.value)}
-            >
-              <option>Europe/London</option>
-              <option>UTC</option>
+            <TimezoneSelect value={timezone} onChange={setTimezone} />
+          </label>
+          <label className="field">
+            Date format
+            <select value={dateFormat} onChange={(event) => setDateFormat(event.target.value)}>
+              <option value="DD/MM/YYYY">DD/MM/YYYY</option>
+              <option value="MM/DD/YYYY">MM/DD/YYYY</option>
+              <option value="YYYY-MM-DD">YYYY-MM-DD</option>
             </select>
           </label>
           <button className="primary" onClick={save}>
@@ -4283,16 +4431,11 @@ function AccountView({
               const propertyCount = data.properties.filter((property) => property.workspace_id === workspace?.id).length;
               const canEditWorkspace = entry.role === "owner" || entry.role === "member";
               return [
-                <input
-                  aria-label={`Workspace name for ${workspace?.name || "Workspace"}`}
-                  value={workspaceDrafts[workspace?.id] || ""}
-                  readOnly={!canEditWorkspace}
-                  onChange={(event) => setWorkspaceDrafts((current) => ({ ...current, [workspace?.id]: event.target.value }))}
-                />,
+                <b>{workspace?.name || "Workspace"}</b>,
                 propertyCount,
                 cap(entry.role),
                 <div className="row-actions">
-                  {canEditWorkspace && <button className="btn" disabled={!workspaceDrafts[workspace?.id]?.trim()} onClick={() => void saveWorkspace(workspace?.id)}>Save</button>}
+                  {canEditWorkspace && <button className="btn" onClick={() => setWorkspaceToEdit(workspace)}>Edit</button>}
                   {entry.role === "owner" && (
                     <button
                       className="danger-solid"
@@ -4309,8 +4452,29 @@ function AccountView({
           />
           <p className="subtle">A workspace must be empty before it can be deleted, and every account must retain at least one workspace.</p>
         </Panel>
+      ) : tab === "Properties" ? (
+        <Panel title="Properties across your workspaces">
+          <DataTable
+            headers={["Property", "Workspace", "Viewers", "Editing/admin users", "Tracking", "Uptime", ""]}
+            rows={data.properties.filter((property) => data.workspaces.some((entry: any) => entry.workspaces?.id === property.workspace_id && ["owner", "member"].includes(entry.role))).map((property) => {
+              const workspace = data.workspaces.find((entry: any) => entry.workspaces?.id === property.workspace_id)?.workspaces;
+              const viewerCount = (data.propertyMemberships || []).filter((membership: any) => membership.property_id === property.id).length;
+              const editorCount = (usersData?.workspaceMemberships || []).filter((membership: any) => membership.workspace_id === property.workspace_id && membership.role !== "viewer").length;
+              const monitor = property.uptime_monitors?.[0];
+              return [
+                <Link className="project-cell" to={`/overview?property=${property.id}`}><span className="favicon project-icon"><PropertyFavicon property={property} /></span><span><b>{property.name}</b><small>{property.canonical_host}</small></span></Link>,
+                workspace?.name || "Workspace",
+                viewerCount,
+                editorCount,
+                <StatusPill tone={property.tracking_last_received_at ? "success" : "danger"}>{property.tracking_last_received_at ? "Receiving data" : "Not installed"}</StatusPill>,
+                <StatusPill tone={monitor?.enabled === false ? "neutral" : monitor?.last_status === "offline" ? "danger" : "success"}>{monitor?.enabled === false ? "Paused" : monitor ? "Monitoring" : "Not monitoring"}</StatusPill>,
+                <div className="row-actions"><Link className="btn" to={`/settings?property=${property.id}`}>Edit</Link><button className="btn" onClick={() => { setPropertyToMove(property); setPropertyMoveWorkspaceId(property.workspace_id || ""); }}>Move</button><button className="danger-solid" onClick={() => setPropertyToDelete(property)}>Delete</button></div>,
+              ];
+            })}
+          />
+        </Panel>
       ) : tab === "Billing & plan" ? (
-        <Billing fixture={fixture} notify={notify} />
+        <Billing fixture={fixture} notify={notify} data={data} session={session} />
       ) : tab === "Users" ? (
         <Panel
           title="Workspace users"
@@ -4444,6 +4608,66 @@ function AccountView({
           />
         </Panel>
       )}
+      {workspaceToEdit && (
+        <SimpleDialog
+          title="Edit workspace"
+          close={() => setWorkspaceToEdit(null)}
+          action="Save"
+          disabled={!workspaceDrafts[workspaceToEdit.id]?.trim()}
+          onSave={async () => {
+            await saveWorkspace(workspaceToEdit.id);
+            setWorkspaceToEdit(null);
+          }}
+        >
+          <label className="field">Workspace name<input autoFocus value={workspaceDrafts[workspaceToEdit.id] || ""} onChange={(event) => setWorkspaceDrafts((current) => ({ ...current, [workspaceToEdit.id]: event.target.value }))} /></label>
+        </SimpleDialog>
+      )}
+      {propertyToMove && (
+        <SimpleDialog
+          title="Change assigned workspace"
+          close={() => setPropertyToMove(null)}
+          action="Move property"
+          disabled={!propertyMoveWorkspaceId || propertyMoveWorkspaceId === propertyToMove.workspace_id}
+          onSave={async () => {
+            if (!session) return;
+            try {
+              await api(session, `/api/properties/${propertyToMove.id}`, { method: "PATCH", body: JSON.stringify({ name: propertyToMove.name, workspace_id: propertyMoveWorkspaceId }) });
+              setPropertyToMove(null);
+              reload();
+              notify("Property moved to its new workspace");
+            } catch (error: any) {
+              notify(error.message);
+            }
+          }}
+        >
+          <p>Move <b>{propertyToMove.name}</b> to another workspace in this account.</p>
+          <label className="field">Workspace<select value={propertyMoveWorkspaceId} onChange={(event) => setPropertyMoveWorkspaceId(event.target.value)}>{data.workspaces.filter((entry: any) => ["owner", "member"].includes(entry.role)).map((entry: any) => <option key={entry.workspaces?.id} value={entry.workspaces?.id}>{entry.workspaces?.name}</option>)}</select></label>
+        </SimpleDialog>
+      )}
+      {propertyToDelete && (
+        <SimpleDialog
+          title="Delete property"
+          close={() => { setPropertyToDelete(null); setPropertyDeleteConfirmation(""); }}
+          action="Delete property"
+          danger
+          disabled={propertyDeleteConfirmation !== propertyToDelete.name}
+          onSave={async () => {
+            if (!session || propertyDeleteConfirmation !== propertyToDelete.name) return;
+            try {
+              await api(session, `/api/properties/${propertyToDelete.id}`, { method: "DELETE" });
+              setPropertyToDelete(null);
+              setPropertyDeleteConfirmation("");
+              reload();
+              notify("Property deleted");
+            } catch (error: any) {
+              notify(error.message);
+            }
+          }}
+        >
+          <p>This permanently removes the property and its monitoring, analytics, audits and reports.</p>
+          <label className="field">Type <b>{propertyToDelete.name}</b> to confirm<input autoFocus value={propertyDeleteConfirmation} onChange={(event) => setPropertyDeleteConfirmation(event.target.value)} /></label>
+        </SimpleDialog>
+      )}
       {inviteOpen && (
         <SimpleDialog
           title="Invite workspace user"
@@ -4547,143 +4771,72 @@ function AccountView({
   );
 }
 
-function Billing({ fixture, notify }: { fixture: boolean; notify: Notify }) {
+function Billing({ fixture, notify, data, session }: { fixture: boolean; notify: Notify; data: Bootstrap; session: Session | null }) {
   const [annual, setAnnual] = useState(true);
-  const downloadInvoice = (date: string) => {
-    const url = URL.createObjectURL(
-      new Blob([`Claritude invoice\n${date}\nAnnual Scale\n£468 excl. VAT\nPaid`], {
-        type: "text/plain",
-      }),
-    );
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `claritude-invoice-${date.replaceAll(" ", "-")}.txt`;
-    link.click();
-    URL.revokeObjectURL(url);
-  };
+  const [eventUsage, setEventUsage] = useState<{ used: number; limit: number | null } | null>(fixture ? { used: 2, limit: 20 } : null);
+  const entitlement = String(data.accounts?.[0]?.accounts?.entitlement || (fixture ? "Scale" : "Pro"));
+  const plan = /essentials/i.test(entitlement) ? "Essentials" : /scale/i.test(entitlement) ? "Scale" : /pro/i.test(entitlement) ? "Pro" : "Free";
+  useEffect(() => {
+    if (!session || !data.properties.length) return;
+    let cancelled = false;
+    Promise.all(data.properties.map((property) => api<EventDefinitionsResponse | EventDefinition[]>(session, `/api/properties/${property.id}/events`).catch(() => null)))
+      .then((results) => {
+        if (cancelled) return;
+        let used = 0;
+        let limit: number | null = 0;
+        for (const result of results) {
+          if (!result) continue;
+          if (Array.isArray(result)) used += result.length;
+          else {
+            used += result.allowance.used;
+            if (result.allowance.limit == null) limit = null;
+            else if (limit != null) limit += result.allowance.limit;
+          }
+        }
+        setEventUsage({ used, limit });
+      });
+    return () => { cancelled = true; };
+  }, [session, data.properties.map((property) => property.id).join("|")]);
+  const auditCount = data.properties.reduce((total, property) => total + (property.audit_runs || []).filter((run) => new Date(run.created_at).getMonth() === new Date().getMonth() && new Date(run.created_at).getFullYear() === new Date().getFullYear()).length, 0);
+  const viewerCount = (data.propertyMemberships || []).length;
   return (
     <>
       <div className="grid equal">
         <Panel title="Subscription">
-          <span className="tag">{fixture ? "Active" : "Early access"}</span>
-          <div className="price">{fixture ? "Scale" : "Pro"}</div>
-          {fixture ? (
-            <>
-              <b>£39 / month</b>
-              <p className="subtle">
-                Billed annually · £468 / year excluding VAT
-                <br />
-                Renews 30 September 2027
-              </p>
-              <button className="btn" onClick={() => notify("Choose a plan below to review a change")}>Change plan</button>{" "}
-              <button className="btn" onClick={() => notify("Billing management opened")}>Manage billing</button>
-            </>
-          ) : (
-            <p className="subtle">
-              Pro access is included during early access. No charge is
-              represented by this interface.
-            </p>
-          )}
+          <StatusPill tone="success">{fixture ? "Active" : "Early access"}</StatusPill>
+          <div className="price">{plan}</div>
+          <p className="subtle">No billable Stripe subscription is connected to this account. No charge, renewal date or billing action is represented here.</p>
+          <button className="btn" disabled title="Stripe plan changes are not connected">Change plan</button>{" "}
+          <button className="btn" disabled title="Stripe billing management is not connected">Manage billing</button>
         </Panel>
-        <Panel title="Usage this month">
-          <KeyValues
-            rows={
-              fixture
-                ? [
-                    ["Properties", "12 / 50 · resets never"],
-                    ["Analytics events", "85,408 / 250,000 · resets 1 Oct"],
-                    ["Audits", "42 / 200 · resets 1 Oct"],
-                    ["Editing seats", "3 included · 3 used"],
-                    ["Additional seats", "1 · £8 / month excl. VAT"],
-                  ]
-                : [
-                    ["Properties", "Measured from workspace"],
-                    ["Analytics events", "Usage billing not active"],
-                    ["Audits", "Usage billing not active"],
-                    ["Editing seats", "Not enforced in Stage 1"],
-                  ]
-            }
-          />
+        <Panel title="Current usage">
+          <div className="usage-list">
+            <UsageBar label="Properties" used={data.properties.length} />
+            <UsageBar label="Workspaces" used={data.workspaces.length} />
+            <UsageBar label="Custom events" used={eventUsage?.used ?? 0} limit={eventUsage?.limit} loading={!eventUsage} />
+            <UsageBar label="Audits this month" used={auditCount} />
+            <UsageBar label="Property viewers" used={viewerCount} />
+          </div>
+          <p className="subtle">Only limits currently exposed by the entitlement service are shown as allowances. Infrastructure safety ceilings are deliberately not presented as commercial plan limits.</p>
         </Panel>
       </div>
-      {fixture && (
-        <div className="grid equal">
-          <Panel title="Payment method">
-            <div className="payment-card">
-              <b>VISA</b>
-              <span>
-                •••• 4242<small>Exp 12/28</small>
-              </span>
-              <button className="btn" onClick={() => notify("Payment method editor opened")}>Update</button>
-            </div>
-            <p className="subtle">No cancellation or downgrade is scheduled.</p>
-          </Panel>
-          <Panel title="Invoice history">
-            <DataTable
-              headers={["Date", "Description", "Amount", "Status", ""]}
-              rows={[
-                [
-                  "30 Sep 2026",
-                  "Annual Scale",
-                  "£468 excl. VAT",
-                  "● Paid",
-                  <button className="btn" onClick={() => downloadInvoice("30 Sep 2026")}>Download</button>,
-                ],
-                [
-                  "30 Sep 2025",
-                  "Annual Scale",
-                  "£468 excl. VAT",
-                  "● Paid",
-                  <button className="btn" onClick={() => downloadInvoice("30 Sep 2025")}>Download</button>,
-                ],
-              ]}
-            />
-          </Panel>
+      <div className="grid equal">
+        <Panel title="Payment method"><EmptyCompact title="No payment method available" detail="Stripe billing is not connected." /><button className="btn" disabled>Update</button><p className="subtle">No cancellation or downgrade is scheduled.</p></Panel>
+        <Panel title="Invoice history"><EmptyCompact title="No invoice history available" detail="Invoices will appear after Stripe billing is connected." /></Panel>
+      </div>
+      <Panel title="Choose a plan" actions={<span className="seg"><button className={annual ? "active" : ""} onClick={() => setAnnual(true)}>Annual</button><button className={!annual ? "active" : ""} onClick={() => setAnnual(false)}>Monthly</button></span>}>
+        <div className="plans">
+          {["Free", "Essentials", "Scale", "Pro"].map((candidate) => <div className={`plan ${candidate === plan ? "current" : ""}`} key={candidate}><h2>{candidate}</h2><div className="price">Pricing unavailable</div><p>{candidate === "Pro" ? "Unlimited configured custom events per property, subject to platform safety limits." : `${candidate === "Free" ? 2 : candidate === "Essentials" ? 5 : 20} configured custom events per property.`}</p><button className="btn" disabled>{candidate === plan ? "Current plan" : candidate === "Free" ? "Downgrade" : "Upgrade"}</button></div>)}
         </div>
-      )}
-      {fixture ? (
-        <Panel
-          title="Choose a plan"
-          actions={
-            <span className="seg">
-              <button className={annual ? "active" : ""} onClick={() => setAnnual(true)}>Annual</button>
-              <button className={!annual ? "active" : ""} onClick={() => setAnnual(false)}>Monthly</button>
-            </span>
-          }
-        >
-          <div className="plans">
-            {[
-              ["Free", "£0 / mo", "2 properties · 15-minute monitoring"],
-              ["Essentials", "£9 / mo", "5 properties · 5-minute monitoring"],
-              ["Scale", "£39 / mo", "50 properties · 5-minute monitoring"],
-              ["Pro", "£99 / mo", "200 properties · branded reports"],
-            ].map((x) => (
-              <div className={`plan ${x[0] === "Scale" ? "current" : ""}`} key={x[0]}>
-                <h2>{x[0]}</h2>
-                <div className="price">{x[1]}</div>
-                <p>{x[2]}</p>
-                <button
-                  className="btn"
-                  disabled={x[0] === "Scale"}
-                  onClick={() => notify(`${x[0]} ${annual ? "annual" : "monthly"} plan review opened`)}
-                >
-                  {x[0] === "Scale" ? "Current plan" : "Choose"}
-                </button>
-              </div>
-            ))}
-          </div>
-        </Panel>
-      ) : (
-        <Panel title="Billing integration deferred">
-          <p>
-            Early-access Pro features are enabled without a charge. Stripe checkout,
-            payment methods, invoices, plan changes and usage billing are not active in Stage 1.
-          </p>
-          <p className="subtle">No billing action can be performed from this screen.</p>
-        </Panel>
-      )}
+        <p className="subtle">Downgrading requires excess properties and paid users to be removed before renewal. The pricing toggle does not change the active annual subscription.</p>
+      </Panel>
     </>
   );
+}
+
+function UsageBar({ label, used, limit, loading = false }: { label: string; used: number; limit?: number | null; loading?: boolean }) {
+  const percentage = limit && limit > 0 ? Math.min(100, used / limit * 100) : 0;
+  return <div className="usage-item"><span><b>{label}</b><small>{loading ? "Loading…" : `${fmt(used)} / ${limit == null ? "Current allowance not published" : fmt(limit)}`}</small></span>{limit != null && <span className="usage-track"><i style={{ width: `${percentage}%` }} /></span>}</div>;
 }
 
 function AddPropertyDialog({
@@ -4981,6 +5134,19 @@ function Page({
     [compact, setCompact] = useState(false),
     [periodFrom, setPeriodFrom] = useState(pageParams.get("from") || defaultFrom),
     [periodTo, setPeriodTo] = useState(pageParams.get("to") || defaultTo);
+  useEffect(() => {
+    if (!menu) return;
+    const dismiss = (event: PointerEvent) => {
+      if (!(event.target as Element).closest(".page-options")) setMenu(false);
+    };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setMenu(false); };
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [menu]);
   function exportVisibleTable() {
     const table = document.querySelector("main table");
     if (!table) return;
@@ -5192,7 +5358,7 @@ function Metrics({ values }: { values: ReactNode[][] }) {
         <div className="metric" key={i}>
           <small>{v[0]}</small>
           <b className={isPendingDataText(v[1]) ? "pending-data-text" : ""}>{v[1]}</b>
-          <span>{v[2]}</span>
+          {v[2] ? <span>{v[2]}</span> : null}
         </div>
       ))}
     </div>
@@ -5369,6 +5535,10 @@ function TrackingStatus({ receiving }: { receiving: boolean }) {
       {receiving ? "Receiving data" : "Not installed"}
     </span>
   );
+}
+
+function StatusPill({ tone, children }: { tone: "success" | "danger" | "neutral"; children: ReactNode }) {
+  return <span className={`status-pill ${tone}`}><i />{children}</span>;
 }
 
 function CopyButton({
@@ -6060,7 +6230,7 @@ function MonitorPanel({
   reload: () => void;
   notify: Notify;
 }) {
-  const [interval, setInterval] = useState(monitor?.interval_minutes || 5),
+  const [interval, setInterval] = useState(monitor?.interval_minutes || 10),
     [threshold, setThreshold] = useState(monitor?.failure_threshold || 2);
   async function save(enabled = monitor?.enabled !== false) {
     if (!monitor) return;
@@ -6085,6 +6255,7 @@ function MonitorPanel({
   }
   return (
     <Panel title="Monitor settings">
+      <KeyValues rows={[["Status", <StatusPill tone={monitor?.enabled === false ? "neutral" : monitor?.last_status === "offline" ? "danger" : "success"}>{monitor?.enabled === false ? "Paused" : monitor ? "Monitoring" : "Not monitoring"}</StatusPill>]]} />
       <div className="form-two">
         <label className="field">
           Check interval
@@ -6106,7 +6277,7 @@ function MonitorPanel({
             onChange={(e) => setThreshold(Number(e.target.value))}
           >
             {[1, 2, 3, 4, 5].map((x) => (
-              <option key={x}>{x}</option>
+              <option key={x} value={x}>Confirm after {x} downtime {x === 1 ? "event" : "events"}</option>
             ))}
           </select>
         </label>
@@ -7051,6 +7222,8 @@ function EventsPanel({
   const [eventsLoadError, setEventsLoadError] = useState("");
   const [eventsReloadToken, setEventsReloadToken] = useState(0);
   const [eventPage, setEventPage] = useState(1);
+  const [eventToDelete, setEventToDelete] = useState<EventDefinition | null>(null);
+  const [eventDeleteConfirmation, setEventDeleteConfirmation] = useState("");
   useEffect(() => {
     if (fixture) {
       setEvents([
@@ -7137,7 +7310,7 @@ function EventsPanel({
           ? `<button data-claritude-event="${normalizedName}">…</button>`
           : eventType === "pageview"
             ? `claritude.pageview({ path: "${normalisePagePath(pathValue)}" });`
-            : `claritude.event("${normalizedName}", { page: location.pathname }); // call only after confirmed success`,
+            : `claritude.formSuccess("${normalizedName}", { page: location.pathname });`,
       );
       notify("Event configuration saved");
     } catch (error: any) {
@@ -7158,6 +7331,24 @@ function EventsPanel({
       });
       setEvents((current) => current.map((item) => item.id === updated.id ? { ...item, ...updated } : item));
       notify(updated.enabled ? "Event enabled" : "Event disabled");
+    } catch (error: any) {
+      notify(error.message);
+    }
+  }
+  async function deleteEvent() {
+    if (!session || !eventToDelete?.id || eventDeleteConfirmation !== eventToDelete.name) return;
+    try {
+      const result = await api<any>(session, `/api/properties/${property.id}/events/${eventToDelete.id}`, { method: "DELETE" });
+      setEvents((current) => current.filter((event) => event.id !== eventToDelete.id));
+      setEventAllowance((current) => current ? {
+        ...current,
+        used: Math.max(0, current.used - 1),
+        remaining: current.limit == null ? null : Math.max(0, current.limit - Math.max(0, current.used - 1)),
+        canCreate: true,
+      } : current);
+      setEventToDelete(null);
+      setEventDeleteConfirmation("");
+      notify(`Event deleted with ${fmt(Number(result.deletedOccurrences || 0))} collected occurrences`);
     } catch (error: any) {
       notify(error.message);
     }
@@ -7225,11 +7416,11 @@ function EventsPanel({
                 headers={["Event", "Trigger", "Key event", "Received", "Status", ""]}
                 rows={events.map((event) => [
                   event.name,
-                  event.event_type === "form_success" ? "Confirmed success" : event.event_type === "pageview" ? "Page view" : "Element click",
+                  <span className="event-trigger"><EventTriggerIcon type={event.event_type} />{event.event_type === "form_success" ? "Confirmed success" : event.event_type === "pageview" ? "Page view" : "Element click"}</span>,
                   "Yes",
                   event.received ?? "—",
-                  event.enabled === false ? "Paused" : "Active",
-                  <button className="btn" onClick={() => void toggleEvent(event)}>{event.enabled ? "Disable" : "Enable"}</button>,
+                  <StatusPill tone={event.enabled === false ? "neutral" : "success"}>{event.enabled === false ? "Paused" : "Active"}</StatusPill>,
+                  <div className="row-actions"><button className="btn" onClick={() => void toggleEvent(event)}>{event.enabled ? "Disable" : "Enable"}</button><button className="iconbtn danger-icon" aria-label={`Delete ${event.name}`} onClick={() => setEventToDelete(event)}><Trash2 /></button></div>,
                 ])}
               />
             ) : (
@@ -7239,6 +7430,26 @@ function EventsPanel({
           </>
         )}
       </Panel>
+      {!data && (
+        <Panel title="Install events tracking">
+          <div className="snippet-grid">
+            <div className="snippet-card">
+              <h3>Buttons and link clicks</h3>
+              <p>Add <code>data-claritude-event</code> to the clicked element. This records the interaction itself, not the downstream result.</p>
+              <pre className="install-code install-code-dark">{`<button data-claritude-event="enquiry-submit-click">\n  Submit enquiry\n</button>`}</pre>
+              <CopyButton text={'<button data-claritude-event="enquiry-submit-click">\n  Submit enquiry\n</button>'} label="Copy snippet" successMessage="Event snippet copied" notify={notify} />
+              <p className="subtle">Use short, stable, lowercase names. Do not capture form values or unrestricted button text.</p>
+            </div>
+            <div className="snippet-card">
+              <h3>Successful form submissions</h3>
+              <p>Fire the event only after the server or form provider confirms success. Use a supported plugin callback, success callback, or dedicated thank-you page.</p>
+              <pre className="install-code install-code-dark">{`claritude.formSuccess('successful-form-submission', {\n  page: '/contact/'\n});`}</pre>
+              <CopyButton text={`claritude.formSuccess('successful-form-submission', {\n  page: '/contact/'\n});`} label="Copy snippet" successMessage="Form-success snippet copied" notify={notify} />
+              <p className="subtle">Failed validation, rejected submissions and repeated button clicks are not counted as successful submissions.</p>
+            </div>
+          </div>
+        </Panel>
+      )}
       {open && (
         <SimpleDialog
           title="Create event"
@@ -7290,8 +7501,27 @@ function EventsPanel({
           <div className="dialog-actions"><button className="primary" onClick={() => setInstruction("")}>Done</button></div>
         </Modal>
       )}
+      {eventToDelete && (
+        <SimpleDialog
+          title="Delete event"
+          close={() => { setEventToDelete(null); setEventDeleteConfirmation(""); }}
+          action="Delete event"
+          danger
+          disabled={eventDeleteConfirmation !== eventToDelete.name}
+          onSave={deleteEvent}
+        >
+          <p>Deleting this event will permanently remove the event definition and all collected data associated with it.</p>
+          <label className="field">Type <b>{eventToDelete.name}</b> to confirm<input autoFocus value={eventDeleteConfirmation} onChange={(event) => setEventDeleteConfirmation(event.target.value)} /></label>
+        </SimpleDialog>
+      )}
     </>
   );
+}
+
+function EventTriggerIcon({ type }: { type: EventDefinition["event_type"] }) {
+  if (type === "form_success") return <ClipboardCheck />;
+  if (type === "pageview") return <Globe2 />;
+  return <SquareDashedMousePointer />;
 }
 const auditPreparingMessages = [
   "Preparing your audit",
@@ -9165,17 +9395,25 @@ function fmt(x: number) {
   return new Intl.NumberFormat("en-GB").format(x || 0);
 }
 function fmtDate(x: string) {
-  return new Intl.DateTimeFormat("en-GB", {
+  const locale = activeDateFormat === "MM/DD/YYYY" ? "en-US" : activeDateFormat === "YYYY-MM-DD" ? "en-CA" : "en-GB";
+  return new Intl.DateTimeFormat(locale, {
     dateStyle: "medium",
     timeStyle: "short",
+    timeZone: activeDisplayTimezone,
   }).format(new Date(x));
 }
 function shortDate(x: string) {
+  const value = new Date(`${x}T12:00:00`);
+  if (activeDateFormat === "YYYY-MM-DD") return x;
+  if (activeDateFormat === "MM/DD/YYYY")
+    return new Intl.DateTimeFormat("en-US", { day: "2-digit", month: "2-digit", year: "numeric" }).format(value);
+  if (activeDateFormat === "DD/MM/YYYY")
+    return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" }).format(value);
   return new Intl.DateTimeFormat("en-GB", {
     day: "numeric",
     month: "short",
-    year: new Date(x).getFullYear() === new Date().getFullYear() ? undefined : "numeric",
-  }).format(new Date(`${x}T12:00:00`));
+    year: value.getFullYear() === new Date().getFullYear() ? undefined : "numeric",
+  }).format(value);
 }
 export function periodLabel(from: string, to: string) {
   const start = new Date(`${from}T12:00:00`);

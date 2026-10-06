@@ -673,7 +673,7 @@ app.post("/api/properties", async (c) => {
 });
 
 app.patch("/api/properties/:id", async (c) => {
-  const body = await c.req.json<{ name?: string; settings?: Record<string, unknown> }>();
+  const body = await c.req.json<{ name?: string; workspace_id?: string; settings?: Record<string, unknown> }>();
   const name = body.name?.trim().slice(0, 100);
   if (!name) return c.json({ error: "property_name_required" }, 400);
   const db = c.get("db");
@@ -699,11 +699,32 @@ app.patch("/api/properties/:id", async (c) => {
         : {}),
     };
   }
-  const { data, error } = await c
-    .get("db")
+  let workspaceId: string | undefined;
+  if (body.workspace_id) {
+    const { data: currentProperty } = await db
+      .from("properties")
+      .select("workspace_id,workspaces(account_id)")
+      .eq("id", c.req.param("id"))
+      .single();
+    const { data: targetWorkspace } = await db
+      .from("workspaces")
+      .select("id,account_id")
+      .eq("id", body.workspace_id)
+      .single();
+    const currentAccountId = (currentProperty as any)?.workspaces?.account_id;
+    if (!currentProperty || !targetWorkspace) return c.json({ error: "workspace_not_found" }, 404);
+    if (targetWorkspace.account_id !== currentAccountId)
+      return c.json({ error: "workspace_account_mismatch" }, 400);
+    if (!(await canManageWorkspace(db, c.get("userId"), currentProperty.workspace_id)) ||
+        !(await canManageWorkspace(db, c.get("userId"), targetWorkspace.id)))
+      return c.json({ error: "workspace_manage_access_required" }, 403);
+    workspaceId = targetWorkspace.id;
+  }
+  const { data, error } = await db
     .from("properties")
     .update({
       name,
+      ...(workspaceId ? { workspace_id: workspaceId } : {}),
       ...(settings ? { settings } : {}),
       updated_at: new Date().toISOString(),
     })
@@ -719,6 +740,7 @@ app.patch("/api/profile", async (c) => {
   const body = await c.req.json<{
     full_name?: string;
     timezone?: string;
+    date_format?: "DD/MM/YYYY" | "MM/DD/YYYY" | "YYYY-MM-DD";
     notification_preferences?: Record<string, boolean>;
     alerts_snoozed_until?: string | null;
   }>();
@@ -744,6 +766,9 @@ app.patch("/api/profile", async (c) => {
       : {}),
     ...(body.timezone !== undefined
       ? { timezone: body.timezone.trim().slice(0, 80) || "Europe/London" }
+      : {}),
+    ...(body.date_format !== undefined
+      ? { date_format: ["DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD"].includes(body.date_format) ? body.date_format : "DD/MM/YYYY" }
       : {}),
     ...(notificationPreferences
       ? { notification_preferences: notificationPreferences }
@@ -1008,6 +1033,7 @@ app.get("/api/properties/:id/viewers", async (c) => {
       ...member,
       email: users.find((user) => user.id === member.user_id)?.email || "",
       name: users.find((user) => user.id === member.user_id)?.name || "",
+      confirmedAt: users.find((user) => user.id === member.user_id)?.confirmedAt || null,
     })),
   );
 });
@@ -1134,6 +1160,46 @@ app.delete("/api/properties/:id", async (c) => {
   });
   const { error } = await admin(c.env).from("properties").delete().eq("id", propertyId);
   return error ? c.json({ error: error.message }, 400) : c.json({ deleted: true });
+});
+
+app.get("/api/properties/:id/export", async (c) => {
+  const propertyId = c.req.param("id");
+  const db = c.get("db");
+  const [property, monitors, incidents, analytics, definitions, audits, reports, schedules, viewers] = await Promise.all([
+    db.from("properties").select("*").eq("id", propertyId).single(),
+    db.from("uptime_monitors").select("*,uptime_checks(*)").eq("property_id", propertyId),
+    db.from("incidents").select("*").eq("property_id", propertyId).order("opened_at", { ascending: false }),
+    db.from("analytics_events").select("*").eq("property_id", propertyId).order("occurred_at", { ascending: false }).limit(50000),
+    db.from("event_definitions").select("*").eq("property_id", propertyId),
+    db.from("audit_runs").select("*,audit_results(*)").eq("property_id", propertyId).order("created_at", { ascending: false }),
+    db.from("saved_reports").select("*").eq("property_id", propertyId),
+    db.from("report_schedules").select("*").eq("property_id", propertyId),
+    db.from("property_memberships").select("user_id,role,created_at").eq("property_id", propertyId),
+  ]);
+  const firstError = [property, monitors, incidents, analytics, definitions, audits, reports, schedules, viewers].find((response) => response.error)?.error;
+  if (firstError) return c.json({ error: firstError.message }, 400);
+  return c.json({
+    exportedAt: new Date().toISOString(),
+    property: property.data,
+    uptime: { monitors: monitors.data, incidents: incidents.data },
+    analytics: { events: analytics.data, definitions: definitions.data },
+    audits: audits.data,
+    reports: reports.data,
+    reportSchedules: schedules.data,
+    propertyViewers: viewers.data,
+  });
+});
+
+app.post("/api/properties/:id/reset", async (c) => {
+  const propertyId = c.req.param("id");
+  const { data, error } = await c.get("db").rpc("reset_property_data", { p_property_id: propertyId });
+  if (error) {
+    if (error.message.includes("property_manage_access_required"))
+      return c.json({ error: "property_manage_access_required" }, 403);
+    return c.json({ error: error.message }, 400);
+  }
+  await recordActivity(c.env, c.get("userId"), "property.data_reset", propertyId);
+  return c.json(data);
 });
 
 app.post("/api/properties/:id/verify", async (c) => {
@@ -2387,6 +2453,27 @@ app.get("/api/properties/:id/overview", async (c) => {
     },
     audit,
   });
+});
+
+app.delete("/api/properties/:id/events/:eventId", async (c) => {
+  const propertyId = c.req.param("id");
+  const eventId = c.req.param("eventId");
+  const { data, error } = await c.get("db").rpc("delete_event_definition_with_data", {
+    p_property_id: propertyId,
+    p_event_id: eventId,
+  });
+  if (error) {
+    if (error.message.includes("property_manage_access_required"))
+      return c.json({ error: "property_manage_access_required" }, 403);
+    if (error.message.includes("event_definition_not_found"))
+      return c.json({ error: "event_definition_not_found" }, 404);
+    return c.json({ error: error.message }, 400);
+  }
+  await recordActivity(c.env, c.get("userId"), "property.event_deleted", propertyId, {
+    eventId,
+    deletedOccurrences: Number((data as any)?.deletedOccurrences || 0),
+  });
+  return c.json(data);
 });
 
 app.get("/api/properties/:id/analytics", async (c) => {

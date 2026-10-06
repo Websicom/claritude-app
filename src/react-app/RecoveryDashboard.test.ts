@@ -26,6 +26,7 @@ import {
   propertyFaviconSources,
   squareImageCrop,
   sortWorkspaceProperties,
+  supportedTimezones,
   trafficSeriesKey,
   uptimePeriodQuery,
   responseChartLabel,
@@ -65,6 +66,12 @@ describe("top selector searches", () => {
       "https://www.example.com/favicon.ico",
     ]);
     expect(propertyFaviconSources("not a url")).toEqual([]);
+  });
+
+  it("offers the runtime timezone catalogue with safe global fallbacks", () => {
+    const zones = supportedTimezones();
+    expect(zones).toContain("Europe/London");
+    expect(zones.length).toBeGreaterThan(10);
   });
 
   it("protects the homepage and center-crops avatar source images", () => {
