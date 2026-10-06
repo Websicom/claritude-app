@@ -32,14 +32,22 @@ Evidence: `npm run check`, 194 Vitest tests, the production build, migration pus
 
 The application exposes a **Verify sandbox acceptance evidence** action. It cannot stamp acceptance until the database contains a test account, completed checkout, projected subscription/entitlement, update, cancellation, successful payment, failed payment and successful refund.
 
+## Sandbox provider setup completed on 6 October 2026
+
+- A dedicated Stripe sandbox restricted key is deployed as the encrypted Worker secret `STRIPE_TEST_SECRET_KEY`; no secret value is stored in this repository.
+- The isolated sandbox webhook endpoint `we_1UNbFx0N1c5vQhvipKzJSEZD` targets `https://app.claritude.io/webhooks/stripe/test`. Its signing secret is deployed as encrypted `STRIPE_TEST_WEBHOOK_SECRET`.
+- The sandbox Customer Portal configuration `bpc_1UNbGa0N1c5vQhvimkvR8FyN` is deployed as `STRIPE_TEST_PORTAL_CONFIGURATION_ID`. It supports customer details, invoices, payment methods and cancellation at period end. Subscription switching remains disabled until prices are approved.
+- Sandbox product shells exist without invented prices: Essentials `prod_VOO9u3CFeQkGRA`, Scale `prod_VOOA92ndwQtdih`, and Pro `prod_VOOAJpBfnK01Y6`.
+- No live Stripe credential, webhook, portal configuration or live catalogue was created. Live checkout remains disabled.
+
 ## Blocked by credentials or commercial decisions
 
-- No Stripe keys or webhook secrets are configured in the deployed Worker. The current secret inventory contains only `RESEND_API_KEY` and `SUPABASE_SECRET_KEY`.
+- Sandbox credentials, webhook signing and Customer Portal configuration are deployed. Live credentials and a separate live webhook/portal remain intentionally absent pending live-readiness approval.
 - No approved Stripe Product/Price IDs or amounts are present for the required package/currency/interval combinations.
 - Published paid package versions still need authoritative included editing-seat allowances and an explicit decision on which packages sell seat overage.
 - Stripe Tax registrations, product tax codes and inclusive/exclusive price behaviour have not been approved. No tax values were invented.
-- Separate sandbox and live Customer Portal configuration IDs are not configured.
-- Provider-dependent sandbox acceptance cannot be run until the dedicated restricted sandbox key and sandbox webhook secret are supplied.
+- The sandbox Customer Portal configuration is present. The separate live configuration remains blocked with live activation.
+- Provider-dependent sandbox acceptance cannot proceed until the approved base prices, included-seat allowances, overage policy and tax behaviour are supplied.
 
 ## Still incomplete
 

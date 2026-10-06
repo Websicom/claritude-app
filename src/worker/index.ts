@@ -2130,6 +2130,145 @@ app.get("/api/superadmin/bootstrap", async (c) => {
   });
 });
 
+app.get("/api/superadmin/overview", async (c) => {
+  const authorization = await requireStaff(c, "overview.read");
+  if (authorization.response) return authorization.response;
+  const billingEnvironment = c.req.query("billingEnvironment") || "live";
+  if (!['test', 'live'].includes(billingEnvironment)) return c.json({ error: "valid_billing_environment_required" }, 400);
+  const now = new Date();
+  const defaultFrom = new Date(now.getTime() - 29 * 86400_000);
+  const fromText = c.req.query("from") || defaultFrom.toISOString().slice(0, 10);
+  const toText = c.req.query("to") || now.toISOString().slice(0, 10);
+  const fromMs = Date.parse(`${fromText}T00:00:00.000Z`);
+  const toMs = Date.parse(`${toText}T23:59:59.999Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fromText) || !/^\d{4}-\d{2}-\d{2}$/.test(toText) || !Number.isFinite(fromMs) || !Number.isFinite(toMs) || fromMs > toMs || toMs - fromMs > 3650 * 86400_000) {
+    return c.json({ error: "valid_overview_date_range_required" }, 400);
+  }
+  const service = admin(c.env);
+  const rangeFrom = new Date(fromMs).toISOString();
+  const rangeTo = new Date(toMs).toISOString();
+  const [accountsResult, assignmentsResult, grantsResult, subscriptionsResult, databaseResult, settingsResult, countersResult, snapshotsResult] = await Promise.all([
+    service.from("accounts").select("id,entitlement,access_state,created_at,is_test_account,billing_environment").eq("billing_environment", billingEnvironment).lte("created_at", rangeTo).limit(10000),
+    service.from("account_package_assignments").select("account_id,billing_state,complimentary,starts_at,ends_at,package_versions(package_key)").limit(10000),
+    service.from("account_package_grants").select("account_id,status,starts_at,expires_at,package_versions(package_key)").limit(10000),
+    service.from("billing_subscriptions").select("account_id,status,mrr_minor,provider_created_at,trial_end,cancelled_at,ended_at").eq("billing_environment", billingEnvironment).limit(10000),
+    service.rpc("superadmin_database_metrics"),
+    service.from("platform_settings").select("key,value").in("key", ["safety_limits", "retention_policy"]),
+    service.from("processing_daily_counters").select("day,metric,value").gte("day", fromText).lte("day", toText).limit(5000),
+    service.from("superadmin_overview_daily_snapshots").select("day,accounts,properties,workload,infrastructure,measured_at,source").eq("billing_environment", billingEnvironment).gte("day", fromText).lte("day", toText).order("day").limit(4000),
+  ]);
+  const requiredError = [accountsResult, assignmentsResult, grantsResult, subscriptionsResult, settingsResult, countersResult, snapshotsResult].find((result) => result.error)?.error;
+  if (requiredError) {
+    console.error("superadmin_overview_base_failed", requiredError);
+    return c.json({ error: "superadmin_overview_unavailable" }, 503);
+  }
+  const accounts = accountsResult.data || [];
+  const accountIds = new Set(accounts.map((item: any) => item.id));
+  const accountIdList = [...accountIds];
+  const [propertiesResult, workspacesResult, deliveriesResult] = await Promise.all([
+    accountIdList.length ? service.from("properties").select("id,account_id,workspace_id,access_state,tracking_enabled,tracking_last_received_at,created_at").in("account_id", accountIdList).lte("created_at", rangeTo).limit(20000) : Promise.resolve({ data: [], error: null }),
+    accountIdList.length ? service.from("workspaces").select("id,account_id,created_at").in("account_id", accountIdList).lte("created_at", rangeTo).limit(10000) : Promise.resolve({ data: [], error: null }),
+    accountIdList.length ? service.from("notification_deliveries").select("account_id,status,created_at").in("account_id", accountIdList).gte("created_at", rangeFrom).lte("created_at", rangeTo).limit(50000) : Promise.resolve({ data: [], error: null }),
+  ]);
+  if (propertiesResult.error || workspacesResult.error || deliveriesResult.error) return c.json({ error: "superadmin_overview_resources_unavailable" }, 503);
+  const properties = propertiesResult.data || [];
+  const propertyIds = new Set(properties.map((item: any) => item.id));
+  const propertyIdList = [...propertyIds];
+  const [monitorsResult, uptimeChecksResult, analyticsResult, auditsResult, incidentsResult, reportsResult, operationalResult] = await Promise.all([
+    propertyIdList.length ? service.from("uptime_monitors").select("id,property_id,enabled,last_status,last_checked_at").in("property_id", propertyIdList).limit(20000) : Promise.resolve({ data: [], error: null }),
+    propertyIdList.length ? service.from("uptime_checks").select("property_id,checked_at,status").in("property_id", propertyIdList).gte("checked_at", rangeFrom).lte("checked_at", rangeTo).limit(50000) : Promise.resolve({ data: [], error: null }),
+    propertyIdList.length ? service.from("analytics_events").select("property_id,event_type,occurred_at").in("property_id", propertyIdList).gte("occurred_at", rangeFrom).lte("occurred_at", rangeTo).limit(50000) : Promise.resolve({ data: [], error: null }),
+    propertyIdList.length ? service.from("audit_runs").select("id,property_id,status,page_url,created_at").in("property_id", propertyIdList).gte("created_at", rangeFrom).lte("created_at", rangeTo).limit(50000) : Promise.resolve({ data: [], error: null }),
+    propertyIdList.length ? service.from("incidents").select("property_id,opened_at,resolved_at").in("property_id", propertyIdList).gte("opened_at", rangeFrom).lte("opened_at", rangeTo).limit(50000) : Promise.resolve({ data: [], error: null }),
+    propertyIdList.length ? service.from("saved_reports").select("property_id,created_at").in("property_id", propertyIdList).gte("created_at", rangeFrom).lte("created_at", rangeTo).limit(50000) : Promise.resolve({ data: [], error: null }),
+    service.from("operational_events").select("service,metric,value,unit,source,account_id,property_id,observed_at").gte("observed_at", rangeFrom).lte("observed_at", rangeTo).order("observed_at").limit(50000),
+  ]);
+  const activityError = [monitorsResult, uptimeChecksResult, analyticsResult, auditsResult, incidentsResult, reportsResult, operationalResult].find((result) => result.error)?.error;
+  if (activityError) return c.json({ error: "superadmin_overview_activity_unavailable" }, 503);
+  const auditRunIds = (auditsResult.data || []).map((item: any) => item.id);
+  const auditResultsResult = auditRunIds.length
+    ? await service.from("audit_results").select("audit_run_id,created_at").in("audit_run_id", auditRunIds).gte("created_at", rangeFrom).lte("created_at", rangeTo).limit(50000)
+    : { data: [], error: null };
+  if (auditResultsResult.error) return c.json({ error: "superadmin_overview_audit_results_unavailable" }, 503);
+  const monitors = monitorsResult.data || [];
+  const enabledMonitorPropertyIds = new Set(monitors.filter((item: any) => item.enabled).map((item: any) => item.property_id));
+  const activeSubscriptions = (subscriptionsResult.data || []).filter((item: any) => ["active", "trialing", "past_due", "unpaid"].includes(item.status));
+  const activeGrants = (grantsResult.data || []).filter((item: any) => accountIds.has(item.account_id) && item.status === "active" && Date.parse(item.starts_at) <= now.getTime() && (!item.expires_at || Date.parse(item.expires_at) > now.getTime()));
+  const assignments = (assignmentsResult.data || []).filter((item: any) => accountIds.has(item.account_id) && (!item.ends_at || Date.parse(item.ends_at) > now.getTime()));
+  const payingIds = new Set(activeSubscriptions.filter((item: any) => item.status !== "trialing").map((item: any) => item.account_id));
+  const trialIds = new Set(activeSubscriptions.filter((item: any) => item.status === "trialing").map((item: any) => item.account_id));
+  const delinquentIds = new Set(activeSubscriptions.filter((item: any) => ["past_due", "unpaid"].includes(item.status)).map((item: any) => item.account_id));
+  const complimentaryIds = new Set(activeGrants.map((item: any) => item.account_id));
+  const freeIds = new Set(assignments.filter((item: any) => (item.package_versions as any)?.package_key === "free").map((item: any) => item.account_id));
+  const accountSnapshot = {
+    total: accounts.length,
+    active: accounts.filter((item: any) => item.access_state === "active").length,
+    free: [...freeIds].filter((id) => !payingIds.has(id) && !complimentaryIds.has(id)).length,
+    paying: payingIds.size,
+    complimentary: complimentaryIds.size,
+    trial: trialIds.size,
+    delinquent: delinquentIds.size,
+    test: accounts.filter((item: any) => item.is_test_account).length,
+  };
+  const propertySnapshot = {
+    total: properties.length,
+    active: properties.filter((item: any) => item.access_state === "active" && (item.tracking_enabled || enabledMonitorPropertyIds.has(item.id))).length,
+    monitored: enabledMonitorPropertyIds.size,
+    analyticsEnabled: properties.filter((item: any) => item.tracking_enabled).length,
+    inactive: properties.filter((item: any) => item.access_state !== "active").length,
+  };
+  const today = now.toISOString().slice(0, 10);
+  const dayKey = (value: string) => value.slice(0, 10);
+  const dayRows = new Map<string, any>();
+  for (let cursor = Date.parse(`${fromText}T00:00:00.000Z`); cursor <= Date.parse(`${toText}T00:00:00.000Z`); cursor += 86400_000) {
+    const day = new Date(cursor).toISOString().slice(0, 10);
+    dayRows.set(day, { day, accounts: null, properties: null, workload: { audits: 0, auditsCompleted: 0, auditsFailed: 0, auditsPartial: 0, pagesAudited: 0, auditEvaluations: 0, analyticsEvents: 0, analyticsPageviews: 0, analyticsCustomEvents: 0, uptimeChecks: 0, incidents: 0, reports: 0, notifications: 0, queueJobs: null, queueFailures: null, queueRetries: null }, infrastructure: null, sources: [] });
+  }
+  for (const snapshot of snapshotsResult.data || []) dayRows.set(snapshot.day, { ...(dayRows.get(snapshot.day) || { day: snapshot.day }), accounts: snapshot.accounts, properties: snapshot.properties, workload: { ...(dayRows.get(snapshot.day)?.workload || {}), ...(snapshot.workload || {}) }, infrastructure: snapshot.infrastructure, sources: [snapshot.source] });
+  const increment = (collection: any[], field: string, metric: string, filter?: (item: any) => boolean) => collection.forEach((item: any) => { if (filter && !filter(item)) return; const row = dayRows.get(dayKey(item[field])); if (row) row.workload[metric] = Number(row.workload[metric] || 0) + 1; });
+  increment(auditsResult.data || [], "created_at", "audits");
+  increment(auditsResult.data || [], "created_at", "auditsCompleted", (item) => item.status === "completed");
+  increment(auditsResult.data || [], "created_at", "auditsFailed", (item) => item.status === "failed");
+  increment(auditsResult.data || [], "created_at", "auditsPartial", (item) => item.status === "partial");
+  increment(auditsResult.data || [], "created_at", "pagesAudited");
+  increment(auditResultsResult.data || [], "created_at", "auditEvaluations");
+  increment(analyticsResult.data || [], "occurred_at", "analyticsEvents");
+  increment(analyticsResult.data || [], "occurred_at", "analyticsPageviews", (item) => item.event_type === "pageview");
+  increment(analyticsResult.data || [], "occurred_at", "analyticsCustomEvents", (item) => item.event_type !== "pageview");
+  increment(uptimeChecksResult.data || [], "checked_at", "uptimeChecks");
+  increment(incidentsResult.data || [], "opened_at", "incidents");
+  increment(reportsResult.data || [], "created_at", "reports");
+  increment(deliveriesResult.data || [], "created_at", "notifications", (item) => item.status === "sent");
+  for (const counter of countersResult.data || []) { const row = dayRows.get(counter.day); if (row) row.workload[counter.metric] = Number(counter.value || 0); }
+  const infrastructure = databaseResult.error ? { state: "unavailable", reason: "postgres_metrics_unavailable" } : { ...(databaseResult.data || {}), state: "measured" };
+  const workloadToday = dayRows.get(today)?.workload || { audits: 0, auditsCompleted: 0, auditsFailed: 0, auditsPartial: 0, pagesAudited: 0, auditEvaluations: 0, analyticsEvents: 0, analyticsPageviews: 0, analyticsCustomEvents: 0, uptimeChecks: 0, incidents: 0, reports: 0, notifications: 0, queueJobs: null, queueFailures: null, queueRetries: null };
+  if (dayRows.has(today)) {
+    const snapshot = { billing_environment: billingEnvironment, day: today, accounts: accountSnapshot, properties: propertySnapshot, workload: workloadToday, infrastructure, measured_at: now.toISOString(), source: databaseResult.error ? "application_measured" : "postgres_reported" };
+    const stored = await service.from("superadmin_overview_daily_snapshots").upsert(snapshot, { onConflict: "billing_environment,day" });
+    if (!stored.error) dayRows.set(today, { ...dayRows.get(today), ...snapshot, sources: [snapshot.source] });
+  }
+  const limits = Object.fromEntries((settingsResult.data || []).map((item: any) => [item.key, item.value]));
+  const latestOperationalByMetric = new Map<string, any>();
+  for (const item of operationalResult.data || []) {
+    if ((item.account_id && !accountIds.has(item.account_id)) || (item.property_id && !propertyIds.has(item.property_id))) continue;
+    latestOperationalByMetric.set(`${item.service}:${item.metric}`, item);
+  }
+  return c.json({
+    billingEnvironment,
+    range: { from: fromText, to: toText, maximumDays: 3651 },
+    current: { accounts: accountSnapshot, properties: propertySnapshot, workload: workloadToday, infrastructure },
+    history: [...dayRows.values()],
+    capacity: { limits, operational: [...latestOperationalByMetric.values()], leases: { runningAudits: Number((countersResult.data || []).find((item: any) => item.day === today && item.metric === "running_audits")?.value || 0) } },
+    provenance: {
+      accountHistory: "Daily account-category history begins when measured snapshots are recorded; missing earlier category values are shown as unavailable, not backfilled.",
+      activity: "Application source records grouped by UTC day. Counts are capped only if the API reports truncation.",
+      infrastructure: databaseResult.error ? "PostgreSQL provider measurements unavailable." : "Current PostgreSQL-reported measurements; daily history begins with stored snapshots.",
+      properties: "Active properties have active resource access and at least one enabled application service: analytics tracking or uptime monitoring.",
+      uptimeChecks: "Persisted uptime_checks records grouped by checked_at UTC day.",
+    },
+  });
+});
+
 app.post("/api/superadmin/test-accounts", async (c) => {
   const authorization = await requireStaff(c, "customers.write");
   if (authorization.response) return authorization.response;
