@@ -4496,6 +4496,7 @@ function SuperAdminView({ session, fixture = false, staff }: { session: Session 
   const [staffData, setStaffData] = useState<any>(null);
   const [activity, setActivity] = useState<any[]>([]);
   const [delegations, setDelegations] = useState<any[]>([]);
+  const [savedViews, setSavedViews] = useState<any[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
@@ -4518,14 +4519,16 @@ function SuperAdminView({ session, fixture = false, staff }: { session: Session 
       ]);
       setPayload(nextPayload);
       setPlatform(nextPlatform);
-      const [staffResult, activityResult, delegationResult] = await Promise.all([
+      const [staffResult, activityResult, delegationResult, savedViewResult] = await Promise.all([
         api<any>(session, "/api/superadmin/staff").catch(() => null),
         api<any>(session, "/api/superadmin/activity?limit=100").catch(() => null),
         api<any>(session, "/api/superadmin/delegations").catch(() => null),
+        api<any>(session, "/api/superadmin/saved-views").catch(() => null),
       ]);
       setStaffData(staffResult);
       setActivity(activityResult?.activity || []);
       setDelegations(delegationResult?.sessions || []);
+      setSavedViews(savedViewResult?.views || []);
     } catch (reason: any) {
       setError(reason.message || "SuperAdmin command centre could not be loaded");
     } finally {
@@ -4575,6 +4578,31 @@ function SuperAdminView({ session, fixture = false, staff }: { session: Session 
     await load();
   }
 
+  async function saveCurrentView() {
+    if (!session || fixture) return;
+    const name = window.prompt("Name this saved view:");
+    if (!name?.trim()) return;
+    await api(session, "/api/superadmin/saved-views", { method: "POST", body: JSON.stringify({ page: view, name: name.trim(), filters: { tab: activeTab, query } }) });
+    await load();
+  }
+
+  function applySavedView(id: string) {
+    const saved = savedViews.find((item) => item.id === id);
+    if (!saved) return;
+    setQuery(String(saved.filters?.query || ""));
+    const next = new URLSearchParams();
+    next.set("view", saved.page);
+    const savedTabs = SUPERADMIN_TABS[saved.page] || [];
+    if (saved.filters?.tab && saved.filters.tab !== savedTabs[0]) next.set("tab", String(saved.filters.tab));
+    navigate(`/superadmin?${next.toString()}`);
+  }
+
+  async function removeSavedView(id: string) {
+    if (!session || fixture) return;
+    await api(session, `/api/superadmin/saved-views/${id}`, { method: "DELETE" });
+    await load();
+  }
+
   const normalizedQuery = query.trim().toLowerCase();
   const accounts = (payload?.accounts || []).filter((account) => !normalizedQuery || `${account.name} ${account.effectivePackageName || account.entitlement}`.toLowerCase().includes(normalizedQuery));
   const users = (payload?.users || []).filter((user) => !normalizedQuery || `${user.name} ${user.email}`.toLowerCase().includes(normalizedQuery));
@@ -4590,13 +4618,13 @@ function SuperAdminView({ session, fixture = false, staff }: { session: Session 
     {activeTab === "Service health" ? <PlatformServices platform={platform} payload={payload} /> : null}
     {activeTab === "Summary" ? <><PlatformServices platform={platform} payload={payload} /><Panel title="Needs attention"><DataTable headers={["Account", "Offline properties", "Package", "Action"]} rows={accounts.filter((account) => account.offlineCount).map((account) => [account.name, account.offlineCount, cap(account.entitlement), <Link to={`/superadmin?view=accounts&account=${account.id}`}>Open account</Link>])} /></Panel></> : null}
   </>;
-  else if (view === "accounts") content = accountId && accountDetail ? <SuperAdminAccountDetail detail={accountDetail} packages={platform?.packages || []} session={session} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("packages.write"))} refresh={async () => { if (!session || fixture) return; setAccountDetail(await api<any>(session, `/api/superadmin/accounts/${accountId}`)); await load(); }} /> : <Panel title={activeTab} actions={<button className="btn" onClick={() => void queueExport("accounts", "csv")}>Export CSV</button>}><DataTable headers={["Account", "Package", "Arrangement", "Users", "Workspaces", "Properties", "Health", "Created"]} rows={accounts.filter((account) => activeTab !== "Needs attention" || account.offlineCount > 0).map((account) => [<Link to={`/superadmin?view=accounts&account=${account.id}`}><b>{account.name}</b></Link>, account.effectivePackageName || cap(account.entitlement.replaceAll("_", " ")), account.billingArrangement === "complimentary" ? <StatusPill tone="success">Complimentary</StatusPill> : "Standard", account.userCount, account.workspaceCount, account.propertyCount, account.offlineCount ? <StatusPill tone="danger">{account.offlineCount} offline</StatusPill> : <StatusPill tone="success">Healthy</StatusPill>, fmtDate(account.created_at)])} /></Panel>;
-  else if (view === "users") content = activeTab === "Invitations" ? <Panel title="Staff and customer invitations"><DataTable headers={["Email", "Role", "Expires", "Status"]} rows={(staffData?.invitations || []).map((invite: any) => [invite.email, cap(invite.role), fmtDate(invite.expires_at), invite.accepted_at ? "Accepted" : invite.revoked_at ? "Revoked" : "Pending"])} /></Panel> : <Panel title={activeTab} actions={<button className="btn" onClick={() => void queueExport("users", "csv")}>Export CSV</button>}><DataTable headers={["User", "Email", "Accounts", "Customer session", "Email status", "Last sign-in", "Created"]} rows={users.filter((user) => activeTab !== "Access issues" || !user.confirmedAt).map((user) => [<b>{user.name || "Claritude user"}</b>, user.email, user.accountCount, user.accountIds?.[0] ? <Link to={`/superadmin?view=administration&tab=Customer+sessions&account=${user.accountIds[0]}`}>View as customer</Link> : "No account membership", user.confirmedAt ? <StatusPill tone="success">Confirmed</StatusPill> : <StatusPill tone="neutral">Pending</StatusPill>, user.lastSignInAt ? fmtDate(user.lastSignInAt) : "Never", fmtDate(user.createdAt)])} /></Panel>;
+  else if (view === "accounts") content = accountId && accountDetail ? <SuperAdminAccountDetail detail={accountDetail} packages={platform?.packages || []} session={session} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("packages.write"))} canManageCustomers={Boolean(staff?.permissions.includes("customers.write"))} canCommunicate={Boolean(staff?.permissions.includes("communications.write"))} canExport={Boolean(staff?.permissions.includes("exports.write"))} refresh={async () => { if (!session || fixture) return; setAccountDetail(await api<any>(session, `/api/superadmin/accounts/${accountId}`)); await load(); }} /> : <Panel title={activeTab} actions={<button className="btn" onClick={() => void queueExport("accounts", "csv")}>Export CSV</button>}><DataTable headers={["Account", "Package", "Arrangement", "Users", "Workspaces", "Properties", "Health", "Created"]} rows={accounts.filter((account) => activeTab !== "Needs attention" || account.offlineCount > 0).map((account) => [<Link to={`/superadmin?view=accounts&account=${account.id}`}><b>{account.name}</b></Link>, account.effectivePackageName || cap(account.entitlement.replaceAll("_", " ")), account.billingArrangement === "complimentary" ? <StatusPill tone="success">Complimentary</StatusPill> : "Standard", account.userCount, account.workspaceCount, account.propertyCount, account.offlineCount ? <StatusPill tone="danger">{account.offlineCount} offline</StatusPill> : <StatusPill tone="success">Healthy</StatusPill>, fmtDate(account.created_at)])} /></Panel>;
+  else if (view === "users") content = <SuperAdminUsersDesk activeTab={activeTab} users={users} session={session} fixture={fixture} canManageCustomers={Boolean(staff?.permissions.includes("customers.write"))} isOwner={staff?.role === "owner"} refresh={load} onExport={() => queueExport("users", "csv")} />;
   else if (view === "resources") content = activeTab === "Workspaces" ? <Panel title="Workspaces"><DataTable headers={["Workspace", "Account", "Properties", "Created"]} rows={workspaces.map((workspace) => [workspace.name, payload?.accounts.find((account) => account.id === workspace.account_id)?.name || workspace.account_id, workspace.propertyCount, fmtDate(workspace.created_at)])} /></Panel> : <Panel title={activeTab}><DataTable headers={["Property", "Domain", "Workspace", "Connection", "Monitor", "Last analytics"]} rows={properties.filter((property) => activeTab !== "Connection health" || property.verification_status !== "verified" || !property.tracking_last_received_at).map((property) => [property.name, property.canonical_host, payload?.workspaces.find((workspace) => workspace.id === property.workspace_id)?.name || property.workspace_id, property.verification_status, property.monitor?.last_status || "Not configured", property.tracking_last_received_at ? fmtDate(property.tracking_last_received_at) : "No data"])} /></Panel>;
   else if (view === "packages") content = activeTab === "Free account inactivity" ? <Panel title="Free account inactivity"><p className="subtle">Policy: warning day 60, reminder day 90, reversible freeze day 100, deletion eligibility day 121. Accounts with a current complimentary non-Free grant are excluded. Automatic irreversible deletion is disabled.</p><DataTable headers={["Account", "State", "Last meaningful activity", "Review hold", "Updated"]} rows={(platform?.inactivity || []).map((item: any) => [payload?.accounts.find((account) => account.id === item.account_id)?.name || item.account_id, item.state, item.last_meaningful_activity_at ? fmtDate(item.last_meaningful_activity_at) : "Not recorded", item.analytics_review_required || item.notice_delivery_failed ? "Required" : "No", fmtDate(item.updated_at)])} /></Panel> : activeTab === "Account overrides" ? <><Panel title="Complimentary package grants"><DataTable headers={["Account", "Package", "Status", "Starts", "Expires", "Reason"]} rows={(platform?.grants || []).map((item: any) => [<Link to={`/superadmin?view=accounts&account=${item.account_id}`}>{payload?.accounts.find((account) => account.id === item.account_id)?.name || item.account_id}</Link>, item.package_versions?.display_name || item.package_version_id, cap(item.status), fmtDate(item.starts_at), item.expires_at ? fmtDate(item.expires_at) : "Never", item.reason])} /></Panel><Panel title="Allocation overrides"><DataTable headers={["Account", "Key", "Value", "Source", "Starts", "Expires", "Reason"]} rows={(platform?.overrides || []).map((item: any) => [payload?.accounts.find((account) => account.id === item.account_id)?.name || item.account_id, item.key, JSON.stringify(item.value), item.grant_id ? "Complimentary grant" : "Manual", fmtDate(item.starts_at), item.expires_at ? fmtDate(item.expires_at) : "No expiry", item.reason])} /></Panel></> : activeTab === "Subscription rules" ? <Panel title="Subscription rules"><p>Complimentary grants are resolved before the underlying standard assignment.</p><p className="subtle">Granting or revoking complimentary access never creates, changes or cancels a Stripe subscription. Temporary grants return to the underlying standard package on expiry. Package and allocation changes preserve all customer data.</p></Panel> : <Panel title={activeTab}><DataTable headers={["Package", "Version", "State", "Allowances", "Features", "Unresolved commercial values", "Effective"]} rows={(platform?.packages || []).map((item: any) => [item.display_name, item.version, item.state, JSON.stringify(item.allowances || {}), JSON.stringify(item.features || {}), item.unresolved_values?.join(", ") || "None", item.effective_at ? fmtDate(item.effective_at) : "Draft"])} /></Panel>;
   else if (view === "financials") content = <Panel title={activeTab}>{!platform?.billing?.configured ? <UnavailableState title="Stripe billing is unconfigured" detail="No server-side Stripe key, webhook secret, product catalogue or reconciled billing state is available. Complimentary and beta access remains unchanged; no paid subscriptions are fabricated." /> : <DataTable headers={["Provider event", "Type", "State", "Provider time"]} rows={(platform.billing.events || []).map((event: any) => [event.provider_event_id, event.event_type, event.processing_state, fmtDate(event.provider_created_at)])} />}<p className="subtle">Currencies remain separate unless a labelled conversion is explicitly configured. Credits, cash refunds, recurring revenue and cash collection are reported independently.</p></Panel>;
   else if (view === "coupons") content = <Panel title={activeTab}>{!platform?.billing?.configured && <UnavailableState title="Promotion synchronisation unavailable" detail="Stripe sandbox credentials and product/price configuration are required before promotion codes can be enabled." />}<DataTable headers={["Code", "Discount", "Duration", "Packages", "Expires", "Enabled"]} rows={(platform?.billing?.promotions || []).map((item: any) => [item.code || "Provider generated", item.discount_type === "percentage" ? `${item.percentage}%` : `${item.fixed_amount_minor} ${item.currency}`, item.duration_type === "billing_periods" ? `${item.duration_count} billing periods` : item.duration_type, item.eligible_packages?.join(", ") || "All configured", item.expires_at ? fmtDate(item.expires_at) : "No expiry", item.enabled ? "Yes" : "No"])} /></Panel>;
-  else if (view === "audits") content = activeTab === "Check health" ? <Panel title="Audit check health"><Metrics values={[["Technical checks", platform?.audits?.technicalChecks?.length || 0, "Repository-owned execution"], ["Customer groups", platform?.audits?.groups?.length || 0, "Presentation groups"], ["Failed today", platform?.audits?.today?.failed || 0, "Application measured"], ["Partial today", platform?.audits?.today?.partial || 0, "Application measured"]]} /></Panel> : <Panel title={activeTab}><p className="subtle">Executable logic remains in the repository. Database controls can change validated availability and supported configuration only.</p><DataTable headers={["Check", "Category", "Subcategory", "Severity", "Lifecycle", "Config version"]} rows={(platform?.audits?.technicalChecks || []).filter((item: any) => !normalizedQuery || `${item.id} ${item.title} ${item.primary_category}`.toLowerCase().includes(normalizedQuery)).slice(0, 250).map((item: any) => [item.title, item.primary_category, item.subcategory, item.severity, item.lifecycle, item.configuration_version])} /></Panel>;
+  else if (view === "audits") content = <AuditControlsDesk activeTab={activeTab} platform={platform} session={session} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("audits.write"))} refresh={load} />;
   else if (view === "health") content = activeTab === "Incidents" ? <Panel title="Platform incidents"><DataTable headers={["Incident", "State", "Services", "Opened", "Resolved"]} rows={(platform?.incidents || []).map((item: any) => [item.title, item.state, item.affected_services?.join(", "), fmtDate(item.opened_at), item.resolved_at ? fmtDate(item.resolved_at) : "Open"])} /></Panel> : <PlatformServices platform={platform} payload={payload} />;
   else if (view === "infrastructure") content = <InfrastructureDesk activeTab={activeTab} platform={platform} payload={payload} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("operations.write"))} toggleControl={toggleControl} session={session} refresh={load} />;
   else if (view === "email") content = <EmailControlDesk activeTab={activeTab} platform={platform} session={session} fixture={fixture} refresh={load} />;
@@ -4612,6 +4640,11 @@ function SuperAdminView({ session, fixture = false, staff }: { session: Session 
       {searchResults.length > 0 && <div className="superadmin-search-results">{searchResults.map((item) => <Link key={`${item.type}:${item.id}`} to={item.href} onClick={() => { setQuery(""); setSearchResults([]); }}><small>{cap(item.type.replaceAll("_", " "))}</small><b>{item.label}</b></Link>)}</div>}
     </div>
     {tabs.length > 0 && <Tabs labels={tabs} value={activeTab} onChange={selectTab} />}
+    <div className="button-row superadmin-saved-views">
+      <label className="field">Saved view<select value="" onChange={(event) => applySavedView(event.target.value)}><option value="">Choose a saved view</option>{savedViews.map((item) => <option key={item.id} value={item.id}>{item.name} · {navigationItems.find((entry) => entry.id === item.page)?.label || item.page}</option>)}</select></label>
+      <button className="btn" disabled={fixture} onClick={() => void saveCurrentView()}>Save current view</button>
+      {savedViews.filter((item) => item.page === view).map((item) => <button className="btn" key={item.id} onClick={() => void removeSavedView(item.id)} aria-label={`Remove saved view ${item.name}`}>Remove {item.name}</button>)}
+    </div>
     {error ? <Panel><div className="analytics-state" role="alert"><Empty title="SuperAdmin command centre could not be loaded" detail={error} /><button className="btn" onClick={() => void load()}>Retry</button></div></Panel> : !payload || !platform ? <Panel><Empty title="Loading SuperAdmin command centre…" detail="Collecting real platform data and capability status." /></Panel> : content}
   </Page>;
 }
@@ -4845,8 +4878,8 @@ function AdminActivityDesk({ activity }: { activity: any[] }) {
   </Panel>;
 }
 
-function SuperAdminAccountDetail({ detail, packages, session, fixture, canWrite, refresh }: { detail: any; packages: any[]; session: Session | null; fixture: boolean; canWrite: boolean; refresh: () => Promise<void> }) {
-  const labels = ["Overview", "Workspaces & Properties", "Users & Permissions", "Package & Billing", "Usage", "Communications", "Activity", "Data & Access"];
+function SuperAdminAccountDetail({ detail, packages, session, fixture, canWrite, canManageCustomers, canCommunicate, canExport, refresh }: { detail: any; packages: any[]; session: Session | null; fixture: boolean; canWrite: boolean; canManageCustomers: boolean; canCommunicate: boolean; canExport: boolean; refresh: () => Promise<void> }) {
+  const labels = ["Overview", "Workspaces & Properties", "Users & Permissions", "Package & Limits", "Billing", "Usage", "Communications", "Activity", "Data & Access"];
   const [tab, setTab] = useState("Overview");
   const activeGrant = (detail.grants || []).find((item: any) => item.status === "active" && (!item.expires_at || Date.parse(item.expires_at) > Date.now()));
   const standardAssignment = (detail.assignments || []).find((item: any) => !item.ends_at);
@@ -4861,6 +4894,14 @@ function SuperAdminAccountDetail({ detail, packages, session, fixture, canWrite,
   const [preview, setPreview] = useState<any>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const [tags, setTags] = useState((detail.account.tags || []).join(", "));
+  const [draftSubject, setDraftSubject] = useState("");
+  const [draftBody, setDraftBody] = useState("");
+  const [draftChannel, setDraftChannel] = useState<"in_app" | "email">("in_app");
+  const [draftReason, setDraftReason] = useState("");
+  const [accountState, setAccountState] = useState(detail.account.access_state || "active");
+  const [scheduledDeletionAt, setScheduledDeletionAt] = useState(detail.account.scheduled_deletion_at ? new Date(detail.account.scheduled_deletion_at).toISOString().slice(0, 16) : "");
   const effective = detail.effectiveEntitlements;
   const publishedPackages = packages.filter((item) => item.state === "published");
 
@@ -4899,15 +4940,57 @@ function SuperAdminAccountDetail({ detail, packages, session, fixture, canWrite,
     finally { setBusy(false); }
   }
 
+  async function customerMutation(path: string, options: any, success: string) {
+    if (!session || fixture) return;
+    setBusy(true); setMessage("");
+    try { await api(session, path, options); setMessage(success); await refresh(); }
+    catch (error: any) { setMessage(error.message); }
+    finally { setBusy(false); }
+  }
+
+  async function addNote() {
+    await customerMutation(`/api/superadmin/accounts/${detail.account.id}/notes`, { method: "POST", body: JSON.stringify({ body: note }) }, "Internal note added.");
+    setNote("");
+  }
+
+  async function saveTags() {
+    const reason = window.prompt("Reason for changing account tags:");
+    if (!reason) return;
+    await customerMutation(`/api/superadmin/accounts/${detail.account.id}/tags`, { method: "PATCH", body: JSON.stringify({ tags: String(tags).split(",").map((item: string) => item.trim()).filter(Boolean), reason }) }, "Account tags saved.");
+  }
+
+  async function saveAccountState() {
+    const reason = window.prompt(`Reason to set this account to ${accountState}:`);
+    if (!reason) return;
+    await customerMutation(`/api/superadmin/accounts/${detail.account.id}/state`, { method: "PATCH", body: JSON.stringify({ state: accountState, reason, scheduledDeletionAt: accountState === "pending_deletion" && scheduledDeletionAt ? new Date(scheduledDeletionAt).toISOString() : null }) }, "Account access state updated.");
+  }
+
+  async function toggleAccountService(service: string, paused: boolean) {
+    const reason = window.prompt(`Reason to ${paused ? "pause" : "resume"} ${service}:`);
+    if (!reason) return;
+    await customerMutation(`/api/superadmin/accounts/${detail.account.id}/services/${service}`, { method: "PATCH", body: JSON.stringify({ paused, reason }) }, `${cap(service)} ${paused ? "paused" : "resumed"}.`);
+  }
+
+  async function saveMessageDraft() {
+    await customerMutation(`/api/superadmin/accounts/${detail.account.id}/messages`, { method: "POST", body: JSON.stringify({ subject: draftSubject, body: draftBody, channel: draftChannel, reason: draftReason }) }, "Message saved as a draft; nothing was sent.");
+    setDraftSubject(""); setDraftBody(""); setDraftReason("");
+  }
+
+  async function exportAccount() {
+    const reason = window.prompt("Reason for exporting this account:");
+    if (!session || fixture || !reason) return;
+    await customerMutation("/api/superadmin/exports", { method: "POST", body: JSON.stringify({ scope: "accounts", format: "csv", reason, filters: { accountId: detail.account.id, selection: "selected" } }) }, "Permission-checked account export queued.");
+  }
+
   const packageName = activeGrant?.package_versions?.display_name || standardAssignment?.package_versions?.display_name || cap(effective?.packageKey?.replaceAll("_", " ") || detail.account.entitlement);
   return <>
     <div className="button-row"><Link className="btn" to="/superadmin?view=accounts">← All accounts</Link><span><b>{detail.account.name}</b> · {packageName} · <StatusPill tone={activeGrant ? "success" : "neutral"}>{activeGrant ? "Complimentary" : "Standard"}</StatusPill></span></div>
     <Tabs labels={labels} value={tab} onChange={setTab} />
-    {tab === "Overview" ? <><Metrics values={[["Workspaces", detail.workspaces.length, "Account resources"], ["Properties", detail.properties.length, "Preserved on package changes"], ["Users", new Set(detail.memberships.map((item: any) => item.user_id)).size, "Account identities"], ["Access", cap(detail.account.access_state || "active"), "Account state"]]} /><Panel title="Effective access"><p><b>{packageName}</b> · {activeGrant ? "Complimentary" : `Standard billing state: ${standardAssignment?.billing_state || "unconfigured"}`}</p><p className="subtle">Package changes do not delete workspaces, properties, reports, audits or analytics history.</p></Panel></> : null}
+    {tab === "Overview" ? <><Metrics values={[["Workspaces", detail.workspaces.length, "Account resources"], ["Properties", detail.properties.length, "Preserved on package changes"], ["Users", new Set(detail.memberships.map((item: any) => item.user_id)).size, "Account identities"], ["Access", cap(detail.account.access_state || "active"), "Account state"]]} /><Panel title="Effective access"><p><b>{packageName}</b> · {activeGrant ? "Complimentary" : `Standard billing state: ${standardAssignment?.billing_state || "unconfigured"}`}</p><p className="subtle">Package changes do not delete workspaces, properties, reports, audits or analytics history.</p></Panel><Panel title="Internal account context"><label className="field">Tags (comma separated)<input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="priority, onboarding, review" /></label><button className="btn" disabled={busy || !canManageCustomers} onClick={() => void saveTags()}>Save tags</button><label className="field">New internal note<textarea rows={3} value={note} onChange={(event) => setNote(event.target.value)} /></label><button className="btn" disabled={busy || !canManageCustomers || !note.trim()} onClick={() => void addNote()}>Add note</button><DataTable headers={["Note", "Created"]} rows={(detail.notes || []).map((item: any) => [item.body, fmtDate(item.created_at)])} /></Panel></> : null}
     {tab === "Workspaces & Properties" ? <Panel title="Workspaces & properties"><DataTable headers={["Property", "Domain", "Workspace", "State"]} rows={detail.properties.map((property: any) => [property.name, property.canonical_host, detail.workspaces.find((workspace: any) => workspace.id === property.workspace_id)?.name || property.workspace_id, property.access_state])} /></Panel> : null}
-    {tab === "Users & Permissions" ? <Panel title="Users & permissions"><DataTable headers={["User ID", "Role", "Created"]} rows={detail.memberships.map((item: any) => [item.user_id, cap(item.role), fmtDate(item.created_at)])} /></Panel> : null}
-    {tab === "Package & Billing" ? <>
-      <Panel title="Current package & billing"><Metrics values={[["Effective package", packageName, activeGrant ? "Complimentary grant" : "Standard assignment"], ["Billing arrangement", activeGrant ? "Complimentary" : "Standard", activeGrant ? "No payment required" : cap(standardAssignment?.billing_state || "unconfigured")], ["Grant expiry", activeGrant?.expires_at ? fmtDate(activeGrant.expires_at) : activeGrant ? "Never" : "Not applicable", activeGrant?.expiry_behavior === "return_to_standard" ? "Returns to standard package" : ""], ["Stripe", standardAssignment?.billing_state || "Unconfigured", "Unaffected by complimentary access"]]} />
+    {tab === "Users & Permissions" ? <Panel title="Users & permissions"><DataTable headers={["User ID", "Workspace role", "Billing access", "Created"]} rows={detail.memberships.map((item: any) => { const billing = (detail.billingMemberships || []).find((entry: any) => entry.user_id === item.user_id); return [item.user_id, cap(item.role), billing ? billing.can_manage ? "Manage" : billing.can_view ? "View" : "None" : "None", fmtDate(item.created_at)]; })} /><p className="subtle">Customer identity, workspace membership, property viewing and billing access remain separate records.</p></Panel> : null}
+    {tab === "Package & Limits" ? <>
+      <Panel title="Current package & limits"><Metrics values={[["Effective package", packageName, activeGrant ? "Complimentary grant" : "Standard assignment"], ["Arrangement", activeGrant ? "Complimentary" : "Standard", activeGrant ? "No payment required" : cap(standardAssignment?.billing_state || "unconfigured")], ["Grant expiry", activeGrant?.expires_at ? fmtDate(activeGrant.expires_at) : activeGrant ? "Never" : "Not applicable", activeGrant?.expiry_behavior === "return_to_standard" ? "Returns to standard package" : ""], ["Overrides", (detail.overrides || []).length, "Effective dated"]]} />
         {activeGrant?.expires_at && <UnavailableState title="Temporary complimentary access" detail={`This grant ends ${fmtDate(activeGrant.expires_at)}. The account will return to its underlying standard package without an automatic charge.`} />}
       </Panel>
       <Panel title="Edit package access">
@@ -4929,10 +5012,11 @@ function SuperAdminAccountDetail({ detail, packages, session, fixture, canWrite,
       </Panel>
       <Panel title="Grant history"><DataTable headers={["Package", "Arrangement", "Status", "Starts", "Expires", "Reason"]} rows={(detail.grants || []).map((item: any) => [item.package_versions?.display_name || item.package_version_id, "Complimentary", cap(item.status), fmtDate(item.starts_at), item.expires_at ? fmtDate(item.expires_at) : "Never", item.reason])} /></Panel>
     </> : null}
+    {tab === "Billing" ? <Panel title="Billing"><Metrics values={[["Billing arrangement", activeGrant ? "Complimentary" : "Standard", activeGrant ? "No payment required" : cap(standardAssignment?.billing_state || "unconfigured")], ["Stripe state", standardAssignment?.billing_state || "Unconfigured", "Verified provider state only"], ["Billing members", (detail.billingMemberships || []).filter((item: any) => item.can_view || item.can_manage).length, "Explicit billing permissions"], ["Currency", "Unavailable", "No reconciled subscription currency"]]} /><p className="subtle">Complimentary access does not fabricate a subscription or modify Stripe. Financial operations remain disabled until provider configuration and reconciliation are verified.</p></Panel> : null}
     {tab === "Usage" ? <Panel title="Usage"><DataTable headers={["Period", "Metric", "Included", "Consumed", "Reserved"]} rows={(detail.usage || []).map((item: any) => [`${fmtDate(item.period_start)} – ${fmtDate(item.period_end)}`, item.metric, item.included ?? "—", item.consumed, item.reserved])} /></Panel> : null}
-    {tab === "Communications" ? <Panel title="Communications"><DataTable headers={["Channel", "Subject", "State", "Created"]} rows={(detail.messages || []).map((item: any) => [item.channel, item.subject || item.kind, item.state, fmtDate(item.created_at)])} /></Panel> : null}
+    {tab === "Communications" ? <><Panel title="Draft direct message"><div className="settings-grid"><label className="field">Channel<select value={draftChannel} onChange={(event) => setDraftChannel(event.target.value as "in_app" | "email")}><option value="in_app">In-app</option><option value="email">Email</option></select></label><label className="field">Subject<input value={draftSubject} onChange={(event) => setDraftSubject(event.target.value)} /></label><label className="field settings-span-2">Message<textarea rows={5} value={draftBody} onChange={(event) => setDraftBody(event.target.value)} /></label><label className="field settings-span-2">Administrative reason<input value={draftReason} onChange={(event) => setDraftReason(event.target.value)} /></label></div><button className="btn" disabled={busy || !canCommunicate || !draftSubject.trim() || !draftBody.trim() || draftReason.trim().length < 3} onClick={() => void saveMessageDraft()}>Save draft</button><p className="subtle">Drafting is available; this control never sends. Delivery requires a separately reviewed recipient preview and send workflow.</p></Panel><Panel title="Communication history"><DataTable headers={["Channel", "Subject", "State", "Created"]} rows={(detail.messages || []).map((item: any) => [item.channel, item.subject || item.kind, item.status || item.state, fmtDate(item.created_at)])} /></Panel></> : null}
     {tab === "Activity" ? <Panel title="Account activity"><DataTable headers={["Action", "Actor", "Time"]} rows={(detail.activity || []).map((item: any) => [item.action, item.actor_id || "System", fmtDate(item.created_at)])} /></Panel> : null}
-    {tab === "Data & Access" ? <Panel title="Data & access"><p>Account state: <b>{cap(detail.account.access_state || "active")}</b></p><p><Link className="btn" to={`/superadmin?view=administration&tab=Customer+sessions&account=${detail.account.id}`}>View as this customer</Link></p><p className="subtle">Package changes preserve customer data. Data export and deletion remain separate permission-checked workflows.</p></Panel> : null}
+    {tab === "Data & Access" ? <><Panel title="Account access"><div className="settings-grid"><label className="field">State<select value={accountState} onChange={(event) => setAccountState(event.target.value)}><option value="active">Active</option><option value="frozen">Frozen</option><option value="blocked">Blocked</option><option value="pending_deletion">Pending deletion</option></select></label>{accountState === "pending_deletion" && <label className="field">Scheduled review date<input type="datetime-local" value={scheduledDeletionAt} onChange={(event) => setScheduledDeletionAt(event.target.value)} /></label>}</div><div className="button-row"><button className="btn" disabled={busy || !canManageCustomers || accountState === detail.account.access_state} onClick={() => void saveAccountState()}>Update access state</button><Link className="btn" to={`/superadmin?view=administration&tab=Customer+sessions&account=${detail.account.id}`}>View as this customer</Link><button className="btn" disabled={busy || !canExport} onClick={() => void exportAccount()}>Export this account</button></div><p className="subtle">Pending deletion is a reversible reviewed state. This interface does not irreversibly delete production customer data.</p></Panel><Panel title="Service-specific controls"><DataTable headers={["Service", "State", "Reason", "Action"]} rows={["audits", "analytics", "uptime", "reports", "email"].map((service) => { const control = (detail.controls || []).find((item: any) => item.service === service); const paused = Boolean(control?.paused); return [cap(service), paused ? <StatusPill tone="danger">Paused</StatusPill> : <StatusPill tone="success">Running</StatusPill>, control?.reason || "—", <button className="btn" disabled={busy || !canManageCustomers} onClick={() => void toggleAccountService(service, !paused)}>{paused ? "Resume" : "Pause"}</button>]; })} /></Panel></> : null}
   </>;
 }
 
@@ -4950,6 +5034,87 @@ function PlatformServices({ platform, payload }: { platform: any; payload: Super
     ["Cloudflare detailed telemetry", "Unavailable", "Provider access not configured", "—"],
     ["Supabase backups", "Unverified", "Provider capability not read", "—"],
   ]} /></Panel>;
+}
+
+function AuditControlsDesk({ activeTab, platform, session, fixture, canWrite, refresh }: any) {
+  const checks = platform?.audits?.technicalChecks || [];
+  const groups = platform?.audits?.groups || [];
+  const availability = platform?.audits?.packageAvailability || [];
+  const history = platform?.audits?.groupHistory || [];
+  const [category, setCategory] = useState("all");
+  const [status, setStatus] = useState("all");
+  const [packageFilter, setPackageFilter] = useState("all");
+  const [message, setMessage] = useState("");
+  const categories = [...new Set([...checks.map((item: any) => item.primary_category), ...groups.map((item: any) => item.category)].filter(Boolean))].sort();
+  const packages = [...new Set<string>(availability.map((item: any) => String(item.entitlement)))].sort();
+  const mutate = async (url: string, options: any, success: string) => {
+    if (!session || fixture) return;
+    try { setMessage(""); await api(session, url, options); setMessage(success); await refresh(); }
+    catch (error: any) { setMessage(error.message); }
+  };
+  const matches = (item: any, kind: string) => {
+    const itemCategory = item.primary_category || item.category;
+    const itemStatus = item.lifecycle === "active" && item.enabled_by_default !== false ? "enabled" : "disabled";
+    const packageRule = packageFilter === "all" || availability.some((rule: any) => rule.target_kind === kind && rule.target_id === item.id && rule.entitlement === packageFilter);
+    return (category === "all" || itemCategory === category) && (status === "all" || itemStatus === status) && packageRule;
+  };
+  async function toggleCheck(item: any) {
+    const reason = window.prompt(`Reason to ${item.lifecycle === "active" ? "disable" : "enable"} ${item.title}:`);
+    if (!reason) return;
+    await mutate(`/api/superadmin/audit-checks/${encodeURIComponent(item.id)}`, { method: "PATCH", body: JSON.stringify({ lifecycle: item.lifecycle === "active" ? "disabled" : "active", reason }) }, "Technical check configuration updated.");
+  }
+  async function toggleGroup(item: any) {
+    const reason = window.prompt(`Reason to ${item.lifecycle === "active" ? "disable" : "enable"} ${item.name}:`);
+    if (!reason) return;
+    await mutate(`/api/superadmin/audit-groups/${encodeURIComponent(item.id)}`, { method: "PATCH", body: JSON.stringify({ lifecycle: item.lifecycle === "active" ? "disabled" : "active", enabledByDefault: item.lifecycle !== "active", reason }) }, "Customer-facing group configuration updated.");
+  }
+  async function setPackageRule(item: any, kind: "technical_check" | "user_facing_group") {
+    const entitlement = window.prompt("Package entitlement key (for example free or pro_early_access):");
+    if (!entitlement) return;
+    const enabled = window.confirm("Enable this item for the package? Choose Cancel to explicitly disable it.");
+    const reason = window.prompt("Reason for the package availability rule:");
+    if (!reason) return;
+    await mutate("/api/superadmin/audit-catalogue/package-availability", { method: "PUT", body: JSON.stringify({ targetKind: kind, targetId: item.id, entitlement, enabled, reason }) }, "Package availability rule saved.");
+  }
+  async function rollback(item: any) {
+    const reason = window.prompt("Reason for restoring this group configuration snapshot:");
+    if (!reason) return;
+    await mutate(`/api/superadmin/audit-groups/${encodeURIComponent(item.group_id)}/rollback/${item.id}`, { method: "POST", body: JSON.stringify({ reason }) }, "Group configuration restored as a new version.");
+  }
+  if (activeTab === "Check health") return <Panel title="Audit check health"><Metrics values={[["Technical checks", checks.length, "Repository-owned execution"], ["Customer groups", groups.length, "Presentation groups"], ["Failed today", platform?.audits?.today?.failed || 0, "Application measured"], ["Partial today", platform?.audits?.today?.partial || 0, "Application measured"]]} /><p className="subtle">Runtime and outcome telemetry is measured at audit-run level. Missing provider telemetry is not inferred.</p></Panel>;
+  if (activeTab === "Change history") return <Panel title="Group configuration history"><DataTable headers={["Group", "Version restored from", "Reason", "Changed", "Action"]} rows={history.map((item: any) => [groups.find((group: any) => group.id === item.group_id)?.name || item.group_id, item.snapshot?.configuration_version || "—", item.reason, fmtDate(item.changed_at), <button className="btn" disabled={!canWrite || fixture} onClick={() => void rollback(item)}>Restore</button>])} />{message && <p role="status">{message}</p>}</Panel>;
+  return <>
+    <Panel title="Catalogue filters"><div className="button-row"><label className="field">Category<select value={category} onChange={(event) => setCategory(event.target.value)}><option value="all">All categories</option>{categories.map((item) => <option key={item}>{item}</option>)}</select></label><label className="field">State<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All states</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option></select></label><label className="field">Package rule<select value={packageFilter} onChange={(event) => setPackageFilter(event.target.value)}><option value="all">All package rules</option>{packages.map((item) => <option key={item}>{item}</option>)}</select></label></div><p className="subtle">Executable logic remains in the repository. These controls change validated availability and supported configuration only.</p></Panel>
+    <Panel title="Customer-facing groups"><DataTable headers={["Group", "Category", "Severity", "Weight", "State", "Version", "Actions"]} rows={groups.filter((item: any) => matches(item, "user_facing_group")).map((item: any) => [item.name, item.category, item.failure_severity, item.weight, item.lifecycle === "active" && item.enabled_by_default ? <StatusPill tone="success">Enabled</StatusPill> : <StatusPill tone="neutral">Disabled</StatusPill>, item.configuration_version, <div className="button-row"><button className="btn" disabled={!canWrite || fixture} onClick={() => void toggleGroup(item)}>{item.lifecycle === "active" ? "Disable" : "Enable"}</button><button className="btn" disabled={!canWrite || fixture} onClick={() => void setPackageRule(item, "user_facing_group")}>Package rule</button></div>])} /></Panel>
+    <Panel title="Technical checks"><DataTable headers={["Check", "Category", "Method", "Severity", "State", "Version", "Actions"]} rows={checks.filter((item: any) => matches(item, "technical_check")).map((item: any) => [item.title, item.primary_category, item.execution_method, item.severity, item.lifecycle === "active" ? <StatusPill tone="success">Enabled</StatusPill> : <StatusPill tone="neutral">Disabled</StatusPill>, item.configuration_version, <div className="button-row"><button className="btn" disabled={!canWrite || fixture} onClick={() => void toggleCheck(item)}>{item.lifecycle === "active" ? "Disable" : "Enable"}</button><button className="btn" disabled={!canWrite || fixture} onClick={() => void setPackageRule(item, "technical_check")}>Package rule</button></div>])} /></Panel>
+    {message && <p role="status">{message}</p>}
+  </>;
+}
+
+function SuperAdminUsersDesk({ activeTab, users, session, fixture, canManageCustomers, isOwner, refresh, onExport }: any) {
+  const [message, setMessage] = useState("");
+  const pending = users.filter((user: any) => !user.confirmedAt);
+  async function mutate(url: string, options: any, success: string) {
+    if (!session || fixture) return;
+    try { setMessage(""); await api(session, url, options); setMessage(success); await refresh(); }
+    catch (error: any) { setMessage(error.message); }
+  }
+  async function resend(user: any) {
+    const reason = window.prompt(`Reason to resend verification to ${user.email}:`);
+    if (!reason) return;
+    await mutate(`/api/superadmin/users/${user.id}/verification-resend`, { method: "POST", body: JSON.stringify({ reason }) }, "Verification email requested and logged.");
+  }
+  async function confirm(user: any) {
+    const reason = window.prompt(`Restricted manual confirmation reason for ${user.email}:`);
+    if (!reason || window.prompt('Type "CONFIRM EMAIL" to continue:') !== "CONFIRM EMAIL") return;
+    await mutate(`/api/superadmin/users/${user.id}/confirm-email`, { method: "PATCH", body: JSON.stringify({ reason, confirmation: "CONFIRM EMAIL" }) }, "Email manually confirmed. No account membership was created.");
+  }
+  const visible = activeTab === "All users" ? users : pending;
+  return <Panel title={activeTab === "Invitations" ? "Pending identity invitations" : activeTab} actions={<button className="btn" onClick={() => void onExport()}>Export filtered users</button>}>
+    {activeTab === "Invitations" && <p className="subtle">These are unconfirmed authentication identities. Workspace, property and billing memberships are separate and an email confirmation never grants account access.</p>}
+    <DataTable headers={["User", "Email", "Accounts", "Customer session", "Email status", "Last sign-in", "Created", "Actions"]} rows={visible.map((user: any) => [<b>{user.name || "Claritude user"}</b>, user.email, user.accountCount, user.accountIds?.[0] ? <Link to={`/superadmin?view=administration&tab=Customer+sessions&account=${user.accountIds[0]}`}>View as customer</Link> : "No account membership", user.confirmedAt ? <StatusPill tone="success">Confirmed</StatusPill> : <StatusPill tone="neutral">Pending</StatusPill>, user.lastSignInAt ? fmtDate(user.lastSignInAt) : "Never", fmtDate(user.createdAt), !user.confirmedAt ? <div className="button-row"><button className="btn" disabled={!canManageCustomers || fixture} onClick={() => void resend(user)}>Resend verification</button><button className="btn" disabled={!isOwner || fixture} onClick={() => void confirm(user)}>Manual confirm</button></div> : "—"])} />
+    {message && <p role="status">{message}</p>}
+  </Panel>;
 }
 
 function CustomerSessionsPanel({ session, fixture, payload, sessions, refresh }: { session: Session | null; fixture: boolean; payload: SuperAdminPayload | null; sessions: any[]; refresh: () => Promise<void> }) {

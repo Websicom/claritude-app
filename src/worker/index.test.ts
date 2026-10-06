@@ -48,11 +48,26 @@ import {
   deriveEmailAutomationDecision,
   renderEmailTemplate,
   validatePlatformSetting,
+  normalizeAccountTags,
+  applyAdminExportFilters,
 } from "./index";
 import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
 
 describe("worker evidence pipelines", () => {
+  it("normalises bounded account tags without accepting oversized metadata", () => {
+    expect(normalizeAccountTags([" Priority ", "Priority", "needs   review"])).toEqual(["Priority", "needs review"]);
+    expect(normalizeAccountTags("priority")).toBeNull();
+    expect(normalizeAccountTags(Array.from({ length: 21 }, (_, index) => `tag-${index}`))).toBeNull();
+    expect(normalizeAccountTags(["x".repeat(41)])).toBeNull();
+  });
+
+  it("applies selected-row, account and query filters to admin exports", () => {
+    const rows = [{ id: "a", account_id: "one", name: "Alpha" }, { id: "b", account_id: "two", name: "Beta" }];
+    expect(applyAdminExportFilters(rows, { selectedIds: ["b"] })).toEqual([rows[1]]);
+    expect(applyAdminExportFilters(rows, { accountId: "one" })).toEqual([rows[0]]);
+    expect(applyAdminExportFilters(rows, { query: "beta" })).toEqual([rows[1]]);
+  });
   it("derives configuration state separately from permission and running jobs", () => {
     expect(deriveFeatureState({ permitted: true, configured: false, enabled: false })).toMatchObject({ state: "awaiting_configuration", runningJobs: 0 });
     expect(deriveFeatureState({ permitted: true, configured: true, enabled: false })).toMatchObject({ state: "ready_to_activate" });

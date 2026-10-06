@@ -11,8 +11,8 @@ This is an acceptance record, not a marketing checklist. A page or schema founda
 - [x] Confirm `Websicom/claritude-app`, `main`, Supabase project `dfaxmxschvzmlozxjaxf`, Cloudflare Worker deployment, queues, cron, browser binding and Resend integration.
 - [x] Inspect authentication, database, audit engine, analytics, uptime, email and deployment paths before changing them.
 - [x] Use additive, service-role-only migrations for privileged state and preserve existing customer data.
-- [x] Run type checks, 183 unit tests, production build, production dependency audit and responsive browser smoke tests.
-- [x] Production applied the expected three migrations and linked database lint returned no schema errors.
+- [x] Run type checks, 190 unit tests, production build, production dependency audit and responsive browser smoke tests.
+- [x] Production applied the expected migrations through `20261006093839`; the current checkpoint adds one additive audit-group history migration for the same migration-first workflow.
 - [x] Push through `main`, observe migration-first deployment and verify the exact deployed commit on `/health`.
 
 ## Stage A — staff security, MFA and administrative logging
@@ -29,13 +29,14 @@ This is an acceptance record, not a marketing checklist. A page or schema founda
 ## Stage B — customer administration
 
 - [x] Add account directory search, state/package filters, sorting, pagination, aggregate counts and account detail aggregation.
-- [x] Add internal notes, tags/state fields, billing-permission data, service controls, scheduled deletion records and activity/communication data foundations.
+- [x] Add working internal notes, tags, account state, explicit billing-permission display, service-specific pause/resume controls, reviewed scheduled deletion and activity/communication views.
 - [x] Add freeze/block/restore/pending-deletion operations with required reasons and Owner-only destructive scheduling.
 - [x] Add account deletion dry-run and Owner reactivation without resetting usage.
 - [x] Enforce full normalised URL identity within an account without revealing cross-account matches.
-- [~] Account detail data contains the specified domains, but the first UI release presents compact command-centre panels rather than every requested dedicated detail tab and mutation form.
-- [~] Ownership-transfer, scoped invitation, verification-resend/manual-confirmation and cross-account transfer state are modelled or compatible with existing membership flows, but dedicated reviewed SuperAdmin workflows are not enabled.
-- [!] Direct customer messaging remains disabled until approved templates, recipient policy and safe test recipients exist.
+- [x] Account detail uses the nine specified tabs, separating Package & Limits from Billing and exposing source-aware limits, communications, activity and data/access controls.
+- [x] Add logged verification resend and restricted Owner-only manual confirmation; confirmation explicitly does not create account membership.
+- [~] Scoped workspace/property invitation flows exist and identity is separate from membership; ownership transfer and cross-account property transfer still need their recipient-verification and review UI.
+- [~] Direct account messages can be created as audited drafts. Sending remains intentionally unavailable until recipient preview and safe policy are approved.
 
 ## Stage C — entitlements, lifecycle and durable usage
 
@@ -62,7 +63,8 @@ This is an acceptance record, not a marketing checklist. A page or schema founda
 - [x] Preserve 306 repository-owned technical checks and 121 customer-facing groups; no arbitrary stored code is executed.
 - [x] Add catalogue search/filtering, lifecycle/configuration versions, change history and rollback.
 - [x] Exclude effectively disabled checks from new execution snapshots while preserving historical snapshots and five-outcome semantics.
-- [~] Check-level lifecycle, weight and supported metadata can be changed safely; group/package availability editors and dependency/runtime distribution views are read-only or not yet exposed.
+- [x] Check and customer-facing group lifecycle/default availability can be changed safely; group versions support immutable history/rollback and package availability rules are editable.
+- [~] Dependency and check-level runtime/error/outcome distribution views remain limited to the application-measured audit-run aggregates currently captured.
 - [~] Existing audit suites cover scoring, coverage and incomplete collection; Stage 2 configuration rollback has backend coverage but not a linked-database integration test.
 
 ## Stage E — operations, health and infrastructure safety
@@ -96,7 +98,8 @@ This is an acceptance record, not a marketing checklist. A page or schema founda
 - [x] Add versioned template, automation, campaign, alert-rule and alert-history data models.
 - [x] Show existing delivery history and preserve established uptime/report sends.
 - [x] Seed new campaigns, lifecycle notices and weekly digest disabled.
-- [~] The command centre can inspect templates, delivery, campaigns and alerts; editors, audience preview, test-send, acknowledgement/snooze and digest assembly are not enabled.
+- [x] Add template version editors/previews/publishing, automation controls/simulation, campaign draft/duplicate/safe simulation, delivery classification and filtering, suppressions, alert-rule editing/evaluation, alert lifecycle actions and digest settings.
+- [~] Campaign audience resolution is simulation-only and new campaign/digest sends remain disabled until safe recipients and policy are configured.
 - [!] New outbound automation requires approved templates, preferences/suppression policy and safe test recipients.
 
 ## Stage H — exports, retention and shared controls
@@ -105,7 +108,8 @@ This is an acceptance record, not a marketing checklist. A page or schema founda
 - [x] Add queued CSV/JSON exports for accounts, users, properties, audits and admin activity with progress, private storage, seven-day expiry and a new permission check before a 60-second signed download.
 - [x] Neutralise spreadsheet formula injection and omit sensitive before/after payloads from administrative-log export.
 - [x] Add retention settings, cleanup/deletion review data and honest backup-unavailable state.
-- [~] Saved-view storage exists; full saved-view UI and selected/current-page export controls are not yet exposed.
+- [x] Add per-staff saved-view create/apply/remove controls for page, tab and search state.
+- [~] Export jobs accept selected IDs, account scope and query filters; account-specific and filtered-user export controls are exposed, while checkbox selection/current-page controls are not yet consistent across every directory.
 - [!] Cleanup execution and provider backup/PITR claims remain disabled pending policy and verified provider access.
 
 ## Stage I — command centre and navigation
@@ -120,6 +124,7 @@ This is an acceptance record, not a marketing checklist. A page or schema founda
 ## Release activation gates
 
 - [x] Production workflow applied all three migrations. Its guarded seed proves a verified `admin@claritude.io` identity existed and was bound as Owner; Adam is bound if verified or otherwise has the exact-identity pending Owner invitation.
-- [x] Cloudflare Worker version `34b5ba95-d331-489c-9cc9-cb2fcad567a8` reports commit `295c352b5049b4c9c3d5b77ea8389e1a629cd922` on `/health`.
+- [x] Cloudflare Worker version `8bb3d429-77cb-401d-90aa-253ac1770017` reports commit `4fd59aeda18b4ec0443a9f83bb61014cac1cfa3a` on `/health` before this checkpoint.
+- [ ] Deploy and health-verify the containing customer-operations/audit-controls checkpoint and migration `20261006114500`.
 - [ ] Owner signs in, completes AAL2 and verifies staff directory plus a read-only delegated-session smoke test.
 - [ ] Stripe, new outbound automation, automatic deletion, cleanup and unverified provider controls remain off until their individual prerequisites are satisfied.

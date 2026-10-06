@@ -42,3 +42,13 @@
 - Supabase applied migrations `20261006005852`, `20261006012241` and `20261006013136`; linked lint reported no schema errors. The first migration is an intentionally empty migration-number placeholder, preventing the discarded email-only prototype from ever being created.
 - Cloudflare deployed Worker version `34b5ba95-d331-489c-9cc9-cb2fcad567a8`. The independent production health response reported 306/306 implemented audit checks and the exact release commit.
 - The guarded staff migration could only complete if the confirmed `admin@claritude.io` Auth identity existed, so that identity is now an active platform Owner. Adam is an active Owner when his confirmed identity existed at migration time; otherwise the exact-email invitation remains pending and binds only after that identity is confirmed.
+
+## 2026-10-06 — full-brief reconciliation checkpoint
+
+- Account direct communications are draft-only in this checkpoint. This is deliberate: creating and auditing copy is useful, but a separate reviewed recipient preview/send action is required before any real customer contact.
+- Manual email confirmation is restricted to a platform Owner, requires a reason plus the exact confirmation phrase, and updates only the Auth identity. It never creates an account, workspace, property or billing membership.
+- Account-wide access state and service-specific processing state remain separate. Pausing audits, analytics, uptime, reports or email does not delete data or silently alter package/billing state.
+- Saved SuperAdmin views are private to the staff identity. They currently persist page, tab and search state; future numeric/date filters can be added to the same bounded JSON contract.
+- Selected/account/query export filters are applied again inside the asynchronous export worker after the staff permission recheck. Account exports therefore cannot rely on client-only filtering.
+- Customer-facing audit groups now receive the same reviewed configuration discipline as technical checks: an immutable pre-change snapshot, monotonically increasing configuration version, reasoned rollback and package-level availability overrides. Executable audit logic remains repository-owned.
+- Ownership transfer and cross-account property transfer are intentionally not approximated with an unsafe administrator-only reassignment. They remain outstanding until the destination identity can accept a short-lived, account-scoped verification workflow.

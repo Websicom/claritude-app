@@ -2049,6 +2049,13 @@ function safeSearchTerm(value: unknown) {
   return String(value || "").trim().slice(0, 120).replace(/[,%_()]/g, "");
 }
 
+export function normalizeAccountTags(value: unknown) {
+  if (!Array.isArray(value)) return null;
+  const tags = [...new Set(value.map((item) => String(item).trim().replace(/\s+/g, " ")).filter(Boolean))];
+  if (tags.length > 20 || tags.some((tag) => tag.length > 40)) return null;
+  return tags;
+}
+
 export function validSafetyLimits(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const limits = value as Record<string, unknown>;
@@ -2279,12 +2286,127 @@ app.post("/api/superadmin/accounts/:id/notes", async (c) => {
   return c.json({ note: data }, 201);
 });
 
+app.patch("/api/superadmin/accounts/:id/tags", async (c) => {
+  const authorization = await requireStaff(c, "customers.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ tags?: unknown; reason?: string }>().catch(() => ({} as any));
+  const tags = normalizeAccountTags(body.tags);
+  const reason = String(body.reason || "").trim();
+  if (!tags || reason.length < 3 || reason.length > 500) return c.json({ error: "valid_tags_and_reason_required" }, 400);
+  const service = admin(c.env);
+  const { data: previous } = await service.from("accounts").select("tags").eq("id", c.req.param("id")).maybeSingle();
+  if (!previous) return c.json({ error: "account_not_found" }, 404);
+  const { data, error } = await service.from("accounts").update({ tags }).eq("id", c.req.param("id")).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "account.tags_changed", "success", { targetType: "account", targetId: data.id, accountId: data.id, reason, previousValues: { tags: previous.tags || [] }, newValues: { tags } });
+  return c.json({ account: data });
+});
+
+app.patch("/api/superadmin/accounts/:id/services/:service", async (c) => {
+  const authorization = await requireStaff(c, "customers.write");
+  if (authorization.response) return authorization.response;
+  const serviceKey = c.req.param("service");
+  if (!["audits", "analytics", "uptime", "reports", "email"].includes(serviceKey)) return c.json({ error: "valid_account_service_required" }, 400);
+  const body = await c.req.json<{ paused?: boolean; reason?: string }>().catch(() => ({} as any));
+  const reason = String(body.reason || "").trim();
+  if (typeof body.paused !== "boolean" || reason.length < 3 || reason.length > 500) return c.json({ error: "paused_state_and_reason_required" }, 400);
+  const service = admin(c.env);
+  const { data: previous } = await service.from("account_service_controls").select("paused,reason,changed_at").eq("account_id", c.req.param("id")).eq("service", serviceKey).maybeSingle();
+  const { data, error } = await service.from("account_service_controls").upsert({ account_id: c.req.param("id"), service: serviceKey, paused: body.paused, reason, changed_by: authorization.staff!.userId, changed_at: new Date().toISOString() }, { onConflict: "account_id,service" }).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "account.service_control_changed", "success", { targetType: "account", targetId: c.req.param("id"), accountId: c.req.param("id"), reason, previousValues: previous || { paused: false }, newValues: { service: serviceKey, paused: body.paused } });
+  return c.json({ control: data });
+});
+
+app.post("/api/superadmin/accounts/:id/messages", async (c) => {
+  const authorization = await requireStaff(c, "communications.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ subject?: string; body?: string; channel?: "in_app" | "email"; userId?: string; propertyId?: string; reason?: string }>().catch(() => ({} as any));
+  const subject = String(body.subject || "").trim();
+  const message = String(body.body || "").trim();
+  const reason = String(body.reason || "").trim();
+  if (!subject || subject.length > 200 || !message || message.length > 10000 || !["in_app", "email"].includes(body.channel || "") || reason.length < 3 || reason.length > 500) return c.json({ error: "valid_draft_message_and_reason_required" }, 400);
+  const { data, error } = await admin(c.env).from("customer_messages").insert({ account_id: c.req.param("id"), user_id: body.userId || null, property_id: body.propertyId || null, subject, body: message, channel: body.channel, status: "draft", created_by: authorization.staff!.userId }).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "customer_message.drafted", "success", { targetType: "customer_message", targetId: data.id, accountId: c.req.param("id"), reason, metadata: { channel: body.channel, userId: body.userId || null, propertyId: body.propertyId || null } });
+  return c.json({ message: data, delivery: "not_sent" }, 201);
+});
+
+app.get("/api/superadmin/saved-views", async (c) => {
+  const authorization = await requireStaff(c, "overview.read");
+  if (authorization.response) return authorization.response;
+  let request = admin(c.env).from("saved_admin_views").select("id,page,name,filters,created_at").eq("staff_user_id", authorization.staff!.userId).order("name");
+  if (c.req.query("page")) request = request.eq("page", String(c.req.query("page")));
+  const { data, error } = await request;
+  if (error) return c.json({ error: "saved_views_unavailable" }, 503);
+  return c.json({ views: data || [] });
+});
+
+app.post("/api/superadmin/saved-views", async (c) => {
+  const authorization = await requireStaff(c, "overview.read");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ page?: string; name?: string; filters?: Record<string, unknown> }>().catch(() => ({} as any));
+  const page = String(body.page || "").trim().slice(0, 80);
+  const name = String(body.name || "").trim().slice(0, 80);
+  const serialized = JSON.stringify(body.filters || {});
+  if (!page || !name || serialized.length > 10000) return c.json({ error: "valid_saved_view_required" }, 400);
+  const { data, error } = await admin(c.env).from("saved_admin_views").upsert({ staff_user_id: authorization.staff!.userId, page, name, filters: body.filters || {} }, { onConflict: "staff_user_id,page,name" }).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "admin_view.saved", "success", { targetType: "saved_admin_view", targetId: data.id, metadata: { page, name } });
+  return c.json({ view: data }, 201);
+});
+
+app.delete("/api/superadmin/saved-views/:id", async (c) => {
+  const authorization = await requireStaff(c, "overview.read");
+  if (authorization.response) return authorization.response;
+  const { data, error } = await admin(c.env).from("saved_admin_views").delete().eq("id", c.req.param("id")).eq("staff_user_id", authorization.staff!.userId).select().maybeSingle();
+  if (error || !data) return c.json({ error: "saved_view_not_found" }, 404);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "admin_view.removed", "success", { targetType: "saved_admin_view", targetId: data.id, metadata: { page: data.page, name: data.name } });
+  return c.json({ removed: true });
+});
+
+app.post("/api/superadmin/users/:id/verification-resend", async (c) => {
+  const authorization = await requireStaff(c, "customers.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({} as any));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3 || reason.length > 500) return c.json({ error: "reason_required" }, 400);
+  const service = admin(c.env);
+  const userResult = await service.auth.admin.getUserById(c.req.param("id"));
+  const user = userResult.data.user;
+  if (userResult.error || !user?.email) return c.json({ error: "user_not_found" }, 404);
+  if (user.email_confirmed_at) return c.json({ error: "email_already_confirmed" }, 409);
+  const resend = await service.auth.resend({ type: "signup", email: user.email, options: { emailRedirectTo: `${c.env.APP_ORIGIN.replace(/\/$/, "")}/auth/confirmed` } });
+  if (resend.error) {
+    await recordAdminActivity(c.env, authorization.staff!.userId, "user.verification_resent", "failed", { targetType: "user", targetId: user.id, reason, metadata: { error: resend.error.message } });
+    return c.json({ error: "verification_resend_failed" }, 503);
+  }
+  await recordAdminActivity(c.env, authorization.staff!.userId, "user.verification_resent", "success", { targetType: "user", targetId: user.id, reason });
+  return c.json({ resent: true });
+});
+
+app.patch("/api/superadmin/users/:id/confirm-email", async (c) => {
+  const authorization = await requireStaff(c, "customers.write");
+  if (authorization.response) return authorization.response;
+  if (authorization.staff!.role !== "owner") return c.json({ error: "owner_permission_required" }, 403);
+  const body = await c.req.json<{ reason?: string; confirmation?: string }>().catch(() => ({} as any));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3 || reason.length > 500 || body.confirmation !== "CONFIRM EMAIL") return c.json({ error: "reason_and_confirmation_required" }, 400);
+  const service = admin(c.env);
+  const before = await service.auth.admin.getUserById(c.req.param("id"));
+  if (before.error || !before.data.user) return c.json({ error: "user_not_found" }, 404);
+  const updated = await service.auth.admin.updateUserById(c.req.param("id"), { email_confirm: true });
+  if (updated.error) return c.json({ error: "manual_confirmation_failed" }, 503);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "user.email_manually_confirmed", "success", { targetType: "user", targetId: c.req.param("id"), reason, previousValues: { confirmedAt: before.data.user.email_confirmed_at || null }, newValues: { confirmedAt: updated.data.user.email_confirmed_at || "confirmed" }, metadata: { membershipCreated: false } });
+  return c.json({ user: { id: updated.data.user.id, email: updated.data.user.email, confirmedAt: updated.data.user.email_confirmed_at }, membershipCreated: false });
+});
+
 app.get("/api/superadmin/platform", async (c) => {
   const authorization = await requireStaff(c, "overview.read");
   if (authorization.response) return authorization.response;
   const service = admin(c.env);
   const today = new Date().toISOString().slice(0, 10);
-  const [settings, settingHistory, controls, alerts, alertRules, alertHistory, incidents, packages, grants, overrides, inactivity, auditDefinitions, auditGroups, auditRuns, exports, deletionRequests, templates, automations, campaigns, billingCustomers, billingEvents, promotions, deliveries, suppressions] = await Promise.all([
+  const [settings, settingHistory, controls, alerts, alertRules, alertHistory, incidents, packages, grants, overrides, inactivity, auditDefinitions, auditGroups, auditGroupHistory, auditPackageAvailability, auditRuns, exports, deletionRequests, templates, automations, campaigns, billingCustomers, billingEvents, promotions, deliveries, suppressions] = await Promise.all([
     service.from("platform_settings").select("*").order("key"),
     service.from("platform_setting_history").select("*").order("changed_at", { ascending: false }).limit(250),
     service.from("emergency_controls").select("*").order("key"),
@@ -2296,8 +2418,10 @@ app.get("/api/superadmin/platform", async (c) => {
     service.from("account_package_grants").select("id,account_id,package_version_id,status,starts_at,expires_at,reason,created_at,package_versions(display_name,package_key,version)").order("created_at", { ascending: false }).limit(250),
     service.from("account_entitlement_overrides").select("id,account_id,key,value,reason,starts_at,expires_at,created_at,grant_id,revoked_at").order("created_at", { ascending: false }).limit(250),
     service.from("account_inactivity").select("*").order("updated_at", { ascending: false }).limit(5000),
-    service.from("audit_check_definitions").select("id,title,primary_category,subcategory,severity,lifecycle,configuration_version,changed_at").order("id"),
-    service.from("audit_user_facing_groups").select("id,name,category,subcategory,lifecycle,enabled_by_default,configuration_version").order("sort_order"),
+    service.from("audit_check_definitions").select("id,title,primary_category,subcategory,severity,lifecycle,configuration_version,changed_at,thresholds,weight,timeout_class,execution_method").order("id"),
+    service.from("audit_user_facing_groups").select("id,name,category,subcategory,lifecycle,enabled_by_default,configuration_version,failure_severity,weight,changed_at").order("sort_order"),
+    service.from("audit_group_history").select("id,group_id,snapshot,reason,changed_by,changed_at").order("changed_at", { ascending: false }).limit(250),
+    service.from("audit_catalogue_package_availability").select("target_kind,target_id,entitlement,enabled,changed_at").order("entitlement").limit(5000),
     service.from("audit_runs").select("id,status,duration_ms,error,created_at,execution_telemetry").gte("created_at", `${today}T00:00:00.000Z`).limit(1000),
     service.from("admin_export_jobs").select("id,scope,format,state,progress,row_count,error,expires_at,created_at,completed_at").order("created_at", { ascending: false }).limit(100),
     service.from("deletion_requests").select("*").order("created_at", { ascending: false }).limit(100),
@@ -2327,7 +2451,7 @@ app.get("/api/superadmin/platform", async (c) => {
     environment: { name: c.env.APP_ORIGIN.includes("app.claritude.io") ? "Production" : "Preview", commitSha: c.env.DEPLOY_COMMIT_SHA || null, refreshedAt: new Date().toISOString() },
     providers: { stripe: { configured: Boolean(c.env.STRIPE_SECRET_KEY && c.env.STRIPE_WEBHOOK_SECRET), mode: c.env.STRIPE_SECRET_KEY?.startsWith("sk_test_") ? "sandbox" : c.env.STRIPE_SECRET_KEY ? "live" : "unconfigured", tax: "unconfigured" }, resend: { configured: Boolean(c.env.RESEND_API_KEY), from: c.env.RESEND_FROM || null }, cloudflareTelemetry: "unavailable", supabaseBackups: "unverified" },
     settings: settings.data || [], settingHistory: settingHistory.data || [], controls: controls.data || [], featureStates, alerts: alerts.data || [], alertRules: alertRules.data || [], alertHistory: alertHistory.data || [], alertCoverage: { enabledRuleCount: (alertRules.data || []).filter((item) => item.enabled).length, lastEvaluationAt: (alertRules.data || []).map((item) => item.last_evaluated_at).filter(Boolean).sort().at(-1) || null, evaluatorHealth: !(alertRules.data || []).length ? "no_rules" : (alertRules.data || []).some((item) => item.evaluation_state === "failing") ? "failing" : (alertRules.data || []).every((item) => item.evaluation_state === "not_started") ? "not_started" : (alertRules.data || []).some((item) => item.evaluation_state === "telemetry_unavailable") ? "telemetry_unavailable" : "healthy" }, incidents: incidents.data || [], packages: packages.data || [], grants: grants.data || [], overrides: overrides.data || [], inactivity: inactivity.data || [],
-    audits: { technicalChecks: auditDefinitions.data || [], groups: auditGroups.data || [], today: auditStatus, source: "application_measured", period: "UTC day" },
+    audits: { technicalChecks: auditDefinitions.data || [], groups: auditGroups.data || [], groupHistory: auditGroupHistory.data || [], packageAvailability: auditPackageAvailability.data || [], today: auditStatus, source: "application_measured", period: "UTC day" },
     exports: exports.data || [], deletionRequests: deletionRequests.data || [], email: { templates: templates.data || [], automations: automations.data || [], campaigns: campaigns.data || [], deliveries: deliveries.data || [], suppressions: suppressions.data || [] },
     billing: { configured: Boolean(c.env.STRIPE_SECRET_KEY && c.env.STRIPE_WEBHOOK_SECRET), customers: billingCustomers.data || [], events: billingEvents.data || [], promotions: promotions.data || [], calculations: { mrr: "Unavailable until Stripe is configured and reconciled", arr: "Unavailable until Stripe is configured and reconciled", cashCollected: "Unavailable until Stripe is configured and reconciled", currencyPolicy: "Currencies remain separate unless an explicit labelled conversion is configured" } },
   });
@@ -2377,6 +2501,67 @@ app.patch("/api/superadmin/audit-checks/:id", async (c) => {
   if (error) return c.json({ error: error.message }, 400);
   await recordAdminActivity(c.env, authorization.staff!.userId, "audit.check_configuration_changed", "success", { targetType: "audit_check", targetId: previous.id, reason, previousValues: { lifecycle: previous.lifecycle, severity: previous.severity, thresholds: previous.thresholds, weight: previous.weight, configurationVersion: previous.configuration_version }, newValues: { lifecycle: data.lifecycle, severity: data.severity, thresholds: data.thresholds, weight: data.weight, configurationVersion: data.configuration_version }, metadata: { historyId: history.data.id } });
   return c.json({ check: data, historyId: history.data.id });
+});
+
+app.patch("/api/superadmin/audit-groups/:id", async (c) => {
+  const authorization = await requireStaff(c, "audits.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ lifecycle?: "active" | "disabled"; enabledByDefault?: boolean; failureSeverity?: string; weight?: number; reason?: string }>().catch(() => ({} as any));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3 || reason.length > 500) return c.json({ error: "reason_required" }, 400);
+  if (body.lifecycle && !["active", "disabled"].includes(body.lifecycle)) return c.json({ error: "unsupported_group_lifecycle" }, 400);
+  if (body.enabledByDefault !== undefined && typeof body.enabledByDefault !== "boolean") return c.json({ error: "invalid_default_availability" }, 400);
+  if (body.weight !== undefined && (!Number.isFinite(body.weight) || body.weight < 0 || body.weight > 100)) return c.json({ error: "invalid_group_weight" }, 400);
+  const db = admin(c.env);
+  const { data: previous } = await db.from("audit_user_facing_groups").select("*").eq("id", c.req.param("id")).maybeSingle();
+  if (!previous) return c.json({ error: "audit_group_not_found" }, 404);
+  const history = await db.from("audit_group_history").insert({ group_id: previous.id, snapshot: previous, changed_by: authorization.staff!.userId, reason }).select("id").single();
+  if (history.error) return c.json({ error: "audit_group_history_failed" }, 503);
+  const next: Record<string, unknown> = { configuration_version: Number(previous.configuration_version || 0) + 1, changed_by: authorization.staff!.userId, changed_at: new Date().toISOString() };
+  if (body.lifecycle) next.lifecycle = body.lifecycle;
+  if (body.enabledByDefault !== undefined) next.enabled_by_default = body.enabledByDefault;
+  if (body.failureSeverity) next.failure_severity = String(body.failureSeverity).trim().slice(0, 80);
+  if (body.weight !== undefined) next.weight = body.weight;
+  const { data, error } = await db.from("audit_user_facing_groups").update(next).eq("id", previous.id).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "audit.group_configuration_changed", "success", { targetType: "audit_group", targetId: previous.id, reason, previousValues: { lifecycle: previous.lifecycle, enabledByDefault: previous.enabled_by_default, failureSeverity: previous.failure_severity, weight: previous.weight, configurationVersion: previous.configuration_version }, newValues: { lifecycle: data.lifecycle, enabledByDefault: data.enabled_by_default, failureSeverity: data.failure_severity, weight: data.weight, configurationVersion: data.configuration_version }, metadata: { historyId: history.data.id } });
+  return c.json({ group: data, historyId: history.data.id });
+});
+
+app.post("/api/superadmin/audit-groups/:id/rollback/:historyId", async (c) => {
+  const authorization = await requireStaff(c, "audits.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({} as any));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3 || reason.length > 500) return c.json({ error: "reason_required" }, 400);
+  const db = admin(c.env);
+  const [{ data: current }, { data: historical }] = await Promise.all([
+    db.from("audit_user_facing_groups").select("*").eq("id", c.req.param("id")).maybeSingle(),
+    db.from("audit_group_history").select("*").eq("id", c.req.param("historyId")).eq("group_id", c.req.param("id")).maybeSingle(),
+  ]);
+  if (!current || !historical?.snapshot) return c.json({ error: "audit_group_or_history_not_found" }, 404);
+  await db.from("audit_group_history").insert({ group_id: current.id, snapshot: current, changed_by: authorization.staff!.userId, reason: `Pre-rollback snapshot: ${reason}` });
+  const snapshot = historical.snapshot as Record<string, unknown>;
+  const { data, error } = await db.from("audit_user_facing_groups").update({ lifecycle: snapshot.lifecycle, enabled_by_default: snapshot.enabled_by_default, failure_severity: snapshot.failure_severity, weight: snapshot.weight, configuration_version: Number(current.configuration_version || 0) + 1, changed_by: authorization.staff!.userId, changed_at: new Date().toISOString() }).eq("id", current.id).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "audit.group_configuration_rolled_back", "success", { targetType: "audit_group", targetId: current.id, reason, previousValues: current, newValues: data, metadata: { restoredHistoryId: historical.id } });
+  return c.json({ group: data });
+});
+
+app.put("/api/superadmin/audit-catalogue/package-availability", async (c) => {
+  const authorization = await requireStaff(c, "audits.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ targetKind?: "technical_check" | "user_facing_group"; targetId?: string; entitlement?: string; enabled?: boolean; reason?: string }>().catch(() => ({} as any));
+  const targetId = String(body.targetId || "").trim();
+  const entitlement = String(body.entitlement || "").trim().toLowerCase();
+  const reason = String(body.reason || "").trim();
+  if (!body.targetKind || !["technical_check", "user_facing_group"].includes(body.targetKind) || !targetId || !/^[a-z0-9_]{2,80}$/.test(entitlement) || typeof body.enabled !== "boolean" || reason.length < 3) return c.json({ error: "valid_package_availability_and_reason_required" }, 400);
+  const db = admin(c.env);
+  const { data: previous } = await db.from("audit_catalogue_package_availability").select("*").eq("target_kind", body.targetKind).eq("target_id", targetId).eq("entitlement", entitlement).maybeSingle();
+  const { data, error } = await db.from("audit_catalogue_package_availability").upsert({ target_kind: body.targetKind, target_id: targetId, entitlement, enabled: body.enabled, changed_by: authorization.staff!.userId, changed_at: new Date().toISOString() }, { onConflict: "target_kind,target_id,entitlement" }).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "audit.package_availability_changed", "success", { targetType: body.targetKind, targetId, reason, previousValues: previous, newValues: data, metadata: { entitlement } });
+  return c.json({ availability: data });
 });
 
 app.post("/api/superadmin/packages/:id/migration-preview", async (c) => {
@@ -7734,6 +7919,15 @@ export function escapeCsvCell(value: unknown) {
   return `"${text.replaceAll('"', '""')}"`;
 }
 
+export function applyAdminExportFilters(rows: Array<Record<string, any>>, filters: unknown) {
+  if (!filters || typeof filters !== "object" || Array.isArray(filters)) return rows;
+  const value = filters as Record<string, unknown>;
+  const selectedIds = Array.isArray(value.selectedIds) ? new Set(value.selectedIds.slice(0, 1000).map(String)) : null;
+  const accountId = typeof value.accountId === "string" ? value.accountId : null;
+  const query = typeof value.query === "string" ? value.query.trim().toLowerCase().slice(0, 120) : "";
+  return rows.filter((row) => (!selectedIds || selectedIds.has(String(row.id))) && (!accountId || row.id === accountId || row.account_id === accountId) && (!query || Object.values(row).some((entry) => String(entry ?? "").toLowerCase().includes(query))));
+}
+
 function rowsToCsv(rows: Array<Record<string, unknown>>) {
   const headers = [...new Set(rows.flatMap((row) => Object.keys(row)))];
   return [headers.map(escapeCsvCell).join(","), ...rows.map((row) => headers.map((header) => escapeCsvCell(row[header])).join(","))].join("\r\n");
@@ -7774,6 +7968,7 @@ async function runAdminExport(env: Env, id: string) {
     } else {
       throw new Error("unsupported_export_scope");
     }
+    rows = applyAdminExportFilters(rows, job.filters);
     await db.from("admin_export_jobs").update({ progress: 70, row_count: rows.length }).eq("id", id);
     const content = job.format === "json" ? JSON.stringify({ exportedAt: new Date().toISOString(), scope: job.scope, rows }) : rowsToCsv(rows);
     const objectKey = `${job.requested_by}/${job.id}.${job.format}`;
