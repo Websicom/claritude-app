@@ -25,6 +25,7 @@ import {
   performanceTargetStatus,
   performanceTargetLabel,
   propertyOnboardingChecks,
+  propertySwitchDestination,
   shouldShowAuditQuickFilters,
   suggestedAiPhrase,
   propertyFaviconSources,
@@ -36,6 +37,13 @@ import {
   responseChartLabel,
   workspaceKeyEventCount,
 } from "./RecoveryDashboard";
+
+describe("property switching", () => {
+  it("keeps the current product page and removes property-specific drilldown ids", () => {
+    expect(propertySwitchDestination("/audit", "?property=old&auditPage=old-page&auditTab=History&from=2026-09-01", "new"))
+      .toBe("/audit?property=new&auditTab=History&from=2026-09-01");
+  });
+});
 
 afterEach(() => vi.unstubAllGlobals());
 

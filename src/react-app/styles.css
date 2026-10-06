@@ -549,6 +549,14 @@ main {
 .period-chip svg {
   width: 13px;
 }
+.period-trigger {
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
 .tag {
   border: 1px solid var(--line);
   border-radius: 12px;

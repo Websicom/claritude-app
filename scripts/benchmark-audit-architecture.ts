@@ -41,6 +41,13 @@ const cpu = process.cpuUsage(cpuStarted);
 const outcomeCounts = Object.fromEntries(["passed", "failed", "advisory", "not_applicable", "unable_to_test"].map((outcome) => [outcome, results.filter((result) => result.outcome === outcome).length]));
 const evidenceBytes = encoder.encode(JSON.stringify({ http, source, links, resources })).byteLength;
 const resultBytes = encoder.encode(JSON.stringify(results)).byteLength;
+const registryById = new Map(AUDIT_REGISTRY.map((check) => [check.id, check]));
+const largestResultPayloads = results.map((result) => ({
+  checkId: result.check_id,
+  group: registryById.get(result.check_id)?.groupId || "Ungrouped",
+  bytes: encoder.encode(JSON.stringify(result)).byteLength,
+  occurrences: Array.isArray(result.evidence.occurrences) ? result.evidence.occurrences.length : 0,
+})).sort((left, right) => right.bytes - left.bytes).slice(0, 15);
 
 console.log(JSON.stringify({
   fixture: "source + shared link/resource collection; browser, DNS, robots and sitemap deliberately unavailable",
@@ -61,4 +68,5 @@ console.log(JSON.stringify({
   occurrencesStored: results.reduce((total, result) => total + (Array.isArray(result.evidence.occurrences) ? result.evidence.occurrences.length : 0), 0),
   truncatedCollections: Number(links.truncated) + Number(resources.truncated),
   outcomeCounts,
+  largestResultPayloads,
 }, null, 2));

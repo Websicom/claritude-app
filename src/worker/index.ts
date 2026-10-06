@@ -2833,7 +2833,10 @@ export function validatePlatformSetting(key: string, value: unknown) {
     const warnings = item.warningDays;
     if (!Array.isArray(warnings) || warnings.length !== 2 || !warnings.every(Number.isInteger) || warnings[0] < 1 || warnings[1] <= warnings[0] || !Number.isInteger(item.freezeDay) || item.freezeDay <= warnings[1] || !Number.isInteger(item.deletionEligibleDay) || item.deletionEligibleDay - item.freezeDay !== 21 || item.automaticDeletionEnabled !== false) return "invalid_inactivity_policy";
   }
-  if (key === "retention_policy" && !Object.values(item).every((entry) => Number.isInteger(entry) && entry >= 1 && entry <= 3650)) return "invalid_retention_policy";
+  if (key === "retention_policy") {
+    const numericValues = Object.entries(item).filter(([name]) => name !== "freeAuditExpiryEnabled").map(([, entry]) => entry);
+    if (typeof item.freeAuditExpiryEnabled !== "boolean" || !Number.isInteger(item.freeAuditExpiryDays) || item.freeAuditExpiryDays < 1 || item.freeAuditExpiryDays > 3650 || !numericValues.every((entry) => Number.isInteger(entry) && entry >= 1 && entry <= 3650)) return "invalid_retention_policy";
+  }
   if (key === "outbound_automation" && (!Array.isArray(item.safeTestRecipients) || !item.safeTestRecipients.every((email: unknown) => /^\S+@\S+\.\S+$/.test(String(email))) || typeof item.campaignsEnabled !== "boolean" || typeof item.inactivityNoticesEnabled !== "boolean" || typeof item.weeklyDigestEnabled !== "boolean")) return "invalid_outbound_automation";
   if (key === "email_settings" && (!String(item.senderName || "").trim() || (String(item.replyTo || "") && !/^\S+@\S+\.\S+$/.test(String(item.replyTo))) || !Array.isArray(item.enabledCategories) || !["enforce", "report_only"].includes(item.suppressionHandling) || !Number.isInteger(item.hourlySendLimit) || item.hourlySendLimit < 1 || item.hourlySendLimit > 100000)) return "invalid_email_settings";
   if (key === "staff_sessions" && (!Number.isInteger(item.defaultMinutes) || !Number.isInteger(item.maximumMinutes) || item.defaultMinutes < 5 || item.maximumMinutes > 60 || item.defaultMinutes > item.maximumMinutes || item.requireReason !== true)) return "invalid_staff_sessions";
@@ -4550,9 +4553,37 @@ app.get("/api/properties/:id/audits", async (c) => {
     .lte("created_at", window.to)
     .order("created_at", { ascending: false });
   if (pageId) query = query.eq("audit_page_id", pageId);
-  const { data, error } = await query.limit(50);
+  const [{ data, error }, summaryResult] = await Promise.all([
+    query.limit(50),
+    (() => {
+      let summaryQuery = db.from("audit_run_summaries").select("*")
+        .eq("property_id", c.req.param("id"))
+        .gte("created_at", window.from).lte("created_at", window.to)
+        .order("created_at", { ascending: false });
+      if (pageId) summaryQuery = summaryQuery.eq("audit_page_id", pageId);
+      return summaryQuery.limit(50);
+    })(),
+  ]);
   if (error) return c.json({ error: error.message }, 400);
-  let runs = data || [];
+  if (summaryResult.error) return c.json({ error: summaryResult.error.message }, 400);
+  const compactRuns = (summaryResult.data || []).map((summary: any) => ({
+    id: summary.source_run_id,
+    audit_page_id: summary.audit_page_id,
+    property_id: summary.property_id,
+    page_url: summary.page_url,
+    status: summary.status,
+    score: summary.score,
+    coverage: summary.coverage,
+    duration_ms: summary.duration_ms,
+    created_at: summary.created_at,
+    completed_at: summary.completed_at,
+    category_scores: { SEO: summary.seo_score, Accessibility: summary.accessibility_score, Performance: summary.performance_score, Security: summary.security_score, Technical: summary.technical_score, "AI & Crawler Readiness": summary.ai_crawler_readiness_score },
+    catalogue_summary: { attemptedChecks: summary.automated_check_count, successfullyExecutedChecks: summary.automated_check_count - summary.not_tested_count, passedChecks: summary.passed_count, issueChecks: summary.issues_count, notApplicableChecks: summary.not_applicable_count, notTestedChecks: summary.not_tested_count },
+    compact_summary: true,
+    audit_results: [],
+    user_facing_results: [],
+  }));
+  let runs = [...(data || []), ...compactRuns].sort((left: any, right: any) => Date.parse(right.created_at) - Date.parse(left.created_at)).slice(0, 50);
   if (!pageId) {
     const { data: active } = await db
       .from("audit_runs")
@@ -6776,7 +6807,18 @@ async function runAudit(env: Env, id: string) {
       : fallbackUserFacingSnapshot(snapshot);
     const userFacingResults = deriveUserFacingAuditResults(groupSnapshot, results);
     const score = scoreUserFacingAuditResults(userFacingResults);
-    const outcomeCounts = Object.fromEntries(["passed", "failed", "advisory", "not_applicable", "unable_to_test"].map((outcome) => [outcome, results.filter((item) => item.outcome === outcome).length]));
+    const detailedOutcomeCounts = Object.fromEntries(["passed", "failed", "advisory", "not_applicable", "unable_to_test"].map((outcome) => [outcome, results.filter((item) => item.outcome === outcome).length]));
+    const outcomeCounts = {
+      automated: results.length,
+      passed: detailedOutcomeCounts.passed,
+      issues: detailedOutcomeCounts.failed + detailedOutcomeCounts.advisory,
+      notApplicable: detailedOutcomeCounts.not_applicable,
+      notTested: detailedOutcomeCounts.unable_to_test,
+    };
+    const categoryScores = Object.fromEntries(["SEO", "Accessibility", "Performance", "Security", "Technical", "AI & Crawler Readiness"].map((category) => [
+      category,
+      scoreUserFacingAuditResults(userFacingResults.filter((result) => result.category === category)),
+    ]));
     const decoratedResults = results.map(decorate);
     const jsonBytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
     const telemetry = {
@@ -6798,8 +6840,8 @@ async function runAudit(env: Env, id: string) {
       },
       occurrencesStored: results.reduce((total, item) => total + (Array.isArray(item.evidence.occurrences) ? item.evidence.occurrences.length : 0), 0),
       truncatedOccurrenceSets: Number(collected.telemetry.truncatedOccurrenceSets || 0) + results.filter((item) => item.evidence.truncated === true).length,
-      checkOutcomeCounts: outcomeCounts,
-      unableToTestCount: outcomeCounts.unable_to_test,
+      checkOutcomeCounts: detailedOutcomeCounts,
+      unableToTestCount: detailedOutcomeCounts.unable_to_test,
     };
     const finalStatus = results.some((r) => r.outcome === "unable_to_test") ? "partial" : "completed";
     await updateRun({
@@ -6820,6 +6862,8 @@ async function runAudit(env: Env, id: string) {
       coverage,
       finalStatus,
       totalChecks: snapshot.length,
+      categoryScores,
+      outcomeCounts,
     });
     console.log("audit continuation queued", JSON.stringify({ auditRunId: id, payloadBytes: payload.length, results: decoratedResults.length }));
     await env.JOBS.send({ type: "audit-persist", id, payload });
@@ -6865,6 +6909,8 @@ type AuditContinuationPayload = {
   coverage: number;
   finalStatus: "completed" | "partial";
   totalChecks: number;
+  categoryScores?: Record<string, number | null>;
+  outcomeCounts?: Record<string, number>;
 };
 
 function bytesToBase64(bytes: Uint8Array) {
@@ -6972,6 +7018,8 @@ async function persistAuditContinuation(env: Env, id: string, encodedPayload: st
     completed_at: new Date().toISOString(),
     duration_ms: Date.now() - payload.startedAt,
     telemetry,
+    category_scores: payload.categoryScores || {},
+    outcome_counts: payload.outcomeCounts || {},
     architecture_version: "2.0.0",
     error: null,
   }).eq("id", id).in("status", ["queued", "running"]);
@@ -7361,6 +7409,7 @@ async function scheduled(env: Env, cron: string) {
     if (pruneResult.error) throw pruneResult.error;
     await runDueReportSchedules(env, db);
     await expireComplimentaryPackageGrants(db);
+    await expireFreeAccountAudits(db);
     await evaluateFreeAccountInactivity(env, db);
     await processDueBillingChanges(env, db);
     const customers = await db.from("billing_customers").select("account_id,billing_environment").not("provider_customer_id", "is", null).limit(1000);
@@ -7422,6 +7471,43 @@ async function expireComplimentaryPackageGrants(db: SupabaseClient) {
     await db.from("account_entitlement_overrides").update({ revoked_at: now }).eq("grant_id", grant.id).is("revoked_at", null);
     await db.from("platform_alerts").insert({ title: "Complimentary package grant expired", details: { accountId: grant.account_id, grantId: grant.id, package: (grant.package_versions as any)?.display_name || null, outcome: "Returned to underlying standard package; billing provider unchanged", reviewRequired: true } });
   }
+}
+
+async function expireFreeAccountAudits(db: SupabaseClient) {
+  const setting = await db.from("platform_settings").select("value").eq("key", "retention_policy").maybeSingle();
+  if (setting.error) throw setting.error;
+  const policy = (setting.data?.value || {}) as Record<string, unknown>;
+  if (policy.freeAuditExpiryEnabled !== true) return;
+  const days = Number(policy.freeAuditExpiryDays);
+  if (!Number.isInteger(days) || days < 1 || days > 3650) throw new Error("invalid_free_audit_retention_policy");
+  const accountsResult = await db.from("accounts").select("id").eq("entitlement", "free").limit(10_000);
+  if (accountsResult.error) throw accountsResult.error;
+  const accountIds = (accountsResult.data || []).map((account) => account.id);
+  if (!accountIds.length) return;
+  const now = new Date().toISOString();
+  const [grants, assignments] = await Promise.all([
+    db.from("account_package_grants").select("account_id").in("account_id", accountIds).eq("status", "active").lte("starts_at", now).or(`expires_at.is.null,expires_at.gt.${now}`),
+    db.from("account_package_assignments").select("account_id,package_versions(package_key)").in("account_id", accountIds).is("ends_at", null),
+  ]);
+  if (grants.error) throw grants.error;
+  if (assignments.error) throw assignments.error;
+  const paidOrGranted = new Set([
+    ...(grants.data || []).map((grant) => grant.account_id),
+    ...(assignments.data || []).filter((assignment: any) => assignment.package_versions?.package_key !== "free").map((assignment) => assignment.account_id),
+  ]);
+  const freeAccountIds = accountIds.filter((id) => !paidOrGranted.has(id));
+  if (!freeAccountIds.length) return;
+  const properties = await db.from("properties").select("id").in("account_id", freeAccountIds).limit(50_000);
+  if (properties.error) throw properties.error;
+  const propertyIds = (properties.data || []).map((property) => property.id);
+  if (!propertyIds.length) return;
+  const before = new Date(Date.now() - days * 864e5).toISOString();
+  const [summaries, runs] = await Promise.all([
+    db.from("audit_run_summaries").delete().in("property_id", propertyIds).lt("created_at", before),
+    db.from("audit_runs").delete().in("property_id", propertyIds).lt("created_at", before).not("status", "in", "(queued,running)"),
+  ]);
+  if (summaries.error) throw summaries.error;
+  if (runs.error) throw runs.error;
 }
 
 export function meaningfulAccountActivity(action: string) {

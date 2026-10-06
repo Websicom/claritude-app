@@ -61,6 +61,7 @@ import {
   type ReactNode,
   createContext,
   Fragment,
+  isValidElement,
   useEffect,
   useId,
   useMemo,
@@ -599,7 +600,7 @@ export function ClaritudeApplication({
     setPropertyMenu(false);
     navigate(
       id
-        ? href("overview", id)
+        ? propertySwitchDestination(loc.pathname, loc.search, id)
         : workspace?.id
           ? `/?workspace=${workspace.id}`
           : "/",
@@ -2136,6 +2137,15 @@ function PropertyOverview({
       )}
     </Page>
   );
+}
+
+export function propertySwitchDestination(pathname: string, search: string, propertyId: string) {
+  const propertyRoutes = new Set(["/overview", "/uptime", "/analytics", "/audit", "/ai-visibility", "/reports", "/settings"]);
+  const nextPath = propertyRoutes.has(pathname) ? pathname : "/overview";
+  const params = new URLSearchParams(propertyRoutes.has(pathname) ? search : "");
+  params.set("property", propertyId);
+  ["auditPage", "auditEarlier", "auditLater", "auditGroup", "event", "page"].forEach((key) => params.delete(key));
+  return `${nextPath}?${params.toString()}`;
 }
 
 function UptimeView({
@@ -4850,7 +4860,7 @@ const fixturePlatformPayload: any = {
     { key: "email_settings", value: { senderName: "Claritude", replyTo: "", enabledCategories: ["uptime_down", "uptime_recovered", "report"], suppressionHandling: "enforce", hourlySendLimit: 1000 }, description: "Sender identity and delivery rules", source: "application", updated_at: new Date().toISOString() },
     { key: "alert_digest", value: { enabled: false, recipients: [], schedule: "0 9 * * 1", timezone: "Europe/London", includedMetrics: ["active_alerts"] }, description: "Weekly operational digest", source: "application", updated_at: new Date().toISOString() },
     { key: "staff_sessions", value: { defaultMinutes: 30, maximumMinutes: 60, writeModeAllowed: true, requireReason: true }, description: "Scoped customer-session safeguards", source: "application", updated_at: new Date().toISOString() },
-    { key: "retention_policy", value: { adminLogsDays: 730, usageLedgerDays: 2555, exportsDays: 7, evidenceDays: 90, analyticsRawDays: 90, uptimeChecksDays: 365, auditResultsDays: 730 }, description: "Retention and cleanup policy", source: "application", updated_at: new Date().toISOString() },
+    { key: "retention_policy", value: { adminLogsDays: 730, usageLedgerDays: 2555, exportsDays: 7, evidenceDays: 90, analyticsRawDays: 90, uptimeChecksDays: 365, auditResultsDays: 730, freeAuditExpiryEnabled: true, freeAuditExpiryDays: 30 }, description: "Retention and cleanup policy", source: "application", updated_at: new Date().toISOString() },
     { key: "safety_limits", value: { platformAuditStartsPerDay: 200, concurrentAudits: 5, auditWallTimeSeconds: 600, httpResponseBytes: 5000000, linksPerAudit: 5000, resourcesPerAudit: 5000, redirects: 5, queueRetries: 3, analyticsPayloadBytes: 262144, analyticsEventsPerPropertyPerDay: 50000, exportsPerAccountPerDay: 10 }, description: "Application safety ceilings", source: "application", updated_at: new Date().toISOString() },
   ], settingHistory: [], controls: [{ key: "new_audits", paused: false }, { key: "analytics_ingestion", paused: false }, { key: "uptime_checks", paused: false }, { key: "campaigns", paused: false }], featureStates: { campaigns: { state: "awaiting_configuration", reason: "Safe recipients are not configured", permitted: true, runningJobs: 0 }, weeklyDigest: { state: "awaiting_configuration", reason: "Recipients are not configured", permitted: true, runningJobs: 0 } }, alerts: [], alertRules: [{ id: "fixture-alert-rule", name: "Audit failure rate", metric: "audit.failure_rate", operator: "gte", threshold: 5, observation_minutes: 15, minimum_samples: 3, cooldown_minutes: 60, scope: {}, evaluation_state: "telemetry_unavailable", enabled: false }], alertHistory: [], alertCoverage: { enabledRuleCount: 0, lastEvaluationAt: null, evaluatorHealth: "no_rules" }, incidents: [],
   packages: [{ id: "12345678-1234-1234-1234-123456789abc", package_key: "pro_early_access", version: 1, display_name: "Pro early access", state: "published", allowances: { customEventsPerProperty: null }, features: { complimentaryEarlyAccess: true }, hard_ceilings: { propertiesPerAccount: 25 }, unresolved_values: ["futurePrice", "auditCreditsPerWeek"] }], grants: [], overrides: [], inactivity: [],
@@ -5552,11 +5562,29 @@ function SettingsControlDesk({ platform, session, fixture, refresh, onlyKey, key
   const [message, setMessage] = useState("");
   const inactivityPreview = Object.entries((platform?.inactivity || []).reduce((counts: Record<string, number>, item: any) => ({ ...counts, [item.state || "not_evaluated"]: (counts[item.state || "not_evaluated"] || 0) + 1 }), {} as Record<string, number>));
   useEffect(() => setDrafts(Object.fromEntries(selected.map((item: any) => [item.key, JSON.stringify(item.value, null, 2)]))), [selected.map((item: any) => `${item.key}:${item.updated_at}`).join("|")]);
+  function updateRetentionField(key: "freeAuditExpiryEnabled" | "freeAuditExpiryDays", value: boolean | number) {
+    setDrafts((current) => {
+      let parsed: Record<string, unknown> = {};
+      try { parsed = JSON.parse(current.retention_policy || "{}"); } catch { parsed = {}; }
+      return { ...current, retention_policy: JSON.stringify({ ...parsed, [key]: value }, null, 2) };
+    });
+  }
   async function save(item: any) { if (!session || fixture) return; const reason = window.prompt(`Reason for changing ${item.key}:`); if (!reason) return; try { const value = JSON.parse(drafts[item.key]); await api(session, `/api/superadmin/settings/${item.key}`, { method: "PATCH", body: JSON.stringify({ value, reason }) }); setMessage(`${item.key} saved and reloaded.`); await refresh(); } catch (error: any) { setMessage(error.message); } }
   const body = <>
     {selected.map((item: any) => <div className="settings-editor" key={item.key}>
       <h3>{cap(item.key.replaceAll("_", " "))}</h3>
       <p className="subtle">{item.description} · Scope: platform · Effective {fmtDate(item.updated_at)}</p>
+      {item.key === "retention_policy" && <div className="settings-grid analytics-state">
+        <label className="field">Free audit expiry
+          <select value={safeJsonObject(drafts[item.key]).freeAuditExpiryEnabled === false ? "paused" : "enabled"} onChange={(event) => updateRetentionField("freeAuditExpiryEnabled", event.target.value === "enabled")}>
+            <option value="enabled">Enabled</option><option value="paused">Paused</option>
+          </select>
+        </label>
+        <label className="field">Delete free-account audits after
+          <span className="input-suffix"><input type="number" min="1" max="3650" value={Number(safeJsonObject(drafts[item.key]).freeAuditExpiryDays || 30)} onChange={(event) => updateRetentionField("freeAuditExpiryDays", Math.max(1, Number(event.target.value) || 1))} /><span>days</span></span>
+        </label>
+        <p className="subtle settings-span-2">Paid accounts keep one detailed audit per page for the lifetime of the subscription. Older paid audit history contains KPI summaries only.</p>
+      </div>}
       <textarea rows={Math.min(14, Math.max(5, (drafts[item.key] || "").split("\n").length))} value={drafts[item.key] || ""} onChange={(event) => setDrafts((current) => ({ ...current, [item.key]: event.target.value }))} />
       <div className="button-row"><button className="btn" disabled={fixture} onClick={() => void save(item)}>Validate and save</button></div>
       {item.key === "inactivity_policy" && <div className="analytics-state">
@@ -5569,6 +5597,11 @@ function SettingsControlDesk({ platform, session, fixture, refresh, onlyKey, key
     {message && <p role="status">{message}</p>}
   </>;
   return embedded ? body : <Panel title="Platform settings">{body}<UnavailableState title="Provider capabilities are read-only" detail="Capability states are verified from integrations and cannot be changed by editing a description." /></Panel>;
+}
+
+function safeJsonObject(value: string) {
+  try { const parsed = JSON.parse(value || "{}"); return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}; }
+  catch { return {}; }
 }
 
 function StaffPermissionsDesk({ staffData, session, fixture, refresh }: any) {
@@ -7050,18 +7083,22 @@ function Page({
       )}
     </div>
   );
+  const controlsRelocated = relocateMobileControls && typeof children === "function";
+  const dateRangeStatus = isValidElement(status) && status.type === Period;
+  const statusControl = dateRangeStatus
+    ? <button className="period-trigger" type="button" onClick={() => setPeriodOpen(true)} aria-label="Change date range">{status}</button>
+    : status;
   const mobileControls = (
     <div className="property-traffic-mobile-controls">
-      <span className="property-traffic-period">{status}</span>
+      <span className="property-traffic-period">{statusControl}</span>
       {showOptions && renderPageOptions("page-options-mobile")}
     </div>
   );
-  const controlsRelocated = relocateMobileControls && typeof children === "function";
   return (
     <div className={`content ${compact ? "compact-content" : ""}`}>
       <div className={`title-row ${controlsRelocated ? "title-row-relocated" : ""}`}>
         <h1>{title}</h1>
-        <span className={controlsRelocated ? "page-status page-status-relocated" : "page-status"}>{status}</span>
+        <span className={controlsRelocated ? "page-status page-status-relocated" : "page-status"}>{statusControl}</span>
         <span className="spacer" />
         {actions}
         {showOptions && renderPageOptions(controlsRelocated ? "page-options-desktop page-options-relocated" : "page-options-desktop")}
