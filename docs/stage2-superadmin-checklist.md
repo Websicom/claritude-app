@@ -12,8 +12,8 @@ This is an acceptance record, not a marketing checklist. A page or schema founda
 - [x] Inspect authentication, database, audit engine, analytics, uptime, email and deployment paths before changing them.
 - [x] Use additive, service-role-only migrations for privileged state and preserve existing customer data.
 - [x] Run type checks, 183 unit tests, production build, production dependency audit and responsive browser smoke tests.
-- [~] Migration dry-run lists the expected three migrations; final SQL execution and linked database lint occur in the production workflow because the local Docker daemon is unavailable.
-- [ ] Push through `main`, observe migration-first deployment, verify the deployed commit and run linked database lint/advisors.
+- [x] Production applied the expected three migrations and linked database lint returned no schema errors.
+- [x] Push through `main`, observe migration-first deployment and verify the exact deployed commit on `/health`.
 
 ## Stage A — staff security, MFA and administrative logging
 
@@ -119,7 +119,7 @@ This is an acceptance record, not a marketing checklist. A page or schema founda
 
 ## Release activation gates
 
-- [ ] Production workflow applies all three migrations, including verified `admin@claritude.io` Owner binding and `adam.jordan@websi.com` verified binding or pending identity-bound invitation.
-- [ ] Cloudflare deploy reports the exact commit and `/health` returns it.
+- [x] Production workflow applied all three migrations. Its guarded seed proves a verified `admin@claritude.io` identity existed and was bound as Owner; Adam is bound if verified or otherwise has the exact-identity pending Owner invitation.
+- [x] Cloudflare Worker version `34b5ba95-d331-489c-9cc9-cb2fcad567a8` reports commit `295c352b5049b4c9c3d5b77ea8389e1a629cd922` on `/health`.
 - [ ] Owner signs in, completes AAL2 and verifies staff directory plus a read-only delegated-session smoke test.
 - [ ] Stripe, new outbound automation, automatic deletion, cleanup and unverified provider controls remain off until their individual prerequisites are satisfied.

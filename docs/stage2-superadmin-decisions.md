@@ -35,3 +35,10 @@
 - Production Hono and React Router dependencies were upgraded after audit findings. `npm audit --omit=dev` now reports zero vulnerabilities.
 - The normal `agent-browser` executable was unavailable, so the same built fixture route was verified through the controlled browser surface at desktop and 565px widths. Console warnings/errors were zero.
 - Local Docker was unavailable. Supabase CLI dry-run confirmed the pending migration set, while SQL execution, linked lint and post-migration checks are intentionally delegated to the existing migration-first production workflow.
+
+## 2026-10-06 — production release
+
+- GitHub Production run `37402652558` validated, migrated, linted, deployed and health-verified commit `295c352b5049b4c9c3d5b77ea8389e1a629cd922`.
+- Supabase applied migrations `20261006005852`, `20261006012241` and `20261006013136`; linked lint reported no schema errors. The first migration is an intentionally empty migration-number placeholder, preventing the discarded email-only prototype from ever being created.
+- Cloudflare deployed Worker version `34b5ba95-d331-489c-9cc9-cb2fcad567a8`. The independent production health response reported 306/306 implemented audit checks and the exact release commit.
+- The guarded staff migration could only complete if the confirmed `admin@claritude.io` Auth identity existed, so that identity is now an active platform Owner. Adam is an active Owner when his confirmed identity existed at migration time; otherwise the exact-email invitation remains pending and binds only after that identity is confirmed.
