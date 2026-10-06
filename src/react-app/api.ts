@@ -67,12 +67,15 @@ async function request<T>(
   init: RequestInit | undefined,
   retryTransientFailure: boolean,
 ): Promise<T> {
+  let delegationId = "";
+  try { delegationId = JSON.parse(localStorage.getItem("claritude-delegation") || "null")?.id || ""; } catch { delegationId = ""; }
   for (let attempt = 0; ; attempt += 1) {
     const response = await fetch(path, {
       ...init,
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${session.access_token}`,
+        ...(delegationId ? { "x-claritude-delegation": delegationId } : {}),
         ...init?.headers,
       },
     });

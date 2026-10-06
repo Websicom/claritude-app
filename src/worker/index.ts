@@ -74,6 +74,7 @@ type Variables = {
   accessToken: string;
   authAal: "aal1" | "aal2";
   authSessionId: string | null;
+  delegation: any | null;
 };
 type Job =
   | { type: "audit" | "uptime"; id: string }
@@ -847,11 +848,53 @@ app.use("/api/*", async (c, next) => {
   c.set("accessToken", token);
   c.set("authAal", assurance.aal);
   c.set("authSessionId", assurance.sessionId);
+  c.set("delegation", null);
+  const delegationId = c.req.header("x-claritude-delegation");
+  if (delegationId && !c.req.path.startsWith("/api/superadmin")) {
+    const service = admin(c.env);
+    const { data: staff } = await service.from("staff_members").select("role,status").eq("user_id", data.user.id).maybeSingle();
+    if (!staff || staff.status !== "active") return c.json({ error: "active_staff_membership_required" }, 403);
+    const { data: delegation } = await service.from("delegation_sessions").select("*").eq("id", delegationId).eq("staff_user_id", data.user.id).is("revoked_at", null).gt("expires_at", new Date().toISOString()).maybeSingle();
+    if (!delegation) return c.json({ error: "delegation_session_expired_or_revoked" }, 403);
+    if (c.req.method !== "GET" && delegation.mode !== "write") return c.json({ error: "delegation_is_read_only" }, 403);
+    const propertyMatch = c.req.path.match(/^\/api\/properties\/([^/]+)/);
+    if (propertyMatch) {
+      const { data: property } = await service.from("properties").select("id,workspaces(account_id)").eq("id", propertyMatch[1]).maybeSingle();
+      if ((property?.workspaces as any)?.account_id !== delegation.account_id) return c.json({ error: "delegation_scope_violation" }, 403);
+    }
+    const workspaceMatch = c.req.path.match(/^\/api\/workspaces\/([^/]+)/);
+    if (workspaceMatch) {
+      const { data: workspace } = await service.from("workspaces").select("account_id").eq("id", workspaceMatch[1]).maybeSingle();
+      if (workspace?.account_id !== delegation.account_id) return c.json({ error: "delegation_scope_violation" }, 403);
+    }
+    if (!/^\/api\/(bootstrap|account(?:\/|$)|properties\/|workspaces\/|notifications(?:\/|$))/.test(c.req.path)) return c.json({ error: "delegation_route_not_allowed" }, 403);
+    c.set("db", service);
+    c.set("userId", delegation.represented_user_id);
+    c.set("delegation", delegation);
+  }
   await next();
 });
 
 app.get("/api/bootstrap", async (c) => {
   const db = c.get("db");
+  const delegation = c.get("delegation");
+  if (delegation) {
+    const service = admin(c.env);
+    const [account, workspaces, memberships, profile, notifications, activity] = await Promise.all([
+      service.from("accounts").select("*").eq("id", delegation.account_id).single(),
+      service.from("workspaces").select("*").eq("account_id", delegation.account_id).order("created_at"),
+      service.from("account_memberships").select("role").eq("account_id", delegation.account_id).eq("user_id", delegation.represented_user_id).single(),
+      service.from("profiles").select("*").eq("id", delegation.represented_user_id).maybeSingle(),
+      service.from("notifications").select("*").eq("account_id", delegation.account_id).eq("user_id", delegation.represented_user_id).order("created_at", { ascending: false }).limit(50),
+      service.from("activity_log").select("*").eq("account_id", delegation.account_id).order("created_at", { ascending: false }).limit(100),
+    ]);
+    const workspaceRows = workspaces.data || [];
+    const workspaceIds = workspaceRows.map((item) => item.id);
+    const properties = workspaceIds.length ? await service.from("properties").select("*,uptime_monitors(*),audit_runs(id,status,score,coverage,created_at)").in("workspace_id", workspaceIds).order("created_at") : { data: [], error: null };
+    const propertyIds = (properties.data || []).map((item: any) => item.id);
+    const incidents = propertyIds.length ? await service.from("incidents").select("*").in("property_id", propertyIds).order("opened_at", { ascending: false }).limit(50) : { data: [], error: null };
+    return c.json({ superadmin: true, staff: null, delegated: { ...delegation, actorUserId: delegation.staff_user_id }, profile: profile.data, accounts: [{ role: memberships.data?.role || delegation.represented_role, accounts: account.data }], accountEntitlements: { [delegation.account_id]: await effectiveEntitlements(c.env, delegation.account_id) }, workspaces: workspaceRows.map((item) => ({ role: memberships.data?.role || delegation.represented_role, workspaces: item })), properties: normalizePropertyRelations(properties.data || []), incidents: incidents.data || [], notifications: notifications.data || [], activity: activity.data || [], propertyMemberships: [] });
+  }
   const staff = await requestStaffAccess(c);
   const superadmin = staff?.status === "active";
   const { data: accessibleProperties } = await db.from("properties").select("id");
@@ -1761,6 +1804,7 @@ app.get("/api/superadmin/bootstrap", async (c) => {
       lastSignInAt: user.last_sign_in_at || null,
       createdAt: user.created_at,
       accountCount: new Set(memberships.filter((membership) => membership.user_id === user.id).map((membership) => membership.account_id)).size,
+      accountIds: [...new Set(memberships.filter((membership) => membership.user_id === user.id).map((membership) => membership.account_id))],
     })),
   });
 });
@@ -1829,6 +1873,18 @@ app.post("/api/superadmin/staff/invitations", async (c) => {
   return c.json({ invitation: result.data, delivery }, 201);
 });
 
+app.delete("/api/superadmin/staff/invitations/:id", async (c) => {
+  const authorization = await requireStaff(c, "staff.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({} as { reason?: string }));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3) return c.json({ error: "reason_required" }, 400);
+  const { data, error } = await admin(c.env).from("staff_invitations").update({ revoked_at: new Date().toISOString() }).eq("id", c.req.param("id")).is("accepted_at", null).is("revoked_at", null).select().single();
+  if (error) return c.json({ error: "pending_invitation_not_found" }, 404);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "staff.invitation_revoked", "success", { targetType: "staff_invitation", targetId: data.id, reason, previousValues: { email: data.email, role: data.role }, newValues: { revokedAt: data.revoked_at } });
+  return c.json({ invitation: data });
+});
+
 app.patch("/api/superadmin/staff/:id", async (c) => {
   const authorization = await requireStaff(c, "staff.write");
   if (authorization.response) return authorization.response;
@@ -1885,8 +1941,19 @@ app.get("/api/superadmin/activity", async (c) => {
   const authorization = await requireStaff(c, "staff.read");
   if (authorization.response) return authorization.response;
   const limit = Math.min(250, Math.max(1, Number(c.req.query("limit")) || 100));
-  const { data, error } = await admin(c.env).from("admin_activity_log").select("*").order("created_at", { ascending: false }).limit(limit);
-  return error ? c.json({ error: "admin_activity_unavailable" }, 503) : c.json({ activity: data || [] });
+  const service = admin(c.env);
+  let query = service.from("admin_activity_log").select("*").order("created_at", { ascending: false }).limit(limit);
+  if (c.req.query("actor")) query = query.eq("actor_staff_id", c.req.query("actor"));
+  if (c.req.query("action")) query = query.eq("action", c.req.query("action"));
+  if (c.req.query("outcome")) query = query.eq("outcome", c.req.query("outcome"));
+  if (c.req.query("from")) query = query.gte("created_at", c.req.query("from"));
+  if (c.req.query("to")) query = query.lte("created_at", c.req.query("to"));
+  const [{ data, error }, staff, accounts] = await Promise.all([query, service.from("staff_members").select("user_id,display_name"), service.from("accounts").select("id,name")]);
+  const staffUsers = await service.auth.admin.listUsers({ page: 1, perPage: 1000 });
+  const emailById = new Map(staffUsers.data.users.map((item) => [item.id, item.email || ""]));
+  const staffById = new Map((staff.data || []).map((item) => [item.user_id, item]));
+  const accountById = new Map((accounts.data || []).map((item) => [item.id, item.name]));
+  return error ? c.json({ error: "admin_activity_unavailable" }, 503) : c.json({ activity: (data || []).map((item) => ({ ...item, actorName: staffById.get(item.actor_staff_id)?.display_name || null, actorEmail: emailById.get(item.actor_staff_id) || null, targetName: item.account_id ? accountById.get(item.account_id) || null : null })) });
 });
 
 app.get("/api/superadmin/delegations", async (c) => {
@@ -1901,15 +1968,18 @@ app.post("/api/superadmin/delegations", async (c) => {
   const authorization = await requireStaff(c, "delegation.write");
   if (authorization.response) return authorization.response;
   const body = await c.req.json<{ accountId?: string; representedUserId?: string; mode?: "read" | "write"; durationMinutes?: number; reason?: string }>().catch(() => ({} as { accountId?: string; representedUserId?: string; mode?: "read" | "write"; durationMinutes?: number; reason?: string }));
+  const service = admin(c.env);
+  const { data: staffSessionSetting } = await service.from("platform_settings").select("value").eq("key", "staff_sessions").maybeSingle();
+  const sessionPolicy = (staffSessionSetting?.value || { defaultMinutes: 30, maximumMinutes: 60, writeModeAllowed: true, requireReason: true }) as Record<string, any>;
   const reason = String(body.reason || "").trim();
-  const durationMinutes = Math.floor(Number(body.durationMinutes) || 30);
+  const durationMinutes = Math.floor(Number(body.durationMinutes) || Number(sessionPolicy.defaultMinutes) || 30);
   const mode = body.mode === "write" ? "write" : "read";
   if (!body.accountId || !body.representedUserId) return c.json({ error: "account_and_user_required" }, 400);
-  if (reason.length < 3 || reason.length > 500) return c.json({ error: "reason_required" }, 400);
-  if (durationMinutes < 5 || durationMinutes > 60) return c.json({ error: "delegation_duration_out_of_range" }, 400);
+  if ((sessionPolicy.requireReason !== false && reason.length < 3) || reason.length > 500) return c.json({ error: "reason_required" }, 400);
+  if (durationMinutes < 5 || durationMinutes > Math.min(60, Number(sessionPolicy.maximumMinutes) || 60)) return c.json({ error: "delegation_duration_out_of_range" }, 400);
+  if (mode === "write" && sessionPolicy.writeModeAllowed !== true) return c.json({ error: "delegation_write_mode_disabled" }, 403);
   if (mode === "write" && !staffRoleCan(authorization.staff!.role, "customers.write"))
     return c.json({ error: "customer_write_permission_required" }, 403);
-  const service = admin(c.env);
   const { data: membership } = await service.from("account_memberships").select("role")
     .eq("account_id", body.accountId).eq("user_id", body.representedUserId).maybeSingle();
   if (!membership) return c.json({ error: "represented_membership_not_found" }, 404);
@@ -1989,6 +2059,77 @@ export function validSafetyLimits(value: unknown) {
     analyticsEventsPerPropertyPerDay: [100, 1_000_000], exportsPerAccountPerDay: [1, 100],
   };
   return Object.entries(ranges).every(([key, [min, max]]) => Number.isInteger(limits[key]) && Number(limits[key]) >= min && Number(limits[key]) <= max);
+}
+
+export type EffectiveFeatureState = "draft" | "awaiting_configuration" | "ready_to_activate" | "enabled" | "paused" | "unavailable";
+
+export function deriveFeatureState(input: {
+  permitted: boolean;
+  configured: boolean;
+  enabled: boolean;
+  dependencyAvailable?: boolean;
+  draftExists?: boolean;
+  runningJobs?: number;
+  dependency?: string;
+}) {
+  const runningJobs = Math.max(0, Number(input.runningJobs) || 0);
+  if (input.dependencyAvailable === false) return { state: "unavailable" as EffectiveFeatureState, reason: input.dependency || "Required dependency is unavailable", permitted: input.permitted, runningJobs };
+  if (!input.configured) return { state: input.draftExists ? "draft" as EffectiveFeatureState : "awaiting_configuration" as EffectiveFeatureState, reason: "Required policy or recipients are not configured", permitted: input.permitted, runningJobs };
+  if (!input.enabled) return { state: "ready_to_activate" as EffectiveFeatureState, reason: "Configuration is valid but activation is disabled", permitted: input.permitted, runningJobs };
+  if (!input.permitted) return { state: "paused" as EffectiveFeatureState, reason: "Operational control is paused", permitted: false, runningJobs };
+  return { state: "enabled" as EffectiveFeatureState, reason: runningJobs ? `${runningJobs} job${runningJobs === 1 ? "" : "s"} currently running` : "Permitted and configured; no job is currently running", permitted: true, runningJobs };
+}
+
+export function renderEmailTemplate(source: string, variables: Record<string, unknown>) {
+  const missing = [...source.matchAll(/{{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*}}/g)]
+    .map((match) => match[1])
+    .filter((key, index, all) => !Object.prototype.hasOwnProperty.call(variables, key) && all.indexOf(key) === index);
+  if (missing.length) return { rendered: source, missing };
+  return {
+    rendered: source.replace(/{{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*}}/g, (_match, key) => escapeHtml(variables[key])),
+    missing: [],
+  };
+}
+
+async function publishedEmailTemplate(db: SupabaseClient, templateKey: string) {
+  const { data, error } = await db.from("email_templates").select("id,subject,html_body,text_body,variables,version").eq("template_key", templateKey).eq("state", "active").order("version", { ascending: false }).limit(1).maybeSingle();
+  return error ? null : data;
+}
+
+export function deriveEmailAutomationDecision(input: { configured: boolean; enabled: boolean; enabledCategories?: string[]; suppressionHandling?: string; suppressed: boolean; category: string }) {
+  if (!input.configured) return { allowed: false, reason: "automation_not_configured" };
+  if (!input.enabled) return { allowed: false, reason: "automation_paused" };
+  const configuredCategory = input.category === "scheduled_report" ? "report" : input.category;
+  if (Array.isArray(input.enabledCategories) && !input.enabledCategories.includes(configuredCategory)) return { allowed: false, reason: "category_disabled" };
+  if (input.suppressionHandling !== "report_only" && input.suppressed) return { allowed: false, reason: "recipient_suppressed" };
+  return { allowed: true, reason: null };
+}
+
+async function emailAutomationDecision(db: SupabaseClient, key: string, recipient: string, category: string) {
+  const [automation, settings, suppression] = await Promise.all([
+    db.from("email_automations").select("enabled,eligibility").eq("key", key).maybeSingle(),
+    db.from("platform_settings").select("value").eq("key", "email_settings").maybeSingle(),
+    db.from("email_suppressions").select("id,category").eq("recipient", recipient.trim().toLowerCase()).in("category", [category, "all"]).is("lifted_at", null).limit(1),
+  ]);
+  const emailSettings = (settings.data?.value || {}) as Record<string, any>;
+  return deriveEmailAutomationDecision({ configured: Boolean(automation.data), enabled: Boolean(automation.data?.enabled), enabledCategories: emailSettings.enabledCategories, suppressionHandling: emailSettings.suppressionHandling, suppressed: Boolean((suppression.data || []).length), category });
+}
+
+export function validatePlatformSetting(key: string, value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "setting_value_must_be_an_object";
+  const item = value as Record<string, any>;
+  if (key === "safety_limits") return validSafetyLimits(value) ? null : "invalid_safety_limits";
+  if (key === "inactivity_policy") {
+    const warnings = item.warningDays;
+    if (!Array.isArray(warnings) || warnings.length !== 2 || !warnings.every(Number.isInteger) || warnings[0] < 1 || warnings[1] <= warnings[0] || !Number.isInteger(item.freezeDay) || item.freezeDay <= warnings[1] || !Number.isInteger(item.deletionEligibleDay) || item.deletionEligibleDay - item.freezeDay !== 21 || item.automaticDeletionEnabled !== false) return "invalid_inactivity_policy";
+  }
+  if (key === "retention_policy" && !Object.values(item).every((entry) => Number.isInteger(entry) && entry >= 1 && entry <= 3650)) return "invalid_retention_policy";
+  if (key === "outbound_automation" && (!Array.isArray(item.safeTestRecipients) || !item.safeTestRecipients.every((email: unknown) => /^\S+@\S+\.\S+$/.test(String(email))) || typeof item.campaignsEnabled !== "boolean" || typeof item.inactivityNoticesEnabled !== "boolean" || typeof item.weeklyDigestEnabled !== "boolean")) return "invalid_outbound_automation";
+  if (key === "email_settings" && (!String(item.senderName || "").trim() || (String(item.replyTo || "") && !/^\S+@\S+\.\S+$/.test(String(item.replyTo))) || !Array.isArray(item.enabledCategories) || !["enforce", "report_only"].includes(item.suppressionHandling) || !Number.isInteger(item.hourlySendLimit) || item.hourlySendLimit < 1 || item.hourlySendLimit > 100000)) return "invalid_email_settings";
+  if (key === "staff_sessions" && (!Number.isInteger(item.defaultMinutes) || !Number.isInteger(item.maximumMinutes) || item.defaultMinutes < 5 || item.maximumMinutes > 60 || item.defaultMinutes > item.maximumMinutes || item.requireReason !== true)) return "invalid_staff_sessions";
+  if (key === "alert_digest" && (!Array.isArray(item.recipients) || !item.recipients.every((email: unknown) => /^\S+@\S+\.\S+$/.test(String(email))) || typeof item.enabled !== "boolean" || !String(item.schedule || "").trim() || !String(item.timezone || "").trim() || !Array.isArray(item.includedMetrics))) return "invalid_alert_digest";
+  if (key === "provider_capabilities") return "provider_capabilities_are_discovered_not_editable";
+  return null;
 }
 
 app.get("/api/superadmin/search", async (c) => {
@@ -2143,36 +2284,51 @@ app.get("/api/superadmin/platform", async (c) => {
   if (authorization.response) return authorization.response;
   const service = admin(c.env);
   const today = new Date().toISOString().slice(0, 10);
-  const [settings, controls, alerts, incidents, packages, grants, overrides, inactivity, auditDefinitions, auditGroups, auditRuns, exports, deletionRequests, templates, automations, campaigns, billingCustomers, billingEvents, promotions, deliveries] = await Promise.all([
+  const [settings, settingHistory, controls, alerts, alertRules, alertHistory, incidents, packages, grants, overrides, inactivity, auditDefinitions, auditGroups, auditRuns, exports, deletionRequests, templates, automations, campaigns, billingCustomers, billingEvents, promotions, deliveries, suppressions] = await Promise.all([
     service.from("platform_settings").select("*").order("key"),
+    service.from("platform_setting_history").select("*").order("changed_at", { ascending: false }).limit(250),
     service.from("emergency_controls").select("*").order("key"),
     service.from("platform_alerts").select("*").order("created_at", { ascending: false }).limit(100),
+    service.from("alert_rules").select("*").order("created_at", { ascending: false }).limit(250),
+    service.from("platform_alert_history").select("*").order("created_at", { ascending: false }).limit(250),
     service.from("platform_incidents").select("*").order("opened_at", { ascending: false }).limit(100),
     service.from("package_versions").select("*").order("package_key").order("version", { ascending: false }),
     service.from("account_package_grants").select("id,account_id,package_version_id,status,starts_at,expires_at,reason,created_at,package_versions(display_name,package_key,version)").order("created_at", { ascending: false }).limit(250),
     service.from("account_entitlement_overrides").select("id,account_id,key,value,reason,starts_at,expires_at,created_at,grant_id,revoked_at").order("created_at", { ascending: false }).limit(250),
-    service.from("account_inactivity").select("*").neq("state", "active").order("updated_at", { ascending: false }).limit(250),
+    service.from("account_inactivity").select("*").order("updated_at", { ascending: false }).limit(5000),
     service.from("audit_check_definitions").select("id,title,primary_category,subcategory,severity,lifecycle,configuration_version,changed_at").order("id"),
     service.from("audit_user_facing_groups").select("id,name,category,subcategory,lifecycle,enabled_by_default,configuration_version").order("sort_order"),
     service.from("audit_runs").select("id,status,duration_ms,error,created_at,execution_telemetry").gte("created_at", `${today}T00:00:00.000Z`).limit(1000),
     service.from("admin_export_jobs").select("id,scope,format,state,progress,row_count,error,expires_at,created_at,completed_at").order("created_at", { ascending: false }).limit(100),
     service.from("deletion_requests").select("*").order("created_at", { ascending: false }).limit(100),
-    service.from("email_templates").select("id,template_key,version,subject,variables,state,created_at").order("template_key").order("version", { ascending: false }),
+    service.from("email_templates").select("id,template_key,version,subject,html_body,text_body,variables,state,description,provider_managed,sending_path,published_at,supersedes_id,created_at").order("template_key").order("version", { ascending: false }),
     service.from("email_automations").select("*").order("key"),
     service.from("email_campaigns").select("*").order("created_at", { ascending: false }).limit(100),
     service.from("billing_customers").select("*").limit(1000),
     service.from("billing_events").select("id,provider_event_id,event_type,provider_created_at,processing_state,attempts,error,received_at,processed_at").order("provider_created_at", { ascending: false }).limit(250),
     service.from("promotion_rules").select("*").order("created_at", { ascending: false }).limit(100),
-    service.from("notification_deliveries").select("id,kind,recipient,status,provider_id,error,created_at,updated_at").order("created_at", { ascending: false }).limit(250),
+    service.from("notification_deliveries").select("id,kind,recipient,status,provider,provider_status,provider_id,error,is_test,account_id,property_id,template_id,automation_key,campaign_id,payload,created_at,updated_at").order("created_at", { ascending: false }).limit(250),
+    service.from("email_suppressions").select("id,recipient,category,reason,source,created_at,lifted_at").is("lifted_at", null).order("created_at", { ascending: false }).limit(250),
   ]);
   const runs = auditRuns.data || [];
   const auditStatus = Object.fromEntries(["queued", "running", "completed", "partial", "failed"].map((status) => [status, runs.filter((run) => run.status === status).length]));
+  const settingValues = Object.fromEntries((settings.data || []).map((item) => [item.key, item.value]));
+  const controlByKey = new Map((controls.data || []).map((item) => [item.key, item]));
+  const outbound = settingValues.outbound_automation || {};
+  const digest = settingValues.alert_digest || {};
+  const campaignConfigured = Array.isArray(outbound.safeTestRecipients) && outbound.safeTestRecipients.length > 0 && (templates.data || []).some((item) => item.state === "active" && !item.provider_managed);
+  const weeklyConfigured = Array.isArray(digest.recipients) && digest.recipients.length > 0;
+  const featureStates = {
+    campaigns: deriveFeatureState({ permitted: !controlByKey.get("campaigns")?.paused, configured: campaignConfigured, enabled: outbound.campaignsEnabled === true, dependencyAvailable: Boolean(c.env.RESEND_API_KEY && c.env.RESEND_FROM), dependency: "Resend credentials and sender identity are unavailable", draftExists: (campaigns.data || []).some((item) => item.state === "draft"), runningJobs: (campaigns.data || []).filter((item) => item.state === "sending").length }),
+    inactivityNotices: deriveFeatureState({ permitted: true, configured: Array.isArray(outbound.safeTestRecipients) && outbound.safeTestRecipients.length > 0, enabled: outbound.inactivityNoticesEnabled === true, dependencyAvailable: Boolean(c.env.RESEND_API_KEY && c.env.RESEND_FROM), dependency: "Resend credentials and safe test recipients are required" }),
+    weeklyDigest: deriveFeatureState({ permitted: true, configured: weeklyConfigured, enabled: digest.enabled === true && outbound.weeklyDigestEnabled === true, dependencyAvailable: Boolean(c.env.RESEND_API_KEY && c.env.RESEND_FROM), dependency: "Resend credentials and digest recipients are required" }),
+  };
   return c.json({
     environment: { name: c.env.APP_ORIGIN.includes("app.claritude.io") ? "Production" : "Preview", commitSha: c.env.DEPLOY_COMMIT_SHA || null, refreshedAt: new Date().toISOString() },
     providers: { stripe: { configured: Boolean(c.env.STRIPE_SECRET_KEY && c.env.STRIPE_WEBHOOK_SECRET), mode: c.env.STRIPE_SECRET_KEY?.startsWith("sk_test_") ? "sandbox" : c.env.STRIPE_SECRET_KEY ? "live" : "unconfigured", tax: "unconfigured" }, resend: { configured: Boolean(c.env.RESEND_API_KEY), from: c.env.RESEND_FROM || null }, cloudflareTelemetry: "unavailable", supabaseBackups: "unverified" },
-    settings: settings.data || [], controls: controls.data || [], alerts: alerts.data || [], incidents: incidents.data || [], packages: packages.data || [], grants: grants.data || [], overrides: overrides.data || [], inactivity: inactivity.data || [],
+    settings: settings.data || [], settingHistory: settingHistory.data || [], controls: controls.data || [], featureStates, alerts: alerts.data || [], alertRules: alertRules.data || [], alertHistory: alertHistory.data || [], alertCoverage: { enabledRuleCount: (alertRules.data || []).filter((item) => item.enabled).length, lastEvaluationAt: (alertRules.data || []).map((item) => item.last_evaluated_at).filter(Boolean).sort().at(-1) || null, evaluatorHealth: !(alertRules.data || []).length ? "no_rules" : (alertRules.data || []).some((item) => item.evaluation_state === "failing") ? "failing" : (alertRules.data || []).every((item) => item.evaluation_state === "not_started") ? "not_started" : (alertRules.data || []).some((item) => item.evaluation_state === "telemetry_unavailable") ? "telemetry_unavailable" : "healthy" }, incidents: incidents.data || [], packages: packages.data || [], grants: grants.data || [], overrides: overrides.data || [], inactivity: inactivity.data || [],
     audits: { technicalChecks: auditDefinitions.data || [], groups: auditGroups.data || [], today: auditStatus, source: "application_measured", period: "UTC day" },
-    exports: exports.data || [], deletionRequests: deletionRequests.data || [], email: { templates: templates.data || [], automations: automations.data || [], campaigns: campaigns.data || [], deliveries: deliveries.data || [] },
+    exports: exports.data || [], deletionRequests: deletionRequests.data || [], email: { templates: templates.data || [], automations: automations.data || [], campaigns: campaigns.data || [], deliveries: deliveries.data || [], suppressions: suppressions.data || [] },
     billing: { configured: Boolean(c.env.STRIPE_SECRET_KEY && c.env.STRIPE_WEBHOOK_SECRET), customers: billingCustomers.data || [], events: billingEvents.data || [], promotions: promotions.data || [], calculations: { mrr: "Unavailable until Stripe is configured and reconciled", arr: "Unavailable until Stripe is configured and reconciled", cashCollected: "Unavailable until Stripe is configured and reconciled", currencyPolicy: "Currencies remain separate unless an explicit labelled conversion is configured" } },
   });
 });
@@ -2413,12 +2569,14 @@ app.patch("/api/superadmin/settings/:key", async (c) => {
   const body = await c.req.json<{ value?: unknown; reason?: string }>().catch(() => ({} as any));
   const reason = String(body.reason || "").trim();
   if (body.value === undefined || reason.length < 3 || reason.length > 500) return c.json({ error: "value_and_reason_required" }, 400);
-  if (c.req.param("key") === "safety_limits" && !validSafetyLimits(body.value)) return c.json({ error: "invalid_safety_limits" }, 400);
+  const validationError = validatePlatformSetting(c.req.param("key"), body.value);
+  if (validationError) return c.json({ error: validationError }, 400);
   const service = admin(c.env);
   const { data: previous } = await service.from("platform_settings").select("*").eq("key", c.req.param("key")).single();
   if (!previous) return c.json({ error: "platform_setting_not_found" }, 404);
   const { data, error } = await service.from("platform_settings").update({ value: body.value, updated_by: authorization.staff!.userId, updated_at: new Date().toISOString() }).eq("key", c.req.param("key")).select().single();
   if (error) return c.json({ error: error.message }, 400);
+  await service.from("platform_setting_history").insert({ setting_key: data.key, previous_value: previous.value, new_value: data.value, reason, changed_by: authorization.staff!.userId });
   await recordAdminActivity(c.env, authorization.staff!.userId, "platform_setting.changed", "success", { targetType: "platform_setting", targetId: data.key, reason, previousValues: previous.value, newValues: data.value });
   return c.json({ setting: data });
 });
@@ -2444,10 +2602,309 @@ app.get("/api/superadmin/exports/:id/download", async (c) => {
   const service = admin(c.env);
   const { data: job } = await service.from("admin_export_jobs").select("*").eq("id", c.req.param("id")).single();
   if (!job || job.state !== "completed" || !job.object_key || !job.expires_at || Date.parse(job.expires_at) <= Date.now()) return c.json({ error: "export_not_available" }, 404);
-  const signed = await service.storage.from("admin-exports").createSignedUrl(job.object_key, 60);
+  const signed = await service.storage.from("admin-exports").createSignedUrl(job.object_key, 60, { download: `${job.scope}-${job.id}.${job.format}` });
   if (signed.error) return c.json({ error: "export_download_unavailable" }, 503);
   await recordAdminActivity(c.env, authorization.staff!.userId, "export.downloaded", "success", { targetType: "admin_export", targetId: job.id });
   return c.json({ url: signed.data.signedUrl, expiresInSeconds: 60 });
+});
+
+app.post("/api/superadmin/exports/:id/retry", async (c) => {
+  const authorization = await requireStaff(c, "exports.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({} as { reason?: string }));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3 || reason.length > 500) return c.json({ error: "reason_required" }, 400);
+  const service = admin(c.env);
+  const { data: previous } = await service.from("admin_export_jobs").select("*").eq("id", c.req.param("id")).maybeSingle();
+  if (!previous || !["failed", "expired", "cancelled"].includes(previous.state)) return c.json({ error: "failed_or_expired_export_required" }, 409);
+  const { data, error } = await service.from("admin_export_jobs").insert({ requested_by: authorization.staff!.userId, scope: previous.scope, format: previous.format, filters: previous.filters }).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await c.env.JOBS.send({ type: "admin-export", id: data.id });
+  await recordAdminActivity(c.env, authorization.staff!.userId, "export.retried", "success", { targetType: "admin_export", targetId: data.id, reason, metadata: { previousJobId: previous.id } });
+  return c.json({ job: data }, 202);
+});
+
+app.post("/api/superadmin/email/templates/preview", async (c) => {
+  const authorization = await requireStaff(c, "communications.read");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ subject?: string; htmlBody?: string; variables?: Record<string, unknown> }>().catch(() => ({} as { subject?: string; htmlBody?: string; variables?: Record<string, unknown> }));
+  const subject = renderEmailTemplate(String(body.subject || ""), body.variables || {});
+  const html = renderEmailTemplate(String(body.htmlBody || ""), body.variables || {});
+  return c.json({ preview: { subject: subject.rendered, html: html.rendered, missing: [...new Set([...subject.missing, ...html.missing])] } });
+});
+
+app.post("/api/superadmin/email/templates", async (c) => {
+  const authorization = await requireStaff(c, "communications.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<any>().catch(() => ({}));
+  const key = String(body.templateKey || "").trim().toLowerCase().replace(/[^a-z0-9_]+/g, "_");
+  const reason = String(body.reason || "").trim();
+  if (!key || !String(body.subject || "").trim() || !String(body.htmlBody || "").trim() || reason.length < 3) return c.json({ error: "template_key_subject_body_and_reason_required" }, 400);
+  const service = admin(c.env);
+  const { data: current } = await service.from("email_templates").select("*").eq("template_key", key).order("version", { ascending: false }).limit(1).maybeSingle();
+  if (current?.provider_managed) return c.json({ error: "provider_managed_template_must_be_edited_in_supabase_auth" }, 409);
+  const variables = [...new Set([...String(body.subject).matchAll(/{{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*}}/g), ...String(body.htmlBody).matchAll(/{{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*}}/g)].map((match) => match[1]))];
+  const { data, error } = await service.from("email_templates").insert({ template_key: key, version: Number(current?.version || 0) + 1, subject: String(body.subject).trim(), html_body: String(body.htmlBody), text_body: String(body.textBody || ""), variables, state: "draft", description: String(body.description || "").trim() || null, sending_path: current?.sending_path || "Platform automation", supersedes_id: current?.id || null, created_by: authorization.staff!.userId }).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "email_template.version_created", "success", { targetType: "email_template", targetId: data.id, reason, previousValues: current || null, newValues: data });
+  return c.json({ template: data }, 201);
+});
+
+app.post("/api/superadmin/email/templates/:id/publish", async (c) => {
+  const authorization = await requireStaff(c, "communications.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({} as { reason?: string }));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3) return c.json({ error: "reason_required" }, 400);
+  const service = admin(c.env);
+  const { data: draft } = await service.from("email_templates").select("*").eq("id", c.req.param("id")).maybeSingle();
+  if (!draft) return c.json({ error: "template_not_found" }, 404);
+  if (draft.provider_managed) return c.json({ error: "provider_managed_template_must_be_published_in_supabase_auth" }, 409);
+  await service.from("email_templates").update({ state: "retired" }).eq("template_key", draft.template_key).eq("state", "active");
+  const { data, error } = await service.from("email_templates").update({ state: "active", published_at: new Date().toISOString() }).eq("id", draft.id).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "email_template.published", "success", { targetType: "email_template", targetId: data.id, reason, previousValues: draft, newValues: data });
+  return c.json({ template: data });
+});
+
+app.patch("/api/superadmin/email/automations/:key", async (c) => {
+  const authorization = await requireStaff(c, "communications.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<any>().catch(() => ({}));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3) return c.json({ error: "reason_required" }, 400);
+  const service = admin(c.env);
+  const { data: previous } = await service.from("email_automations").select("*").eq("key", c.req.param("key")).maybeSingle();
+  if (!previous) return c.json({ error: "automation_not_found" }, 404);
+  const changes: Record<string, unknown> = { updated_by: authorization.staff!.userId, updated_at: new Date().toISOString() };
+  if (typeof body.enabled === "boolean") changes.enabled = body.enabled;
+  if (body.delayMinutes !== undefined) changes.delay_minutes = Math.max(0, Math.min(525600, Math.floor(Number(body.delayMinutes) || 0)));
+  if (body.eligibility && typeof body.eligibility === "object") changes.eligibility = body.eligibility;
+  const { data, error } = await service.from("email_automations").update(changes).eq("key", previous.key).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "email_automation.changed", "success", { targetType: "email_automation", targetId: data.key, reason, previousValues: previous, newValues: data });
+  return c.json({ automation: data });
+});
+
+app.post("/api/superadmin/email/automations/:key/simulate", async (c) => {
+  const authorization = await requireStaff(c, "communications.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ recipient?: string; eventId?: string }>().catch(() => ({} as { recipient?: string; eventId?: string }));
+  const recipient = String(body.recipient || "").trim().toLowerCase();
+  if (!/^\S+@\S+\.\S+$/.test(recipient)) return c.json({ error: "valid_test_recipient_required" }, 400);
+  const dedupeKey = `simulation:${c.req.param("key")}:${String(body.eventId || "manual")}:${recipient}`;
+  const { data: claimed, error } = await admin(c.env).rpc("claim_notification", { p_key: dedupeKey, p_kind: c.req.param("key"), p_recipient: recipient, p_payload: { simulation: true, staffUserId: authorization.staff!.userId } });
+  if (error) return c.json({ error: error.message }, 400);
+  if (claimed) await admin(c.env).from("notification_deliveries").update({ status: "simulated", provider: "none", provider_status: "not_sent", is_test: true, automation_key: c.req.param("key"), updated_at: new Date().toISOString() }).eq("dedupe_key", dedupeKey);
+  return c.json({ simulated: true, claimed, duplicatePrevented: !claimed, sentToProvider: false });
+});
+
+app.post("/api/superadmin/email/campaigns", async (c) => {
+  const authorization = await requireStaff(c, "communications.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<any>().catch(() => ({}));
+  const name = String(body.name || "").trim();
+  if (name.length < 3) return c.json({ error: "campaign_name_required" }, 400);
+  const service = admin(c.env);
+  const segment = body.segment && typeof body.segment === "object" ? body.segment : {};
+  const members = await service.from("account_memberships").select("user_id,account_id").limit(50000);
+  const uniqueUsers = new Set((members.data || []).filter((item) => !segment.accountId || item.account_id === segment.accountId).map((item) => item.user_id));
+  const { data, error } = await service.from("email_campaigns").insert({ name, template_id: body.templateId || null, subject: String(body.subject || "").trim() || null, segment, recipient_preview_count: uniqueUsers.size, state: "draft", created_by: authorization.staff!.userId }).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  return c.json({ campaign: data, preview: { eligibleBeforePreferences: uniqueUsers.size, executionRechecksPreferences: true, sentToCustomers: false } }, 201);
+});
+
+app.patch("/api/superadmin/email/campaigns/:id", async (c) => {
+  const authorization = await requireStaff(c, "communications.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<any>().catch(() => ({}));
+  const service = admin(c.env);
+  const { data: previous } = await service.from("email_campaigns").select("*").eq("id", c.req.param("id")).maybeSingle();
+  if (!previous) return c.json({ error: "campaign_not_found" }, 404);
+  let changes: Record<string, unknown> = {};
+  if (body.action === "schedule") {
+    const scheduledAt = String(body.scheduledAt || "");
+    if (!scheduledAt || Date.parse(scheduledAt) <= Date.now()) return c.json({ error: "future_schedule_required" }, 400);
+    changes = { state: "scheduled", scheduled_at: scheduledAt };
+  } else if (body.action === "cancel") changes = { state: "cancelled", cancelled_at: new Date().toISOString() };
+  else return c.json({ error: "valid_campaign_action_required" }, 400);
+  const { data, error } = await service.from("email_campaigns").update(changes).eq("id", previous.id).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  return c.json({ campaign: data, customerSendActivated: false });
+});
+
+app.post("/api/superadmin/email/campaigns/:id/duplicate", async (c) => {
+  const authorization = await requireStaff(c, "communications.write");
+  if (authorization.response) return authorization.response;
+  const service = admin(c.env);
+  const { data: source } = await service.from("email_campaigns").select("*").eq("id", c.req.param("id")).maybeSingle();
+  if (!source) return c.json({ error: "campaign_not_found" }, 404);
+  const { data, error } = await service.from("email_campaigns").insert({ name: `${source.name} copy`, template_id: source.template_id, subject: source.subject, segment: source.segment, recipient_preview_count: source.recipient_preview_count, state: "draft", duplicated_from: source.id, created_by: authorization.staff!.userId }).select().single();
+  return error ? c.json({ error: error.message }, 400) : c.json({ campaign: data }, 201);
+});
+
+app.post("/api/superadmin/email/campaigns/:id/simulate", async (c) => {
+  const authorization = await requireStaff(c, "communications.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ recipient?: string; eventId?: string }>().catch(() => ({} as { recipient?: string; eventId?: string }));
+  const recipient = String(body.recipient || "").trim().toLowerCase();
+  if (!/^\S+@\S+\.\S+$/.test(recipient)) return c.json({ error: "valid_test_recipient_required" }, 400);
+  const service = admin(c.env);
+  const { data: campaign } = await service.from("email_campaigns").select("id,template_id").eq("id", c.req.param("id")).maybeSingle();
+  if (!campaign) return c.json({ error: "campaign_not_found" }, 404);
+  const dedupeKey = `simulation:campaign:${campaign.id}:${String(body.eventId || "manual")}:${recipient}`;
+  const { data: claimed, error } = await service.rpc("claim_notification", { p_key: dedupeKey, p_kind: "campaign", p_recipient: recipient, p_payload: { simulation: true, campaignId: campaign.id, staffUserId: authorization.staff!.userId } });
+  if (error) return c.json({ error: error.message }, 400);
+  if (claimed) await service.from("notification_deliveries").update({ status: "simulated", provider: "none", provider_status: "not_sent", is_test: true, template_id: campaign.template_id, campaign_id: campaign.id, updated_at: new Date().toISOString() }).eq("dedupe_key", dedupeKey);
+  return c.json({ simulated: true, claimed, duplicatePrevented: !claimed, sentToProvider: false });
+});
+
+app.post("/api/superadmin/email/suppressions", async (c) => {
+  const authorization = await requireStaff(c, "communications.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<any>().catch(() => ({}));
+  const recipient = String(body.recipient || "").trim().toLowerCase();
+  const category = String(body.category || "all").trim().slice(0, 80);
+  const reason = String(body.reason || "").trim().slice(0, 500);
+  if (!/^\S+@\S+\.\S+$/.test(recipient) || !category || reason.length < 3) return c.json({ error: "valid_suppression_required" }, 400);
+  const { data, error } = await admin(c.env).from("email_suppressions").upsert({ recipient, category, reason, source: "superadmin", created_at: new Date().toISOString(), lifted_at: null }, { onConflict: "recipient,category" }).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "email_suppression.changed", "success", { targetType: "email_suppression", targetId: data.id, reason, newValues: { recipient, category, active: true } });
+  return c.json({ suppression: data }, 201);
+});
+
+app.delete("/api/superadmin/email/suppressions/:id", async (c) => {
+  const authorization = await requireStaff(c, "communications.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({} as { reason?: string }));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3) return c.json({ error: "reason_required" }, 400);
+  const { data, error } = await admin(c.env).from("email_suppressions").update({ lifted_at: new Date().toISOString() }).eq("id", c.req.param("id")).select().single();
+  if (error) return c.json({ error: "suppression_not_found" }, 404);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "email_suppression.lifted", "success", { targetType: "email_suppression", targetId: data.id, reason, newValues: { active: false } });
+  return c.json({ suppression: data });
+});
+
+app.post("/api/superadmin/alert-rules", async (c) => {
+  const authorization = await requireStaff(c, "operations.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<any>().catch(() => ({}));
+  const name = String(body.name || "").trim().slice(0, 120);
+  const metric = String(body.metric || "").trim().slice(0, 120);
+  const operator = String(body.operator || "gte");
+  const threshold = Number(body.threshold);
+  const observationMinutes = Math.floor(Number(body.observationMinutes));
+  const minimumSamples = Math.floor(Number(body.minimumSamples));
+  const cooldownMinutes = Math.floor(Number(body.cooldownMinutes));
+  if (name.length < 3 || !metric || !["gt", "gte", "lt", "lte"].includes(operator) || !Number.isFinite(threshold) || observationMinutes < 1 || observationMinutes > 10080 || minimumSamples < 1 || cooldownMinutes < 1 || cooldownMinutes > 43200)
+    return c.json({ error: "valid_alert_rule_required" }, 400);
+  const { data, error } = await admin(c.env).from("alert_rules").insert({
+    name,
+    metric,
+    operator,
+    threshold,
+    observation_minutes: observationMinutes,
+    minimum_samples: minimumSamples,
+    cooldown_minutes: cooldownMinutes,
+    scope: body.scope && typeof body.scope === "object" ? body.scope : {},
+    enabled: false,
+    created_by: authorization.staff!.userId,
+  }).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "alert_rule.created", "success", { targetType: "alert_rule", targetId: data.id, newValues: data });
+  return c.json({ rule: data }, 201);
+});
+
+app.patch("/api/superadmin/alert-rules/:id", async (c) => {
+  const authorization = await requireStaff(c, "operations.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<any>().catch(() => ({}));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3) return c.json({ error: "reason_required" }, 400);
+  const service = admin(c.env);
+  const { data: previous } = await service.from("alert_rules").select("*").eq("id", c.req.param("id")).maybeSingle();
+  if (!previous) return c.json({ error: "alert_rule_not_found" }, 404);
+  const changes: Record<string, unknown> = {};
+  if (typeof body.enabled === "boolean") changes.enabled = body.enabled;
+  if (body.name !== undefined) {
+    const name = String(body.name).trim().slice(0, 120);
+    if (name.length < 3) return c.json({ error: "valid_rule_name_required" }, 400);
+    changes.name = name;
+  }
+  if (body.metric !== undefined) {
+    const metric = String(body.metric).trim().slice(0, 120);
+    if (!metric) return c.json({ error: "valid_metric_required" }, 400);
+    changes.metric = metric;
+  }
+  if (body.operator !== undefined) {
+    if (!["gt", "gte", "lt", "lte"].includes(String(body.operator))) return c.json({ error: "valid_operator_required" }, 400);
+    changes.operator = String(body.operator);
+  }
+  for (const [inputKey, column, minimum, maximum] of [
+    ["threshold", "threshold", Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY],
+    ["observationMinutes", "observation_minutes", 1, 10080],
+    ["minimumSamples", "minimum_samples", 1, Number.MAX_SAFE_INTEGER],
+    ["cooldownMinutes", "cooldown_minutes", 1, 43200],
+  ] as const) {
+    if (body[inputKey] === undefined) continue;
+    const value = Number(body[inputKey]);
+    if (!Number.isFinite(value) || value < minimum || value > maximum) return c.json({ error: `valid_${inputKey}_required` }, 400);
+    changes[column] = inputKey === "threshold" ? value : Math.floor(value);
+  }
+  if (body.scope !== undefined) {
+    if (!body.scope || typeof body.scope !== "object" || Array.isArray(body.scope)) return c.json({ error: "valid_scope_required" }, 400);
+    changes.scope = body.scope;
+  }
+  if (!Object.keys(changes).length) return c.json({ error: "alert_rule_change_required" }, 400);
+  const { data, error } = await service.from("alert_rules").update(changes).eq("id", previous.id).select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "alert_rule.changed", "success", { targetType: "alert_rule", targetId: data.id, reason, previousValues: previous, newValues: data });
+  return c.json({ rule: data });
+});
+
+app.patch("/api/superadmin/alerts/:id", async (c) => {
+  const authorization = await requireStaff(c, "operations.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ action?: string; reason?: string; snoozedUntil?: string }>().catch(() => ({} as { action?: string; reason?: string; snoozedUntil?: string }));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3 || !["acknowledge", "snooze", "resolve"].includes(body.action || "")) return c.json({ error: "valid_action_and_reason_required" }, 400);
+  const service = admin(c.env);
+  const state = body.action === "acknowledge" ? "acknowledged" : body.action === "snooze" ? "snoozed" : "resolved";
+  const snoozedUntil = state === "snoozed" ? String(body.snoozedUntil || "") : null;
+  if (state === "snoozed" && Date.parse(snoozedUntil!) <= Date.now()) return c.json({ error: "future_snooze_required" }, 400);
+  const { data, error } = await service.from("platform_alerts").update({ state, acknowledged_by: authorization.staff!.userId, snoozed_until: snoozedUntil, resolved_at: state === "resolved" ? new Date().toISOString() : null }).eq("id", c.req.param("id")).select().single();
+  if (error) return c.json({ error: "alert_not_found" }, 404);
+  await service.from("platform_alert_history").insert({ alert_id: data.id, event: state === "acknowledged" ? "acknowledged" : state, reason, actor_staff_id: authorization.staff!.userId });
+  return c.json({ alert: data });
+});
+
+app.post("/api/superadmin/alerts/evaluate", async (c) => {
+  const authorization = await requireStaff(c, "operations.write");
+  if (authorization.response) return authorization.response;
+  const service = admin(c.env);
+  const { data: rules } = await service.from("alert_rules").select("*").eq("enabled", true);
+  const results: any[] = [];
+  for (const rule of rules || []) {
+    const since = new Date(Date.now() - Number(rule.observation_minutes) * 60000).toISOString();
+    const events = await service.from("operational_events").select("value").eq("metric", rule.metric).gte("observed_at", since).limit(10000);
+    if (events.error) {
+      await service.from("alert_rules").update({ evaluation_state: "failing", evaluation_error: events.error.message, last_evaluated_at: new Date().toISOString() }).eq("id", rule.id);
+      results.push({ ruleId: rule.id, state: "failing" }); continue;
+    }
+    const values = (events.data || []).map((item) => Number(item.value)).filter(Number.isFinite);
+    const latest = values.at(-1);
+    const enough = values.length >= rule.minimum_samples;
+    const breached = enough && latest !== undefined && ({ gt: latest > rule.threshold, gte: latest >= rule.threshold, lt: latest < rule.threshold, lte: latest <= rule.threshold } as any)[rule.operator];
+    const evaluationState = values.length ? "healthy" : "telemetry_unavailable";
+    await service.from("alert_rules").update({ evaluation_state: evaluationState, evaluation_error: null, last_evaluated_at: new Date().toISOString() }).eq("id", rule.id);
+    if (breached) {
+      const title = `${rule.name}: ${latest} ${rule.operator} ${rule.threshold}`;
+      const { data: alert } = await service.from("platform_alerts").insert({ rule_id: rule.id, title, details: { value: latest, samples: values.length, observationMinutes: rule.observation_minutes } }).select().single();
+      if (alert) await service.from("platform_alert_history").insert({ alert_id: alert.id, event: "created", details: alert.details });
+    }
+    results.push({ ruleId: rule.id, state: evaluationState, samples: values.length, breached });
+  }
+  return c.json({ evaluatedAt: new Date().toISOString(), rules: results, simulated: true });
 });
 
 app.post("/api/properties/:id/reset", async (c) => {
@@ -3400,6 +3857,8 @@ app.post("/api/properties/:id/test-alert", async (c) => {
     p_payload: { ...sampleIncident, test: true, requested_by: c.get("userId") },
   });
   if (!claimed) return c.json({ error: "test_alert_already_submitted" }, 409);
+  const testTemplate = await publishedEmailTemplate(admin(c.env), "uptime_down");
+  const testVariables = { propertyName: property.name, propertyUrl: property.url || "", incidentOpenedAt: sampleIncident.opened_at, incidentResolvedAt: "", appUrl: `${c.env.APP_ORIGIN}/uptime?property=${property.id}` };
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -3410,8 +3869,8 @@ app.post("/api/properties/:id/test-alert", async (c) => {
     body: JSON.stringify({
       from: c.env.RESEND_FROM,
       to: [email],
-      subject: `[TEST] Claritude uptime alert · ${property.name}`,
-      html: renderUptimeAlertEmail({
+      subject: `[TEST] ${testTemplate ? renderEmailTemplate(testTemplate.subject, testVariables).rendered : `Claritude uptime alert · ${property.name}`}`,
+      html: testTemplate ? renderEmailTemplate(testTemplate.html_body, testVariables).rendered : renderUptimeAlertEmail({
         property,
         incident: sampleIncident,
         kind: "down",
@@ -3426,7 +3885,13 @@ app.post("/api/properties/:id/test-alert", async (c) => {
     .from("notification_deliveries")
     .update({
       status: response.ok ? "sent" : "failed",
+      provider: "Resend",
+      provider_status: response.ok ? "accepted" : "rejected",
       provider_id: providerId,
+      is_test: true,
+      property_id: propertyId,
+      template_id: testTemplate?.id || null,
+      automation_key: "uptime_down",
       error: response.ok ? null : (await response.text()).slice(0, 1000),
       updated_at: new Date().toISOString(),
     })
@@ -5395,15 +5860,23 @@ async function sendAlert(
     .select("email")
     .eq("property_id", incident.property_id)
     .eq("enabled", true);
+  const templateKey = kind === "down" ? "uptime_down" : "uptime_recovered";
+  const template = await publishedEmailTemplate(db, templateKey);
+  const templateVariables = { propertyName: property?.name || "Property", propertyUrl: property?.url || "", incidentOpenedAt: incident.opened_at, incidentResolvedAt: incident.resolved_at || "", appUrl: `${env.APP_ORIGIN}/uptime?property=${property?.id || incident.property_id}` };
   for (const r of recipients || []) {
     const key = `${incident.id}:${kind}:${r.email}`;
+    const decision = await emailAutomationDecision(db, templateKey, r.email, templateKey);
     const { data: claimed } = await db.rpc("claim_notification", {
       p_key: key,
       p_kind: `uptime_${kind}`,
       p_recipient: r.email,
-      p_payload: incident,
+      p_payload: { ...incident, automationDecision: decision.reason || "allowed" },
     });
     if (!claimed) continue;
+    if (!decision.allowed) {
+      await db.from("notification_deliveries").update({ status: "skipped", provider: "none", provider_status: decision.reason, is_test: false, account_id: accountId, property_id: incident.property_id, template_id: template?.id || null, automation_key: templateKey, updated_at: new Date().toISOString() }).eq("dedupe_key", key);
+      continue;
+    }
     const response = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
@@ -5414,11 +5887,14 @@ async function sendAlert(
       body: JSON.stringify({
         from: env.RESEND_FROM,
         to: [r.email],
-        subject:
-          kind === "down"
+        subject: template
+          ? renderEmailTemplate(template.subject, templateVariables).rendered
+          : kind === "down"
             ? `Claritude downtime alert · ${property?.name || "Property"}`
             : `Claritude recovery notice · ${property?.name || "Property"}`,
-        html: renderUptimeAlertEmail({
+        html: template
+          ? renderEmailTemplate(template.html_body, templateVariables).rendered
+          : renderUptimeAlertEmail({
           property: property || { id: incident.property_id, name: "Property", url: "" },
           incident,
           kind,
@@ -5430,7 +5906,14 @@ async function sendAlert(
       .from("notification_deliveries")
       .update({
         status: response.ok ? "sent" : "failed",
+        provider: "Resend",
+        provider_status: response.ok ? "accepted" : "rejected",
         provider_id: response.headers.get("x-message-id"),
+        is_test: false,
+        account_id: accountId,
+        property_id: incident.property_id,
+        template_id: template?.id || null,
+        automation_key: templateKey,
         error: response.ok ? null : await response.text(),
       })
       .eq("dedupe_key", key);
@@ -5655,18 +6138,25 @@ async function runDueReportSchedules(env: Env, db: SupabaseClient) {
       });
       let delivered = 0;
       let lastError: string | null = null;
+      const publishedTemplate = await publishedEmailTemplate(db, "scheduled_report");
+      const reportVariables = { propertyName: schedule.properties?.name || "Property", reportUrl: `${env.APP_ORIGIN}/reports?property=${schedule.property_id}`, periodStart: snapshot.periodStart, periodEnd: snapshot.periodEnd };
       if (!env.RESEND_API_KEY || !env.RESEND_FROM) {
         lastError = "email_delivery_not_configured";
       } else {
         for (const recipient of schedule.recipients || []) {
           const key = `report:${schedule.id}:${snapshot.periodEnd}:${recipient}`;
+          const decision = await emailAutomationDecision(db, "scheduled_report", recipient, "scheduled_report");
           const { data: claimed } = await db.rpc("claim_notification", {
             p_key: key,
             p_kind: "scheduled_report",
             p_recipient: recipient,
-            p_payload: { scheduleId: schedule.id, propertyId: schedule.property_id },
+            p_payload: { scheduleId: schedule.id, propertyId: schedule.property_id, automationDecision: decision.reason || "allowed" },
           });
           if (!claimed) continue;
+          if (!decision.allowed) {
+            await db.from("notification_deliveries").update({ status: "skipped", provider: "none", provider_status: decision.reason, is_test: false, account_id: schedule.properties?.account_id || null, property_id: schedule.property_id, template_id: publishedTemplate?.id || null, automation_key: "scheduled_report", updated_at: new Date().toISOString() }).eq("dedupe_key", key);
+            continue;
+          }
           const response = await fetch("https://api.resend.com/emails", {
             method: "POST",
             headers: {
@@ -5677,15 +6167,22 @@ async function runDueReportSchedules(env: Env, db: SupabaseClient) {
             body: JSON.stringify({
               from: env.RESEND_FROM,
               to: [recipient],
-              subject: `Claritude report · ${schedule.properties?.name || "Property"}`,
-              html: renderReportEmail(snapshot),
+              subject: publishedTemplate ? renderEmailTemplate(publishedTemplate.subject, reportVariables).rendered : `Claritude report · ${schedule.properties?.name || "Property"}`,
+              html: publishedTemplate ? renderEmailTemplate(publishedTemplate.html_body, reportVariables).rendered : renderReportEmail(snapshot),
             }),
           });
           await db
             .from("notification_deliveries")
             .update({
               status: response.ok ? "sent" : "failed",
+              provider: "Resend",
+              provider_status: response.ok ? "accepted" : "rejected",
               provider_id: response.headers.get("x-message-id"),
+              is_test: false,
+              account_id: schedule.properties?.account_id || null,
+              property_id: schedule.property_id,
+              template_id: publishedTemplate?.id || null,
+              automation_key: "scheduled_report",
               error: response.ok ? null : (await response.text()).slice(0, 1000),
               updated_at: new Date().toISOString(),
             })

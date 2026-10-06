@@ -44,11 +44,40 @@ import {
   parseAuthAssurance,
   staffPermissions,
   staffRoleCan,
+  deriveFeatureState,
+  deriveEmailAutomationDecision,
+  renderEmailTemplate,
+  validatePlatformSetting,
 } from "./index";
 import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
 
 describe("worker evidence pipelines", () => {
+  it("derives configuration state separately from permission and running jobs", () => {
+    expect(deriveFeatureState({ permitted: true, configured: false, enabled: false })).toMatchObject({ state: "awaiting_configuration", runningJobs: 0 });
+    expect(deriveFeatureState({ permitted: true, configured: true, enabled: false })).toMatchObject({ state: "ready_to_activate" });
+    expect(deriveFeatureState({ permitted: false, configured: true, enabled: true })).toMatchObject({ state: "paused" });
+    expect(deriveFeatureState({ permitted: true, configured: true, enabled: true, runningJobs: 0 })).toMatchObject({ state: "enabled", reason: "Permitted and configured; no job is currently running" });
+    expect(deriveFeatureState({ permitted: true, configured: true, enabled: true, dependencyAvailable: false, dependency: "Provider missing" })).toMatchObject({ state: "unavailable", reason: "Provider missing" });
+  });
+
+  it("validates templates and safety-sensitive platform settings", () => {
+    expect(renderEmailTemplate("Hello {{name}}", { name: "<Adam>" })).toEqual({ rendered: "Hello &lt;Adam&gt;", missing: [] });
+    expect(renderEmailTemplate("Hello {{name}} from {{team}}", { name: "Adam" }).missing).toEqual(["team"]);
+    expect(validatePlatformSetting("inactivity_policy", { warningDays: [60, 90], freezeDay: 100, deletionEligibleDay: 121, automaticDeletionEnabled: false })).toBeNull();
+    expect(validatePlatformSetting("inactivity_policy", { warningDays: [60, 90], freezeDay: 100, deletionEligibleDay: 121, automaticDeletionEnabled: true })).toBe("invalid_inactivity_policy");
+    expect(validatePlatformSetting("provider_capabilities", {})).toBe("provider_capabilities_are_discovered_not_editable");
+  });
+
+  it("enforces automation activation, categories and suppressions at send time", () => {
+    const active = { configured: true, enabled: true, enabledCategories: ["uptime_down", "report"], suppressionHandling: "enforce", suppressed: false };
+    expect(deriveEmailAutomationDecision({ ...active, category: "uptime_down" })).toEqual({ allowed: true, reason: null });
+    expect(deriveEmailAutomationDecision({ ...active, category: "scheduled_report" })).toEqual({ allowed: true, reason: null });
+    expect(deriveEmailAutomationDecision({ ...active, enabled: false, category: "uptime_down" })).toMatchObject({ allowed: false, reason: "automation_paused" });
+    expect(deriveEmailAutomationDecision({ ...active, suppressed: true, category: "uptime_down" })).toMatchObject({ allowed: false, reason: "recipient_suppressed" });
+    expect(deriveEmailAutomationDecision({ ...active, category: "campaign" })).toMatchObject({ allowed: false, reason: "category_disabled" });
+  });
+
   it("enforces the staff role permission boundary", () => {
     expect(staffRoleCan("owner", "staff.write")).toBe(true);
     expect(staffRoleCan("support", "delegation.write")).toBe(true);
