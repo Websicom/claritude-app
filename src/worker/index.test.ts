@@ -908,6 +908,7 @@ describe("worker evidence pipelines", () => {
       { event_type: "pageview", path: "/work", device: "desktop", source: "Google", country_code: "GB" },
       { event_type: "pageview", path: "/work/case-study/", device: "mobile", source: "Google", country_code: "GB" },
       { event_type: "pageview", path: "/services/", device: "desktop", source: "Direct", country_code: "US" },
+      { event_type: "pageview", path: "/ai/", device: "desktop", source: "ChatGPT", country_code: "GB" },
     ];
     expect(normalizeAnalyticsPath("https://example.com/work")).toBe("/work/");
     expect(
@@ -925,6 +926,7 @@ describe("worker evidence pipelines", () => {
     expect(
       filterAnalyticsEvents(events, { pathMode: "prefix", pathValue: "/wor" }),
     ).toEqual([events[0], events[1]]);
+    expect(filterAnalyticsEvents(events, { sourceType: "AI referral" })).toEqual([events[3]]);
   });
 
   it("keeps pageviews separate from key events and preserves fractional average daily visitors", () => {

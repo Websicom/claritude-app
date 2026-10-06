@@ -68,6 +68,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 
 const AdminTableContext = createContext(false);
 import {
@@ -889,13 +890,6 @@ export function ClaritudeApplication({
                 <b>{data.profile?.full_name || "Claritude user"}</b>
               </Link>
               <span className="spacer" />
-              <button
-                className="iconbtn"
-                aria-label="Account menu"
-                onClick={() => setUserMenu((v) => !v)}
-              >
-                <MoreHorizontal />
-              </button>
               <Link
                 className="iconbtn notif-btn"
                 aria-label="Notifications"
@@ -913,6 +907,13 @@ export function ClaritudeApplication({
                   </i>
                 )}
               </Link>
+              <button
+                className="iconbtn"
+                aria-label="Account menu"
+                onClick={() => setUserMenu((v) => !v)}
+              >
+                <MoreHorizontal />
+              </button>
             </div>
           </div>
         </aside>
@@ -2618,7 +2619,7 @@ function UptimeView({
 }
 
 function AiMetricLabel({ children, help }: { children: ReactNode; help: string }) {
-  return <span className="ai-metric-label">{children}<span className="ai-help-icon" title={help} aria-label={help}><Info /></span></span>;
+  return <span className="ai-metric-label">{children}<InfoHelp help={help} label={String(children)} /></span>;
 }
 
 function aiMetricComparison(current: number | null | undefined, previous: number | null | undefined, mode: "count" | "percent" | "points" = "count") {
@@ -2647,6 +2648,10 @@ function AiVisibilityView({
   notify: Notify;
 }) {
   const location = useLocation();
+  const navigate = useNavigate();
+  const queryParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
+  const filters = analyticsPageFiltersFromParams(queryParams);
+  const filterQuery = analyticsPageFilterQuery(filters);
   const livePeriod = `${periodQuery(location.search)}&time_zone=${encodeURIComponent(property?.settings?.timezone || "Europe/London")}`;
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -2663,7 +2668,7 @@ function AiVisibilityView({
     setError("");
     setData(null);
     if (session) {
-      api<any>(session, `/api/properties/${property.id}/ai-visibility?${livePeriod}`)
+      api<any>(session, `/api/properties/${property.id}/ai-visibility?${livePeriod}${filterQuery ? `&${filterQuery}` : ""}`)
         .then((next) => !cancelled && setData(next))
         .catch((reason) => !cancelled && setError(reason.message || "AI visibility could not be loaded"))
         .finally(() => !cancelled && setLoading(false));
@@ -2675,7 +2680,7 @@ function AiVisibilityView({
       setLoading(false);
     }
     return () => { cancelled = true; };
-  }, [fixture, livePeriod, property?.id, reloadToken, session]);
+  }, [filterQuery, fixture, livePeriod, property?.id, reloadToken, session]);
 
   if (!property) return <Empty title="Select a property" detail="AI visibility is property-specific." />;
   const suggestion = suggestedAiPhrase(property);
@@ -2686,11 +2691,10 @@ function AiVisibilityView({
     current.coverage === "unavailable" ? "Unavailable" : value == null ? "—" : `${fmt(value)}${suffix}`;
   const maxSourceVisits = Math.max(1, ...(current.platforms || []).map((platform: any) => platform.visits));
   const maxPageVisits = Math.max(1, ...(current.pages || []).map((page: any) => page.visits));
-  const queryParams = new URLSearchParams(location.search);
   const analyticsBase = new URLSearchParams({
     property: property.id,
     analyticsTab: "Pages",
-    source_type: "AI referral",
+    sourceType: "AI referral",
   });
   if (queryParams.get("from")) analyticsBase.set("from", queryParams.get("from")!);
   if (queryParams.get("to")) analyticsBase.set("to", queryParams.get("to")!);
@@ -2709,6 +2713,12 @@ function AiVisibilityView({
     if (groupId) params.set("auditGroup", groupId);
     else params.set("auditCategory", "AI & Crawler Readiness");
     return `/audit?${params.toString()}`;
+  };
+  const changeFilters = (nextFilters: AnalyticsPageFilters) => {
+    const next = new URLSearchParams(location.search);
+    for (const key of analyticsFilterParamKeys) next.delete(key);
+    writeAnalyticsFilters(next, nextFilters);
+    navigate(`${location.pathname}?${next.toString()}`, { replace: true });
   };
 
   async function copyPhrase(message = "Prompt copied") {
@@ -2768,8 +2778,15 @@ function AiVisibilityView({
 
           <div className="ai-visibility-columns">
             <div className="ai-visibility-primary">
-              <Panel className="ai-traffic-panel" title={<span>AI referral traffic <span className="ai-help-icon" title="Visits from recognised AI acquisition sources; this is not a measure of all AI citations."><Info /></span></span>}>
+              <Panel className="ai-traffic-panel" title={<span>AI referral traffic <InfoHelp label="AI referral traffic" help="Visits from recognised AI acquisition sources; this is not a measure of all AI citations." /></span>}>
                 <p className="panel-subtitle">Visits from recognised AI sources.</p>
+                <AnalyticsPageFilterToolbar
+                  filters={filters}
+                  options={current.filterOptions || emptyAnalyticsFilterOptions}
+                  onChange={changeFilters}
+                  title="AI traffic"
+                  categories={["Page", "Source", "Device", "Country", "Browser"]}
+                />
                 <div className="chart-legend ai-chart-legend"><span>Current period</span><span className="previous">Previous period</span></div>
                 <SeriesChart
                   points={(current.series || []).map((point: any) => ({ label: point.day, value: point.visits }))}
@@ -2805,7 +2822,7 @@ function AiVisibilityView({
               <Panel className="ai-pages-panel" title="Top pages from AI">
                 <p className="panel-subtitle">Landing pages receiving AI referral visits.</p>
                 <div className="ai-insight"><Sparkles /><span>{current.insight}</span></div>
-                {(current.pages || []).length ? <div className="table-wrap"><table className="ai-bar-table ai-pages-table"><thead><tr><th>Page</th><th>Visits</th><th>Sources</th></tr></thead><tbody>{current.pages.slice(0, 5).map((page: any) => <tr key={page.path}><td><Link className="ai-bar-cell" style={{ "--bar-size": `${page.visits / maxPageVisits * 100}%` } as CSSProperties} to={analyticsHref(page.path)} title={page.path}><span>{page.title || page.path}</span></Link></td><td>{fmt(page.visits)}</td><td><span className="ai-source-logos">{page.sources.map((source: string) => { const platform = AI_PLATFORMS.find((item) => item.id === source); return platform ? <img key={source} src={platform.icon} alt={platform.name} title={platform.name} /> : null; })}</span></td></tr>)}</tbody></table></div> : <Empty title="No AI landing pages" detail="This does not mean the property has never been mentioned by an AI platform." />}
+                {(current.pages || []).length ? <div className="table-wrap"><table className="ai-bar-table ai-pages-table"><thead><tr><th>Page</th><th>Visits</th><th>Sources</th></tr></thead><tbody>{current.pages.slice(0, 5).map((page: any) => <tr key={page.path}><td><Link className="ai-bar-cell" style={{ "--bar-size": `${page.visits / maxPageVisits * 100}%` } as CSSProperties} to={analyticsHref(page.path)} title={page.path}><span>{page.path === "/" ? "/home/" : (page.title || page.path)}</span></Link></td><td>{fmt(page.visits)}</td><td><span className="ai-source-logos">{page.sources.map((source: string) => { const platform = AI_PLATFORMS.find((item) => item.id === source); return platform ? <img key={source} src={platform.icon} alt={platform.name} title={platform.name} /> : null; })}</span></td></tr>)}</tbody></table></div> : <Empty title="No AI landing pages" detail="This does not mean the property has never been mentioned by an AI platform." />}
                 {(current.pages || []).length > 0 && <Link className="text-link ai-view-all" to={analyticsHref()}>View all {fmt(current.landingPages)} pages <ChevronRight /></Link>}
               </Panel>
 
@@ -3701,7 +3718,7 @@ function AuditView({
               {auditDataLoading && !latest ? (
                 <div className="audit-results-loading" role="status"><RefreshCw className="audit-spin" /> Loading your last audit</div>
               ) : (
-                <AuditResults results={filteredActionable} filters={auditFilters} hideOutcome />
+                <AuditResults results={filteredActionable} filters={auditFilters} />
               )}
               </Panel>
               <div className="audit-run-meta">
@@ -10053,14 +10070,12 @@ export function filterAuditSubfindings(subfindings: any[] = [], types: AuditFilt
 function AuditResults({
   results,
   filters,
-  hideOutcome = false,
   openId: controlledOpenId,
   onOpenIdChange,
   resultLink,
 }: {
   results: any[];
   filters?: AuditBrowseFilters;
-  hideOutcome?: boolean;
   openId?: string | null;
   onOpenIdChange?: (id: string | null) => void;
   resultLink?: (result: any) => string;
@@ -10077,7 +10092,7 @@ function AuditResults({
     return () => window.cancelAnimationFrame(frame);
   }, [openId]);
   return (
-    <div className={`audit-result-list ${hideOutcome ? "hide-result-outcome" : ""}`}>
+    <div className="audit-result-list">
       {results.length ? results.map((result, index) => {
         const itemId = String(result.group_id || result.id || index);
         const open = itemId === openId;
@@ -10099,14 +10114,13 @@ function AuditResults({
             <button className="audit-item-toggle" aria-expanded={open} onClick={() => setOpenId(open ? null : itemId)}>
               <span className={`severity-icon ${auditSeverityGroup(result)}`}>{auditGroupIcon(auditSeverityGroup(result))}</span>
               <span><b>{result.title || result.title_snapshot || result.check_id}</b><small>{result.category || "General"}{result.subcategory && result.subcategory !== "General" ? ` · ${result.subcategory}` : ""}</small></span>
-              {!hideOutcome && <span className={`audit-item-state outcome-${result.outcome}`}>{cap(String(result.outcome || result.status || "Recorded").replaceAll("_", " "))}</span>}
               <ChevronDown />
             </button>
             {open && <div className="audit-detail">
               {Array.isArray(result.subfindings) ? <>
                 {result.focus && <section className="audit-information-panel"><b>What Claritude checks</b><p>{result.focus}</p></section>}
                 {!passed && result.result_summary && <section className="audit-result-summary" aria-label="Audit result summary">{result.result_summary}</section>}
-                {!passed && visibleSubfindings.length > 0 && <><b className="audit-detail-label">Technical sub-findings</b><ul className="audit-subfindings">{visibleSubfindings.map((finding: any) => <li key={finding.check_id}><span className={`audit-subfinding-outcome outcome-${finding.outcome}`}>{cap(String(finding.outcome).replaceAll("_", " "))}</span><span><b>{finding.title}</b><small>{finding.evidence_summary}</small></span></li>)}</ul></>}
+                {!passed && visibleSubfindings.length > 0 && <><b className="audit-detail-label">Technical sub-findings</b><ul className="audit-subfindings">{visibleSubfindings.map((finding: any) => <li key={finding.check_id}><span><b>{finding.title}</b><small>{finding.evidence_summary}</small></span></li>)}</ul></>}
                 {!passed && result.occurrence_presentation?.enabled !== false && visibleOccurrences.length > 0 && <><b className="audit-detail-label">Affected elements or resources</b><AuditOccurrences occurrences={visibleOccurrences} presentation={result.occurrence_presentation} /></>}
                 {!passed && ["failed", "advisory"].includes(result.outcome) && result.recommendation && <section className="audit-recommendation-panel"><b>How to fix</b><p>{result.recommendation}</p></section>}
                 {!passed && ["failed", "advisory"].includes(result.outcome) && result.example_fix && <section className="audit-example-fix"><b>Example fix</b><pre><code>{result.example_fix}</code></pre></section>}
@@ -10232,8 +10246,15 @@ function MetricHelp({ term }: { term: string }) {
   const key = term.toUpperCase();
   const description = performanceTermDescriptions[key];
   const label = performanceTermLabels[key] || term;
+  if (!description) return null;
+  return <InfoHelp label={term} help={<><b>{label}.</b> {description}</>} />;
+}
+
+function InfoHelp({ label, help }: { label: string; help: ReactNode }) {
   const helpId = useId();
   const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState({ left: 0, top: 0, above: false });
+  const buttonRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const closeOther = (event: Event) => {
       if ((event as CustomEvent<string>).detail !== helpId) setOpen(false);
@@ -10241,16 +10262,42 @@ function MetricHelp({ term }: { term: string }) {
     window.addEventListener("claritude:metric-help-open", closeOther);
     return () => window.removeEventListener("claritude:metric-help-open", closeOther);
   }, [helpId]);
-  if (!description) return null;
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    const escape = (event: KeyboardEvent) => event.key === "Escape" && close();
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", close, true);
+    document.addEventListener("keydown", escape);
+    return () => {
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", close, true);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [open]);
   const toggle = () => {
     const next = !open;
-    if (next) window.dispatchEvent(new CustomEvent("claritude:metric-help-open", { detail: helpId }));
+    if (next) {
+      const rect = buttonRef.current?.getBoundingClientRect();
+      if (rect) {
+        const above = rect.bottom + 150 > window.innerHeight && rect.top > 150;
+        setPosition({
+          left: Math.min(window.innerWidth - 135, Math.max(135, rect.left + rect.width / 2)),
+          top: above ? rect.top - 7 : rect.bottom + 7,
+          above,
+        });
+      }
+      window.dispatchEvent(new CustomEvent("claritude:metric-help-open", { detail: helpId }));
+    }
     setOpen(next);
   };
   return (
     <span className={`metric-help ${open ? "open" : ""}`}>
-      <button type="button" aria-label={`What does ${term} mean?`} title={`What does ${term} mean?`} aria-expanded={open} onClick={toggle}><Info /></button>
-      {open && <span role="note"><b>{label}.</b> {description}</span>}
+      <button ref={buttonRef} type="button" aria-label={`What does ${label} mean?`} title={`What does ${label} mean?`} aria-expanded={open} aria-describedby={open ? helpId : undefined} onClick={toggle}><Info /></button>
+      {open && typeof document !== "undefined" && createPortal(
+        <span id={helpId} className={`metric-help-popover ${position.above ? "above" : ""}`} role="note" style={{ left: position.left, top: position.top }}>{help}</span>,
+        document.body,
+      )}
     </span>
   );
 }

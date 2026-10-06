@@ -5645,6 +5645,17 @@ app.get("/api/properties/:id/analytics/pages", async (c) => {
 app.get("/api/properties/:id/ai-visibility", async (c) => {
   const window = requestedWindow(c);
   if (!window) return c.json({ error: "invalid_date_range" }, 400);
+  const filters: AnalyticsFilters = {
+    pageSearch: cleanAnalyticsFilter(c.req.query("page_search"), 120),
+    pathMode: ["exact", "prefix"].includes(c.req.query("path_mode") || "")
+      ? (c.req.query("path_mode") as "exact" | "prefix")
+      : undefined,
+    pathValue: cleanAnalyticsFilter(c.req.query("path_value"), 500),
+    device: cleanAnalyticsFilter(c.req.query("device"), 40),
+    source: cleanAnalyticsFilter(c.req.query("source"), 255),
+    country: cleanAnalyticsFilter(c.req.query("country"), 20),
+    browser: cleanAnalyticsFilter(c.req.query("browser"), 60),
+  };
   const db = c.get("db");
   const propertyId = c.req.param("id");
   const { data: property, error: propertyError } = await db
@@ -5655,10 +5666,11 @@ app.get("/api/properties/:id/ai-visibility", async (c) => {
   if (propertyError) return c.json({ error: propertyError.message }, 400);
   if (!property) return c.json({ error: "property_not_found" }, 404);
   const previousWindow = analyticsPreviousPeriodRange(window.from, window.to);
+  const useRollups = !hasAnalyticsFilters(filters);
   try {
     const [currentData, previousData, auditResult] = await Promise.all([
-      loadAnalyticsWindow(db, propertyId, window.from, window.to, true),
-      loadAnalyticsWindow(db, propertyId, previousWindow.from, previousWindow.to, true),
+      loadAnalyticsWindow(db, propertyId, window.from, window.to, useRollups),
+      loadAnalyticsWindow(db, propertyId, previousWindow.from, previousWindow.to, useRollups),
       db.from("audit_runs")
         .select("*,audit_results(*)")
         .eq("property_id", propertyId)
@@ -5669,15 +5681,17 @@ app.get("/api/properties/:id/ai-visibility", async (c) => {
         .maybeSingle(),
     ]);
     if (auditResult.error) throw new Error(auditResult.error.message);
+    const currentEvents = filterAnalyticsEvents(currentData.events, filters);
+    const previousEvents = filterAnalyticsEvents(previousData.events, filters);
     const current = buildAiVisibilitySummary(
-      currentData.events,
+      currentEvents,
       currentData.views,
       window.from,
       window.to,
       window.timeZone,
     );
     const previous = buildAiVisibilitySummary(
-      previousData.events,
+      previousEvents,
       previousData.views,
       previousWindow.from,
       previousWindow.to,
@@ -5690,6 +5704,24 @@ app.get("/api/properties/:id/ai-visibility", async (c) => {
       audit: buildAiAuditSummary(auditResult.data),
       trackingInstalled: Boolean(property.tracking_last_received_at),
       truncated: currentData.truncated || previousData.truncated,
+      filterOptions: buildAnalyticsFilterOptions([
+        ...currentData.events,
+        ...currentData.views.map((view: any) => ({
+          event_type: "pageview",
+          path: view.path,
+          source: view.source,
+          referrer_host: view.referrer_host,
+          device: view.device,
+          country_code: view.country_code,
+          metadata: {
+            browser: view.browser,
+            utm_source: view.utm_source,
+            utm_medium: view.utm_medium,
+            utm_campaign: view.utm_campaign,
+          },
+        })),
+      ]),
+      appliedFilters: filters,
     });
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : "ai_visibility_query_failed" }, 400);
