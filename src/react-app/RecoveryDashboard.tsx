@@ -2814,7 +2814,7 @@ function AiVisibilityView({
               </Panel>
 
               <Panel className="ai-audit-panel" title="AI Audit" actions={current.audit ? <><span className="ai-audit-date">Latest audit: {fmtDate(current.audit.completedAt || current.audit.createdAt)}</span><Link className="btn" to={auditHref()}>View AI checks</Link></> : <Link className="primary" to={`/audit?property=${property.id}`}>Run audit</Link>}>
-                {current.audit?.groups?.length ? <AuditResults results={current.audit.groups} resultLink={(result) => auditHref(result.group_id)} /> : <Empty title="No completed AI Audit" detail="Run the existing property audit to populate AI and crawler-readiness checks, including relevant llms.txt findings." />}
+                {current.audit?.groups?.length ? <AuditResults results={current.audit.groups} hideOutcome resultLink={(result) => auditHref(result.group_id)} /> : <Empty title="No completed AI Audit" detail="Run the existing property audit to populate AI and crawler-readiness checks, including relevant llms.txt findings." />}
               </Panel>
             </div>
 
@@ -3728,7 +3728,7 @@ function AuditView({
               {auditDataLoading && !latest ? (
                 <div className="audit-results-loading" role="status"><RefreshCw className="audit-spin" /> Loading your last audit</div>
               ) : (
-                <AuditResults results={filteredActionable} filters={auditFilters} />
+                <AuditResults results={filteredActionable} filters={auditFilters} hideOutcome />
               )}
               </Panel>
               <div className="audit-run-meta">
@@ -9782,6 +9782,13 @@ export function auditSeverityGroup(result: any) {
   return "warning";
 }
 
+export function auditDisplayOutcome(result: any, outcome = result?.outcome) {
+  const normalized = String(outcome || "recorded").toLowerCase();
+  if (normalized === "failed") return auditSeverityGroup(result);
+  if (normalized === "pass") return "passed";
+  return normalized;
+}
+
 function auditGroupIcon(group: string) {
   if (group === "security") return <ShieldAlert />;
   if (group === "warning") return <TriangleAlert />;
@@ -9998,32 +10005,6 @@ function AuditComparePanel({
   );
 }
 
-function AuditOccurrences({ occurrences, presentation }: { occurrences: any[]; presentation?: { enabled?: boolean; initialLimit?: number; fields?: string[] } }) {
-  const [showAll, setShowAll] = useState(false);
-  if (presentation?.enabled === false || !occurrences.length) return null;
-  const initialLimit = Math.max(1, Number(presentation?.initialLimit) || 10);
-  const visible = showAll ? occurrences : occurrences.slice(0, initialLimit);
-  const groups = new Map<string, { title: string; entries: any[] }>();
-  for (const entry of visible) {
-    const key = entry.check_id || entry.check_title || "affected-items";
-    const group: { title: string; entries: any[] } = groups.get(key) || { title: entry.check_title || "Affected items", entries: [] };
-    group.entries.push(entry);
-    groups.set(key, group);
-  }
-  return (
-    <div className="audit-occurrences">
-      <p className="subtle">Showing {visible.length} of {occurrences.length}</p>
-      {[...groups.entries()].map(([key, group]) => (
-        <section className="audit-occurrence-group" key={key}>
-          <h4>{group.title}</h4>
-          <ol>{group.entries.map((entry, index) => <li key={`${key}-${index}`}><code>{auditOccurrenceText(entry.occurrence, presentation?.fields)}</code></li>)}</ol>
-        </section>
-      ))}
-      {occurrences.length > initialLimit && <button className="text-link" onClick={() => setShowAll((value) => !value)}>{showAll ? `Show first ${initialLimit}` : "Show all"}</button>}
-    </div>
-  );
-}
-
 export function auditScoreBand(score: number | null | undefined) {
   return score == null ? "unknown" : score >= 80 ? "healthy" : score >= 60 ? "moderate" : "poor";
 }
@@ -10107,12 +10088,14 @@ export function filterAuditSubfindings(subfindings: any[] = [], types: AuditFilt
 function AuditResults({
   results,
   filters,
+  hideOutcome = false,
   openId: controlledOpenId,
   onOpenIdChange,
   resultLink,
 }: {
   results: any[];
   filters?: AuditBrowseFilters;
+  hideOutcome?: boolean;
   openId?: string | null;
   onOpenIdChange?: (id: string | null) => void;
   resultLink?: (result: any) => string;
@@ -10129,16 +10112,13 @@ function AuditResults({
     return () => window.cancelAnimationFrame(frame);
   }, [openId]);
   return (
-    <div className="audit-result-list">
+    <div className={`audit-result-list ${hideOutcome ? "hide-result-outcome" : ""}`}>
       {results.length ? results.map((result, index) => {
         const itemId = String(result.group_id || result.id || index);
         const open = itemId === openId;
         const passed = result.outcome === "passed";
         const visibleSubfindings = filterAuditSubfindings(result.subfindings || [], filters?.types);
-        const visibleCheckIds = new Set(visibleSubfindings.map((finding: any) => finding.check_id));
-        const visibleOccurrences = filters?.types?.length
-          ? (result.occurrences || []).filter((entry: any) => visibleCheckIds.has(entry.check_id))
-          : result.occurrences || [];
+        const displayOutcome = auditDisplayOutcome(result);
         return (
           <section
             className={`audit-item ${open ? "open" : ""}`}
@@ -10151,19 +10131,22 @@ function AuditResults({
             <button className="audit-item-toggle" aria-expanded={open} onClick={() => setOpenId(open ? null : itemId)}>
               <span className={`severity-icon ${auditSeverityGroup(result)}`}>{auditGroupIcon(auditSeverityGroup(result))}</span>
               <span><b>{result.title || result.title_snapshot || result.check_id}</b><small>{result.category || "General"}{result.subcategory && result.subcategory !== "General" ? ` · ${result.subcategory}` : ""}</small></span>
+              {!hideOutcome && <span className={`audit-item-state audit-subfinding-outcome outcome-${displayOutcome}`}>{cap(displayOutcome.replaceAll("_", " "))}</span>}
               <ChevronDown />
             </button>
             {open && <div className="audit-detail">
               {Array.isArray(result.subfindings) ? <>
                 {result.focus && <section className="audit-information-panel"><b>What Claritude checks</b><p>{result.focus}</p></section>}
                 {!passed && result.result_summary && <section className="audit-result-summary" aria-label="Audit result summary">{result.result_summary}</section>}
-                {!passed && visibleSubfindings.length > 0 && <><b className="audit-detail-label">Technical sub-findings</b><ul className="audit-subfindings">{visibleSubfindings.map((finding: any) => <li key={finding.check_id}><span><b>{finding.title}</b><small>{finding.evidence_summary}</small></span></li>)}</ul></>}
-                {!passed && result.occurrence_presentation?.enabled !== false && visibleOccurrences.length > 0 && <><b className="audit-detail-label">Affected elements or resources</b><AuditOccurrences occurrences={visibleOccurrences} presentation={result.occurrence_presentation} /></>}
+                {visibleSubfindings.length > 0 && <><b className="audit-detail-label">Individual checks</b><ul className="audit-subfindings">{visibleSubfindings.map((finding: any) => {
+                  const findingOutcome = auditDisplayOutcome(result, finding.outcome);
+                  return <li key={finding.check_id}><span className={`audit-subfinding-outcome outcome-${findingOutcome}`}>{cap(findingOutcome.replaceAll("_", " "))}</span><span><b>{finding.title}</b></span></li>;
+                })}</ul></>}
                 {!passed && ["failed", "advisory"].includes(result.outcome) && result.recommendation && <section className="audit-recommendation-panel"><b>How to fix</b><p>{result.recommendation}</p></section>}
                 {!passed && ["failed", "advisory"].includes(result.outcome) && result.example_fix && <section className="audit-example-fix"><b>Example fix</b><pre><code>{result.example_fix}</code></pre></section>}
               </> : <>
                 <p>{result.focus || result.description || "The audit recorded this result for the selected page."}</p>
-                {!passed && <><b className="audit-detail-label">Affected element or resource</b><code>{auditEvidenceText(result.evidence)}</code><b className="audit-detail-label">Recommended fix</b><p>{result.recommendation || "Review the recorded evidence and update the affected implementation."}</p></>}
+                {!passed && result.recommendation && <section className="audit-recommendation-panel"><b>How to fix</b><p>{result.recommendation}</p></section>}
               </>}
               <div className="audit-detail-actions">
                 {!passed && <a className="text-link audit-more-information" href={auditLearnMoreUrl(result.category, result.source_reference)} target="_blank" rel="noreferrer">More information <ExternalLink /></a>}
@@ -10175,22 +10158,6 @@ function AuditResults({
       }) : <Empty title="No matching findings" detail="Adjust the active filters or run an audit to generate results." />}
     </div>
   );
-}
-function auditEvidenceText(evidence: unknown) {
-  if (typeof evidence === "string") return evidence;
-  if (!evidence || typeof evidence !== "object") return "No element-level evidence was recorded.";
-  const label = (value: string) => value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
-  const readable = (value: unknown): string => {
-    if (Array.isArray(value)) return value.length ? value.map((item) => readable(item)).join(", ") : "None";
-    if (value && typeof value === "object") return Object.entries(value as Record<string, unknown>).map(([key, item]) => `${label(key)} ${readable(item)}`).join("; ");
-    if (typeof value === "boolean") return value ? "Yes" : "No";
-    return String(value);
-  };
-  const entries = Object.entries(evidence as Record<string, unknown>)
-    .filter(([, value]) => value != null && value !== "")
-    .slice(0, 6)
-    .map(([key, value]) => `${label(key)}: ${readable(value)}`);
-  return entries.join("\n") || "No element-level evidence was recorded.";
 }
 function auditLearnMoreUrl(category?: string, sourceReference?: string) {
   if (sourceReference) {

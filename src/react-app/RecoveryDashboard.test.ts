@@ -11,6 +11,7 @@ import {
   customEventUsageText,
   durationLabel,
   eventLabel,
+  auditDisplayOutcome,
   auditSeverityGroup,
   filterProperties,
   filterAuditSubfindings,
@@ -351,6 +352,14 @@ describe("top selector searches", () => {
     expect(auditSeverityGroup({ outcome: "failed", severity: "Critical", category: "SEO" })).toBe("critical");
     expect(auditSeverityGroup({ outcome: "failed", severity: "Security", category: "Security" })).toBe("security");
     expect(auditSeverityGroup({ outcome: "failed", severity: "Warning", category: "SEO" })).toBe("warning");
+  });
+
+  it("uses customer-facing severity labels for failed individual checks", () => {
+    expect(auditDisplayOutcome({ outcome: "failed", severity: "Critical", category: "SEO" })).toBe("critical");
+    expect(auditDisplayOutcome({ outcome: "failed", severity: "Warning", category: "SEO" })).toBe("warning");
+    expect(auditDisplayOutcome({ outcome: "failed", severity: "Security", category: "Security" })).toBe("security");
+    expect(auditDisplayOutcome({ outcome: "passed" })).toBe("passed");
+    expect(auditDisplayOutcome({ outcome: "advisory" })).toBe("advisory");
   });
 });
 
