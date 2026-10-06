@@ -79,7 +79,9 @@ type Variables = {
 type Job =
   | { type: "audit" | "uptime"; id: string }
   | { type: "audit-persist"; id: string; payload: string }
-  | { type: "admin-export"; id: string };
+  | { type: "admin-export"; id: string }
+  | { type: "billing-event"; id: string }
+  | { type: "billing-reconcile"; id: string };
 type AuditResult = TypedAuditResult;
 
 const LIMITS = {
@@ -779,24 +781,216 @@ function stripeClient(env: Env) {
   });
 }
 
+function stripeTimestamp(value: unknown) {
+  const seconds = Number(value || 0);
+  return seconds > 0 ? new Date(seconds * 1000).toISOString() : null;
+}
+
+async function billingAccess(env: Env, userId: string, accountId: string) {
+  const db = admin(env);
+  const [membership, billing] = await Promise.all([
+    db.from("account_memberships").select("role").eq("account_id", accountId).eq("user_id", userId).maybeSingle(),
+    db.from("account_billing_memberships").select("can_view,can_manage").eq("account_id", accountId).eq("user_id", userId).maybeSingle(),
+  ]);
+  const owner = membership.data?.role === "owner";
+  return { canView: owner || billing.data?.can_view === true || billing.data?.can_manage === true, canManage: owner || billing.data?.can_manage === true };
+}
+
+async function billingAccountForObject(env: Env, object: any) {
+  const db = admin(env);
+  const providerCustomerId = typeof object.customer === "string" ? object.customer : object.customer?.id;
+  const metadataAccountId = String(object.metadata?.claritudeAccountId || object.subscription_details?.metadata?.claritudeAccountId || "");
+  if (metadataAccountId) {
+    const account = await db.from("accounts").select("id").eq("id", metadataAccountId).maybeSingle();
+    if (account.data) return { accountId: metadataAccountId, providerCustomerId: providerCustomerId || null };
+  }
+  if (!providerCustomerId) return null;
+  const customer = await db.from("billing_customers").select("account_id").eq("provider_customer_id", providerCustomerId).maybeSingle();
+  return customer.data ? { accountId: customer.data.account_id, providerCustomerId } : null;
+}
+
+async function notifyBillingMembers(env: Env, accountId: string, eventType: string, object: any) {
+  const messages: Record<string, { title: string; body: string; severity: string }> = {
+    "invoice.payment_failed": { title: "Payment failed", body: "Stripe could not collect the latest subscription invoice. Update the payment method in Billing.", severity: "warning" },
+    "invoice.paid": { title: "Payment received", body: `Invoice ${object.number || object.id} was paid successfully.`, severity: "success" },
+    "customer.subscription.trial_will_end": { title: "Trial ending soon", body: "Your Stripe subscription trial is approaching its end date.", severity: "info" },
+    "customer.subscription.deleted": { title: "Subscription ended", body: "The Stripe subscription has ended. Your retained Claritude data has not been deleted.", severity: "warning" },
+    "checkout.session.completed": { title: "Checkout completed", body: "Stripe checkout completed. Access updates after the subscription is verified by webhook reconciliation.", severity: "success" },
+  };
+  const message = messages[eventType];
+  if (!message) return;
+  const db = admin(env);
+  const [billingMembers, owners] = await Promise.all([
+    db.from("account_billing_memberships").select("user_id").eq("account_id", accountId).eq("can_view", true),
+    db.from("account_memberships").select("user_id").eq("account_id", accountId).eq("role", "owner"),
+  ]);
+  const recipients = new Set([...(billingMembers.data || []), ...(owners.data || [])].map((item) => item.user_id));
+  if (recipients.size) await db.from("notifications").insert([...recipients].map((userId) => ({ account_id: accountId, user_id: userId, ...message })));
+}
+
+export function financeMetrics(input: {
+  subscriptions: any[]; invoices: any[]; payments: any[]; refunds: any[]; disputes: any[];
+}) {
+  const currencies = new Set<string>();
+  for (const collection of Object.values(input)) for (const row of collection) if (row.currency) currencies.add(String(row.currency).toLowerCase());
+  return [...currencies].sort().map((currency) => {
+    const subscriptions = input.subscriptions.filter((row) => row.currency === currency && ["active", "trialing", "past_due"].includes(row.status));
+    const recurringMinor = subscriptions.reduce((sum, row) => {
+      const gross = Math.max(0, Number(row.unit_amount_minor || 0) * Math.max(1, Number(row.quantity || 1)) - Number(row.discount_minor || 0));
+      return sum + (row.interval === "year" ? Math.round(gross / 12) : gross);
+    }, 0);
+    const invoices = input.invoices.filter((row) => row.currency === currency);
+    const payments = input.payments.filter((row) => row.currency === currency);
+    const refunds = input.refunds.filter((row) => row.currency === currency);
+    const disputes = input.disputes.filter((row) => row.currency === currency && !["won", "warning_closed"].includes(row.status));
+    return {
+      currency,
+      mrrMinor: recurringMinor,
+      arrMinor: recurringMinor * 12,
+      invoicedMinor: invoices.reduce((sum, row) => sum + Number(row.total_minor || 0), 0),
+      cashCollectedMinor: payments.filter((row) => ["succeeded", "paid"].includes(row.status)).reduce((sum, row) => sum + Number(row.amount_received_minor || 0), 0),
+      refundsMinor: refunds.filter((row) => row.status !== "failed").reduce((sum, row) => sum + Number(row.amount_minor || 0), 0),
+      disputedMinor: disputes.reduce((sum, row) => sum + Number(row.amount_minor || 0), 0),
+      activeSubscriptions: subscriptions.filter((row) => row.status === "active").length,
+      trialingSubscriptions: subscriptions.filter((row) => row.status === "trialing").length,
+      pastDueSubscriptions: subscriptions.filter((row) => row.status === "past_due").length,
+      failedPayments: payments.filter((row) => ["requires_payment_method", "canceled"].includes(row.status)).length,
+    };
+  });
+}
+
+async function projectStripeSubscription(env: Env, subscription: any, eventCreated: number) {
+  const relation = await billingAccountForObject(env, subscription);
+  if (!relation) return null;
+  const db = admin(env);
+  const existing = await db.from("billing_subscriptions").select("last_event_created_at").eq("provider_subscription_id", subscription.id).maybeSingle();
+  if (existing.data?.last_event_created_at && Date.parse(existing.data.last_event_created_at) > eventCreated * 1000) return relation;
+  const item = subscription.items?.data?.[0];
+  const providerPriceId = typeof item?.price === "string" ? item.price : item?.price?.id;
+  const mapping = providerPriceId ? await db.from("billing_catalogue_prices").select("package_version_id,interval,unit_amount_minor,active,provider_livemode").eq("provider_price_id", providerPriceId).maybeSingle() : { data: null };
+  const interval = item?.price?.recurring?.interval || mapping.data?.interval || null;
+  await db.from("billing_subscriptions").upsert({
+    provider_subscription_id: subscription.id,
+    account_id: relation.accountId,
+    provider_customer_id: relation.providerCustomerId,
+    package_version_id: mapping.data?.package_version_id || null,
+    status: subscription.status,
+    currency: subscription.currency || item?.price?.currency || null,
+    interval,
+    quantity: Number(item?.quantity || 1),
+    unit_amount_minor: Number(item?.price?.unit_amount ?? mapping.data?.unit_amount_minor ?? 0),
+    cancel_at_period_end: Boolean(subscription.cancel_at_period_end),
+    current_period_start: stripeTimestamp(subscription.current_period_start || item?.current_period_start),
+    current_period_end: stripeTimestamp(subscription.current_period_end || item?.current_period_end),
+    trial_end: stripeTimestamp(subscription.trial_end),
+    cancelled_at: stripeTimestamp(subscription.canceled_at),
+    ended_at: stripeTimestamp(subscription.ended_at),
+    provider_created_at: stripeTimestamp(subscription.created),
+    livemode: Boolean(subscription.livemode),
+    metadata: { ...(subscription.metadata || {}), providerPriceId },
+    last_event_created_at: stripeTimestamp(eventCreated),
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "provider_subscription_id" });
+  const billingState = ["active", "trialing", "past_due", "unpaid"].includes(subscription.status) ? subscription.status : ["canceled", "incomplete_expired"].includes(subscription.status) ? "cancelled" : "unconfigured";
+  if (mapping.data?.active && mapping.data.provider_livemode === Boolean(subscription.livemode)) {
+    const current = await db.from("account_package_assignments").select("id,package_version_id").eq("account_id", relation.accountId).is("ends_at", null).maybeSingle();
+    if (current.data && current.data.package_version_id !== mapping.data.package_version_id) {
+      await db.from("account_package_assignments").update({ ends_at: new Date().toISOString() }).eq("id", current.data.id);
+      await db.from("account_package_assignments").insert({ account_id: relation.accountId, package_version_id: mapping.data.package_version_id, billing_state: billingState, starts_at: new Date().toISOString(), complimentary: false });
+    } else if (current.data) {
+      await db.from("account_package_assignments").update({ billing_state: billingState }).eq("id", current.data.id);
+    }
+  }
+  return relation;
+}
+
+async function projectStripeInvoice(env: Env, invoice: any, eventCreated = Math.floor(Date.now() / 1000)) {
+  const relation = await billingAccountForObject(env, invoice);
+  if (!relation) return null;
+  const db = admin(env);
+  const existing = await db.from("billing_invoices").select("last_event_created_at").eq("provider_invoice_id", invoice.id).maybeSingle();
+  if (existing.data?.last_event_created_at && Date.parse(existing.data.last_event_created_at) > eventCreated * 1000) return relation;
+  const paidAt = stripeTimestamp(invoice.status_transitions?.paid_at);
+  await db.from("billing_invoices").upsert({
+    provider_invoice_id: invoice.id, account_id: relation.accountId,
+    provider_subscription_id: typeof invoice.subscription === "string" ? invoice.subscription : invoice.subscription?.id || invoice.parent?.subscription_details?.subscription || null,
+    number: invoice.number || null, status: invoice.status || null, currency: invoice.currency,
+    subtotal_minor: Number(invoice.subtotal || 0), discount_minor: Number(invoice.total_discount_amounts?.reduce((sum: number, item: any) => sum + Number(item.amount || 0), 0) || 0),
+    tax_minor: Number(invoice.total_taxes?.reduce((sum: number, item: any) => sum + Number(item.amount || 0), 0) || invoice.tax || 0),
+    total_minor: Number(invoice.total || 0), amount_paid_minor: Number(invoice.amount_paid || 0), amount_remaining_minor: Number(invoice.amount_remaining || 0),
+    hosted_invoice_url: invoice.hosted_invoice_url || null, invoice_pdf: invoice.invoice_pdf || null,
+    period_start: stripeTimestamp(invoice.period_start), period_end: stripeTimestamp(invoice.period_end), due_at: stripeTimestamp(invoice.due_date), paid_at: paidAt,
+    voided_at: stripeTimestamp(invoice.status_transitions?.voided_at), provider_created_at: stripeTimestamp(invoice.created), livemode: Boolean(invoice.livemode), metadata: invoice.metadata || {}, last_event_created_at: stripeTimestamp(eventCreated), updated_at: new Date().toISOString(),
+  }, { onConflict: "provider_invoice_id" });
+  return relation;
+}
+
 async function applyVerifiedBillingEvent(env: Env, event: Stripe.Event) {
   const db = admin(env);
   const object = event.data.object as any;
-  const providerCustomerId = typeof object.customer === "string" ? object.customer : object.customer?.id;
-  if (!providerCustomerId) return;
-  const { data: customer } = await db.from("billing_customers").select("account_id,metadata").eq("provider_customer_id", providerCustomerId).maybeSingle();
-  if (!customer) return;
-  const previousCreated = Number(customer.metadata?.lastProviderEventCreated || 0);
-  if (event.created < previousCreated) return;
-  const billingState = event.type === "invoice.payment_failed" ? "past_due"
-    : event.type === "invoice.paid" ? "active"
-      : event.type === "customer.subscription.deleted" ? "cancelled"
-        : event.type === "customer.subscription.updated" && object.status === "unpaid" ? "unpaid"
-          : event.type === "customer.subscription.updated" && ["active", "trialing", "past_due"].includes(object.status) ? object.status
-            : null;
-  await db.from("billing_customers").update({ sync_state: "synced", last_synced_at: new Date().toISOString(), currency: object.currency || undefined, metadata: { ...(customer.metadata || {}), lastProviderEventCreated: event.created, lastProviderEventId: event.id } }).eq("account_id", customer.account_id);
-  if (billingState)
-    await db.from("account_package_assignments").update({ billing_state: billingState }).eq("account_id", customer.account_id).is("ends_at", null);
+  let relation: { accountId: string; providerCustomerId: string | null } | null = null;
+  if (event.type.startsWith("customer.subscription.")) relation = await projectStripeSubscription(env, object, event.created);
+  else if (event.type.startsWith("invoice.")) relation = await projectStripeInvoice(env, object, event.created);
+  else if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded" || event.type === "checkout.session.async_payment_failed" || event.type === "checkout.session.expired") {
+    relation = await billingAccountForObject(env, object);
+    const checkoutAttemptId = String(object.metadata?.checkoutAttemptId || "");
+    const state = event.type === "checkout.session.expired" ? "expired" : event.type === "checkout.session.async_payment_failed" ? "failed" : "completed";
+    if (checkoutAttemptId) await db.from("billing_checkout_attempts").update({ state, updated_at: new Date().toISOString(), error: state === "failed" ? "Stripe reported asynchronous payment failure" : null }).eq("id", checkoutAttemptId);
+  }
+  else if (event.type.startsWith("payment_intent.")) {
+    relation = await billingAccountForObject(env, object);
+    const existing = await db.from("billing_payments").select("last_event_created_at").eq("provider_payment_intent_id", object.id).maybeSingle();
+    if (relation && (!existing.data?.last_event_created_at || Date.parse(existing.data.last_event_created_at) <= event.created * 1000)) await db.from("billing_payments").upsert({ provider_payment_intent_id: object.id, account_id: relation.accountId, provider_invoice_id: typeof object.invoice === "string" ? object.invoice : object.invoice?.id || null, status: object.status, currency: object.currency, amount_minor: Number(object.amount || 0), amount_received_minor: Number(object.amount_received || 0), payment_method_summary: { type: object.payment_method_types?.[0] || null }, failure_code: object.last_payment_error?.code || null, failure_message: object.last_payment_error?.message || null, provider_created_at: stripeTimestamp(object.created), livemode: Boolean(object.livemode), metadata: object.metadata || {}, last_event_created_at: stripeTimestamp(event.created), updated_at: new Date().toISOString() }, { onConflict: "provider_payment_intent_id" });
+  } else if (event.type.startsWith("charge.refund.")) {
+    relation = await billingAccountForObject(env, object);
+    const existing = await db.from("billing_refunds").select("last_event_created_at").eq("provider_refund_id", object.id).maybeSingle();
+    if (relation && (!existing.data?.last_event_created_at || Date.parse(existing.data.last_event_created_at) <= event.created * 1000)) await db.from("billing_refunds").upsert({ provider_refund_id: object.id, account_id: relation.accountId, provider_payment_intent_id: typeof object.payment_intent === "string" ? object.payment_intent : object.payment_intent?.id || null, status: object.status || null, currency: object.currency, amount_minor: Number(object.amount || 0), reason: object.reason || null, provider_created_at: stripeTimestamp(object.created), livemode: Boolean(object.livemode), metadata: object.metadata || {}, last_event_created_at: stripeTimestamp(event.created), updated_at: new Date().toISOString() }, { onConflict: "provider_refund_id" });
+  } else if (event.type.startsWith("charge.dispute.")) {
+    relation = await billingAccountForObject(env, object);
+    const existing = await db.from("billing_disputes").select("last_event_created_at").eq("provider_dispute_id", object.id).maybeSingle();
+    if (relation && (!existing.data?.last_event_created_at || Date.parse(existing.data.last_event_created_at) <= event.created * 1000)) await db.from("billing_disputes").upsert({ provider_dispute_id: object.id, account_id: relation.accountId, provider_payment_intent_id: typeof object.payment_intent === "string" ? object.payment_intent : object.payment_intent?.id || null, status: object.status, currency: object.currency, amount_minor: Number(object.amount || 0), reason: object.reason || null, evidence_due_at: stripeTimestamp(object.evidence_details?.due_by), provider_created_at: stripeTimestamp(object.created), livemode: Boolean(object.livemode), metadata: object.metadata || {}, last_event_created_at: stripeTimestamp(event.created), updated_at: new Date().toISOString() }, { onConflict: "provider_dispute_id" });
+  } else relation = await billingAccountForObject(env, object);
+  if (relation?.providerCustomerId) await db.from("billing_customers").update({ sync_state: "synced", last_synced_at: new Date().toISOString(), currency: object.currency || undefined, metadata: { lastProviderEventCreated: event.created, lastProviderEventId: event.id } }).eq("account_id", relation.accountId);
+  if (relation) await notifyBillingMembers(env, relation.accountId, event.type, object);
+  return relation;
+}
+
+async function processBillingEvent(env: Env, id: string) {
+  const db = admin(env);
+  const record = await db.from("billing_events").select("*").eq("id", id).maybeSingle();
+  if (!record.data || record.data.processing_state === "processed" || record.data.processing_state === "ignored") return;
+  const attempts = Number(record.data.attempts || 0) + 1;
+  try {
+    const relation = await applyVerifiedBillingEvent(env, record.data.payload as Stripe.Event);
+    await db.from("billing_events").update({ account_id: relation?.accountId || null, processing_state: relation ? "processed" : "ignored", attempts, error: null, last_attempt_at: new Date().toISOString(), processed_at: new Date().toISOString(), next_attempt_at: null }).eq("id", id);
+  } catch (error) {
+    const backoffMinutes = Math.min(360, 2 ** Math.min(attempts, 8));
+    await db.from("billing_events").update({ processing_state: "failed", attempts, error: errorMessage(error).slice(0, 1000), last_attempt_at: new Date().toISOString(), next_attempt_at: new Date(Date.now() + backoffMinutes * 60_000).toISOString() }).eq("id", id);
+    throw error;
+  }
+}
+
+async function reconcileBillingAccount(env: Env, accountId: string, mode: "scheduled" | "manual" | "webhook_repair", requestedBy?: string) {
+  const db = admin(env);
+  const stripe = stripeClient(env);
+  const run = await db.from("billing_reconciliation_runs").insert({ account_id: accountId, mode, requested_by: requestedBy || null }).select("id").single();
+  if (!run.data) throw new Error("reconciliation_run_persistence_failed");
+  try {
+    const customer = await db.from("billing_customers").select("provider_customer_id").eq("account_id", accountId).maybeSingle();
+    if (!stripe || !customer.data?.provider_customer_id) throw new Error("stripe_customer_unavailable");
+    const [subscriptions, invoices] = await Promise.all([
+      stripe.subscriptions.list({ customer: customer.data.provider_customer_id, status: "all", limit: 100 }),
+      stripe.invoices.list({ customer: customer.data.provider_customer_id, limit: 100 }),
+    ]);
+    for (const subscription of subscriptions.data) await projectStripeSubscription(env, subscription, Math.floor(Date.now() / 1000));
+    for (const invoice of invoices.data) await projectStripeInvoice(env, invoice);
+    const counts = { subscriptions: subscriptions.data.length, invoices: invoices.data.length };
+    await db.from("billing_reconciliation_runs").update({ state: "completed", completed_at: new Date().toISOString(), counts, differences: [] }).eq("id", run.data.id);
+    return { id: run.data.id, state: "completed", counts };
+  } catch (error) {
+    await db.from("billing_reconciliation_runs").update({ state: "failed", completed_at: new Date().toISOString(), error: errorMessage(error).slice(0, 1000) }).eq("id", run.data.id);
+    throw error;
+  }
 }
 
 app.post("/webhooks/stripe", async (c) => {
@@ -817,18 +1011,13 @@ app.post("/webhooks/stripe", async (c) => {
     provider_event_id: event.id,
     event_type: event.type,
     provider_created_at: new Date(event.created * 1000).toISOString(),
+    livemode: event.livemode,
     payload: event,
   }).select("id").maybeSingle();
   if (inserted.error?.code === "23505") return c.json({ received: true, duplicate: true });
   if (inserted.error || !inserted.data) return c.json({ error: "billing_event_persistence_failed" }, 503);
-  try {
-    await applyVerifiedBillingEvent(c.env, event);
-    await db.from("billing_events").update({ processing_state: "processed", attempts: 1, processed_at: new Date().toISOString() }).eq("id", inserted.data.id);
-  } catch (error) {
-    await db.from("billing_events").update({ processing_state: "failed", attempts: 1, error: errorMessage(error).slice(0, 1000) }).eq("id", inserted.data.id);
-    return c.json({ error: "billing_event_processing_failed" }, 503);
-  }
-  return c.json({ received: true });
+  await c.env.JOBS.send({ type: "billing-event", id: inserted.data.id });
+  return c.json({ received: true }, 202);
 });
 
 app.use("/api/*", async (c, next) => {
@@ -975,6 +1164,7 @@ app.get("/api/bootstrap", async (c) => {
     try { return [accountId, await effectiveEntitlements(c.env, accountId)]; }
     catch { return [accountId, null]; }
   })));
+  const billingMemberships = await admin(c.env).from("account_billing_memberships").select("account_id,can_view,can_manage,created_at").eq("user_id", c.get("userId"));
   return c.json({
     superadmin,
     staff: staff ? {
@@ -987,6 +1177,7 @@ app.get("/api/bootstrap", async (c) => {
     profile: profile.data,
     accounts: accounts.data,
     accountEntitlements,
+    billingMemberships: billingMemberships.data || [],
     workspaces: [
       ...(workspaces.data || []),
       ...(sharedWorkspaces.data || []).map((workspace: any) => ({ role: "viewer", workspaces: workspace })),
@@ -2045,6 +2236,117 @@ function adminPageParams(c: any) {
   return { page, pageSize, from: (page - 1) * pageSize, to: page * pageSize - 1 };
 }
 
+app.get("/api/billing/:accountId", async (c) => {
+  const accountId = c.req.param("accountId");
+  const access = await billingAccess(c.env, c.get("userId"), accountId);
+  if (!access.canView) return c.json({ error: "billing_view_access_required" }, 403);
+  const db = admin(c.env);
+  const [configuration, customer, subscriptions, invoices, payments, refunds, disputes, catalogue, grant] = await Promise.all([
+    db.from("billing_configuration").select("*").eq("id", true).maybeSingle(),
+    db.from("billing_customers").select("*").eq("account_id", accountId).maybeSingle(),
+    db.from("billing_subscriptions").select("*").eq("account_id", accountId).order("provider_created_at", { ascending: false }),
+    db.from("billing_invoices").select("*").eq("account_id", accountId).order("provider_created_at", { ascending: false }).limit(100),
+    db.from("billing_payments").select("*").eq("account_id", accountId).order("provider_created_at", { ascending: false }).limit(100),
+    db.from("billing_refunds").select("*").eq("account_id", accountId).order("provider_created_at", { ascending: false }).limit(100),
+    db.from("billing_disputes").select("*").eq("account_id", accountId).order("provider_created_at", { ascending: false }).limit(100),
+    db.from("billing_catalogue_prices").select("id,package_version_id,currency,interval,component,unit_amount_minor,tax_behavior,active,provider_livemode,package_versions(package_key,display_name,state)").eq("active", true).order("currency"),
+    db.from("account_package_grants").select("id,status,starts_at,expires_at,reason,overrides,package_versions(package_key,display_name)").eq("account_id", accountId).eq("status", "active").lte("starts_at", new Date().toISOString()).or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`).maybeSingle(),
+  ]);
+  const providerMode = c.env.STRIPE_SECRET_KEY?.startsWith("sk_test_") ? "sandbox" : c.env.STRIPE_SECRET_KEY ? "live" : "unconfigured";
+  const config = configuration.data;
+  const checkoutReady = Boolean(c.env.STRIPE_SECRET_KEY && c.env.STRIPE_WEBHOOK_SECRET && config?.checkout_enabled && catalogue.data?.some((price) => price.provider_livemode === (providerMode === "live")));
+  return c.json({ accountId, canManage: access.canManage, providerMode, checkoutReady, configuration: config || null, customer: customer.data || null, subscriptions: subscriptions.data || [], invoices: invoices.data || [], payments: payments.data || [], refunds: refunds.data || [], disputes: disputes.data || [], catalogue: catalogue.data || [], complimentaryGrant: grant.data || null, effectiveEntitlements: await effectiveEntitlements(c.env, accountId) });
+});
+
+app.post("/api/billing/:accountId/checkout", async (c) => {
+  const accountId = c.req.param("accountId");
+  const access = await billingAccess(c.env, c.get("userId"), accountId);
+  if (!access.canManage) return c.json({ error: "billing_manage_access_required" }, 403);
+  const body = await c.req.json<{ packageVersionId?: string; currency?: string; interval?: string; editingSeats?: number; requestKey?: string }>().catch(() => ({} as { packageVersionId?: string; currency?: string; interval?: string; editingSeats?: number; requestKey?: string }));
+  const currency = String(body.currency || "").toLowerCase();
+  const interval = String(body.interval || "");
+  const editingSeats = Math.max(1, Math.floor(Number(body.editingSeats || 1)));
+  if (!body.packageVersionId || !/^[a-z]{3}$/.test(currency) || !["month", "year"].includes(interval) || editingSeats > 10000) return c.json({ error: "invalid_checkout_selection" }, 400);
+  const stripe = stripeClient(c.env);
+  if (!stripe || !c.env.STRIPE_WEBHOOK_SECRET) return c.json({ error: "stripe_sandbox_credentials_required" }, 409);
+  const db = admin(c.env);
+  const [configuration, grant, existingSubscription, account, prices] = await Promise.all([
+    db.from("billing_configuration").select("*").eq("id", true).maybeSingle(),
+    db.from("account_package_grants").select("id").eq("account_id", accountId).eq("status", "active").lte("starts_at", new Date().toISOString()).or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`).maybeSingle(),
+    db.from("billing_subscriptions").select("provider_subscription_id,status").eq("account_id", accountId).in("status", ["active", "trialing", "past_due", "unpaid", "incomplete"]).maybeSingle(),
+    db.from("accounts").select("id,name").eq("id", accountId).maybeSingle(),
+    db.from("billing_catalogue_prices").select("*").eq("package_version_id", body.packageVersionId).eq("currency", currency).eq("interval", interval).eq("active", true),
+  ]);
+  if (!account.data) return c.json({ error: "account_not_found" }, 404);
+  if (grant.data) return c.json({ error: "complimentary_account_checkout_blocked", detail: "Revoke the complimentary grant through the audited SuperAdmin workflow before creating paid billing." }, 409);
+  if (existingSubscription.data) return c.json({ error: "existing_subscription_requires_portal", subscriptionId: existingSubscription.data.provider_subscription_id }, 409);
+  const config = configuration.data;
+  const livemode = !c.env.STRIPE_SECRET_KEY!.startsWith("sk_test_");
+  if (!config?.checkout_enabled || config.mode !== (livemode ? "live" : "sandbox")) return c.json({ error: "checkout_not_approved_for_environment" }, 409);
+  if (config.tax_enabled && !config.tax_reviewed_at) return c.json({ error: "tax_configuration_not_verified" }, 409);
+  const base = (prices.data || []).find((price) => price.component === "base" && price.provider_livemode === livemode);
+  const seat = (prices.data || []).find((price) => price.component === "additional_editing_seat" && price.provider_livemode === livemode);
+  if (!base || (editingSeats > 1 && !seat)) return c.json({ error: "verified_catalogue_price_missing", detail: "Approved product and price mappings are required for this currency, interval and seat selection." }, 409);
+  const requestKey = String(body.requestKey || crypto.randomUUID()).slice(0, 200);
+  const idempotencyKey = `checkout:${accountId}:${requestKey}`;
+  const prior = await db.from("billing_checkout_attempts").select("provider_session_id,state").eq("idempotency_key", idempotencyKey).maybeSingle();
+  if (prior.data?.provider_session_id) return c.json({ sessionId: prior.data.provider_session_id, reused: true });
+  let customer = await db.from("billing_customers").select("provider_customer_id").eq("account_id", accountId).maybeSingle();
+  let customerId = customer.data?.provider_customer_id || null;
+  if (!customerId) {
+    const created = await stripe.customers.create({ name: account.data.name, email: c.get("userEmail") || undefined, metadata: { claritudeAccountId: accountId } }, { idempotencyKey: `customer:${accountId}` });
+    customerId = created.id;
+    await db.from("billing_customers").upsert({ account_id: accountId, provider_customer_id: customerId, provider: "stripe", currency, sync_state: "pending", metadata: { livemode } }, { onConflict: "account_id" });
+  }
+  const attempt = await db.from("billing_checkout_attempts").insert({ account_id: accountId, requested_by: c.get("userId"), package_version_id: body.packageVersionId, currency, interval, editing_seats: editingSeats, idempotency_key: idempotencyKey }).select("id").single();
+  if (attempt.error) return c.json({ error: "checkout_attempt_persistence_failed" }, 503);
+  try {
+    const activePromotions = await db.from("promotion_rules").select("id").eq("enabled", true).limit(1);
+    const session = await stripe.checkout.sessions.create({
+      mode: "subscription", customer: customerId,
+      line_items: [{ price: base.provider_price_id, quantity: 1 }, ...(editingSeats > 1 && seat ? [{ price: seat.provider_price_id, quantity: editingSeats - 1 }] : [])],
+      allow_promotion_codes: Boolean(activePromotions.data?.length),
+      automatic_tax: { enabled: config.tax_enabled === true },
+      billing_address_collection: config.tax_enabled ? "required" : "auto",
+      success_url: `${c.env.APP_ORIGIN.replace(/\/$/, "")}/account?accountTab=Billing%20%26%20plan&checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${c.env.APP_ORIGIN.replace(/\/$/, "")}/account?accountTab=Billing%20%26%20plan&checkout=cancelled`,
+      metadata: { claritudeAccountId: accountId, packageVersionId: body.packageVersionId, checkoutAttemptId: attempt.data.id },
+      subscription_data: { metadata: { claritudeAccountId: accountId, packageVersionId: body.packageVersionId } },
+    }, { idempotencyKey });
+    await db.from("billing_checkout_attempts").update({ provider_session_id: session.id, state: "created", updated_at: new Date().toISOString() }).eq("id", attempt.data.id);
+    return c.json({ sessionId: session.id, url: session.url });
+  } catch (error) {
+    await db.from("billing_checkout_attempts").update({ state: "failed", error: errorMessage(error).slice(0, 1000), updated_at: new Date().toISOString() }).eq("id", attempt.data.id);
+    return c.json({ error: "stripe_checkout_failed" }, 503);
+  }
+});
+
+app.post("/api/billing/:accountId/portal", async (c) => {
+  const accountId = c.req.param("accountId");
+  const access = await billingAccess(c.env, c.get("userId"), accountId);
+  if (!access.canManage) return c.json({ error: "billing_manage_access_required" }, 403);
+  const stripe = stripeClient(c.env);
+  if (!stripe) return c.json({ error: "stripe_credentials_required" }, 409);
+  const customer = await admin(c.env).from("billing_customers").select("provider_customer_id").eq("account_id", accountId).maybeSingle();
+  if (!customer.data?.provider_customer_id) return c.json({ error: "billing_customer_not_found" }, 404);
+  const portal = await stripe.billingPortal.sessions.create({ customer: customer.data.provider_customer_id, return_url: `${c.env.APP_ORIGIN.replace(/\/$/, "")}/account?accountTab=Billing%20%26%20plan` });
+  return c.json({ url: portal.url });
+});
+
+app.post("/api/billing/:accountId/cancellation", async (c) => {
+  const accountId = c.req.param("accountId");
+  const access = await billingAccess(c.env, c.get("userId"), accountId);
+  if (!access.canManage) return c.json({ error: "billing_manage_access_required" }, 403);
+  const body = await c.req.json<{ cancelAtPeriodEnd?: boolean }>().catch(() => ({} as { cancelAtPeriodEnd?: boolean }));
+  const stripe = stripeClient(c.env);
+  if (!stripe) return c.json({ error: "stripe_credentials_required" }, 409);
+  const current = await admin(c.env).from("billing_subscriptions").select("provider_subscription_id").eq("account_id", accountId).in("status", ["active", "trialing", "past_due", "unpaid"]).maybeSingle();
+  if (!current.data) return c.json({ error: "active_subscription_not_found" }, 404);
+  const subscription = await stripe.subscriptions.update(current.data.provider_subscription_id, { cancel_at_period_end: body.cancelAtPeriodEnd !== false });
+  await projectStripeSubscription(c.env, subscription, Math.floor(Date.now() / 1000));
+  return c.json({ subscriptionId: subscription.id, cancelAtPeriodEnd: subscription.cancel_at_period_end });
+});
+
 function safeSearchTerm(value: unknown) {
   return String(value || "").trim().slice(0, 120).replace(/[,%_()]/g, "");
 }
@@ -2224,7 +2526,16 @@ app.get("/api/superadmin/accounts/:id", async (c) => {
   if (account.error) return c.json({ error: "account_not_found" }, 404);
   let effective;
   try { effective = await effectiveEntitlements(c.env, accountId); } catch { effective = null; }
-  return c.json({ account: account.data, workspaces: workspaces.data || [], properties: properties.data || [], memberships: memberships.data || [], billingMemberships: billingMemberships.data || [], notes: notes.data || [], controls: controls.data || [], activity: activity.data || [], messages: messages.data || [], usage: usage.data || [], assignments: assignments.data || [], grants: grants.data || [], overrides: overrides.data || [], inactivity: inactivity.data, effectiveEntitlements: effective });
+  const [billingCustomer, billingSubscriptions, billingInvoices, billingPayments, billingRefunds, billingDisputes, billingReconciliation] = await Promise.all([
+    service.from("billing_customers").select("*").eq("account_id", accountId).maybeSingle(),
+    service.from("billing_subscriptions").select("*").eq("account_id", accountId).order("updated_at", { ascending: false }),
+    service.from("billing_invoices").select("*").eq("account_id", accountId).order("provider_created_at", { ascending: false }).limit(100),
+    service.from("billing_payments").select("*").eq("account_id", accountId).order("provider_created_at", { ascending: false }).limit(100),
+    service.from("billing_refunds").select("*").eq("account_id", accountId).order("provider_created_at", { ascending: false }).limit(100),
+    service.from("billing_disputes").select("*").eq("account_id", accountId).order("provider_created_at", { ascending: false }).limit(100),
+    service.from("billing_reconciliation_runs").select("*").eq("account_id", accountId).order("started_at", { ascending: false }).limit(25),
+  ]);
+  return c.json({ account: account.data, workspaces: workspaces.data || [], properties: properties.data || [], memberships: memberships.data || [], billingMemberships: billingMemberships.data || [], notes: notes.data || [], controls: controls.data || [], activity: activity.data || [], messages: messages.data || [], usage: usage.data || [], assignments: assignments.data || [], grants: grants.data || [], overrides: overrides.data || [], inactivity: inactivity.data, effectiveEntitlements: effective, billing: { customer: billingCustomer.data || null, subscriptions: billingSubscriptions.data || [], invoices: billingInvoices.data || [], payments: billingPayments.data || [], refunds: billingRefunds.data || [], disputes: billingDisputes.data || [], reconciliation: billingReconciliation.data || [] } });
 });
 
 app.get("/api/superadmin/users/:id", async (c) => {
@@ -2520,6 +2831,22 @@ app.get("/api/superadmin/platform", async (c) => {
     inactivityNotices: deriveFeatureState({ permitted: true, configured: Array.isArray(outbound.safeTestRecipients) && outbound.safeTestRecipients.length > 0, enabled: outbound.inactivityNoticesEnabled === true, dependencyAvailable: Boolean(c.env.RESEND_API_KEY && c.env.RESEND_FROM), dependency: "Resend credentials and safe test recipients are required" }),
     weeklyDigest: deriveFeatureState({ permitted: true, configured: weeklyConfigured, enabled: digest.enabled === true && outbound.weeklyDigestEnabled === true, dependencyAvailable: Boolean(c.env.RESEND_API_KEY && c.env.RESEND_FROM), dependency: "Resend credentials and digest recipients are required" }),
   };
+  const [billingConfiguration, billingCatalogue, billingSubscriptions, billingInvoices, billingPayments, billingRefunds, billingDisputes, billingReconciliation, billingDaily] = await Promise.all([
+    service.from("billing_configuration").select("*").eq("id", true).maybeSingle(),
+    service.from("billing_catalogue_prices").select("*,package_versions(package_key,display_name,version,state)").order("currency").order("interval"),
+    service.from("billing_subscriptions").select("*,accounts(name)").order("updated_at", { ascending: false }).limit(2000),
+    service.from("billing_invoices").select("*,accounts(name)").order("provider_created_at", { ascending: false }).limit(2000),
+    service.from("billing_payments").select("*,accounts(name)").order("provider_created_at", { ascending: false }).limit(2000),
+    service.from("billing_refunds").select("*,accounts(name)").order("provider_created_at", { ascending: false }).limit(1000),
+    service.from("billing_disputes").select("*,accounts(name)").order("provider_created_at", { ascending: false }).limit(1000),
+    service.from("billing_reconciliation_runs").select("*,accounts(name)").order("started_at", { ascending: false }).limit(250),
+    service.from("billing_daily_finance").select("*").order("day", { ascending: true }).limit(2000),
+  ]);
+  const finance = financeMetrics({ subscriptions: billingSubscriptions.data || [], invoices: billingInvoices.data || [], payments: billingPayments.data || [], refunds: billingRefunds.data || [], disputes: billingDisputes.data || [] });
+  const providerMode = c.env.STRIPE_SECRET_KEY?.startsWith("sk_test_") ? "sandbox" : c.env.STRIPE_SECRET_KEY ? "live" : "unconfigured";
+  const requiredCatalogueKeys = ["essentials", "scale", "pro"].flatMap((packageKey) => ["gbp", "eur", "usd"].flatMap((currency) => ["month", "year"].flatMap((interval) => ["base", "additional_editing_seat"].map((component) => `${packageKey}:${currency}:${interval}:${component}`))));
+  const catalogueKeys = new Set((billingCatalogue.data || []).filter((price) => price.active && price.provider_livemode === (providerMode === "live")).map((price: any) => `${price.package_versions?.package_key}:${price.currency}:${price.interval}:${price.component}`));
+  const catalogueReady = requiredCatalogueKeys.every((key) => catalogueKeys.has(key));
   return c.json({
     environment: { name: c.env.APP_ORIGIN.includes("app.claritude.io") ? "Production" : "Preview", commitSha: c.env.DEPLOY_COMMIT_SHA || null, refreshedAt: new Date().toISOString() },
     providers: { stripe: { configured: Boolean(c.env.STRIPE_SECRET_KEY && c.env.STRIPE_WEBHOOK_SECRET), mode: c.env.STRIPE_SECRET_KEY?.startsWith("sk_test_") ? "sandbox" : c.env.STRIPE_SECRET_KEY ? "live" : "unconfigured", tax: "unconfigured" }, resend: { configured: Boolean(c.env.RESEND_API_KEY), from: c.env.RESEND_FROM || null }, cloudflareTelemetry: "unavailable", supabaseBackups: "unverified" },
@@ -2527,7 +2854,7 @@ app.get("/api/superadmin/platform", async (c) => {
     audits: { technicalChecks: auditDefinitions.data || [], groups: auditGroups.data || [], groupHistory: auditGroupHistory.data || [], packageAvailability: auditPackageAvailability.data || [], today: auditStatus, runs: runs, source: "application_measured", period: "UTC day" },
     infrastructure: { database: databaseMetrics.data || null, databaseError: databaseMetrics.error?.message || null, events: operationalEvents.data || [], leases: leases.data || [], period: "UTC day" },
     exports: exports.data || [], deletionRequests: deletionRequests.data || [], email: { templates: templates.data || [], automations: automations.data || [], campaigns: campaigns.data || [], deliveries: deliveries.data || [], suppressions: suppressions.data || [] },
-    billing: { configured: Boolean(c.env.STRIPE_SECRET_KEY && c.env.STRIPE_WEBHOOK_SECRET), customers: billingCustomers.data || [], events: billingEvents.data || [], promotions: promotions.data || [], calculations: { mrr: "Unavailable until Stripe is configured and reconciled", arr: "Unavailable until Stripe is configured and reconciled", cashCollected: "Unavailable until Stripe is configured and reconciled", currencyPolicy: "Currencies remain separate unless an explicit labelled conversion is configured" } },
+    billing: { configured: Boolean(c.env.STRIPE_SECRET_KEY && c.env.STRIPE_WEBHOOK_SECRET), providerMode, configuration: billingConfiguration.data || null, catalogueReady, catalogue: billingCatalogue.data || [], customers: billingCustomers.data || [], subscriptions: billingSubscriptions.data || [], invoices: billingInvoices.data || [], payments: billingPayments.data || [], refunds: billingRefunds.data || [], disputes: billingDisputes.data || [], reconciliation: billingReconciliation.data || [], daily: billingDaily.data || [], events: billingEvents.data || [], promotions: promotions.data || [], calculations: finance, currencyPolicy: "Currencies remain separate; no implicit FX conversion is applied. MRR annualises monthly recurring line amounts and divides annual recurring amounts by 12. Cash, refunds and disputes remain separate." },
   });
 });
 
@@ -2551,6 +2878,107 @@ app.post("/api/superadmin/billing/events/:id/reprocess", async (c) => {
     await recordAdminActivity(c.env, authorization.staff!.userId, "billing.event_reprocessed", "failed", { targetType: "billing_event", targetId: record.id, reason, metadata: { providerEventId: record.provider_event_id, error: errorMessage(error) } });
     return c.json({ error: "billing_event_reprocessing_failed" }, 503);
   }
+});
+
+app.post("/api/superadmin/billing/catalogue", async (c) => {
+  const authorization = await requireStaff(c, "financials.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ packageVersionId?: string; priceId?: string; component?: "base" | "additional_editing_seat"; reason?: string }>().catch(() => ({} as { packageVersionId?: string; priceId?: string; component?: "base" | "additional_editing_seat"; reason?: string }));
+  const reason = String(body.reason || "").trim();
+  if (!body.packageVersionId || !body.priceId || !["base", "additional_editing_seat"].includes(body.component || "") || reason.length < 3) return c.json({ error: "package_price_component_and_reason_required" }, 400);
+  const stripe = stripeClient(c.env);
+  if (!stripe) return c.json({ error: "stripe_credentials_required" }, 409);
+  const db = admin(c.env);
+  const packageVersion = await db.from("package_versions").select("id,package_key,display_name").eq("id", body.packageVersionId).maybeSingle();
+  if (!packageVersion.data || !["essentials", "scale", "pro"].includes(packageVersion.data.package_key)) return c.json({ error: "paid_package_version_required" }, 400);
+  const price = await stripe.prices.retrieve(body.priceId, { expand: ["product"] });
+  const product: any = price.product;
+  if (!price.active || !price.recurring || price.unit_amount == null || typeof product === "string" || !product.active) return c.json({ error: "active_recurring_price_and_product_required" }, 409);
+  if (!["month", "year"].includes(price.recurring.interval)) return c.json({ error: "unsupported_billing_interval" }, 409);
+  const livemode = !c.env.STRIPE_SECRET_KEY!.startsWith("sk_test_");
+  if (price.livemode !== livemode) return c.json({ error: "stripe_environment_mismatch" }, 409);
+  const row = { package_version_id: body.packageVersionId, provider_product_id: product.id, provider_price_id: price.id, currency: price.currency, interval: price.recurring.interval, component: body.component, unit_amount_minor: price.unit_amount, tax_behavior: price.tax_behavior || "unspecified", active: true, provider_livemode: price.livemode, verified_at: new Date().toISOString(), verified_by: authorization.staff!.userId, updated_at: new Date().toISOString(), metadata: { productName: product.name, productTaxCode: product.tax_code || null, recurringUsageType: price.recurring.usage_type || null } };
+  const saved = await db.from("billing_catalogue_prices").upsert(row, { onConflict: "package_version_id,currency,interval,component" }).select().single();
+  if (saved.error) return c.json({ error: saved.error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "billing.catalogue_price_verified", "success", { targetType: "stripe_price", targetId: price.id, reason, newValues: row, metadata: { packageKey: packageVersion.data.package_key } });
+  return c.json({ price: saved.data });
+});
+
+app.patch("/api/superadmin/billing/configuration", async (c) => {
+  const authorization = await requireStaff(c, "financials.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ checkoutEnabled?: boolean; taxEnabled?: boolean; reason?: string }>().catch(() => ({} as { checkoutEnabled?: boolean; taxEnabled?: boolean; reason?: string }));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3 || reason.length > 500) return c.json({ error: "reason_required" }, 400);
+  const db = admin(c.env);
+  const previous = await db.from("billing_configuration").select("*").eq("id", true).single();
+  const mode = c.env.STRIPE_SECRET_KEY?.startsWith("sk_test_") ? "sandbox" : c.env.STRIPE_SECRET_KEY ? "live" : null;
+  if (!mode || !c.env.STRIPE_WEBHOOK_SECRET) return c.json({ error: "stripe_credentials_and_webhook_required" }, 409);
+  const mappings = await db.from("billing_catalogue_prices").select("currency,interval,component,provider_livemode,tax_behavior,metadata,package_versions(package_key)").eq("active", true).eq("provider_livemode", mode === "live");
+  const required = ["essentials", "scale", "pro"].flatMap((packageKey) => ["gbp", "eur", "usd"].flatMap((currency) => ["month", "year"].flatMap((interval) => ["base", "additional_editing_seat"].map((component) => `${packageKey}:${currency}:${interval}:${component}`))));
+  const present = new Set((mappings.data || []).map((item: any) => `${item.package_versions?.package_key}:${item.currency}:${item.interval}:${item.component}`));
+  const missing = required.filter((key) => !present.has(key));
+  if (body.checkoutEnabled === true && missing.length) return c.json({ error: "catalogue_incomplete", missing }, 409);
+  let taxReviewedAt = previous.data.tax_reviewed_at;
+  if (body.taxEnabled === true) {
+    const stripe = stripeClient(c.env)!;
+    const registrations = await (stripe.tax.registrations as any).list({ status: "active", limit: 100 });
+    const unsafePrices = (mappings.data || []).filter((item: any) => item.tax_behavior === "unspecified" || !item.metadata?.productTaxCode);
+    if (!registrations.data?.length || unsafePrices.length) return c.json({ error: "tax_configuration_unverified", activeRegistrations: registrations.data?.length || 0, unsafePriceCount: unsafePrices.length }, 409);
+    taxReviewedAt = new Date().toISOString();
+  }
+  const next = { mode, checkout_enabled: body.checkoutEnabled ?? previous.data.checkout_enabled, tax_enabled: body.taxEnabled ?? previous.data.tax_enabled, tax_reviewed_at: body.taxEnabled === true ? taxReviewedAt : body.taxEnabled === false ? null : previous.data.tax_reviewed_at, tax_reviewed_by: body.taxEnabled === true ? authorization.staff!.userId : body.taxEnabled === false ? null : previous.data.tax_reviewed_by, updated_at: new Date().toISOString(), updated_by: authorization.staff!.userId };
+  const saved = await db.from("billing_configuration").update(next).eq("id", true).select().single();
+  if (saved.error) return c.json({ error: saved.error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "billing.configuration_changed", "success", { targetType: "billing_configuration", targetId: "platform", reason, previousValues: previous.data, newValues: saved.data });
+  return c.json({ configuration: saved.data });
+});
+
+app.post("/api/superadmin/billing/accounts/:id/reconcile", async (c) => {
+  const authorization = await requireStaff(c, "financials.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({} as { reason?: string }));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3) return c.json({ error: "reason_required" }, 400);
+  try {
+    const result = await reconcileBillingAccount(c.env, c.req.param("id"), "manual", authorization.staff!.userId);
+    await recordAdminActivity(c.env, authorization.staff!.userId, "billing.account_reconciled", "success", { targetType: "account", targetId: c.req.param("id"), accountId: c.req.param("id"), reason, metadata: result });
+    return c.json(result);
+  } catch (error) {
+    return c.json({ error: "billing_reconciliation_failed", detail: errorMessage(error) }, 503);
+  }
+});
+
+app.post("/api/superadmin/billing/subscriptions/:id/cancellation", async (c) => {
+  const authorization = await requireStaff(c, "financials.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ action?: "schedule" | "undo"; reason?: string }>().catch(() => ({} as { action?: "schedule" | "undo"; reason?: string }));
+  const reason = String(body.reason || "").trim();
+  if (!body.action || reason.length < 3) return c.json({ error: "action_and_reason_required" }, 400);
+  const stripe = stripeClient(c.env);
+  if (!stripe) return c.json({ error: "stripe_credentials_required" }, 409);
+  const previous = await admin(c.env).from("billing_subscriptions").select("*").eq("provider_subscription_id", c.req.param("id")).maybeSingle();
+  if (!previous.data) return c.json({ error: "subscription_not_found" }, 404);
+  const updated = await stripe.subscriptions.update(c.req.param("id"), { cancel_at_period_end: body.action === "schedule" });
+  await projectStripeSubscription(c.env, updated, Math.floor(Date.now() / 1000));
+  await recordAdminActivity(c.env, authorization.staff!.userId, `billing.cancellation_${body.action === "schedule" ? "scheduled" : "undone"}`, "success", { targetType: "subscription", targetId: updated.id, accountId: previous.data.account_id, reason, previousValues: { cancelAtPeriodEnd: previous.data.cancel_at_period_end }, newValues: { cancelAtPeriodEnd: updated.cancel_at_period_end } });
+  return c.json({ subscriptionId: updated.id, cancelAtPeriodEnd: updated.cancel_at_period_end });
+});
+
+app.post("/api/superadmin/billing/payments/:id/refund", async (c) => {
+  const authorization = await requireStaff(c, "financials.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ amountMinor?: number; reason?: string; confirmation?: string }>().catch(() => ({} as { amountMinor?: number; reason?: string; confirmation?: string }));
+  const reason = String(body.reason || "").trim();
+  const amountMinor = Math.floor(Number(body.amountMinor || 0));
+  if (reason.length < 3 || amountMinor < 1 || body.confirmation !== "REFUND") return c.json({ error: "amount_reason_and_confirmation_required" }, 400);
+  const stripe = stripeClient(c.env);
+  if (!stripe) return c.json({ error: "stripe_credentials_required" }, 409);
+  const payment = await admin(c.env).from("billing_payments").select("*").eq("provider_payment_intent_id", c.req.param("id")).maybeSingle();
+  if (!payment.data || amountMinor > Number(payment.data.amount_received_minor || 0)) return c.json({ error: "invalid_refund_amount" }, 409);
+  const refund = await stripe.refunds.create({ payment_intent: payment.data.provider_payment_intent_id, amount: amountMinor, metadata: { claritudeAccountId: payment.data.account_id, operatorReason: reason } }, { idempotencyKey: `refund:${payment.data.provider_payment_intent_id}:${amountMinor}:${crypto.randomUUID()}` });
+  await recordAdminActivity(c.env, authorization.staff!.userId, "billing.refund_created", "success", { targetType: "refund", targetId: refund.id, accountId: payment.data.account_id, reason, newValues: { amountMinor, currency: payment.data.currency } });
+  return c.json({ refundId: refund.id, status: refund.status });
 });
 
 app.patch("/api/superadmin/audit-checks/:id", async (c) => {
@@ -6273,6 +6701,8 @@ export function renderUptimeAlertEmail({
 async function scheduled(env: Env, cron: string) {
   const db = admin(env);
   if (cron === "*/5 * * * *") {
+    const failedBilling = await db.from("billing_events").select("id").eq("processing_state", "failed").lte("next_attempt_at", new Date().toISOString()).lt("attempts", 10).limit(50);
+    await Promise.all((failedBilling.data || []).map((event) => env.JOBS.send({ type: "billing-event", id: event.id })));
     const access = await processingAccess(env, "uptime_checks");
     if (!access.allowed) {
       await db.from("operational_events").insert({ service: "uptime", metric: "scheduler_suppressed", value: 1, unit: "run", source: "application_measured", metadata: { reason: access.error } });
@@ -6302,6 +6732,14 @@ async function scheduled(env: Env, cron: string) {
     await runDueReportSchedules(env, db);
     await expireComplimentaryPackageGrants(db);
     await evaluateFreeAccountInactivity(env, db);
+    const customers = await db.from("billing_customers").select("account_id").not("provider_customer_id", "is", null).limit(1000);
+    await Promise.all((customers.data || []).map((customer) => env.JOBS.send({ type: "billing-reconcile", id: customer.account_id })));
+    const [subscriptions, invoices, payments, refunds, disputes, grants] = await Promise.all([
+      db.from("billing_subscriptions").select("*"), db.from("billing_invoices").select("*"), db.from("billing_payments").select("*"), db.from("billing_refunds").select("*"), db.from("billing_disputes").select("*"), db.from("account_package_grants").select("account_id").eq("status", "active").lte("starts_at", new Date().toISOString()).or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`),
+    ]);
+    for (const metric of financeMetrics({ subscriptions: subscriptions.data || [], invoices: invoices.data || [], payments: payments.data || [], refunds: refunds.data || [], disputes: disputes.data || [] })) {
+      await db.from("billing_daily_finance").upsert({ day: new Date().toISOString().slice(0, 10), currency: metric.currency, livemode: !env.STRIPE_SECRET_KEY?.startsWith("sk_test_"), mrr_minor: metric.mrrMinor, arr_minor: metric.arrMinor, invoiced_minor: metric.invoicedMinor, cash_collected_minor: metric.cashCollectedMinor, refunds_minor: metric.refundsMinor, failed_payments: metric.failedPayments, active_subscriptions: metric.activeSubscriptions, trialing_subscriptions: metric.trialingSubscriptions, past_due_subscriptions: metric.pastDueSubscriptions, complimentary_accounts: new Set((grants.data || []).map((grant) => grant.account_id)).size, calculated_at: new Date().toISOString() }, { onConflict: "day,currency,livemode" });
+    }
   }
 }
 
@@ -8291,6 +8729,8 @@ export default {
         if (message.body.type === "audit") await runAudit(env, message.body.id);
         else if (message.body.type === "audit-persist") await persistAuditContinuation(env, message.body.id, message.body.payload);
         else if (message.body.type === "admin-export") await runAdminExport(env, message.body.id);
+        else if (message.body.type === "billing-event") await processBillingEvent(env, message.body.id);
+        else if (message.body.type === "billing-reconcile") await reconcileBillingAccount(env, message.body.id, "scheduled");
         else await runUptime(env, message.body.id);
         message.ack();
       } catch (error) {

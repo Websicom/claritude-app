@@ -278,6 +278,7 @@ type Bootstrap = {
   notifications: any[];
   activity?: any[];
   propertyMemberships?: any[];
+  billingMemberships?: Array<{ account_id: string; can_view: boolean; can_manage: boolean }>;
 };
 type WorkspaceOption = {
   id: string;
@@ -4643,11 +4644,11 @@ function SuperAdminView({ session, fixture = false, staff }: { session: Session 
     {activeTab === "Service health" ? <PlatformServices platform={platform} payload={payload} /> : null}
     {activeTab === "Summary" ? <><PlatformServices platform={platform} payload={payload} /><Panel title="Needs attention"><DataTable headers={["Account", "Offline properties", "Package", "Action"]} rows={accounts.filter((account) => account.offlineCount).map((account) => [account.name, account.offlineCount, cap(account.entitlement), <Link to={`/superadmin?view=accounts&account=${account.id}`}>Open account</Link>])} /></Panel></> : null}
   </>;
-  else if (view === "accounts") content = accountId && accountDetail ? <SuperAdminAccountDetail detail={accountDetail} packages={platform?.packages || []} session={session} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("packages.write"))} canManageCustomers={Boolean(staff?.permissions.includes("customers.write"))} canCommunicate={Boolean(staff?.permissions.includes("communications.write"))} canExport={Boolean(staff?.permissions.includes("exports.write"))} refresh={async () => { if (!session || fixture) return; setAccountDetail(await api<any>(session, `/api/superadmin/accounts/${accountId}`)); await load(); }} /> : <Panel title={activeTab} actions={<button className="btn" onClick={() => void queueExport("accounts", "csv")}>Export CSV</button>}><DataTable headers={["Account", "Package", "Arrangement", "Users", "Workspaces", "Properties", "Health", "Created"]} rows={accounts.filter((account) => activeTab !== "Needs attention" || account.offlineCount > 0).map((account) => [<Link to={`/superadmin?view=accounts&account=${account.id}`}><b>{account.name}</b></Link>, account.effectivePackageName || cap(account.entitlement.replaceAll("_", " ")), account.billingArrangement === "complimentary" ? <StatusPill tone="success">Complimentary</StatusPill> : "Standard", account.userCount, account.workspaceCount, account.propertyCount, account.offlineCount ? <StatusPill tone="danger">{account.offlineCount} offline</StatusPill> : <StatusPill tone="success">Healthy</StatusPill>, fmtDate(account.created_at)])} rowActions={accounts.filter((account) => activeTab !== "Needs attention" || account.offlineCount > 0).map((account) => [{ label: "Open account", to: `/superadmin?view=accounts&account=${account.id}` }, { label: "View as customer", to: `/superadmin?view=administration&tab=Customer+sessions&account=${account.id}` }])} /></Panel>;
+  else if (view === "accounts") content = accountId && accountDetail ? <SuperAdminAccountDetail detail={accountDetail} packages={platform?.packages || []} session={session} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("packages.write"))} canFinancials={Boolean(staff?.permissions.includes("financials.write"))} canManageCustomers={Boolean(staff?.permissions.includes("customers.write"))} canCommunicate={Boolean(staff?.permissions.includes("communications.write"))} canExport={Boolean(staff?.permissions.includes("exports.write"))} refresh={async () => { if (!session || fixture) return; setAccountDetail(await api<any>(session, `/api/superadmin/accounts/${accountId}`)); await load(); }} /> : <Panel title={activeTab} actions={<button className="btn" onClick={() => void queueExport("accounts", "csv")}>Export CSV</button>}><DataTable headers={["Account", "Package", "Arrangement", "Users", "Workspaces", "Properties", "Health", "Created"]} rows={accounts.filter((account) => activeTab !== "Needs attention" || account.offlineCount > 0).map((account) => [<Link to={`/superadmin?view=accounts&account=${account.id}`}><b>{account.name}</b></Link>, account.effectivePackageName || cap(account.entitlement.replaceAll("_", " ")), account.billingArrangement === "complimentary" ? <StatusPill tone="success">Complimentary</StatusPill> : "Standard", account.userCount, account.workspaceCount, account.propertyCount, account.offlineCount ? <StatusPill tone="danger">{account.offlineCount} offline</StatusPill> : <StatusPill tone="success">Healthy</StatusPill>, fmtDate(account.created_at)])} rowActions={accounts.filter((account) => activeTab !== "Needs attention" || account.offlineCount > 0).map((account) => [{ label: "Open account", to: `/superadmin?view=accounts&account=${account.id}` }, { label: "View as customer", to: `/superadmin?view=administration&tab=Customer+sessions&account=${account.id}` }])} /></Panel>;
   else if (view === "users") content = userId && userDetail ? <SuperAdminUserProfile detail={userDetail} session={session} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("customers.write"))} refresh={async () => { if (session) setUserDetail(await api<any>(session, `/api/superadmin/users/${userId}`)); await load(); }} /> : <SuperAdminUsersDesk activeTab={activeTab} users={users} session={session} fixture={fixture} canManageCustomers={Boolean(staff?.permissions.includes("customers.write"))} isOwner={staff?.role === "owner"} refresh={load} onExport={() => queueExport("users", "csv")} />;
   else if (view === "resources") content = propertyId && propertyDetail ? <SuperAdminPropertyProfile detail={propertyDetail} allWorkspaces={payload?.workspaces || []} session={session} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("customers.write"))} refresh={async () => { if (session) setPropertyDetail(await api<any>(session, `/api/superadmin/properties/${propertyId}`)); await load(); }} /> : activeTab === "Workspaces" ? <Panel title="Workspaces"><DataTable headers={["Workspace", "Account", "Properties", "Created"]} rows={workspaces.map((workspace) => [workspace.name, payload?.accounts.find((account) => account.id === workspace.account_id)?.name || workspace.account_id, workspace.propertyCount, fmtDate(workspace.created_at)])} /></Panel> : <Panel title={activeTab}><DataTable headers={["Property", "Domain", "Workspace", "Connection", "Monitor", "Last analytics"]} rows={properties.filter((property) => activeTab !== "Connection health" || property.verification_status !== "verified" || !property.tracking_last_received_at).map((property) => [<Link to={`/superadmin?view=resources&property=${property.id}`}><b>{property.name}</b></Link>, property.canonical_host, payload?.workspaces.find((workspace) => workspace.id === property.workspace_id)?.name || property.workspace_id, property.verification_status, property.monitor?.last_status || "Not configured", property.tracking_last_received_at ? fmtDate(property.tracking_last_received_at) : "No data"])} rowActions={properties.filter((property) => activeTab !== "Connection health" || property.verification_status !== "verified" || !property.tracking_last_received_at).map((property) => [{ label: "Open property settings", to: `/superadmin?view=resources&property=${property.id}` }, { label: "Open account", to: `/superadmin?view=accounts&account=${property.accountId}` }])} /></Panel>;
   else if (view === "packages") content = <PackagesControlDesk activeTab={activeTab} platform={platform} payload={payload} session={session} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("packages.write"))} refresh={load} />;
-  else if (view === "financials") content = <Panel title={activeTab}>{!platform?.billing?.configured ? <UnavailableState title="Stripe billing is unconfigured" detail="No server-side Stripe key, webhook secret, product catalogue or reconciled billing state is available. Complimentary and beta access remains unchanged; no paid subscriptions are fabricated." /> : <DataTable headers={["Provider event", "Type", "State", "Provider time"]} rows={(platform.billing.events || []).map((event: any) => [event.provider_event_id, event.event_type, event.processing_state, fmtDate(event.provider_created_at)])} />}<p className="subtle">Currencies remain separate unless a labelled conversion is explicitly configured. Credits, cash refunds, recurring revenue and cash collection are reported independently.</p></Panel>;
+  else if (view === "financials") content = <FinancialsControlDesk activeTab={activeTab} platform={platform} session={session} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("financials.write"))} refresh={load} />;
   else if (view === "coupons") content = <Panel title={activeTab}>{!platform?.billing?.configured && <UnavailableState title="Promotion synchronisation unavailable" detail="Stripe sandbox credentials and product/price configuration are required before promotion codes can be enabled." />}<DataTable headers={["Code", "Discount", "Duration", "Packages", "Expires", "Enabled"]} rows={(platform?.billing?.promotions || []).map((item: any) => [item.code || "Provider generated", item.discount_type === "percentage" ? `${item.percentage}%` : `${item.fixed_amount_minor} ${item.currency}`, item.duration_type === "billing_periods" ? `${item.duration_count} billing periods` : item.duration_type, item.eligible_packages?.join(", ") || "All configured", item.expires_at ? fmtDate(item.expires_at) : "No expiry", item.enabled ? "Yes" : "No"])} /></Panel>;
   else if (view === "audits") content = <AuditControlsDesk activeTab={activeTab} platform={platform} session={session} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("audits.write"))} refresh={load} />;
   else if (view === "health") content = <PlatformHealthDesk activeTab={activeTab} platform={platform} payload={payload} />;
@@ -4667,6 +4668,79 @@ function SuperAdminView({ session, fixture = false, staff }: { session: Session 
     {tabs.length > 0 && <Tabs labels={tabs} value={activeTab} onChange={selectTab} />}
     <AdminTableContext.Provider value>{error ? <Panel><div className="analytics-state" role="alert"><Empty title="SuperAdmin command centre could not be loaded" detail={error} /><button className="btn" onClick={() => void load()}>Retry</button></div></Panel> : !payload || !platform ? <Panel><Empty title="Loading SuperAdmin command centre…" detail="Collecting real platform data and capability status." /></Panel> : content}</AdminTableContext.Provider>
   </Page>;
+}
+
+function formatMinor(value: unknown, currency = "gbp") {
+  return new Intl.NumberFormat("en-GB", { style: "currency", currency: String(currency || "gbp").toUpperCase() }).format(Number(value || 0) / 100);
+}
+
+function FinanceTrend({ rows, metric }: { rows: any[]; metric: string }) {
+  const points = rows.slice(-30);
+  const max = Math.max(1, ...points.map((row) => Number(row[metric] || 0)));
+  return <div className="finance-trend" role="img" aria-label={`${cap(metric.replaceAll("_", " "))} over the last ${points.length} recorded days`}>
+    {points.length ? points.map((row) => <span key={`${row.day}:${row.currency}`} title={`${row.day}: ${formatMinor(row[metric], row.currency)}`} style={{ height: `${Math.max(3, Number(row[metric] || 0) / max * 100)}%` }} />) : <p className="subtle">No historical finance snapshots have been calculated yet.</p>}
+  </div>;
+}
+
+function FinancialsControlDesk({ activeTab, platform, session, fixture, canWrite, refresh }: { activeTab: string; platform: any; session: Session | null; fixture: boolean; canWrite: boolean; refresh: () => Promise<void> }) {
+  const billing = platform?.billing || {};
+  const calculations = billing.calculations || [];
+  const [busy, setBusy] = useState(false);
+  const [packageVersionId, setPackageVersionId] = useState("");
+  const [priceId, setPriceId] = useState("");
+  const [component, setComponent] = useState("base");
+  const paidPackages = (platform?.packages || []).filter((item: any) => ["essentials", "scale", "pro"].includes(item.package_key));
+  async function mutate(path: string, body: any) {
+    if (!session || fixture) return;
+    setBusy(true);
+    try { await api(session, path, { method: "POST", body: JSON.stringify(body) }); await refresh(); }
+    finally { setBusy(false); }
+  }
+  async function verifyPrice() {
+    const reason = window.prompt("Reason for adding or replacing this verified Stripe price mapping:")?.trim();
+    if (!reason || !packageVersionId || !priceId) return;
+    await mutate("/api/superadmin/billing/catalogue", { packageVersionId, priceId: priceId.trim(), component, reason });
+    setPriceId("");
+  }
+  async function updateConfiguration(changes: { checkoutEnabled?: boolean; taxEnabled?: boolean }) {
+    const reason = window.prompt("Reason for changing Stripe billing activation:")?.trim();
+    if (!session || fixture || !reason) return;
+    setBusy(true);
+    try { await api(session, "/api/superadmin/billing/configuration", { method: "PATCH", body: JSON.stringify({ ...changes, reason }) }); await refresh(); }
+    finally { setBusy(false); }
+  }
+  async function refundPayment(payment: any) {
+    const currency = String(payment.currency || "gbp").toUpperCase();
+    const maximum = Number(payment.amount_received_minor || 0) / 100;
+    const amount = window.prompt(`Refund amount in ${currency} (maximum ${maximum.toFixed(2)}):`, maximum.toFixed(2))?.trim();
+    if (!amount) return;
+    const amountMinor = Math.round(Number(amount) * 100);
+    if (!Number.isFinite(amountMinor) || amountMinor < 1 || amountMinor > Number(payment.amount_received_minor || 0)) {
+      window.alert("Enter a valid refund amount no greater than the amount received.");
+      return;
+    }
+    const reason = window.prompt("Reason for this refund (recorded in the immutable admin log):")?.trim();
+    if (!reason) return;
+    const confirmation = window.prompt(`Type REFUND to return ${formatMinor(amountMinor, payment.currency)} to the customer:`)?.trim();
+    if (confirmation !== "REFUND") return;
+    await mutate(`/api/superadmin/billing/payments/${payment.provider_payment_intent_id}/refund`, { amountMinor, reason, confirmation });
+  }
+  const status = !billing.configured ? "Stripe credentials and webhook secret are missing" : !billing.catalogueReady ? "Stripe is connected, but the approved GBP/EUR/USD monthly, annual and seat catalogue is incomplete" : billing.configuration?.checkout_enabled ? "Checkout enabled" : "Catalogue verified; checkout remains disabled";
+  if (activeTab === "Overview") return <>
+    <Panel title="Billing readiness"><Metrics values={[["Provider", cap(billing.providerMode || "unconfigured"), billing.configured ? "Credentials present" : "Credentials absent"], ["Catalogue", billing.catalogue?.filter((item: any) => item.active).length || 0, billing.catalogueReady ? "Complete" : "Verified mappings"], ["Checkout", billing.configuration?.checkout_enabled ? "Enabled" : "Disabled", status], ["Automatic tax", billing.configuration?.tax_enabled ? "Enabled" : "Disabled", billing.configuration?.tax_reviewed_at ? `Reviewed ${fmtDate(billing.configuration.tax_reviewed_at)}` : "Registration and tax-code review required"]]} /><div className="button-row"><button className="btn" disabled={busy || !canWrite || !billing.configured || (!billing.catalogueReady && !billing.configuration?.checkout_enabled)} onClick={() => void updateConfiguration({ checkoutEnabled: !billing.configuration?.checkout_enabled })}>{billing.configuration?.checkout_enabled ? "Disable checkout" : "Enable checkout"}</button><button className="btn" disabled={busy || !canWrite || !billing.configured || !billing.catalogueReady} onClick={() => void updateConfiguration({ taxEnabled: !billing.configuration?.tax_enabled })}>{billing.configuration?.tax_enabled ? "Disable automatic tax" : "Verify and enable automatic tax"}</button></div><p className="subtle">{billing.currencyPolicy}</p></Panel>
+    {calculations.length ? calculations.map((metric: any) => <Panel key={metric.currency} title={`${metric.currency.toUpperCase()} finance`}><Metrics values={[["MRR", formatMinor(metric.mrrMinor, metric.currency), "Recurring revenue"], ["ARR", formatMinor(metric.arrMinor, metric.currency), "MRR × 12"], ["Invoiced", formatMinor(metric.invoicedMinor, metric.currency), "Invoice totals"], ["Cash collected", formatMinor(metric.cashCollectedMinor, metric.currency), "Succeeded payments"], ["Refunds", formatMinor(metric.refundsMinor, metric.currency), "Reported separately"], ["Disputes", formatMinor(metric.disputedMinor, metric.currency), "Open/lost exposure"]]} /></Panel>) : <UnavailableState title="No reconciled financial records" detail={status} />}
+    <Panel title="Revenue history"><FinanceTrend rows={billing.daily || []} metric="mrr_minor" /></Panel>
+    <Panel title="Verified Stripe catalogue" actions={<button className="btn" disabled={busy || !canWrite || !packageVersionId || !priceId} onClick={() => void verifyPrice()}>Verify price ID</button>}>
+      <div className="grid three"><label className="field">Paid package<select value={packageVersionId} onChange={(event) => setPackageVersionId(event.target.value)}><option value="">Select package</option>{paidPackages.map((item: any) => <option key={item.id} value={item.id}>{item.display_name} v{item.version}</option>)}</select></label><label className="field">Stripe Price ID<input value={priceId} onChange={(event) => setPriceId(event.target.value)} placeholder="price_…" /></label><label className="field">Component<select value={component} onChange={(event) => setComponent(event.target.value)}><option value="base">Base subscription</option><option value="additional_editing_seat">Additional editing seat</option></select></label></div>
+      <DataTable headers={["Package", "Component", "Currency", "Interval", "Amount", "Environment", "Tax", "Verified"]} rows={(billing.catalogue || []).map((item: any) => [item.package_versions?.display_name || item.package_version_id, cap(item.component.replaceAll("_", " ")), item.currency.toUpperCase(), cap(item.interval), formatMinor(item.unit_amount_minor, item.currency), item.provider_livemode ? "Live" : "Sandbox", cap(item.tax_behavior), item.verified_at ? fmtDate(item.verified_at) : "No"])} />
+    </Panel>
+  </>;
+  if (activeTab === "Subscriptions") return <Panel title="Subscriptions"><DataTable headers={["Account", "Status", "Package", "Currency", "Interval", "Quantity", "MRR", "Renews / ends"]} rows={(billing.subscriptions || []).map((item: any) => [<Link to={`/superadmin?view=accounts&account=${item.account_id}`}>{item.accounts?.name || item.account_id}</Link>, <StatusPill tone={item.status === "active" ? "success" : item.status === "past_due" ? "danger" : "neutral"}>{cap(item.status)}</StatusPill>, item.metadata?.providerPriceId || "Unmapped", item.currency?.toUpperCase() || "—", cap(item.interval || "—"), item.quantity, formatMinor(item.interval === "year" ? Math.round(item.unit_amount_minor * item.quantity / 12) : item.unit_amount_minor * item.quantity, item.currency), item.current_period_end ? fmtDate(item.current_period_end) : "—"])} rowActions={(billing.subscriptions || []).map((item: any) => [{ label: item.cancel_at_period_end ? "Undo cancellation" : "Cancel at period end", disabled: !canWrite || busy, onClick: () => { const reason = window.prompt(item.cancel_at_period_end ? "Reason for undoing cancellation:" : "Reason for scheduling cancellation:")?.trim(); if (reason) void mutate(`/api/superadmin/billing/subscriptions/${item.provider_subscription_id}/cancellation`, { action: item.cancel_at_period_end ? "undo" : "schedule", reason }); } }, { label: "Open account", to: `/superadmin?view=accounts&account=${item.account_id}` }])} /></Panel>;
+  if (activeTab === "Invoices & Payments") return <><Panel title="Invoices"><DataTable headers={["Account", "Invoice", "Status", "Total", "Paid", "Tax", "Created"]} rows={(billing.invoices || []).map((item: any) => [item.accounts?.name || item.account_id, item.number || item.provider_invoice_id, cap(item.status || "unknown"), formatMinor(item.total_minor, item.currency), formatMinor(item.amount_paid_minor, item.currency), formatMinor(item.tax_minor, item.currency), item.provider_created_at ? fmtDate(item.provider_created_at) : "—"])} rowActions={(billing.invoices || []).map((item: any) => [{ label: "Open hosted invoice", disabled: !item.hosted_invoice_url, onClick: () => item.hosted_invoice_url && window.open(item.hosted_invoice_url, "_blank", "noopener") }, { label: "Download PDF", disabled: !item.invoice_pdf, onClick: () => item.invoice_pdf && window.open(item.invoice_pdf, "_blank", "noopener") }])} /></Panel><Panel title="Payments"><DataTable headers={["Account", "Payment", "Status", "Amount", "Received", "Failure", "Created"]} rows={(billing.payments || []).map((item: any) => [item.accounts?.name || item.account_id, item.provider_payment_intent_id, cap(item.status), formatMinor(item.amount_minor, item.currency), formatMinor(item.amount_received_minor, item.currency), item.failure_message || "—", item.provider_created_at ? fmtDate(item.provider_created_at) : "—"])} rowActions={(billing.payments || []).map((item: any) => [{ label: "Refund payment", disabled: !canWrite || busy || item.status !== "succeeded" || Number(item.amount_received_minor || 0) < 1, onClick: () => void refundPayment(item) }, { label: "Open account", to: `/superadmin?view=accounts&account=${item.account_id}` }])} /></Panel></>;
+  if (activeTab === "Recovery") return <Panel title="Failed-payment recovery"><DataTable headers={["Account", "Payment", "State", "Amount", "Failure", "Updated"]} rows={(billing.payments || []).filter((item: any) => item.failure_code || ["requires_payment_method", "canceled"].includes(item.status)).map((item: any) => [item.accounts?.name || item.account_id, item.provider_payment_intent_id, cap(item.status), formatMinor(item.amount_minor, item.currency), item.failure_message || item.failure_code || "Payment incomplete", fmtDate(item.updated_at)])} /></Panel>;
+  if (activeTab === "Refunds & Credits") return <><Panel title="Refunds"><DataTable headers={["Account", "Refund", "State", "Amount", "Reason", "Created"]} rows={(billing.refunds || []).map((item: any) => [item.accounts?.name || item.account_id, item.provider_refund_id, cap(item.status || "unknown"), formatMinor(item.amount_minor, item.currency), item.reason || "—", item.provider_created_at ? fmtDate(item.provider_created_at) : "—"])} /></Panel><Panel title="Disputes"><DataTable headers={["Account", "Dispute", "State", "Amount", "Reason", "Evidence due"]} rows={(billing.disputes || []).map((item: any) => [item.accounts?.name || item.account_id, item.provider_dispute_id, cap(item.status), formatMinor(item.amount_minor, item.currency), item.reason || "—", item.evidence_due_at ? fmtDate(item.evidence_due_at) : "—"])} /></Panel></>;
+  if (activeTab === "Revenue analysis") return <><Panel title="MRR history"><FinanceTrend rows={billing.daily || []} metric="mrr_minor" /></Panel><Panel title="Currency-separated calculations"><DataTable headers={["Currency", "MRR", "ARR", "Invoiced", "Cash", "Refunds", "Disputes", "Active", "Past due"]} rows={calculations.map((item: any) => [item.currency.toUpperCase(), formatMinor(item.mrrMinor, item.currency), formatMinor(item.arrMinor, item.currency), formatMinor(item.invoicedMinor, item.currency), formatMinor(item.cashCollectedMinor, item.currency), formatMinor(item.refundsMinor, item.currency), formatMinor(item.disputedMinor, item.currency), item.activeSubscriptions, item.pastDueSubscriptions])} /></Panel></>;
+  return <><Panel title="Reconciliation runs"><DataTable headers={["Account", "Mode", "State", "Counts", "Started", "Completed", "Error"]} rows={(billing.reconciliation || []).map((item: any) => [item.accounts?.name || item.account_id || "Platform", cap(item.mode), cap(item.state), JSON.stringify(item.counts || {}), fmtDate(item.started_at), item.completed_at ? fmtDate(item.completed_at) : "Running", item.error || "—"])} rowActions={(billing.reconciliation || []).map((item: any) => [{ label: "Reconcile account", disabled: !item.account_id || !canWrite || busy, onClick: () => { const reason = window.prompt("Reason for manual Stripe reconciliation:")?.trim(); if (reason) void mutate(`/api/superadmin/billing/accounts/${item.account_id}/reconcile`, { reason }); } }])} /></Panel><Panel title="Webhook event ledger"><DataTable headers={["Provider event", "Type", "State", "Attempts", "Provider time", "Error"]} rows={(billing.events || []).map((event: any) => [event.provider_event_id, event.event_type, cap(event.processing_state), event.attempts, fmtDate(event.provider_created_at), event.error || "—"])} rowActions={(billing.events || []).map((event: any) => [{ label: "Replay event", disabled: !canWrite || busy, onClick: () => { const reason = window.prompt("Reason for replaying this verified event:")?.trim(); if (reason) void mutate(`/api/superadmin/billing/events/${event.id}/reprocess`, { reason }); } }])} /></Panel></>;
 }
 
 function featureStatePill(state: string) {
@@ -4981,7 +5055,7 @@ function AdminActivityDesk({ activity }: { activity: any[] }) {
   </Panel>;
 }
 
-function SuperAdminAccountDetail({ detail, packages, session, fixture, canWrite, canManageCustomers, canCommunicate, canExport, refresh }: { detail: any; packages: any[]; session: Session | null; fixture: boolean; canWrite: boolean; canManageCustomers: boolean; canCommunicate: boolean; canExport: boolean; refresh: () => Promise<void> }) {
+function SuperAdminAccountDetail({ detail, packages, session, fixture, canWrite, canFinancials, canManageCustomers, canCommunicate, canExport, refresh }: { detail: any; packages: any[]; session: Session | null; fixture: boolean; canWrite: boolean; canFinancials: boolean; canManageCustomers: boolean; canCommunicate: boolean; canExport: boolean; refresh: () => Promise<void> }) {
   const labels = ["Overview", "Workspaces & Properties", "Users & Permissions", "Package & Limits", "Billing", "Usage", "Communications", "Activity", "Data & Access"];
   const [tab, setTab] = useState("Overview");
   const activeGrant = (detail.grants || []).find((item: any) => item.status === "active" && (!item.expires_at || Date.parse(item.expires_at) > Date.now()));
@@ -5115,11 +5189,40 @@ function SuperAdminAccountDetail({ detail, packages, session, fixture, canWrite,
       </Panel>
       <Panel title="Grant history"><DataTable headers={["Package", "Arrangement", "Status", "Starts", "Expires", "Reason"]} rows={(detail.grants || []).map((item: any) => [item.package_versions?.display_name || item.package_version_id, "Complimentary", cap(item.status), fmtDate(item.starts_at), item.expires_at ? fmtDate(item.expires_at) : "Never", item.reason])} /></Panel>
     </> : null}
-    {tab === "Billing" ? <Panel title="Billing"><Metrics values={[["Billing arrangement", activeGrant ? "Complimentary" : "Standard", activeGrant ? "No payment required" : cap(standardAssignment?.billing_state || "unconfigured")], ["Stripe state", standardAssignment?.billing_state || "Unconfigured", "Verified provider state only"], ["Billing members", (detail.billingMemberships || []).filter((item: any) => item.can_view || item.can_manage).length, "Explicit billing permissions"], ["Currency", "Unavailable", "No reconciled subscription currency"]]} /><p className="subtle">Complimentary access does not fabricate a subscription or modify Stripe. Financial operations remain disabled until provider configuration and reconciliation are verified.</p></Panel> : null}
+    {tab === "Billing" ? <SuperAdminAccountBilling detail={detail} activeGrant={activeGrant} standardAssignment={standardAssignment} session={session} fixture={fixture} canWrite={canFinancials} refresh={refresh} /> : null}
     {tab === "Usage" ? <Panel title="Usage"><DataTable headers={["Period", "Metric", "Included", "Consumed", "Reserved"]} rows={(detail.usage || []).map((item: any) => [`${fmtDate(item.period_start)} – ${fmtDate(item.period_end)}`, item.metric, item.included ?? "—", item.consumed, item.reserved])} /></Panel> : null}
     {tab === "Communications" ? <><Panel title="Draft direct message"><div className="settings-grid"><label className="field">Channel<select value={draftChannel} onChange={(event) => setDraftChannel(event.target.value as "in_app" | "email")}><option value="in_app">In-app</option><option value="email">Email</option></select></label><label className="field">Subject<input value={draftSubject} onChange={(event) => setDraftSubject(event.target.value)} /></label><label className="field settings-span-2">Message<textarea rows={5} value={draftBody} onChange={(event) => setDraftBody(event.target.value)} /></label><label className="field settings-span-2">Administrative reason<input value={draftReason} onChange={(event) => setDraftReason(event.target.value)} /></label></div><button className="btn" disabled={busy || !canCommunicate || !draftSubject.trim() || !draftBody.trim() || draftReason.trim().length < 3} onClick={() => void saveMessageDraft()}>Save draft</button><p className="subtle">Drafting is available; this control never sends. Delivery requires a separately reviewed recipient preview and send workflow.</p></Panel><Panel title="Communication history"><DataTable headers={["Channel", "Subject", "State", "Created"]} rows={(detail.messages || []).map((item: any) => [item.channel, item.subject || item.kind, item.status || item.state, fmtDate(item.created_at)])} /></Panel></> : null}
     {tab === "Activity" ? <Panel title="Account activity"><DataTable headers={["Action", "Actor", "Time"]} rows={(detail.activity || []).map((item: any) => [item.action, item.actor_id || "System", fmtDate(item.created_at)])} /></Panel> : null}
     {tab === "Data & Access" ? <><Panel title="Account access"><div className="settings-grid"><label className="field">State<select value={accountState} onChange={(event) => setAccountState(event.target.value)}><option value="active">Active</option><option value="frozen">Frozen</option><option value="blocked">Blocked</option><option value="pending_deletion">Pending deletion</option></select></label>{accountState === "pending_deletion" && <label className="field">Scheduled review date<input type="datetime-local" value={scheduledDeletionAt} onChange={(event) => setScheduledDeletionAt(event.target.value)} /></label>}</div><div className="button-row"><button className="btn" disabled={busy || !canManageCustomers || accountState === detail.account.access_state} onClick={() => void saveAccountState()}>Update access state</button><Link className="btn" to={`/superadmin?view=administration&tab=Customer+sessions&account=${detail.account.id}`}>View as this customer</Link><button className="btn" disabled={busy || !canExport} onClick={() => void exportAccount()}>Export this account</button></div><p className="subtle">Pending deletion is a reversible reviewed state. This interface does not irreversibly delete production customer data.</p></Panel><Panel title="Service-specific controls"><DataTable headers={["Service", "State", "Reason", "Action"]} rows={["audits", "analytics", "uptime", "reports", "email"].map((service) => { const control = (detail.controls || []).find((item: any) => item.service === service); const paused = Boolean(control?.paused); return [cap(service), paused ? <StatusPill tone="danger">Paused</StatusPill> : <StatusPill tone="success">Running</StatusPill>, control?.reason || "—", <button className="btn" disabled={busy || !canManageCustomers} onClick={() => void toggleAccountService(service, !paused)}>{paused ? "Resume" : "Pause"}</button>]; })} /></Panel></> : null}
+  </>;
+}
+
+function SuperAdminAccountBilling({ detail, activeGrant, standardAssignment, session, fixture, canWrite, refresh }: any) {
+  const billing = detail.billing || {};
+  const subscription = (billing.subscriptions || []).find((item: any) => ["active", "trialing", "past_due", "unpaid", "incomplete"].includes(item.status));
+  const [busy, setBusy] = useState(false);
+  async function reconcile() {
+    const reason = window.prompt("Reason for reconciling this account with Stripe:")?.trim();
+    if (!session || fixture || !reason) return;
+    setBusy(true);
+    try { await api(session, `/api/superadmin/billing/accounts/${detail.account.id}/reconcile`, { method: "POST", body: JSON.stringify({ reason }) }); await refresh(); }
+    finally { setBusy(false); }
+  }
+  async function cancellation(action: "schedule" | "undo") {
+    const reason = window.prompt(`Reason to ${action === "schedule" ? "schedule" : "undo"} cancellation:`)?.trim();
+    if (!session || fixture || !reason || !subscription) return;
+    setBusy(true);
+    try { await api(session, `/api/superadmin/billing/subscriptions/${subscription.provider_subscription_id}/cancellation`, { method: "POST", body: JSON.stringify({ action, reason }) }); await refresh(); }
+    finally { setBusy(false); }
+  }
+  return <>
+    <Panel title="Billing" actions={<button className="btn" disabled={busy || !canWrite || !billing.customer} onClick={() => void reconcile()}><RefreshCw /> Reconcile Stripe</button>}>
+      <Metrics values={[["Billing arrangement", activeGrant ? "Complimentary" : "Standard", activeGrant ? "Excluded from MRR and no payment required" : cap(standardAssignment?.billing_state || "unconfigured")], ["Stripe customer", billing.customer?.provider_customer_id || "Not connected", billing.customer?.last_synced_at ? `Synced ${fmtDate(billing.customer.last_synced_at)}` : "No sync"], ["Subscription", subscription ? cap(subscription.status) : "None", subscription?.provider_subscription_id || "No provider subscription"], ["Currency", subscription?.currency?.toUpperCase() || billing.customer?.currency?.toUpperCase() || "Unavailable", "Provider-reconciled only"]]} />
+      {activeGrant && <UnavailableState title="Complimentary package protected" detail="This grant remains independent from Stripe. It is excluded from MRR and no subscription mutation occurs unless the grant is explicitly revoked first." />}
+      {subscription && <div className="button-row"><button className="btn" disabled={busy || !canWrite} onClick={() => void cancellation(subscription.cancel_at_period_end ? "undo" : "schedule")}>{subscription.cancel_at_period_end ? "Undo cancellation" : "Cancel at period end"}</button><span>{subscription.current_period_end ? `Current period ends ${fmtDate(subscription.current_period_end)}` : "Period end unavailable"}</span></div>}
+    </Panel>
+    <Panel title="Invoices"><DataTable headers={["Invoice", "Status", "Subtotal", "Tax", "Total", "Paid", "Created"]} rows={(billing.invoices || []).map((item: any) => [item.number || item.provider_invoice_id, cap(item.status || "unknown"), formatMinor(item.subtotal_minor, item.currency), formatMinor(item.tax_minor, item.currency), formatMinor(item.total_minor, item.currency), formatMinor(item.amount_paid_minor, item.currency), item.provider_created_at ? fmtDate(item.provider_created_at) : "—"])} rowActions={(billing.invoices || []).map((item: any) => [{ label: "Open invoice", disabled: !item.hosted_invoice_url, onClick: () => item.hosted_invoice_url && window.open(item.hosted_invoice_url, "_blank", "noopener") }])} /></Panel>
+    <Panel title="Payments, refunds and disputes"><DataTable headers={["Type", "Reference", "Status", "Amount", "Created"]} rows={[...(billing.payments || []).map((item: any) => ["Payment", item.provider_payment_intent_id, cap(item.status), formatMinor(item.amount_received_minor, item.currency), item.provider_created_at ? fmtDate(item.provider_created_at) : "—"]), ...(billing.refunds || []).map((item: any) => ["Refund", item.provider_refund_id, cap(item.status || "unknown"), formatMinor(item.amount_minor, item.currency), item.provider_created_at ? fmtDate(item.provider_created_at) : "—"]), ...(billing.disputes || []).map((item: any) => ["Dispute", item.provider_dispute_id, cap(item.status), formatMinor(item.amount_minor, item.currency), item.provider_created_at ? fmtDate(item.provider_created_at) : "—"])]} /></Panel>
   </>;
 }
 
@@ -5378,8 +5481,9 @@ function AccountView({
     [workspaceToDelete, setWorkspaceToDelete] = useState<any | null>(null),
     [workspaceDeleteConfirmation, setWorkspaceDeleteConfirmation] = useState("");
   const role = data.accounts?.[0]?.role || data.workspaces?.[0]?.role || "viewer";
+  const hasBillingAccess = role === "owner" || Boolean(data.billingMemberships?.some((item) => item.can_view || item.can_manage));
   const tabs = role === "viewer"
-    ? ["Profile", "Notification preferences", "Security"]
+    ? ["Profile", ...(hasBillingAccess ? ["Billing & plan"] : []), "Notification preferences", "Security"]
     : [
         "Profile",
         "Workspace",
@@ -5895,12 +5999,21 @@ function AccountView({
 
 function Billing({ fixture, notify, data, session }: { fixture: boolean; notify: Notify; data: Bootstrap; session: Session | null }) {
   const [annual, setAnnual] = useState(true);
+  const [currency, setCurrency] = useState("gbp");
+  const [billingData, setBillingData] = useState<any>(null);
+  const [billingBusy, setBillingBusy] = useState(false);
   const [eventUsage, setEventUsage] = useState<{ used: number; limit: number | null } | null>(fixture ? { used: 2, limit: 20 } : null);
   const accountId = data.accounts?.[0]?.accounts?.id;
   const effective = accountId ? data.accountEntitlements?.[accountId] : null;
   const entitlement = String(effective?.packageKey || data.accounts?.[0]?.accounts?.entitlement || (fixture ? "Scale" : "Pro"));
   const plan = /essentials/i.test(entitlement) ? "Essentials" : /scale/i.test(entitlement) ? "Scale" : /pro/i.test(entitlement) ? "Pro" : "Free";
   const complimentary = effective?.arrangement === "complimentary" || (!effective && /early.?access/i.test(entitlement));
+  async function loadBilling() {
+    if (!session || !accountId || fixture) return;
+    try { setBillingData(await api(session, `/api/billing/${accountId}`)); }
+    catch (error: any) { setBillingData({ error: error.message, catalogue: [], invoices: [], subscriptions: [] }); }
+  }
+  useEffect(() => { void loadBilling(); }, [session, accountId, fixture]);
   useEffect(() => {
     if (!session || !data.properties.length) return;
     let cancelled = false;
@@ -5924,15 +6037,37 @@ function Billing({ fixture, notify, data, session }: { fixture: boolean; notify:
   }, [session, data.properties.map((property) => property.id).join("|")]);
   const auditCount = data.properties.reduce((total, property) => total + (property.audit_runs || []).filter((run) => new Date(run.created_at).getMonth() === new Date().getMonth() && new Date(run.created_at).getFullYear() === new Date().getFullYear()).length, 0);
   const viewerCount = (data.propertyMemberships || []).length;
+  const currentSubscription = billingData?.subscriptions?.find((item: any) => ["active", "trialing", "past_due", "unpaid", "incomplete"].includes(item.status));
+  async function openPortal() {
+    if (!session || !accountId) return;
+    setBillingBusy(true);
+    try { const result = await api<any>(session, `/api/billing/${accountId}/portal`, { method: "POST", body: "{}" }); window.location.assign(result.url); }
+    catch (error: any) { notify(error.message); setBillingBusy(false); }
+  }
+  async function setCancellation(cancelAtPeriodEnd: boolean) {
+    if (!session || !accountId) return;
+    setBillingBusy(true);
+    try { await api(session, `/api/billing/${accountId}/cancellation`, { method: "POST", body: JSON.stringify({ cancelAtPeriodEnd }) }); await loadBilling(); notify(cancelAtPeriodEnd ? "Cancellation scheduled for the end of the billing period" : "Scheduled cancellation removed"); }
+    catch (error: any) { notify(error.message); }
+    finally { setBillingBusy(false); }
+  }
+  async function checkout(packageVersionId: string) {
+    if (!session || !accountId) return;
+    setBillingBusy(true);
+    try { const result = await api<any>(session, `/api/billing/${accountId}/checkout`, { method: "POST", body: JSON.stringify({ packageVersionId, currency, interval: annual ? "year" : "month", editingSeats: 1, requestKey: crypto.randomUUID() }) }); if (result.url) window.location.assign(result.url); else notify("Checkout session created"); }
+    catch (error: any) { notify(error.message); setBillingBusy(false); }
+  }
   return (
     <>
       <div className="grid equal">
         <Panel title="Subscription">
-          <StatusPill tone="success">{complimentary ? "Complimentary" : "Active"}</StatusPill>
+          <StatusPill tone={currentSubscription?.status === "past_due" ? "danger" : "success"}>{complimentary ? "Complimentary" : currentSubscription ? cap(currentSubscription.status) : "No paid subscription"}</StatusPill>
           <div className="price">{plan}</div>
           <p className="subtle">{complimentary ? `This package is complimentary${effective?.grant?.expires_at ? ` until ${fmtDate(effective.grant.expires_at)}` : " with no expiry"}. No payment is required and no Stripe subscription is changed.` : "This is the effective standard package. Billing state is shown only when reconciled from Stripe."}</p>
-          <button className="btn" disabled title="Stripe plan changes are not connected">Change plan</button>{" "}
-          <button className="btn" disabled title="Stripe billing management is not connected">Manage billing</button>
+          <a className="btn" href="#plans">Change plan</a>{" "}
+          <button className="btn" disabled={billingBusy || !billingData?.canManage || !billingData?.customer} onClick={() => void openPortal()}>Manage billing</button>
+          {currentSubscription && <p><button className="btn" disabled={billingBusy || !billingData?.canManage} onClick={() => void setCancellation(!currentSubscription.cancel_at_period_end)}>{currentSubscription.cancel_at_period_end ? "Undo scheduled cancellation" : "Cancel at period end"}</button></p>}
+          {currentSubscription?.cancel_at_period_end && <p className="subtle">Cancellation is scheduled for {currentSubscription.current_period_end ? fmtDate(currentSubscription.current_period_end) : "the end of the current billing period"}. Account data is preserved.</p>}
         </Panel>
         <Panel title="Current usage">
           <div className="usage-list">
@@ -5946,15 +6081,15 @@ function Billing({ fixture, notify, data, session }: { fixture: boolean; notify:
         </Panel>
       </div>
       <div className="grid equal">
-        <Panel title="Payment method"><EmptyCompact title="No payment method available" detail="Stripe billing is not connected." /><button className="btn" disabled>Update</button><p className="subtle">No cancellation or downgrade is scheduled.</p></Panel>
-        <Panel title="Invoice history"><EmptyCompact title="No invoice history available" detail="Invoices will appear after Stripe billing is connected." /></Panel>
+        <Panel title="Payment method"><p>{billingData?.customer ? "Payment methods are managed securely in the Stripe customer portal." : "No Stripe billing customer exists for this account."}</p><button className="btn" disabled={billingBusy || !billingData?.canManage || !billingData?.customer} onClick={() => void openPortal()}>Update payment method</button><p className="subtle">Claritude never stores card details.</p></Panel>
+        <Panel title="Invoice history">{billingData?.invoices?.length ? <DataTable headers={["Invoice", "Status", "Total", "Paid", "Date"]} rows={billingData.invoices.map((invoice: any) => [invoice.number || invoice.provider_invoice_id, cap(invoice.status || "unknown"), formatMinor(invoice.total_minor, invoice.currency), formatMinor(invoice.amount_paid_minor, invoice.currency), invoice.provider_created_at ? fmtDate(invoice.provider_created_at) : "—"])} /> : <EmptyCompact title="No invoice history" detail={billingData?.checkoutReady ? "Invoices will appear after the first successful subscription invoice." : "Checkout is not yet enabled for this account."} />}</Panel>
       </div>
-      <Panel title="Choose a plan" actions={<span className="seg"><button className={annual ? "active" : ""} onClick={() => setAnnual(true)}>Annual</button><button className={!annual ? "active" : ""} onClick={() => setAnnual(false)}>Monthly</button></span>}>
+      <div id="plans"><Panel title="Choose a plan" actions={<><label className="field inline-field"><span className="sr-only">Billing currency</span><select value={currency} onChange={(event) => setCurrency(event.target.value)}><option value="gbp">GBP</option><option value="eur">EUR</option><option value="usd">USD</option></select></label><span className="seg"><button className={annual ? "active" : ""} onClick={() => setAnnual(true)}>Annual</button><button className={!annual ? "active" : ""} onClick={() => setAnnual(false)}>Monthly</button></span></>}>
         <div className="plans">
-          {["Free", "Essentials", "Scale", "Pro"].map((candidate) => <div className={`plan ${candidate === plan ? "current" : ""}`} key={candidate}><h2>{candidate}</h2><div className="price">Pricing unavailable</div><p>{candidate === "Pro" ? "Unlimited configured custom events per property, subject to platform safety limits." : `${candidate === "Free" ? 2 : candidate === "Essentials" ? 5 : 20} configured custom events per property.`}</p><button className="btn" disabled>{candidate === plan ? "Current plan" : candidate === "Free" ? "Downgrade" : "Upgrade"}</button></div>)}
+          {["Free", "Essentials", "Scale", "Pro"].map((candidate) => { const mapped = billingData?.catalogue?.find((item: any) => item.component === "base" && item.currency === currency && item.interval === (annual ? "year" : "month") && item.package_versions?.display_name === candidate); return <div className={`plan ${candidate === plan ? "current" : ""}`} key={candidate}><h2>{candidate}</h2><div className="price">{candidate === "Free" ? formatMinor(0, currency) : mapped ? `${formatMinor(mapped.unit_amount_minor, currency)} / ${annual ? "year" : "month"}` : "Pricing unavailable"}</div><p>{candidate === "Pro" ? "Unlimited configured custom events per property, subject to platform safety limits." : `${candidate === "Free" ? 2 : candidate === "Essentials" ? 5 : 20} configured custom events per property.`}</p><button className="btn" disabled={billingBusy || complimentary || candidate === plan || candidate === "Free" || !mapped || !billingData?.checkoutReady || !billingData?.canManage || Boolean(currentSubscription)} onClick={() => mapped && void checkout(mapped.package_version_id)}>{candidate === plan ? "Current plan" : candidate === "Free" ? "Contact support to downgrade" : currentSubscription ? "Manage in portal" : mapped ? "Choose plan" : "Unavailable"}</button></div>; })}
         </div>
-        <p className="subtle">Downgrading requires excess properties and paid users to be removed before renewal. The pricing toggle does not change the active annual subscription.</p>
-      </Panel>
+        <p className="subtle">{complimentary ? "This complimentary account cannot enter paid checkout unless its grant is explicitly revoked through the audited SuperAdmin workflow." : billingData?.checkoutReady ? "Plan selection is validated again on the server. Existing subscriptions are managed through the portal to prevent duplicates." : "Checkout stays disabled until every approved price, webhook secret and billing policy is verified."} Downgrading never deletes workspaces, properties, reports, audits or analytics history.</p>
+      </Panel></div>
     </>
   );
 }

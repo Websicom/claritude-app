@@ -50,11 +50,28 @@ import {
   validatePlatformSetting,
   normalizeAccountTags,
   applyAdminExportFilters,
+  financeMetrics,
 } from "./index";
 import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
 
 describe("worker evidence pipelines", () => {
+  it("keeps finance calculations currency-separated and excludes non-recurring cash movements from MRR", () => {
+    expect(financeMetrics({
+      subscriptions: [
+        { status: "active", currency: "gbp", interval: "month", unit_amount_minor: 1200, quantity: 2, discount_minor: 400 },
+        { status: "active", currency: "usd", interval: "year", unit_amount_minor: 12000, quantity: 1, discount_minor: 0 },
+        { status: "canceled", currency: "gbp", interval: "month", unit_amount_minor: 9999, quantity: 1 },
+      ],
+      invoices: [{ currency: "gbp", total_minor: 2400 }],
+      payments: [{ currency: "gbp", status: "succeeded", amount_received_minor: 2400 }],
+      refunds: [{ currency: "gbp", status: "succeeded", amount_minor: 300 }],
+      disputes: [{ currency: "gbp", status: "needs_response", amount_minor: 500 }],
+    })).toEqual([
+      expect.objectContaining({ currency: "gbp", mrrMinor: 2000, arrMinor: 24000, cashCollectedMinor: 2400, refundsMinor: 300, disputedMinor: 500 }),
+      expect.objectContaining({ currency: "usd", mrrMinor: 1000, arrMinor: 12000 }),
+    ]);
+  });
   it("normalises bounded account tags without accepting oversized metadata", () => {
     expect(normalizeAccountTags([" Priority ", "Priority", "needs   review"])).toEqual(["Priority", "needs review"]);
     expect(normalizeAccountTags("priority")).toBeNull();
