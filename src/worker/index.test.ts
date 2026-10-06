@@ -51,6 +51,8 @@ import {
   normalizeAccountTags,
   applyAdminExportFilters,
   financeMetrics,
+  calculateSubscriptionMrr,
+  stripeKeyEnvironment,
 } from "./index";
 import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
@@ -59,7 +61,7 @@ describe("worker evidence pipelines", () => {
   it("keeps finance calculations currency-separated and excludes non-recurring cash movements from MRR", () => {
     expect(financeMetrics({
       subscriptions: [
-        { status: "active", currency: "gbp", interval: "month", unit_amount_minor: 1200, quantity: 2, discount_minor: 400 },
+        { status: "active", currency: "gbp", interval: "month", unit_amount_minor: 1200, quantity: 2, mrr_minor: 2000 },
         { status: "active", currency: "usd", interval: "year", unit_amount_minor: 12000, quantity: 1, discount_minor: 0 },
         { status: "canceled", currency: "gbp", interval: "month", unit_amount_minor: 9999, quantity: 1 },
       ],
@@ -72,6 +74,40 @@ describe("worker evidence pipelines", () => {
       expect.objectContaining({ currency: "usd", mrrMinor: 1000, arrMinor: 12000 }),
     ]);
   });
+  it("detects restricted and secret Stripe keys without crossing environments", () => {
+    expect(stripeKeyEnvironment("sk_test_example")).toBe("test");
+    expect(stripeKeyEnvironment("rk_test_example")).toBe("test");
+    expect(stripeKeyEnvironment("sk_live_example")).toBe("live");
+    expect(stripeKeyEnvironment("rk_live_example")).toBe("live");
+    expect(stripeKeyEnvironment("pk_test_example")).toBeNull();
+    expect(stripeKeyEnvironment("not-a-key")).toBeNull();
+  });
+  it("calculates MRR from every recurring item, annual intervals and recurring discounts", () => {
+    const result = calculateSubscriptionMrr([
+      { id: "si_base", quantity: 1, price: { unit_amount: 12000, recurring: { interval: "year" } } },
+      { id: "si_seats", quantity: 3, price: { unit_amount: 200, recurring: { interval: "month" } } },
+    ], [
+      { id: "di_forever", start: 1, source: { coupon: { id: "co_20", duration: "forever", percent_off: 20 } } },
+      { id: "di_once", start: 1, source: { coupon: { id: "co_once", duration: "once", amount_off: 500 } } },
+    ], 100);
+    expect(result.grossMrrMinor).toBe(1600);
+    expect(result.recurringDiscountMinor).toBe(320);
+    expect(result.mrrMinor).toBe(1280);
+    expect(result.items).toHaveLength(2);
+    expect(result.items.reduce((sum, item) => sum + item.monthlyNetMinor, 0)).toBe(1280);
+    expect(calculateSubscriptionMrr(
+      [{ id: "si_annual", quantity: 1, price: { unit_amount: 24000, recurring: { interval: "year" } } }],
+      [{ id: "di_amount", source: { coupon: { duration: "forever", amount_off: 1200, currency: "gbp" } } }],
+    ).mrrMinor).toBe(1900);
+  });
+  it("scopes finance by environment and counts only succeeded refunds", () => {
+    const result = financeMetrics({
+      subscriptions: [{ billing_environment: "test", status: "active", currency: "gbp", mrr_minor: 900 }, { billing_environment: "live", status: "active", currency: "gbp", mrr_minor: 5000 }],
+      invoices: [], payments: [], disputes: [],
+      refunds: [{ billing_environment: "test", currency: "gbp", status: "succeeded", amount_minor: 100 }, { billing_environment: "test", currency: "gbp", status: "pending", amount_minor: 200 }, { billing_environment: "live", currency: "gbp", status: "succeeded", amount_minor: 300 }],
+    }, "test");
+    expect(result[0]).toMatchObject({ currency: "gbp", mrrMinor: 900, refundsMinor: 100, pendingRefundsMinor: 200 });
+  });
   it("normalises bounded account tags without accepting oversized metadata", () => {
     expect(normalizeAccountTags([" Priority ", "Priority", "needs   review"])).toEqual(["Priority", "needs review"]);
     expect(normalizeAccountTags("priority")).toBeNull();
@@ -80,10 +116,12 @@ describe("worker evidence pipelines", () => {
   });
 
   it("applies selected-row, account and query filters to admin exports", () => {
-    const rows = [{ id: "a", account_id: "one", name: "Alpha" }, { id: "b", account_id: "two", name: "Beta" }];
-    expect(applyAdminExportFilters(rows, { selectedIds: ["b"] })).toEqual([rows[1]]);
+    const rows = [{ id: "a", account_id: "one", name: "Alpha", billing_environment: "live" }, { id: "b", account_id: "two", name: "Beta", billing_environment: "test" }];
+    expect(applyAdminExportFilters(rows, { selectedIds: ["b"], billingEnvironment: "test" })).toEqual([rows[1]]);
     expect(applyAdminExportFilters(rows, { accountId: "one" })).toEqual([rows[0]]);
-    expect(applyAdminExportFilters(rows, { query: "beta" })).toEqual([rows[1]]);
+    expect(applyAdminExportFilters(rows, { query: "beta", billingEnvironment: "test" })).toEqual([rows[1]]);
+    expect(applyAdminExportFilters(rows, { billingEnvironment: "live" })).toEqual([rows[0]]);
+    expect(applyAdminExportFilters(rows, { billingEnvironment: "test" })).toEqual([rows[1]]);
   });
   it("derives configuration state separately from permission and running jobs", () => {
     expect(deriveFeatureState({ permitted: true, configured: false, enabled: false })).toMatchObject({ state: "awaiting_configuration", runningJobs: 0 });

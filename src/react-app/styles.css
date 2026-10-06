@@ -4339,3 +4339,74 @@ input[type="checkbox"]:checked:after {
   min-width: 4px;
   opacity: .82;
 }
+
+.environment-selector select,
+.finance-controls select {
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  padding: 0 34px 0 12px;
+}
+
+.test-environment-banner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 11px 14px;
+  border: 1px solid #f0c36a;
+  border-radius: 10px;
+  background: #fff8df;
+  color: #674b00;
+}
+
+.finance-controls {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.finance-controls label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.finance-chart {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.finance-chart svg {
+  min-width: 620px;
+  width: 100%;
+  height: 250px;
+}
+
+.finance-chart text {
+  fill: var(--muted);
+  font-size: 11px;
+}
+
+.chart-grid {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.chart-line {
+  fill: none;
+  stroke: #087f5b;
+  stroke-width: 3;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.chart-point {
+  fill: #087f5b;
+  stroke: white;
+  stroke-width: 2;
+}
