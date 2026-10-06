@@ -1886,7 +1886,7 @@ input[type="checkbox"]:checked:after {
   max-height: 480px;
 }
 .project-icon {
-  border-radius: 50%;
+  border-radius: 5px;
   font-size: 10px;
   font-weight: 750;
   background: #e8eef7;
@@ -3152,6 +3152,10 @@ input[type="checkbox"]:checked:after {
 .chart-hit {
   fill: transparent;
   pointer-events: all;
+}
+.chart-hit:focus,
+.chart-hit:focus-visible {
+  outline: none;
 }
 .chart-cursor {
   stroke: #94a3b8;

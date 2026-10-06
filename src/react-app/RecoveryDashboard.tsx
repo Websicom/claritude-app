@@ -476,7 +476,7 @@ export function ClaritudeApplication({
     ? data.notifications.filter((notification: any) => notification.property_id === property.id)
     : data.notifications;
   const title = workspaceContext
-    ? "Overview"
+    ? loc.pathname === "/" ? "Workspace Overview" : "Workspace Notifications"
     : section === "account"
       ? "Account settings"
       : section === "settings"
@@ -1290,7 +1290,7 @@ function WorkspaceOverview({
       ).map(([label, value]) => ({ label, value }));
   return (
     <Page
-      title="Your properties"
+      title="Workspace Overview"
       status={<Period />}
       actions={
         <button className="primary" onClick={openAdd} disabled={!canManage}>
@@ -1815,11 +1815,16 @@ function PropertyOverview({
     seoScore =
       audit?.category_scores?.SEO ??
       auditCategoryScore(audit?.user_facing_results || audit?.audit_results, ["SEO"]),
-    vitalRows = (analytics?.vitals || []).map((vital: any) => [
-      vital.name,
-      formatVital(vital.name, vital.value),
-      fmt(vital.samples || 0),
-    ]);
+    vitalRows = (analytics?.vitals || []).map((vital: any) => {
+      const value = formatVital(vital.name, vital.value);
+      const target = performanceTargetLabel(vital.name);
+      return [
+        <MetricTerm key={`${vital.name}-term`} term={vital.name} />,
+        value,
+        <PerformanceTarget key={`${vital.name}-target`} metric={vital.name} value={value} target={target} />,
+        fmt(vital.samples || 0),
+      ];
+    });
   const currentStatus = fixture ? property.demo?.status : monitor?.last_status;
   const analyticsHref = `/analytics?property=${property.id}&${livePeriod}`;
   const analyticsTabHref = (analyticsTab: string) => `${analyticsHref}&analyticsTab=${analyticsTab}`;
@@ -1938,10 +1943,13 @@ function PropertyOverview({
                     <RefreshCw className="audit-spin" /> Loading performance data
                   </div>
                 ) : vitalRows.length ? (
-                  <DataTable
-                    headers={["Metric", "Result", "Samples"]}
-                    rows={vitalRows}
-                  />
+                  <>
+                    <DataTable
+                      headers={["Metric", "Result", "Target", "Samples"]}
+                      rows={vitalRows}
+                    />
+                    <p className="subtle">Combined desktop and mobile 75th-percentile field measurements for the selected period.</p>
+                  </>
                 ) : (
                   <EmptyCompact
                     title="No Core Web Vitals samples"
@@ -2020,7 +2028,7 @@ function UptimeView({
     [checkData, setCheckData] = useState<any>(null),
     [uptimeError, setUptimeError] = useState(""),
     [chartMenuOpen, setChartMenuOpen] = useState(false),
-    [showPreviousChecks, setShowPreviousChecks] = useState(true);
+    [showPreviousChecks, setShowPreviousChecks] = useState(false);
   const loadMaintenance = () => {
     if (!session || !property?.uptime_monitors?.[0]) return Promise.resolve();
     return api<any[]>(
@@ -8402,6 +8410,18 @@ function PerformanceTarget({ metric, value, target }: { metric: string; value: s
   const label = status === "good" ? "Meets target" : status === "close" ? "Close to target" : status === "failed" ? "Does not meet target" : "Target status unavailable";
   return <span className="performance-target">{target.replace(/\s*●\s*$/, "")}<i className={status} aria-label={label} title={label} /></span>;
 }
+
+export function performanceTargetLabel(metric: string) {
+  const targets: Record<string, string> = {
+    LCP: "≤ 2.5 s",
+    INP: "≤ 200 ms",
+    CLS: "≤ 0.1",
+    FCP: "≤ 1.8 s",
+    TBT: "≤ 200 ms",
+  };
+  return targets[metric.toUpperCase()] || "Observed";
+}
+
 function RealUserPerformanceTable({ data, device }: { data: any; device: "desktop" | "mobile" }) {
   const source = data?.[device];
   const performance = source?.performance;
@@ -8425,7 +8445,7 @@ function RealUserPerformanceTable({ data, device }: { data: any; device: "deskto
             key={`${vital.name}-target`}
             metric={vital.name}
             value={formatVital(vital.name, vital.value)}
-            target={vital.name === "LCP" ? "≤ 2.5 s" : vital.name === "INP" ? "≤ 200 ms" : vital.name === "CLS" ? "≤ 0.1" : "Observed"}
+            target={performanceTargetLabel(vital.name)}
           />,
           fmt(vital.samples || 0),
         ])}
@@ -9008,13 +9028,15 @@ function metricDelta(
   return `${direction} ${raw > 0 ? "+" : ""}${raw.toFixed(mode === "percentage points" ? 2 : 0)}${mode === "percent" ? "%" : "%"} vs previous period`;
 }
 
-function eventLabel(value: string) {
+export function eventLabel(value: string) {
   const known: Record<string, string> = {
     form_success: "Successful form submissions",
     "successful-form-submission": "Successful form submissions",
     outbound: "Outbound clicks",
   };
-  return known[value] || String(value || "Event").replaceAll(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  if (known[value]) return known[value];
+  const label = String(value || "Event").replaceAll(/[-_]+/g, " ");
+  return /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/.*)?$/i.test(label) ? label.toLocaleLowerCase() : label;
 }
 
 function shareRows(values: any[] = [], total = 0, iconKind?: string) {
@@ -9034,11 +9056,11 @@ function countryFlag(value: string) {
     : "";
 }
 
-function durationLabel(seconds: number) {
+export function durationLabel(seconds: number) {
   const rounded = Math.max(0, Math.round(seconds));
   return rounded >= 60
-    ? `${Math.floor(rounded / 60)} min ${String(rounded % 60).padStart(2, "0")} sec`
-    : `${rounded} sec`;
+    ? `${Math.floor(rounded / 60)} min ${String(rounded % 60).padStart(2, "0")} ${rounded % 60 === 1 ? "sec" : "secs"}`
+    : `${rounded} ${rounded === 1 ? "sec" : "secs"}`;
 }
 
 export function pageActiveTimeLabel(seconds: number) {
@@ -9046,6 +9068,7 @@ export function pageActiveTimeLabel(seconds: number) {
   const safe = Math.max(0, seconds);
   if (safe < 10) return `${safe.toFixed(1)} s`;
   const rounded = Math.round(safe);
+  if (rounded === 60) return "60 s";
   return rounded >= 60
     ? `${Math.floor(rounded / 60)} min ${String(rounded % 60).padStart(2, "0")} s`
     : `${rounded} s`;

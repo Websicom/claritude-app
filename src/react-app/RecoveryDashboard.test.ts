@@ -9,6 +9,8 @@ import {
   auditScoreBand,
   buildAuditFixPrompt,
   customEventUsageText,
+  durationLabel,
+  eventLabel,
   auditSeverityGroup,
   filterProperties,
   filterAuditSubfindings,
@@ -21,6 +23,7 @@ import {
   periodLabel,
   prepareAvatarImage,
   performanceTargetStatus,
+  performanceTargetLabel,
   propertyOnboardingChecks,
   shouldShowAuditQuickFilters,
   propertyFaviconSources,
@@ -139,7 +142,17 @@ describe("top selector searches", () => {
     expect(pageActiveTimeLabel(4.24)).toBe("4.2 s");
     expect(pageActiveTimeLabel(9.96)).toBe("10.0 s");
     expect(pageActiveTimeLabel(10.2)).toBe("10 s");
+    expect(pageActiveTimeLabel(60)).toBe("60 s");
     expect(pageActiveTimeLabel(78)).toBe("1 min 18 s");
+  });
+
+  it("pluralises active session seconds and preserves readable custom event casing", () => {
+    expect(durationLabel(1)).toBe("1 sec");
+    expect(durationLabel(42)).toBe("42 secs");
+    expect(durationLabel(78)).toBe("1 min 18 secs");
+    expect(eventLabel("www.google.com")).toBe("www.google.com");
+    expect(eventLabel("Www.Google.Com")).toBe("www.google.com");
+    expect(eventLabel("Need Convincing Clicked")).toBe("Need Convincing Clicked");
   });
 
   it("uses individual checks by default and medians only for a selected uptime range", () => {
@@ -317,6 +330,8 @@ describe("top selector searches", () => {
     expect(performanceTargetStatus("LCP", "3.6 s")).toBe("failed");
     expect(performanceTargetStatus("INP", "205 ms")).toBe("close");
     expect(performanceTargetStatus("CLS", "0.00")).toBe("good");
+    expect(performanceTargetLabel("LCP")).toBe("≤ 2.5 s");
+    expect(performanceTargetLabel("INP")).toBe("≤ 200 ms");
   });
 
   it("keeps critical and security group severity visually distinct", () => {
