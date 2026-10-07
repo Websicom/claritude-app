@@ -1280,6 +1280,49 @@ async function provisionSandboxAcceptanceScenarios(env: Env, runId: string) {
   };
 }
 
+async function refreshBillingFinanceEnvironment(env: Env, billingEnvironment: BillingEnvironment) {
+  const db = admin(env);
+  const today = new Date().toISOString().slice(0, 10);
+  const dayStart = `${today}T00:00:00.000Z`;
+  const dayEnd = `${today}T23:59:59.999Z`;
+  const [subscriptions, invoices, payments, refunds, disputes, grants] = await Promise.all([
+    db.from("billing_subscriptions").select("*,package_versions(package_key)").eq("billing_environment", billingEnvironment),
+    db.from("billing_invoices").select("*").eq("billing_environment", billingEnvironment),
+    db.from("billing_payments").select("*").eq("billing_environment", billingEnvironment),
+    db.from("billing_refunds").select("*").eq("billing_environment", billingEnvironment),
+    db.from("billing_disputes").select("*").eq("billing_environment", billingEnvironment),
+    db.from("account_package_grants").select("account_id,accounts!inner(billing_environment)").eq("accounts.billing_environment", billingEnvironment).eq("status", "active").lte("starts_at", new Date().toISOString()).or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`),
+  ]);
+  const provider = stripeContext(env, billingEnvironment);
+  let availableByCurrency: Record<string, number> = {};
+  let pendingByCurrency: Record<string, number> = {};
+  if (provider.client) {
+    const [balance, payouts] = await Promise.all([
+      provider.client.balance.retrieve(),
+      provider.client.payouts.list({ created: { gte: Math.floor(Date.parse(dayStart) / 1000), lte: Math.floor(Date.parse(dayEnd) / 1000) }, limit: 100 }),
+    ]);
+    availableByCurrency = Object.fromEntries(balance.available.map((item) => [item.currency, Number(item.amount || 0)]));
+    pendingByCurrency = Object.fromEntries(balance.pending.map((item) => [item.currency, Number(item.amount || 0)]));
+    if (payouts.data.length) await db.from("billing_payouts").upsert(payouts.data.map((payout) => ({ billing_environment: billingEnvironment, provider_payout_id: payout.id, status: payout.status, currency: payout.currency, amount_minor: payout.amount, arrival_at: stripeTimestamp(payout.arrival_date), provider_created_at: stripeTimestamp(payout.created), metadata: payout.metadata || {}, updated_at: new Date().toISOString() })), { onConflict: "billing_environment,provider_payout_id" });
+  }
+  const metrics = financeMetrics({ subscriptions: subscriptions.data || [], invoices: invoices.data || [], payments: payments.data || [], refunds: refunds.data || [], disputes: disputes.data || [] }, billingEnvironment);
+  for (const metric of metrics) {
+    const dailyPayments = (payments.data || []).filter((row: any) => row.currency === metric.currency && row.provider_created_at >= dayStart && row.provider_created_at <= dayEnd);
+    const dailyRefunds = (refunds.data || []).filter((row: any) => row.currency === metric.currency && row.provider_created_at >= dayStart && row.provider_created_at <= dayEnd);
+    const dailyInvoices = (invoices.data || []).filter((row: any) => row.currency === metric.currency && row.provider_created_at >= dayStart && row.provider_created_at <= dayEnd);
+    const currentSubscriptions = (subscriptions.data || []).filter((row: any) => row.currency === metric.currency && ["active", "trialing", "past_due"].includes(row.status));
+    const packageRevenue = currentSubscriptions.reduce((result: Record<string, number>, row: any) => { const key = row.package_versions?.package_key || "unmapped"; result[key] = (result[key] || 0) + Number(row.mrr_minor || 0); return result; }, {});
+    const intervalMix = currentSubscriptions.reduce((result: Record<string, number>, row: any) => { const key = row.interval || "unknown"; result[key] = (result[key] || 0) + 1; return result; }, {});
+    const collectionsDayMinor = dailyPayments.filter((row: any) => ["succeeded", "paid"].includes(row.status)).reduce((sum: number, row: any) => sum + Number(row.amount_received_minor || 0), 0);
+    const succeededRefunds = dailyRefunds.filter((row: any) => row.status === "succeeded").reduce((sum: number, row: any) => sum + Number(row.amount_minor || 0), 0);
+    const pendingRefunds = dailyRefunds.filter((row: any) => ["pending", "requires_action"].includes(row.status)).reduce((sum: number, row: any) => sum + Number(row.amount_minor || 0), 0);
+    const feesDayMinor = dailyPayments.filter((row: any) => ["succeeded", "paid"].includes(row.status)).reduce((sum: number, row: any) => sum + Number(row.fee_minor || 0), 0);
+    const payouts = await db.from("billing_payouts").select("amount_minor").eq("billing_environment", billingEnvironment).eq("currency", metric.currency).gte("provider_created_at", dayStart).lte("provider_created_at", dayEnd);
+    await db.from("billing_daily_finance").upsert({ day: today, currency: metric.currency, billing_environment: billingEnvironment, livemode: billingEnvironment === "live", mrr_minor: metric.mrrMinor, arr_minor: metric.arrMinor, invoiced_minor: dailyInvoices.reduce((sum: number, row: any) => sum + Number(row.total_minor || 0), 0), cash_collected_minor: collectionsDayMinor, refunds_minor: succeededRefunds, collections_day_minor: collectionsDayMinor, refunds_succeeded_day_minor: succeededRefunds, refunds_pending_day_minor: pendingRefunds, fees_day_minor: feesDayMinor, net_balance_day_minor: collectionsDayMinor - succeededRefunds - feesDayMinor, available_balance_minor: availableByCurrency[metric.currency] || 0, pending_balance_minor: pendingByCurrency[metric.currency] || 0, new_subscriptions: currentSubscriptions.filter((row: any) => row.provider_created_at >= dayStart && row.provider_created_at <= dayEnd).length, cancellations: (subscriptions.data || []).filter((row: any) => row.currency === metric.currency && row.cancelled_at >= dayStart && row.cancelled_at <= dayEnd).length, recovered_payments: dailyPayments.filter((row: any) => ["succeeded", "paid"].includes(row.status) && row.metadata?.recovered === true).length, payouts_day_minor: (payouts.data || []).reduce((sum: number, row: any) => sum + Number(row.amount_minor || 0), 0), package_revenue: packageRevenue, billing_interval_mix: intervalMix, failed_payments: dailyPayments.filter((row: any) => ["requires_payment_method", "canceled"].includes(row.status)).length, active_subscriptions: metric.activeSubscriptions, trialing_subscriptions: metric.trialingSubscriptions, past_due_subscriptions: metric.pastDueSubscriptions, complimentary_accounts: new Set((grants.data || []).map((grant) => grant.account_id)).size, calculated_at: new Date().toISOString() }, { onConflict: "day,currency,billing_environment" });
+  }
+  return { day: today, metrics };
+}
+
 async function sha256Hex(value: string) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -1426,6 +1469,29 @@ app.post("/webhooks/sandbox-acceptance-scenarios", async (c) => {
     await db.from("sandbox_acceptance_scenario_runs").update({ state: "failed", error: detail, updated_at: new Date().toISOString() }).eq("id", run.data.id);
     return c.json({ error: "sandbox_scenario_provisioning_failed", detail }, 503);
   }
+});
+
+app.post("/webhooks/sandbox-acceptance-refresh", async (c) => {
+  const token = c.req.header("authorization")?.replace(/^Bearer\s+/i, "");
+  if (!token) return c.json({ error: "scenario_request_token_required" }, 401);
+  const tokenHash = await sha256Hex(token);
+  const db = admin(c.env);
+  const run = await db.from("sandbox_acceptance_scenario_runs").select("id,state,expires_at").eq("token_hash", tokenHash).maybeSingle();
+  if (!run.data || new Date(run.data.expires_at).getTime() <= Date.now() || run.data.state !== "completed") return c.json({ error: "completed_scenario_request_required" }, 403);
+  const pending = await db.from("billing_events").select("id").eq("billing_environment", "test").neq("processing_state", "processed").neq("processing_state", "ignored").limit(500);
+  for (const event of pending.data || []) await processBillingEvent(c.env, event.id);
+  const customers = await db.from("billing_customers").select("account_id").eq("billing_environment", "test").not("provider_customer_id", "is", null).limit(1000);
+  for (const customer of customers.data || []) await reconcileBillingAccount(c.env, customer.account_id, "webhook_repair");
+  const finance = await refreshBillingFinanceEnvironment(c.env, "test");
+  const [accounts, subscriptions, invoices, payments, refunds, events] = await Promise.all([
+    db.from("accounts").select("id", { count: "exact", head: true }).eq("billing_environment", "test"),
+    db.from("billing_subscriptions").select("provider_subscription_id", { count: "exact", head: true }).eq("billing_environment", "test"),
+    db.from("billing_invoices").select("id", { count: "exact", head: true }).eq("billing_environment", "test"),
+    db.from("billing_payments").select("id", { count: "exact", head: true }).eq("billing_environment", "test"),
+    db.from("billing_refunds").select("id", { count: "exact", head: true }).eq("billing_environment", "test"),
+    db.from("billing_events").select("id", { count: "exact", head: true }).eq("billing_environment", "test").eq("processing_state", "processed"),
+  ]);
+  return c.json({ environment: "test", livemode: false, runId: run.data.id, processedPendingEvents: pending.data?.length || 0, reconciledCustomers: customers.data?.length || 0, counts: { accounts: accounts.count || 0, subscriptions: subscriptions.count || 0, invoices: invoices.count || 0, payments: payments.count || 0, refunds: refunds.count || 0, processedEvents: events.count || 0 }, finance });
 });
 
 app.post("/webhooks/stripe/test", (c) => receiveStripeWebhook(c, "test"));
