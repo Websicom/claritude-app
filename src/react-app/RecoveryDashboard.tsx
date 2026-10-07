@@ -3290,7 +3290,6 @@ function AnalyticsView({
               ["Session engagement rate", engagement.sessionEngagementRate == null ? "Unavailable" : `${engagement.sessionEngagementRate.toFixed(1)}%`],
               ["Engaged pageviews", engagement.engagedPageviews == null ? "Unavailable" : fmt(engagement.engagedPageviews)],
               ["Median scroll depth", engagement.medianScrollDepth == null ? "Unavailable" : `${Math.round(engagement.medianScrollDepth)}%`],
-              ["JavaScript errors", engagement.collectionStatus === "available" ? fmt(engagement.javascriptErrors || 0) : "Unavailable"],
               ["Median active page time", engagement.medianActiveSeconds == null ? "Unavailable" : durationLabel(engagement.medianActiveSeconds)],
               ["Top visible section", engagement.visibleSections?.[0] ? `${eventLabel(engagement.visibleSections[0].name)} · ${fmt(engagement.visibleSections[0].count)} pageviews` : "Unavailable"],
             ]} />
@@ -9360,7 +9359,6 @@ function EventOccurrenceDetail({ detail, timeZone }: { detail: any; timeZone?: s
           ["Active time", behaviour.activeSeconds ? durationLabel(behaviour.activeSeconds) : null],
           ["Maximum scroll", behaviour.maxScroll ? `${Math.round(behaviour.maxScroll)}%` : null],
           ["Visible sections", behaviour.visibleSections?.join(", ")],
-          ["JavaScript errors", behaviour.javascriptErrors == null ? null : fmt(behaviour.javascriptErrors)],
         ]} />
       </div>
       {behaviour.journey?.length ? <section><h4>Session journey</h4><div className="event-journey">{behaviour.journey.map((step: any, index: number) => <Fragment key={`${step.type}-${step.label}-${index}`}><span className={`event-journey-step ${step.type}`}>{step.label}</span>{index < behaviour.journey.length - 1 && <ChevronRight aria-hidden="true" />}</Fragment>)}</div></section> : null}
@@ -9403,7 +9401,7 @@ function analyticsEventDetailFixture(eventName: string) {
   const context = (row: any) => ({
     ...row, name: eventName, eventType: "click", occurredAt: row.occurred_at, receivedAt: new Date(Date.parse(row.occurred_at) + 250).toISOString(), acquisition: { source: row.source, sourceDetail: row.source_detail, referrer: row.referrer_host, landingPage: row.path, utmSource: null, utmMedium: null, utmCampaign: null, utmContent: null, utmTerm: null },
     visitor: { country: row.country_code, device: row.device, browser: row.browser, screen: row.device === "mobile" ? "Small · under 768px" : "Large · 1280px+", language: "en-GB" },
-    behaviour: { activeSeconds: row.active_seconds, maxScroll: 90, visibleSections: ["contact"], javascriptErrors: 0, relatedKeyEvents: [], previous: { type: "pageview", path: row.path, occurredAt: new Date(Date.parse(row.occurred_at) - 10_000).toISOString() }, next: null, journey: [{ type: "source", label: row.source }, { type: "page", label: row.path }, { type: "behaviour", label: "Scrolled 90%" }, { type: "event", label: eventLabel(eventName) }] },
+    behaviour: { activeSeconds: row.active_seconds, maxScroll: 90, visibleSections: ["contact"], relatedKeyEvents: [], previous: { type: "pageview", path: row.path, occurredAt: new Date(Date.parse(row.occurred_at) - 10_000).toISOString() }, next: null, journey: [{ type: "source", label: row.source }, { type: "page", label: row.path }, { type: "behaviour", label: "Scrolled 90%" }, { type: "event", label: eventLabel(eventName) }] },
     webVitals: [{ name: "LCP", value: 1840 }],
   });
   return {
@@ -11539,7 +11537,6 @@ function analyticsFixtureSummary() {
       bounceRate: 33.5,
       averageActiveSessionSeconds: 96,
       medianActiveSessionSeconds: 72,
-      javascriptErrors: 36,
       scrollDepth: [{ depth: 25, pageviews: 21320 }, { depth: 50, pageviews: 16840 }, { depth: 75, pageviews: 10260 }, { depth: 90, pageviews: 6740 }],
       pages: [
         { path: "/services/", engagedViews: 4820 },

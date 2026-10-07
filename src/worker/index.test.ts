@@ -308,6 +308,8 @@ describe("worker evidence pipelines", () => {
     expect(TRACKER_SOURCE).not.toContain("emit('active_time'");
     expect(TRACKER_SOURCE).not.toContain("emit('scroll'");
     expect(TRACKER_SOURCE).not.toContain("emit('visible_section'");
+    expect(TRACKER_SOURCE).not.toContain("javascript_errors");
+    expect(TRACKER_SOURCE).not.toContain("unhandledrejection");
     expect(TRACKER_SOURCE).not.toContain("document.cookie");
     expect(TRACKER_SOURCE).not.toContain("localStorage");
   });
@@ -335,9 +337,9 @@ describe("worker evidence pipelines", () => {
       { event_type: "click", name: "need-convincing-clicked" },
       { event_type: "form_success", name: "contact-success" },
     ];
-    const builtInSignals = ["pageview", "scroll", "active_time", "web_vital", "js_error"];
+    const builtInSignals = ["pageview", "scroll", "active_time", "web_vital"];
     const allowance = customEventAllowance("free", configuredDefinitions.length);
-    expect(builtInSignals).toHaveLength(5);
+    expect(builtInSignals).toHaveLength(4);
     expect(allowance).toMatchObject({ used: 2, canCreate: false });
   });
 

@@ -425,8 +425,8 @@ function fallbackUserFacingSnapshot(technicalSnapshot: AuditRegistrySnapshot[]):
 }
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
-const TRACKER_VERSION = "2.3.0";
-const SUPPORTED_TRACKER_VERSIONS = new Set(["2.0.0", "2.1.0", "2.1.1", "2.1.2", "2.1.3", "2.1.4", "2.1.5", TRACKER_VERSION]);
+const TRACKER_VERSION = "2.3.1";
+const SUPPORTED_TRACKER_VERSIONS = new Set(["2.0.0", "2.1.0", "2.1.1", "2.1.2", "2.1.3", "2.1.4", "2.1.5", "2.3.0", TRACKER_VERSION]);
 app.use("*", secureHeaders({ crossOriginResourcePolicy: false }));
 app.use("*", async (c, next) => {
   await next();
@@ -6518,7 +6518,6 @@ app.get("/api/properties/:id/tracking-diagnostics", async (c) => {
       scrollMilestones: counts.scroll || 0,
       activeTime: counts.active_time || 0,
       visibleSections: counts.visible_section || 0,
-      javascriptErrors: counts.js_error || 0,
       webVitals: counts.web_vital || 0,
     },
   });
@@ -8259,7 +8258,6 @@ function sanitizeEvent(
     "active_time",
     "form_success",
     "web_vital",
-    "js_error",
     "visible_section",
   ];
   if (!kinds.includes(e?.type)) return null;
@@ -8353,7 +8351,6 @@ function sanitizeViewState(
     active_seconds: Math.max(0, Math.min(600000, Number(meta.active_seconds) || 0)),
     max_scroll: Math.max(0, Math.min(100, Number(meta.max_scroll) || 0)),
     key_event_counts: keyEventCounts,
-    javascript_errors: Math.max(0, Math.min(50, Math.floor(Number(meta.javascript_errors) || 0))),
     visible_sections: visibleSections,
     vitals,
   };
@@ -8803,13 +8800,11 @@ export function buildAnalyticsSummary(
     activeSeconds: number;
     maxScroll: number;
     keyEvents: number;
-    jsErrors: number;
     visibleSections: Set<string>;
     vitals: Map<string, number>;
   }>();
   let pageviews = 0;
   let keyEvents = 0;
-  let javascriptErrors = 0;
   const timeZoneDayCache = new Map<string, string>();
   const timeZoneFormatter = timeZone === "UTC"
     ? null
@@ -8883,15 +8878,12 @@ export function buildAnalyticsSummary(
         }
       }
     }
-    if (row.tracker_version === TRACKER_VERSION)
-      javascriptErrors += Number(row.javascript_errors || 0);
     views.set(`${row.day}:${row.view_key}`, {
       path: normalizeAnalyticsPath(row.path),
       sessionId,
       activeSeconds: Number(row.active_seconds || 0),
       maxScroll: Number(row.max_scroll || 0),
       keyEvents: Number(row.key_events || 0),
-      jsErrors: Number(row.javascript_errors || 0),
       visibleSections: new Set(Array.isArray(row.visible_sections) ? row.visible_sections.map(String) : []),
       vitals: viewVitals,
     });
@@ -8935,7 +8927,6 @@ export function buildAnalyticsSummary(
           activeSeconds: 0,
           maxScroll: 0,
           keyEvents: 0,
-          jsErrors: 0,
           visibleSections: new Set<string>(),
           vitals: new Map<string, number>(),
         });
@@ -8954,10 +8945,6 @@ export function buildAnalyticsSummary(
       views.get(viewId)!.activeSeconds += Number(event.value);
     if (event.event_type === "scroll" && Number.isFinite(event.value) && viewId && views.has(viewId))
       views.get(viewId)!.maxScroll = Math.max(views.get(viewId)!.maxScroll, Number(event.value));
-    if (event.event_type === "js_error") {
-      javascriptErrors += amount;
-      if (viewId && views.has(viewId)) views.get(viewId)!.jsErrors += 1;
-    }
     if (event.event_type === "visible_section" && event.name && viewId && views.has(viewId))
       views.get(viewId)!.visibleSections.add(String(event.name));
     const aggregateValues = Array.isArray(event._aggregateValues)
@@ -9151,7 +9138,6 @@ export function buildAnalyticsSummary(
         ? activeSessionTimes.reduce((total, value) => total + value, 0) / eligibleSessions.length
         : null,
       medianActiveSessionSeconds: eligibleSessions.length ? percentile(activeSessionTimes, 0.5) : null,
-      javascriptErrors,
       scrollDepth,
       pages: ranked(engagedPageMap).map(({ name, count }) => ({ path: name, engagedViews: count })),
       visibleSections: ranked(visibleSectionMap),
@@ -9626,7 +9612,6 @@ export function buildAnalyticsOccurrenceContext(
       activeSeconds,
       maxScroll,
       visibleSections,
-      javascriptErrors: viewRows.filter((event) => event.event_type === "js_error").length,
       pageSequence,
       relatedKeyEvents,
       previous: occurrenceIndex > 0 ? compact(meaningful[occurrenceIndex - 1]) : null,
@@ -10369,7 +10354,7 @@ export const TRACKER_SOURCE = `(()=>{
   const p=s&&s.getAttribute('data-property'),endpoint=s&&new URL('/collect',s.src).href,base=s&&new URL('/',s.src).href;
   if(!p||!endpoint||window.__claritude)return;window.__claritude=1;
   const uuid=()=>{try{return crypto.randomUUID()}catch(uuidError){const b=new Uint8Array(16);try{crypto.getRandomValues(b)}catch(randomError){for(let i=0;i<b.length;i++)b[i]=Math.floor(Math.random()*256)}b[6]=b[6]&15|64;b[8]=b[8]&63|128;return Array.prototype.map.call(b,(x,i)=>(i===4||i===6||i===8||i===10?'-':'')+x.toString(16).padStart(2,'0')).join('')}};
-  let q=[],timer,retryTimer,stateTimer,retryDelay=1000,sending=false,lastUrl=location.href,view=uuid(),generation=0,active=0,lastCheckpointActive=0,lastActivity=Date.now(),errorCount=0,maxScroll=0,checkpointSequence=0,pageStartedAt=new Date().toISOString(),dirty=true,vitalsReady=null,vitalState={},keyEventCounts={};
+  let q=[],timer,retryTimer,stateTimer,retryDelay=1000,sending=false,lastUrl=location.href,view=uuid(),generation=0,active=0,lastCheckpointActive=0,lastActivity=Date.now(),maxScroll=0,checkpointSequence=0,pageStartedAt=new Date().toISOString(),dirty=true,vitalsReady=null,vitalState={},keyEventCounts={};
   const marks=new Set,visibleSections=new Set,observedSections=new WeakSet;
   const session=sessionStorage.getItem('_claritude_session')||uuid();
   sessionStorage.setItem('_claritude_session',session);
@@ -10380,7 +10365,7 @@ export const TRACKER_SOURCE = `(()=>{
   const send=async()=>{if(sending||!q.length)return;sending=true;const batch=q.splice(0,20),body=JSON.stringify(batch);try{if(navigator.sendBeacon&&document.visibilityState==='hidden'){if(!navigator.sendBeacon(endpoint,new Blob([body],{type:'application/json'})))throw new Error('beacon-rejected')}else{const response=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/json'},body,keepalive:true});if(!response.ok)throw new Error('collect-'+response.status)}retryDelay=1000}catch(sendError){q=batch.concat(q).slice(0,200);retry()}finally{sending=false;if(q.length&&!retryTimer){clearTimeout(timer);timer=setTimeout(send,500)}}};
   const emit=(type,data={})=>{const supplied=data.meta&&typeof data.meta==='object'?data.meta:{},event_id=uuid(),baseMeta=common();q.push(Object.assign({},data,{type,property:p,path:location.pathname,source:data.source||acquisition.source,referrer:document.referrer,at:new Date().toISOString(),device:innerWidth<768?'mobile':innerWidth<1024?'tablet':'desktop',meta:Object.assign({event_id},baseMeta,supplied,baseMeta,{event_id})}));if(q.length>200)q=q.slice(-200);clearTimeout(timer);timer=setTimeout(send,5000)};
   const scheduleCheckpoint=()=>{dirty=true;if(!stateTimer)stateTimer=setTimeout(()=>{stateTimer=0;checkpoint()},2000)};
-  const checkpoint=(force=false)=>{if(!force&&!dirty)return;checkpointSequence+=1;emit('view_state',{meta:{view_started_at:pageStartedAt,checkpoint_sequence:checkpointSequence,active_seconds:active,max_scroll:maxScroll,key_events:Object.assign({},keyEventCounts),javascript_errors:errorCount,visible_sections:Array.from(visibleSections),vitals:Object.assign({},vitalState)}});dirty=false;lastCheckpointActive=active};
+  const checkpoint=(force=false)=>{if(!force&&!dirty)return;checkpointSequence+=1;emit('view_state',{meta:{view_started_at:pageStartedAt,checkpoint_sequence:checkpointSequence,active_seconds:active,max_scroll:maxScroll,key_events:Object.assign({},keyEventCounts),visible_sections:Array.from(visibleSections),vitals:Object.assign({},vitalState)}});dirty=false;lastCheckpointActive=active};
   const recordKeyEvent=(type,name)=>{const key=type+':'+name;keyEventCounts[key]=(keyEventCounts[key]||0)+1;scheduleCheckpoint()};
   addEventListener('click',e=>{lastActivity=Date.now();const a=e.target.closest('[data-claritude-event],a[href]');if(!a)return;const name=a.dataset.claritudeEvent;if(name){emit('click',{name});recordKeyEvent('click',name)}if(a.href&&new URL(a.href,location.href).host!==location.host){const host=new URL(a.href).host;emit('outbound',{name:host});recordKeyEvent('outbound',host)}},{passive:true});
   ['keydown','pointerdown','touchstart'].forEach(name=>addEventListener(name,()=>{lastActivity=Date.now()},{passive:true}));
@@ -10392,13 +10377,10 @@ export const TRACKER_SOURCE = `(()=>{
   const initVitals=()=>{if(!window.webVitals)return;const own=generation,record=metric=>{if(own===generation&&metric&&Number.isFinite(metric.value)){vitalState[metric.name]=metric.value;scheduleCheckpoint()}};try{webVitals.onLCP(record)}catch(lcpError){}try{webVitals.onINP(record)}catch(inpError){}try{webVitals.onCLS(record)}catch(clsError){}};
   const loadVitals=()=>vitalsReady||(vitalsReady=new Promise(resolve=>{if(window.webVitals){resolve();return}const script=document.createElement('script');script.src=new URL('/vendor/web-vitals.js',base).href;script.async=true;script.crossOrigin='anonymous';script.onload=resolve;script.onerror=resolve;document.head.appendChild(script)}));
   const page=()=>{emit('pageview',{source:acquisition.source});checkpoint(true);observeSections();requestAnimationFrame(checkScroll);loadVitals().then(initVitals)};page();
-  const navigation=(forcedPath)=>{if(!forcedPath&&location.href===lastUrl)return;checkpoint(true);send();lastUrl=location.href;view=uuid();generation+=1;active=0;lastCheckpointActive=0;lastActivity=Date.now();errorCount=0;maxScroll=0;checkpointSequence=0;pageStartedAt=new Date().toISOString();dirty=true;vitalState={};keyEventCounts={};marks.clear();visibleSections.clear();page()};
+  const navigation=(forcedPath)=>{if(!forcedPath&&location.href===lastUrl)return;checkpoint(true);send();lastUrl=location.href;view=uuid();generation+=1;active=0;lastCheckpointActive=0;lastActivity=Date.now();maxScroll=0;checkpointSequence=0;pageStartedAt=new Date().toISOString();dirty=true;vitalState={};keyEventCounts={};marks.clear();visibleSections.clear();page()};
   new MutationObserver(()=>{navigation();observeSections();checkScroll()}).observe(document,{subtree:true,childList:true});
   ['pushState','replaceState'].forEach(k=>{const original=history[k];history[k]=function(){const result=original.apply(this,arguments);Promise.resolve().then(()=>navigation());return result}});
   addEventListener('popstate',()=>navigation());
-  const reportError=(name,source)=>{if(errorCount>=5)return;errorCount+=1;scheduleCheckpoint()};
-  addEventListener('error',event=>reportError('script-error',event.filename||''),true);
-  addEventListener('unhandledrejection',()=>reportError('promise-rejection',''));
   addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){checkpoint(true);send()}else lastActivity=Date.now()});
   addEventListener('pagehide',()=>{clearInterval(tick);clearTimeout(stateTimer);checkpoint(true);send()});
   window.claritude={version:'${TRACKER_VERSION}',event:(name,meta)=>{emit('click',{name,meta});recordKeyEvent('click',name)},formSuccess:(name,meta)=>{emit('form_success',{name,meta});recordKeyEvent('form_success',name)},pageview:details=>navigation(details&&details.path),flush:()=>{checkpoint(true);return send()}};
