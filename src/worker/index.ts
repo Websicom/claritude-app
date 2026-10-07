@@ -1121,6 +1121,127 @@ async function receiveStripeWebhook(c: any, billingEnvironment: BillingEnvironme
   return c.json({ received: true }, 202);
 }
 
+async function provisionSandboxAcceptanceScenarios(env: Env, runId: string) {
+  const db = admin(env);
+  const context = stripeContext(env, "test");
+  if (!context.client || !context.webhookSecret) throw new Error("stripe_test_credentials_and_webhook_required");
+  const stripe = context.client;
+  const websi = await db.from("accounts").select("id").eq("name", "Websi").eq("billing_environment", "live").maybeSingle();
+  const owner = websi.data ? await db.from("account_memberships").select("user_id").eq("account_id", websi.data.id).eq("role", "owner").limit(1).maybeSingle() : { data: null } as any;
+  if (!owner.data?.user_id) throw new Error("websi_owner_required_for_sandbox_scenarios");
+  const user = await db.auth.admin.getUserById(owner.data.user_id);
+  const testRecipient = user.data.user?.email;
+  if (!testRecipient) throw new Error("designated_test_recipient_required");
+  const prices = await db.from("billing_catalogue_prices").select("provider_price_id,package_version_id,interval,package_versions(package_key)").eq("billing_environment", "test").eq("currency", "gbp").eq("component", "base").eq("active", true);
+  if (prices.error) throw prices.error;
+  const priceFor = (packageKey: string, interval: "month" | "year") => (prices.data || []).find((price: any) => (price.package_versions as any)?.package_key === packageKey && price.interval === interval);
+  const proMonth: any = priceFor("pro", "month");
+  const proYear: any = priceFor("pro", "year");
+  const essentialsMonth: any = priceFor("essentials", "month");
+  const scaleMonth: any = priceFor("scale", "month");
+  if (!proMonth || !proYear || !essentialsMonth || !scaleMonth) throw new Error("sandbox_fixture_catalogue_incomplete");
+
+  async function ensureAccount(name: string) {
+    const existing = await db.from("accounts").select("id,name").eq("billing_environment", "test").eq("name", name).maybeSingle();
+    if (existing.data) return existing.data;
+    const created = await db.rpc("create_superadmin_test_account", { p_name: name, p_owner: owner.data.user_id, p_test_recipients: [testRecipient] });
+    if (created.error) throw created.error;
+    return { id: (created.data as any).accountId, name };
+  }
+  async function ensureCustomer(account: { id: string; name: string }, paymentMethod = "pm_card_visa", testClock?: string) {
+    const existing = await db.from("billing_customers").select("provider_customer_id").eq("account_id", account.id).eq("billing_environment", "test").maybeSingle();
+    if (existing.data?.provider_customer_id) return existing.data.provider_customer_id as string;
+    const customer = await stripe.customers.create({
+      name: account.name, email: testRecipient, payment_method: paymentMethod,
+      invoice_settings: { default_payment_method: paymentMethod },
+      ...(testClock ? { test_clock: testClock } : {}),
+      metadata: { claritudeAccountId: account.id, billingEnvironment: "test", sandboxAcceptanceScenario: "true", fixtureRunId: runId },
+    } as any, { idempotencyKey: `sandbox-acceptance-customer:${account.id}` });
+    if (customer.livemode) throw new Error("sandbox_customer_environment_mismatch");
+    const stored = await db.from("billing_customers").upsert({ account_id: account.id, billing_environment: "test", provider_customer_id: customer.id, provider: "stripe", currency: "gbp", sync_state: "pending", metadata: { livemode: false, sandboxAcceptanceScenario: true } }, { onConflict: "account_id,billing_environment" });
+    if (stored.error) throw stored.error;
+    return customer.id;
+  }
+  async function ensureSubscription(scenario: string, account: { id: string; name: string }, customerId: string, priceId: string, extra: Record<string, unknown> = {}) {
+    const existing = await stripe.subscriptions.list({ customer: customerId, status: "all", limit: 100, expand: ["data.discounts"] });
+    let subscription: any = existing.data.find((item: any) => item.metadata?.sandboxAcceptanceScenario === scenario);
+    if (!subscription) subscription = await stripe.subscriptions.create({
+      customer: customerId,
+      items: [{ price: priceId, quantity: 1 }],
+      default_payment_method: "pm_card_visa",
+      payment_behavior: "error_if_incomplete",
+      metadata: { claritudeAccountId: account.id, billingEnvironment: "test", sandboxAcceptanceScenario: scenario, fixtureRunId: runId },
+      expand: ["latest_invoice.payment_intent", "discounts"],
+      ...extra,
+    } as any, { idempotencyKey: `sandbox-acceptance-subscription:${scenario}:${account.id}` });
+    if (subscription.livemode) throw new Error("sandbox_subscription_environment_mismatch");
+    await reconcileBillingAccount(env, account.id, "manual");
+    return subscription;
+  }
+
+  const annualAccount = await ensureAccount("Sandbox Annual Pro");
+  const annualCustomer = await ensureCustomer(annualAccount);
+  const annual = await ensureSubscription("annual", annualAccount, annualCustomer, proYear.provider_price_id);
+
+  const trialAccount = await ensureAccount("Sandbox Trial Pro");
+  const trialCustomer = await ensureCustomer(trialAccount);
+  const trial = await ensureSubscription("trial", trialAccount, trialCustomer, proMonth.provider_price_id, { trial_period_days: 14 });
+
+  const coupon = await stripe.coupons.create({ percent_off: 25, duration: "forever", name: "Claritude sandbox acceptance 25%", metadata: { sandboxAcceptanceFixture: "true", fixtureRunId: runId } }, { idempotencyKey: "sandbox-acceptance-coupon:25-percent" });
+  const existingCodes = await stripe.promotionCodes.list({ code: "SANDBOX25", active: true, limit: 10 });
+  const promotion = existingCodes.data[0] || await stripe.promotionCodes.create({ promotion: { type: "coupon", coupon: coupon.id }, code: "SANDBOX25", metadata: { sandboxAcceptanceFixture: "true", fixtureRunId: runId } } as any, { idempotencyKey: "sandbox-acceptance-promotion:SANDBOX25" });
+  const rule = await db.from("promotion_rules").upsert({ billing_environment: "test", provider_coupon_id: coupon.id, provider_promotion_code_id: promotion.id, code: "SANDBOX25", internal_name: "Sandbox acceptance 25%", description: "Sandbox fixture only; no live commercial authority", discount_type: "percentage", percentage: 25, duration_type: "forever", eligible_packages: ["pro"], eligible_intervals: ["month"], enabled: true, provider_sync_state: "synced", synced_at: new Date().toISOString(), operation_key: "decc23bc-3a6c-45f0-8b1d-11982f848bc2", updated_at: new Date().toISOString() }, { onConflict: "billing_environment,code" });
+  if (rule.error) throw rule.error;
+  const discountAccount = await ensureAccount("Sandbox Discount Pro");
+  const discountCustomer = await ensureCustomer(discountAccount);
+  const discounted = await ensureSubscription("discounted", discountAccount, discountCustomer, proMonth.provider_price_id, { discounts: [{ coupon: coupon.id }] });
+
+  const cancellationAccount = await ensureAccount("Sandbox Cancellation Pro");
+  const cancellationCustomer = await ensureCustomer(cancellationAccount);
+  let cancellation = await ensureSubscription("cancellation", cancellationAccount, cancellationCustomer, proMonth.provider_price_id);
+  if (!cancellation.cancel_at_period_end) cancellation = await stripe.subscriptions.update(cancellation.id, { cancel_at_period_end: true }, { idempotencyKey: `sandbox-acceptance-cancel:${cancellation.id}` });
+  await reconcileBillingAccount(env, cancellationAccount.id, "manual");
+
+  const refundAccount = await ensureAccount("Sandbox Refund Pro");
+  const refundCustomer = await ensureCustomer(refundAccount);
+  const refundable: any = await ensureSubscription("refund", refundAccount, refundCustomer, proMonth.provider_price_id);
+  const refundInvoiceId = typeof refundable.latest_invoice === "string" ? refundable.latest_invoice : refundable.latest_invoice?.id;
+  const refundInvoice: any = refundInvoiceId ? await stripe.invoices.retrieve(refundInvoiceId, { expand: ["payment_intent"] }) : null;
+  const paymentIntentId = typeof refundInvoice?.payment_intent === "string" ? refundInvoice.payment_intent : refundInvoice?.payment_intent?.id;
+  let refund: any = null;
+  if (paymentIntentId) {
+    const refunds = await stripe.refunds.list({ payment_intent: paymentIntentId, limit: 10 });
+    refund = refunds.data.find((item: any) => item.metadata?.sandboxAcceptanceScenario === "refund") || await stripe.refunds.create({ payment_intent: paymentIntentId, amount: 100, reason: "requested_by_customer", metadata: { claritudeAccountId: refundAccount.id, billingEnvironment: "test", sandboxAcceptanceScenario: "refund", fixtureRunId: runId } }, { idempotencyKey: `sandbox-acceptance-refund:${paymentIntentId}` });
+  }
+
+  const upgradeAccount = await ensureAccount("Sandbox Upgrade Pro");
+  const upgradeCustomer = await ensureCustomer(upgradeAccount);
+  let upgrade: any = await ensureSubscription("upgrade", upgradeAccount, upgradeCustomer, essentialsMonth.provider_price_id);
+  const upgradeItem = upgrade.items?.data?.[0];
+  if (upgradeItem?.price?.id !== scaleMonth.provider_price_id) upgrade = await stripe.subscriptions.update(upgrade.id, { items: [{ id: upgradeItem.id, price: scaleMonth.provider_price_id }], proration_behavior: "always_invoice", metadata: { ...upgrade.metadata, packageVersionId: scaleMonth.package_version_id } }, { idempotencyKey: `sandbox-acceptance-upgrade:${upgrade.id}` });
+  await reconcileBillingAccount(env, upgradeAccount.id, "manual");
+  await db.from("billing_scheduled_changes").upsert({ billing_environment: "test", operation_key: "b5d23c13-7e5f-4324-a1aa-32d9d421c78a", account_id: upgradeAccount.id, provider_subscription_id: upgrade.id, effective_at: stripeTimestamp(upgrade.current_period_end || upgrade.items?.data?.[0]?.current_period_end), requested_change: { packageVersionId: essentialsMonth.package_version_id, currency: "gbp", interval: "month", editingSeats: 1, sandboxAcceptanceScenario: true }, state: "scheduled", requested_by: owner.data.user_id }, { onConflict: "billing_environment,operation_key" });
+
+  const failureClock = await stripe.testHelpers.testClocks.create({ frozen_time: Math.floor(Date.now() / 1000), name: "Claritude sandbox past-due acceptance" }, { idempotencyKey: "sandbox-acceptance-clock:past-due" });
+  const failedAccount = await ensureAccount("Sandbox Past Due Pro");
+  const failedCustomer = await ensureCustomer(failedAccount, "pm_card_chargeDeclined", failureClock.id);
+  const failed = await ensureSubscription("past-due", failedAccount, failedCustomer, proMonth.provider_price_id, { default_payment_method: "pm_card_chargeDeclined", payment_behavior: "default_incomplete", trial_end: failureClock.frozen_time + 3600 });
+  if (failureClock.status === "ready") await stripe.testHelpers.testClocks.advance(failureClock.id, { frozen_time: failureClock.frozen_time + 7200 });
+
+  return {
+    environment: "test", livemode: false,
+    scenarios: {
+      annual: { accountId: annualAccount.id, subscriptionId: annual.id, status: annual.status },
+      trial: { accountId: trialAccount.id, subscriptionId: trial.id, status: trial.status },
+      discounted: { accountId: discountAccount.id, subscriptionId: discounted.id, status: discounted.status, promotionCodeId: promotion.id },
+      cancellation: { accountId: cancellationAccount.id, subscriptionId: cancellation.id, cancelAtPeriodEnd: cancellation.cancel_at_period_end },
+      refund: { accountId: refundAccount.id, subscriptionId: refundable.id, refundId: refund?.id || null, refundStatus: refund?.status || null },
+      upgradeAndScheduledDowngrade: { accountId: upgradeAccount.id, subscriptionId: upgrade.id, status: upgrade.status },
+      failedPayment: { accountId: failedAccount.id, subscriptionId: failed.id, initialStatus: failed.status, testClockId: failureClock.id },
+    },
+  };
+}
+
 async function sha256Hex(value: string) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -1244,6 +1365,28 @@ app.post("/webhooks/sandbox-acceptance-fixtures", async (c) => {
     const detail = errorMessage(error).slice(0, 2000);
     await db.from("sandbox_acceptance_fixture_runs").update({ state: "failed", error: detail, updated_at: new Date().toISOString() }).eq("id", run.data.id);
     return c.json({ error: "sandbox_fixture_provisioning_failed", detail }, 503);
+  }
+});
+
+app.post("/webhooks/sandbox-acceptance-scenarios", async (c) => {
+  const token = c.req.header("authorization")?.replace(/^Bearer\s+/i, "");
+  if (!token) return c.json({ error: "scenario_request_token_required" }, 401);
+  const tokenHash = await sha256Hex(token);
+  const db = admin(c.env);
+  const run = await db.from("sandbox_acceptance_scenario_runs").select("*").eq("token_hash", tokenHash).maybeSingle();
+  if (!run.data || new Date(run.data.expires_at).getTime() <= Date.now()) return c.json({ error: "scenario_request_missing_or_expired" }, 403);
+  if (run.data.state === "completed") return c.json({ runId: run.data.id, state: "completed", result: run.data.result, reused: true });
+  if (run.data.state === "processing") return c.json({ runId: run.data.id, state: "processing" }, 409);
+  const claimed = await db.from("sandbox_acceptance_scenario_runs").update({ state: "processing", started_at: new Date().toISOString(), error: null, updated_at: new Date().toISOString() }).eq("id", run.data.id).in("state", ["requested", "failed"]).select("id").maybeSingle();
+  if (!claimed.data) return c.json({ error: "scenario_request_already_claimed" }, 409);
+  try {
+    const result = await provisionSandboxAcceptanceScenarios(c.env, run.data.id);
+    await db.from("sandbox_acceptance_scenario_runs").update({ state: "completed", result, completed_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", run.data.id);
+    return c.json({ runId: run.data.id, state: "completed", result });
+  } catch (error) {
+    const detail = errorMessage(error).slice(0, 2000);
+    await db.from("sandbox_acceptance_scenario_runs").update({ state: "failed", error: detail, updated_at: new Date().toISOString() }).eq("id", run.data.id);
+    return c.json({ error: "sandbox_scenario_provisioning_failed", detail }, 503);
   }
 });
 
