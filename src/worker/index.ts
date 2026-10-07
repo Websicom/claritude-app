@@ -1123,6 +1123,9 @@ async function receiveStripeWebhook(c: any, billingEnvironment: BillingEnvironme
 
 async function provisionSandboxAcceptanceScenarios(env: Env, runId: string) {
   const db = admin(env);
+  const scenarioRun = await db.from("sandbox_acceptance_scenario_runs").select("created_at").eq("id", runId).single();
+  if (!scenarioRun.data?.created_at) throw new Error("sandbox_scenario_run_missing");
+  const scenarioFrozenTime = Math.floor(new Date(scenarioRun.data.created_at).getTime() / 1000);
   const context = stripeContext(env, "test");
   if (!context.client || !context.webhookSecret) throw new Error("stripe_test_credentials_and_webhook_required");
   const stripe = context.client;
@@ -1239,7 +1242,7 @@ async function provisionSandboxAcceptanceScenarios(env: Env, runId: string) {
   await reconcileBillingAccount(env, upgradeAccount.id, "manual");
   await db.from("billing_scheduled_changes").upsert({ billing_environment: "test", operation_key: "b5d23c13-7e5f-4324-a1aa-32d9d421c78a", account_id: upgradeAccount.id, provider_subscription_id: upgrade.id, effective_at: stripeTimestamp(upgrade.current_period_end || upgrade.items?.data?.[0]?.current_period_end), requested_change: { packageVersionId: essentialsMonth.package_version_id, currency: "gbp", interval: "month", editingSeats: 1, sandboxAcceptanceScenario: true }, state: "scheduled", requested_by: owner.data.user_id }, { onConflict: "billing_environment,operation_key" });
 
-  const failureClock = await stripe.testHelpers.testClocks.create({ frozen_time: Math.floor(Date.now() / 1000), name: "Claritude sandbox past-due acceptance" }, { idempotencyKey: "sandbox-acceptance-clock:past-due" });
+  const failureClock = await stripe.testHelpers.testClocks.create({ frozen_time: scenarioFrozenTime, name: "Claritude sandbox past-due acceptance" }, { idempotencyKey: `sandbox-acceptance-clock:v2:${runId}` });
   const failedAccount = await ensureAccount("Sandbox Past Due Pro");
   const failedCustomer = await ensureCustomer(failedAccount, "tok_visa", failureClock.id);
   const failed = await ensureSubscription("past-due", failedAccount, failedCustomer, proMonth.provider_price_id, { trial_end: failureClock.frozen_time + 86400 });
