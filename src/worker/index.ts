@@ -1013,7 +1013,11 @@ async function applyVerifiedBillingEvent(env: Env, event: Stripe.Event) {
   const object = event.data.object as any;
   const billingEnvironment = billingEnvironmentForLivemode(event.livemode);
   let relation: { accountId: string; providerCustomerId: string | null } | null = null;
-  if (event.type.startsWith("customer.subscription.")) relation = await projectStripeSubscription(env, object, event.created);
+  if (event.type.startsWith("customer.subscription.")) {
+    const stripe = stripeClient(env, billingEnvironment);
+    const subscription = stripe ? await stripe.subscriptions.retrieve(object.id, { expand: ["discounts.source.coupon"] }) : object;
+    relation = await projectStripeSubscription(env, subscription, event.created);
+  }
   else if (event.type.startsWith("invoice.")) relation = await projectStripeInvoice(env, object, event.created);
   else if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded" || event.type === "checkout.session.async_payment_failed" || event.type === "checkout.session.expired") {
     relation = await billingAccountForObject(env, object, billingEnvironment);
@@ -1077,7 +1081,7 @@ async function reconcileBillingAccount(env: Env, accountId: string, mode: "sched
     const customer = await db.from("billing_customers").select("provider_customer_id").eq("account_id", accountId).eq("billing_environment", billingEnvironment).maybeSingle();
     if (!stripe || !customer.data?.provider_customer_id) throw new Error("stripe_customer_unavailable");
     const [subscriptions, invoices] = await Promise.all([
-      stripe.subscriptions.list({ customer: customer.data.provider_customer_id, status: "all", limit: 100, expand: ["data.discounts"] }),
+      stripe.subscriptions.list({ customer: customer.data.provider_customer_id, status: "all", limit: 100, expand: ["data.discounts.source.coupon"] }),
       stripe.invoices.list({ customer: customer.data.provider_customer_id, limit: 100 }),
     ]);
     for (const subscription of subscriptions.data) await projectStripeSubscription(env, subscription, Math.floor(Date.now() / 1000));
@@ -1176,7 +1180,7 @@ async function provisionSandboxAcceptanceScenarios(env: Env, runId: string) {
     return customer.id;
   }
   async function ensureSubscription(scenario: string, account: { id: string; name: string }, customerId: string, priceId: string, extra: Record<string, unknown> = {}) {
-    const existing = await stripe.subscriptions.list({ customer: customerId, status: "all", limit: 100, expand: ["data.discounts"] });
+    const existing = await stripe.subscriptions.list({ customer: customerId, status: "all", limit: 100, expand: ["data.discounts.source.coupon"] });
     let subscription: any = existing.data.find((item: any) => item.metadata?.sandboxAcceptanceScenario === scenario);
     if (!subscription) {
       const customer: any = await stripe.customers.retrieve(customerId);
@@ -1190,7 +1194,7 @@ async function provisionSandboxAcceptanceScenarios(env: Env, runId: string) {
       default_payment_method: defaultPaymentMethod,
       payment_behavior: "error_if_incomplete",
       metadata: { claritudeAccountId: account.id, billingEnvironment: "test", sandboxAcceptanceScenario: scenario, fixtureRunId: runId },
-      expand: ["latest_invoice.payment_intent", "discounts"],
+      expand: ["discounts.source.coupon"],
       ...extra,
     } as any, { idempotencyKey: `sandbox-acceptance-subscription:v2:${scenario}:${account.id}` });
     }
@@ -1226,8 +1230,9 @@ async function provisionSandboxAcceptanceScenarios(env: Env, runId: string) {
   const refundCustomer = await ensureCustomer(refundAccount);
   const refundable: any = await ensureSubscription("refund", refundAccount, refundCustomer, proMonth.provider_price_id);
   const refundInvoiceId = typeof refundable.latest_invoice === "string" ? refundable.latest_invoice : refundable.latest_invoice?.id;
-  const refundInvoice: any = refundInvoiceId ? await stripe.invoices.retrieve(refundInvoiceId, { expand: ["payment_intent"] }) : null;
-  const paymentIntentId = typeof refundInvoice?.payment_intent === "string" ? refundInvoice.payment_intent : refundInvoice?.payment_intent?.id;
+  const invoicePayments: any = refundInvoiceId ? await stripe.invoicePayments.list({ invoice: refundInvoiceId, status: "paid", limit: 10, expand: ["data.payment.payment_intent"] }) : null;
+  const invoicePayment = invoicePayments?.data?.find((item: any) => item.payment?.type === "payment_intent");
+  const paymentIntentId = typeof invoicePayment?.payment?.payment_intent === "string" ? invoicePayment.payment.payment_intent : invoicePayment?.payment?.payment_intent?.id;
   let refund: any = null;
   if (paymentIntentId) {
     const refunds = await stripe.refunds.list({ payment_intent: paymentIntentId, limit: 10 });
