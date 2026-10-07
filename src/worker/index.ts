@@ -1246,13 +1246,12 @@ async function provisionSandboxAcceptanceScenarios(env: Env, runId: string) {
   const failedAccount = await ensureAccount("Sandbox Past Due Pro");
   const failedCustomer = await ensureCustomer(failedAccount, "tok_visa", failureClock.id);
   const failed = await ensureSubscription("past-due", failedAccount, failedCustomer, proMonth.provider_price_id, { trial_end: failureClock.frozen_time + 86400 });
-  const declinedMethod = await stripe.paymentMethods.create({
-    type: "card", card: { token: "tok_chargeDeclined" },
-    metadata: { claritudeAccountId: failedAccount.id, billingEnvironment: "test", sandboxAcceptanceScenario: "past-due", fixtureRunId: runId },
-  } as any, { idempotencyKey: `sandbox-acceptance-payment-method:declined:${failedAccount.id}` });
-  try { await stripe.paymentMethods.attach(declinedMethod.id, { customer: failedCustomer }); } catch (error) { if (!/already been attached/i.test(errorMessage(error))) throw error; }
-  await stripe.customers.update(failedCustomer, { invoice_settings: { default_payment_method: declinedMethod.id } });
-  await stripe.subscriptions.update(failed.id, { default_payment_method: declinedMethod.id });
+  const failureCustomer: any = await stripe.customers.retrieve(failedCustomer);
+  const failurePaymentMethod = typeof failureCustomer.invoice_settings?.default_payment_method === "string"
+    ? failureCustomer.invoice_settings.default_payment_method
+    : failureCustomer.invoice_settings?.default_payment_method?.id;
+  if (!failurePaymentMethod) throw new Error("sandbox_failure_payment_method_missing");
+  await stripe.paymentMethods.detach(failurePaymentMethod);
   if (failureClock.status === "ready") {
     try {
       await stripe.testHelpers.testClocks.advance(failureClock.id, { frozen_time: failureClock.frozen_time + 172800 });
