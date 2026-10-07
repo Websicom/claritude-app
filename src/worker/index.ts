@@ -92,7 +92,7 @@ type Job =
 type AuditResult = TypedAuditResult;
 
 const LIMITS = {
-  propertiesPerAccount: 25,
+  propertiesPerAccount: 200,
   auditsPerPropertyPerDay: 20,
   analyticsEventsPerPropertyPerDay: 50_000,
 } as const;
@@ -750,7 +750,7 @@ app.post("/collect", async (c) => {
   if (ingestionError) return c.json({ error: "ingestion_failed" }, 503);
   if (!ingestion?.ok) {
     const error = String(ingestion?.error || "ingestion_failed");
-    const status = error === "analytics_daily_limit_reached" ? 429
+    const status = ["analytics_daily_limit_reached", "analytics_monthly_pageview_limit_reached"].includes(error) ? 429
       : error === "unknown_property" ? 404
         : error === "invalid_batch" ? 400 : 503;
     return c.json({ error }, status as any);
@@ -1748,6 +1748,16 @@ app.post("/api/properties", async (c) => {
   let entitlements;
   try { entitlements = await effectiveEntitlements(c.env, accountId); }
   catch { return c.json({ error: "effective_entitlements_unavailable" }, 503); }
+  const normalizedPackageKey = String(entitlements.packageKey || "free").toLowerCase().startsWith("pro")
+    ? "pro"
+    : String(entitlements.packageKey || "free").toLowerCase();
+  const analyticsRule = await service
+    .from("analytics_plan_rules")
+    .select("properties_limit")
+    .eq("package_key", normalizedPackageKey)
+    .maybeSingle();
+  if (analyticsRule.error || !analyticsRule.data)
+    return c.json({ error: "analytics_plan_rule_unavailable" }, 503);
   const { data: accountWorkspaces, error: accountWorkspacesError } = await service
     .from("workspaces")
     .select("id")
@@ -1765,7 +1775,7 @@ app.post("/api/properties", async (c) => {
     console.error("property_create_limit_lookup_failed", accountPropertiesError);
     return c.json({ error: "property_create_failed" }, 500);
   }
-  const configuredPropertyLimit = Number(entitlements.values.propertiesPerAccount ?? entitlements.hardCeilings.propertiesPerAccount ?? LIMITS.propertiesPerAccount);
+  const configuredPropertyLimit = Number(analyticsRule.data.properties_limit);
   const propertyLimit = Math.min(LIMITS.propertiesPerAccount, Number.isFinite(configuredPropertyLimit) ? configuredPropertyLimit : LIMITS.propertiesPerAccount);
   if ((accountProperties || []).length >= propertyLimit)
     return c.json({ error: "property_limit_reached" }, 409);
@@ -3656,6 +3666,12 @@ app.get("/api/superadmin/platform", async (c) => {
     service.from("billing_daily_finance").select("*").eq("billing_environment", billingEnvironment).order("day", { ascending: true }).limit(2000),
     service.from("billing_payouts").select("*").eq("billing_environment", billingEnvironment).order("provider_created_at", { ascending: false }).limit(1000),
   ]);
+  const [analyticsRules, analyticsStorage, analyticsUsage, analyticsWarnings] = await Promise.all([
+    service.from("analytics_plan_rules").select("*").order("monthly_pageview_limit"),
+    service.from("analytics_storage_snapshots").select("*,accounts(name),properties(name,canonical_host)").order("measured_at", { ascending: false }).limit(10000),
+    service.from("account_analytics_monthly_usage").select("*,accounts(name)").eq("period_start", `${today.slice(0, 7)}-01`).order("accepted_pageviews", { ascending: false }).limit(5000),
+    service.from("analytics_usage_warnings").select("*,accounts(name)").order("created_at", { ascending: false }).limit(250),
+  ]);
   const finance = financeMetrics({ subscriptions: billingSubscriptions.data || [], invoices: billingInvoices.data || [], payments: billingPayments.data || [], refunds: billingRefunds.data || [], disputes: billingDisputes.data || [] }, billingEnvironment);
   const subscriptionRows = (billingSubscriptions.data || []).map((subscription: any) => ({
     ...subscription,
@@ -3691,9 +3707,24 @@ app.get("/api/superadmin/platform", async (c) => {
     settings: settings.data || [], settingHistory: settingHistory.data || [], controls: controls.data || [], featureStates, alerts: alerts.data || [], alertRules: alertRules.data || [], alertHistory: alertHistory.data || [], alertCoverage: { enabledRuleCount: (alertRules.data || []).filter((item) => item.enabled).length, lastEvaluationAt: (alertRules.data || []).map((item) => item.last_evaluated_at).filter(Boolean).sort().at(-1) || null, evaluatorHealth: !(alertRules.data || []).length ? "no_rules" : (alertRules.data || []).some((item) => item.evaluation_state === "failing") ? "failing" : (alertRules.data || []).every((item) => item.evaluation_state === "not_started") ? "not_started" : (alertRules.data || []).some((item) => item.evaluation_state === "telemetry_unavailable") ? "telemetry_unavailable" : "healthy" }, incidents: incidents.data || [], packages: packages.data || [], grants: grants.data || [], overrides: overrides.data || [], inactivity: inactivity.data || [],
     audits: { technicalChecks: auditDefinitions.data || [], groups: auditGroups.data || [], groupChecks: auditGroupChecks.data || [], groupHistory: auditGroupHistory.data || [], packageAvailability: auditPackageAvailability.data || [], today: auditStatus, runs: runs, source: "application_measured", period: "UTC day" },
     infrastructure: { database: databaseMetrics.data || null, databaseError: databaseMetrics.error?.message || null, events: operationalEvents.data || [], leases: leases.data || [], period: "UTC day" },
+    analyticsManagement: { rules: analyticsRules.data || [], storage: analyticsStorage.data || [], usage: analyticsUsage.data || [], warnings: analyticsWarnings.data || [], storageError: analyticsStorage.error?.message || null },
     exports: exports.data || [], deletionRequests: deletionRequests.data || [], email: { templates: templates.data || [], automations: automations.data || [], campaigns: campaigns.data || [], deliveries: deliveries.data || [], suppressions: suppressions.data || [] },
     billing: { environment: billingEnvironment, configured: stripeProvider.configured, providerMode, configuration: billingConfiguration.data || null, catalogueReady, liveReadiness, catalogueRequirements: { requiredCount: requiredCatalogueKeys.length, basePriceCount: 18, maximumWithSeatPrices: 36, missing: requiredCatalogueKeys.filter((key) => !catalogueKeys.has(key)), unresolvedSeatPackages, packagesRequiringSeatPrices, explanation: "Eighteen base prices cover 3 paid packages × 3 currencies × 2 billing intervals. The total becomes 36 only if every package separately sells additional seats; a package needs a seat price only when its approved allowance and commercial policy permit paid seat overage." }, catalogue: billingCatalogue.data || [], customers: billingCustomers.data || [], subscriptions: subscriptionRows, invoices: billingInvoices.data || [], payments: billingPayments.data || [], refunds: billingRefunds.data || [], disputes: billingDisputes.data || [], payouts: billingPayouts.data || [], reconciliation: billingReconciliation.data || [], daily: billingDaily.data || [], events: billingEvents.data || [], promotions: promotions.data || [], calculations: finance, currencyPolicy: "Every finance query is scoped to one billing environment and each series to one currency. No implicit FX conversion is applied. MRR includes every recurring item, annual values divided by 12, and applicable recurring discounts. Daily activity is distinct from available and pending balances; only succeeded refunds reduce completed refund totals." },
   });
+});
+
+app.post("/api/superadmin/analytics-storage/refresh", async (c) => {
+  const authorization = await requireStaff(c, "operations.write");
+  if (authorization.response) return authorization.response;
+  const service = admin(c.env);
+  const { data, error } = await service.rpc("refresh_analytics_storage_snapshots");
+  if (error) return c.json({ error: error.message }, 503);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "analytics.storage_estimates_refreshed", "success", {
+    targetType: "analytics_storage",
+    reason: "Manual SuperAdmin refresh",
+    metadata: data || {},
+  });
+  return c.json(data || { refreshed: true });
 });
 
 app.post("/api/superadmin/billing/events/:id/reprocess", async (c) => {
@@ -5991,7 +6022,7 @@ app.get("/api/properties/:id/uptime-status", async (c) => {
 
 app.get("/api/account/export", async (c) => {
   const db = c.get("db");
-  const [profile, accounts, workspaces, properties, incidents, audits, analytics, reports, schedules, activity] =
+  const [profile, accounts, workspaces, properties, incidents, audits, analytics, analyticsTotals, analyticsDimensions, reports, schedules, activity] =
     await Promise.all([
       db.from("profiles").select("*").maybeSingle(),
       db.from("account_memberships").select("role,accounts(*)"),
@@ -6000,11 +6031,13 @@ app.get("/api/account/export", async (c) => {
       db.from("incidents").select("*"),
       db.from("audit_runs").select("*,audit_results(*)").limit(500),
       db.from("analytics_daily").select("*").limit(100000),
+      db.from("analytics_compact_totals").select("*").limit(100000),
+      db.from("analytics_compact_dimensions").select("*").limit(250000),
       db.from("saved_reports").select("*").limit(1000),
       db.from("report_schedules").select("*").limit(1000),
       db.from("activity_log").select("*").limit(5000),
     ]);
-  const failure = [profile, accounts, workspaces, properties, incidents, audits, analytics, reports, schedules, activity]
+  const failure = [profile, accounts, workspaces, properties, incidents, audits, analytics, analyticsTotals, analyticsDimensions, reports, schedules, activity]
     .find((result) => result.error)?.error;
   if (failure) return c.json({ error: failure.message }, 500);
   return c.json({
@@ -6016,6 +6049,8 @@ app.get("/api/account/export", async (c) => {
     incidents: incidents.data,
     audits: audits.data,
     analyticsDaily: analytics.data,
+    analyticsCompactTotals: analyticsTotals.data,
+    analyticsCompactDimensions: analyticsDimensions.data,
     savedReports: reports.data,
     reportSchedules: schedules.data,
     activity: activity.data,
@@ -6170,6 +6205,13 @@ app.get("/api/properties/:id/analytics", async (c) => {
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : "analytics_query_failed" }, 400);
   }
+  if (hasUnsupportedHistoricalFilters(filters) && (historicalCompactRows(currentResult).totals.length || (previousResult && historicalCompactRows(previousResult).totals.length))) {
+    return c.json({
+      error: "historical_filter_requires_detailed_data",
+      detail: "This filter can be combined freely within the latest 30 days. Older rollups retain exact page history but intentionally do not retain cross-dimension combinations.",
+      detailedFrom: currentResult.detailedFrom,
+    }, 422);
+  }
   const events = [
     ...currentResult.events,
     ...currentResult.rollups.map(analyticsRollupAsEvent),
@@ -6182,27 +6224,59 @@ app.get("/api/properties/:id/analytics", async (c) => {
   const filteredPrevious = filterAnalyticsEvents(previousEvents, filters);
   const filteredViews = filterAnalyticsViews(currentResult.views, filters);
   const filteredPreviousViews = filterAnalyticsViews(previousResult?.views || [], filters);
-  const summary = buildAnalyticsSummary(
-    filtered,
-    window.days,
-    window.from,
-    window.to,
-    window.timeZone,
-    [],
-    filteredViews,
-    { includeVisitTimes: !overviewOnly },
+  const summary = mergeCompactAnalyticsSummary(
+    buildAnalyticsSummary(
+      filtered,
+      window.days,
+      window.from,
+      window.to,
+      window.timeZone,
+      [],
+      filteredViews,
+      { includeVisitTimes: !overviewOnly },
+    ),
+    currentResult,
+    filters,
   );
   const previous = previousResult
-    ? buildAnalyticsSummary(
-        filteredPrevious,
-        window.days,
-        previousFrom,
-        previousTo,
-        window.timeZone,
-        [],
-        filteredPreviousViews,
+    ? mergeCompactAnalyticsSummary(
+        buildAnalyticsSummary(
+          filteredPrevious,
+          window.days,
+          previousFrom,
+          previousTo,
+          window.timeZone,
+          [],
+          filteredPreviousViews,
+        ),
+        previousResult,
+        filters,
       )
     : undefined;
+  let monthlyUsage: any = null;
+  const propertyAccount = await db.from("properties").select("account_id").eq("id", c.req.param("id")).maybeSingle();
+  if (propertyAccount.data?.account_id) {
+    const service = admin(c.env);
+    const effective = await effectiveEntitlements(c.env, propertyAccount.data.account_id).catch(() => null);
+    const packageKey = String(effective?.packageKey || "free").toLowerCase().startsWith("pro") ? "pro" : String(effective?.packageKey || "free").toLowerCase();
+    const periodStart = `${new Date().toISOString().slice(0, 7)}-01`;
+    const [rule, usage] = await Promise.all([
+      service.from("analytics_plan_rules").select("monthly_pageview_limit,grace_percent").eq("package_key", packageKey).maybeSingle(),
+      service.from("account_analytics_monthly_usage").select("accepted_pageviews,rejected_pageviews,updated_at").eq("account_id", propertyAccount.data.account_id).eq("period_start", periodStart).maybeSingle(),
+    ]);
+    if (rule.data) {
+      const limit = Number(rule.data.monthly_pageview_limit || 0);
+      const hardLimit = Math.floor(limit * (1 + Number(rule.data.grace_percent || 0) / 100));
+      const used = Number(usage.data?.accepted_pageviews || 0);
+      monthlyUsage = { used, limit, hardLimit, rejected: Number(usage.data?.rejected_pageviews || 0), percent: limit ? used / limit * 100 : 0, collectionPaused: used >= hardLimit, periodStart, resetsAt: new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth() + 1, 1)).toISOString(), updatedAt: usage.data?.updated_at || null };
+    }
+  }
+  if (monthlyUsage?.collectionPaused && monthlyUsage.updatedAt) {
+    const pausedDay = String(monthlyUsage.updatedAt).slice(0, 10);
+    summary.series = (summary.series || []).map((point: any) => String(point.day).slice(0, 10) >= pausedDay
+      ? { ...point, pageviews: null, events: null, dailyVisitors: null, collectionStatus: "not_collected_limit_reached" }
+      : point);
+  }
   const response = {
     ...summary,
     ...(previous ? { previous } : {}),
@@ -6212,6 +6286,7 @@ app.get("/api/properties/:id/analytics", async (c) => {
     truncated: currentResult.truncated,
     filterOptions: buildAnalyticsFilterOptions(events),
     appliedFilters: filters,
+    monthlyUsage,
   };
   const responseBytes = new TextEncoder().encode(JSON.stringify(response)).byteLength;
   c.header("Server-Timing", `analytics;dur=${(performance.now() - startedAt).toFixed(1)}`);
@@ -6234,28 +6309,51 @@ app.get("/api/properties/:id/analytics/pages", async (c) => {
     : null;
   const pathValue = cleanAnalyticsFilter(c.req.query("path_value"), 500);
   const normalizedPath = pathValue ? normalizeAnalyticsPath(pathValue) : null;
-  const { data, error } = await c.get("db").rpc("analytics_pages_page", {
-    p_property_id: c.req.param("id"),
-    p_from: window.from,
-    p_to: window.to,
-    p_offset: (page - 1) * pageSize,
-    p_limit: pageSize,
-    p_page_search: cleanAnalyticsFilter(c.req.query("page_search"), 120) || null,
-    p_path_mode: pathMode,
-    p_path_value: normalizedPath,
-    p_device: cleanAnalyticsFilter(c.req.query("device"), 40) || null,
-    p_source: cleanAnalyticsFilter(c.req.query("source"), 255) || null,
-    p_country: cleanAnalyticsFilter(c.req.query("country"), 20) || null,
-  });
+  const detailedFrom = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+  const recentFrom = new Date(Math.max(Date.parse(window.from), Date.parse(`${detailedFrom}T00:00:00.000Z`))).toISOString();
+  const db = c.get("db");
+  const [recentResult, compactResult] = await Promise.all([
+    db.rpc("analytics_pages_page", {
+      p_property_id: c.req.param("id"), p_from: recentFrom, p_to: window.to,
+      p_offset: 0, p_limit: 5000,
+      p_page_search: cleanAnalyticsFilter(c.req.query("page_search"), 120) || null,
+      p_path_mode: pathMode, p_path_value: normalizedPath,
+      p_device: cleanAnalyticsFilter(c.req.query("device"), 40) || null,
+      p_source: cleanAnalyticsFilter(c.req.query("source"), 255) || null,
+      p_country: cleanAnalyticsFilter(c.req.query("country"), 20) || null,
+    }),
+    db.rpc("analytics_compact_rollup_window", { p_property_id: c.req.param("id"), p_from: window.from, p_to: window.to }),
+  ]);
+  const { data, error } = recentResult;
   if (error) return c.json({ error: error.message }, 400);
-  const rows = (data || []).map((row: any) => ({
+  if (compactResult.error) return c.json({ error: compactResult.error.message }, 400);
+  const compactPayload: any = compactResult.data || {};
+  const compactKeys = new Set((compactPayload.totals || []).filter((row: any) => String(row.period_start) < detailedFrom).map((row: any) => `${row.grain}:${row.period_start}`));
+  const historicalPages = (compactPayload.dimensions || []).filter((row: any) => row.dimension === "page" && compactKeys.has(`${row.grain}:${row.period_start}`));
+  if (historicalPages.length && (c.req.query("device") || c.req.query("source") || c.req.query("country")))
+    return c.json({ error: "historical_filter_requires_detailed_data", detail: "Device, source and country can be combined with page rows within the latest 30 days." }, 422);
+  const recentRows = (data || []).map((row: any) => ({
     path: row.path,
     pageviews: Number(row.pageviews || 0),
     events: Number(row.events || 0),
-    averageActiveSeconds: row.average_active_seconds == null ? null : Number(row.average_active_seconds),
+    activeSeconds: row.average_active_seconds == null ? 0 : Number(row.average_active_seconds) * Number(row.pageviews || 0),
+    activeViews: row.average_active_seconds == null ? 0 : Number(row.pageviews || 0),
   }));
-  const total = Number((data || [])[0]?.total_rows || 0);
-  return c.json({ rows, page, pageSize, total, pages: Math.max(1, Math.ceil(total / pageSize)) });
+  const pageSearch = cleanAnalyticsFilter(c.req.query("page_search"), 120)?.toLowerCase();
+  const combined = new Map<string, any>();
+  for (const row of [...recentRows, ...historicalPages.map((row: any) => ({ path: normalizeAnalyticsPath(row.value), pageviews: Number(row.pageviews || 0), events: Number(row.events || 0), activeSeconds: Number(row.active_seconds || 0), activeViews: Number(row.active_views || 0) }))]) {
+    const path = normalizeAnalyticsPath(row.path);
+    if (pageSearch && !path.toLowerCase().includes(pageSearch)) continue;
+    if (normalizedPath && pathMode === "exact" && path !== normalizedPath) continue;
+    if (normalizedPath && pathMode === "prefix" && !path.startsWith(normalizedPath)) continue;
+    const current = combined.get(path) || { path, pageviews: 0, events: 0, activeSeconds: 0, activeViews: 0 };
+    current.pageviews += row.pageviews; current.events += row.events; current.activeSeconds += row.activeSeconds; current.activeViews += row.activeViews;
+    combined.set(path, current);
+  }
+  const allRows = [...combined.values()].map((row) => ({ path: row.path, pageviews: row.pageviews, events: row.events, averageActiveSeconds: row.activeViews ? row.activeSeconds / row.activeViews : null })).sort((a, b) => b.pageviews - a.pageviews);
+  const total = allRows.length;
+  const rows = allRows.slice((page - 1) * pageSize, page * pageSize);
+  return c.json({ rows, page, pageSize, total, pages: Math.max(1, Math.ceil(total / pageSize)), dataResolution: historicalPages.length ? "detailed_and_rollup" : "detailed", detailedFrom });
 });
 
 app.get("/api/properties/:id/ai-visibility", async (c) => {
@@ -7884,12 +7982,53 @@ async function processDueBillingChanges(env: Env, db: SupabaseClient) {
   }
 }
 
+async function processAnalyticsUsageWarnings(env: Env, db: SupabaseClient) {
+  const pending = await db
+    .from("analytics_usage_warnings")
+    .select("*,accounts(name)")
+    .eq("state", "pending")
+    .order("created_at")
+    .limit(50);
+  if (pending.error) throw pending.error;
+  for (const warning of pending.data || []) {
+    const memberships = await db.from("account_memberships").select("user_id").eq("account_id", warning.account_id).in("role", ["owner", "member"]);
+    if (memberships.error) continue;
+    const percent = Math.min(100, Math.round(Number(warning.pageviews || 0) / Math.max(1, Number(warning.limit_pageviews || 1)) * 100));
+    const title = warning.threshold === 101 ? "Monthly analytics hard cap reached" : warning.threshold >= 100 ? "Included monthly analytics limit reached" : `Monthly analytics usage is ${percent}%`;
+    const message = warning.threshold === 101
+      ? "Analytics collection has paused for the rest of this UTC month. Audits, uptime monitoring and other Claritude features continue normally."
+      : warning.threshold >= 100
+        ? `This account has used its ${Number(warning.limit_pageviews || 0).toLocaleString()} included pageviews this UTC month. Paid-plan grace is applied automatically before collection pauses.`
+        : `This account has recorded ${Number(warning.pageviews || 0).toLocaleString()} of ${Number(warning.limit_pageviews || 0).toLocaleString()} included pageviews this UTC month.`;
+    for (const membership of memberships.data || []) {
+      const dedupeKey = `analytics-usage:${warning.account_id}:${warning.period_start}:${warning.threshold}:${membership.user_id}`;
+      await db.from("notifications").upsert({ account_id: warning.account_id, user_id: membership.user_id, title, body: message, severity: warning.threshold >= 100 ? "warning" : "info", dedupe_key: dedupeKey }, { onConflict: "dedupe_key", ignoreDuplicates: true });
+      if (!env.RESEND_API_KEY || !env.RESEND_FROM || warning.threshold < 80) continue;
+      const authUser = await db.auth.admin.getUserById(membership.user_id);
+      const recipient = authUser.data.user?.email;
+      if (!recipient) continue;
+      const emailKey = `${dedupeKey}:email`;
+      const { data: claimed } = await db.rpc("claim_notification", { p_key: emailKey, p_kind: "analytics_usage", p_recipient: recipient, p_payload: { accountId: warning.account_id, threshold: warning.threshold, pageviews: warning.pageviews, limit: warning.limit_pageviews } });
+      if (!claimed) continue;
+      const response = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, "content-type": "application/json", "Idempotency-Key": emailKey },
+        body: JSON.stringify({ from: env.RESEND_FROM, to: [recipient], subject: `Claritude · ${title}`, html: `<p>${escapeHtml(message)}</p><p><a href="${escapeHtml(env.APP_ORIGIN)}/analytics">Open analytics</a></p>` }),
+      });
+      const responseBody: any = await response.json().catch(() => ({}));
+      await db.from("notification_deliveries").update({ status: response.ok ? "sent" : "failed", provider: "Resend", provider_status: response.ok ? "accepted" : "rejected", provider_id: responseBody.id || null, account_id: warning.account_id, error: response.ok ? null : String(responseBody.message || `HTTP ${response.status}`).slice(0, 1000), updated_at: new Date().toISOString() }).eq("dedupe_key", emailKey);
+    }
+    await db.from("analytics_usage_warnings").update({ state: "sent", attempted_at: new Date().toISOString(), error: null }).eq("account_id", warning.account_id).eq("period_start", warning.period_start).eq("threshold", warning.threshold).eq("state", "pending");
+  }
+}
+
 async function scheduled(env: Env, cron: string) {
   const db = admin(env);
   if (cron === "*/5 * * * *") {
     const failedBilling = await db.from("billing_events").select("id").eq("processing_state", "failed").lte("next_attempt_at", new Date().toISOString()).lt("attempts", 10).limit(50);
     await Promise.all((failedBilling.data || []).map((event) => env.JOBS.send({ type: "billing-event", id: event.id })));
     await processDueBillingChanges(env, db);
+    await processAnalyticsUsageWarnings(env, db);
     const access = await processingAccess(env, "uptime_checks");
     if (!access.allowed) {
       await db.from("operational_events").insert({ service: "uptime", metric: "scheduler_suppressed", value: 1, unit: "run", source: "application_measured", metadata: { reason: access.error } });
@@ -7914,18 +8053,21 @@ async function scheduled(env: Env, cron: string) {
       p_day: aggregateDay,
     });
     if (viewAggregateResult.error) throw viewAggregateResult.error;
-    // The product exposes at most a 90-day analytics window. Keep an extra
-    // 30-day safety margin before pruning source events in bounded batches.
-    const pruneResult = await db.rpc("prune_analytics_raw", {
-      p_before: new Date(Date.now() - 120 * 864e5).toISOString(),
-      p_limit: 50000,
-    });
+    const compactDayResult = await db.rpc("aggregate_analytics_compact_day", { p_day: aggregateDay });
+    if (compactDayResult.error) throw compactDayResult.error;
+    const monthStart = `${aggregateDay.slice(0, 7)}-01`;
+    const yearStart = `${aggregateDay.slice(0, 4)}-01-01`;
+    const [compactMonthResult, compactYearResult] = await Promise.all([
+      db.rpc("aggregate_analytics_compact_period", { p_grain: "month", p_period_start: monthStart }),
+      db.rpc("aggregate_analytics_compact_period", { p_grain: "year", p_period_start: yearStart }),
+    ]);
+    if (compactMonthResult.error) throw compactMonthResult.error;
+    if (compactYearResult.error) throw compactYearResult.error;
+    const pruneResult = await db.rpc("prune_analytics_retention", { p_limit: 50000 });
     if (pruneResult.error) throw pruneResult.error;
-    const viewPruneResult = await db.rpc("prune_analytics_view_states", {
-      p_before: new Date(Date.now() - 120 * 864e5).toISOString(),
-      p_limit: 50000,
-    });
-    if (viewPruneResult.error) throw viewPruneResult.error;
+    const storageResult = await db.rpc("refresh_analytics_storage_snapshots");
+    if (storageResult.error) throw storageResult.error;
+    await processAnalyticsUsageWarnings(env, db);
     await runDueReportSchedules(env, db);
     await expireComplimentaryPackageGrants(db);
     await expireFreeAccountAudits(db);
@@ -8370,6 +8512,9 @@ type AnalyticsWindowData = {
   events: any[];
   rollups: any[];
   views: any[];
+  compactTotals: any[];
+  compactDimensions: any[];
+  detailedFrom?: string;
   truncated: boolean;
   sourceRows?: number;
   eventRows?: number;
@@ -8495,24 +8640,39 @@ async function loadAnalyticsWindow(
   to: string,
   useRollups: boolean,
 ): Promise<AnalyticsWindowData> {
-  const { data, error } = await db.rpc("analytics_compact_window", {
-    p_property_id: propertyId,
-    p_from: from,
-    p_to: to,
-    p_use_rollups: useRollups,
-  });
+  const [{ data, error }, compactResult] = await Promise.all([
+    db.rpc("analytics_compact_window", {
+      p_property_id: propertyId,
+      p_from: from,
+      p_to: to,
+      p_use_rollups: useRollups,
+    }),
+    db.rpc("analytics_compact_rollup_window", {
+      p_property_id: propertyId,
+      p_from: from,
+      p_to: to,
+    }),
+  ]);
   if (error) throw new Error(error.message);
+  if (compactResult.error) throw new Error(compactResult.error.message);
   const payload = data && typeof data === "object" ? data as Record<string, any> : {};
-  const responseBytes = new TextEncoder().encode(JSON.stringify(payload)).byteLength;
+  const compact = compactResult.data && typeof compactResult.data === "object" ? compactResult.data as Record<string, any> : {};
+  const responseBytes = new TextEncoder().encode(JSON.stringify([payload, compact])).byteLength;
   const compactFormat = Number(payload.formatVersion || 1);
+  const detailedFrom = typeof compact.detailedFrom === "string" ? compact.detailedFrom : new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+  const eventRows = compactFormat >= 2
+    ? expandCompactAnalyticsRows(payload.events, COMPACT_EVENT_COLUMNS)
+    : Array.isArray(payload.events) ? payload.events : [];
+  const viewRows = compactFormat >= 2
+    ? expandCompactAnalyticsRows(payload.views, COMPACT_VIEW_COLUMNS)
+    : Array.isArray(payload.views) ? payload.views : [];
   return {
     events: [],
-    rollups: compactFormat >= 2
-      ? expandCompactAnalyticsRows(payload.events, COMPACT_EVENT_COLUMNS)
-      : Array.isArray(payload.events) ? payload.events : [],
-    views: compactFormat >= 2
-      ? expandCompactAnalyticsRows(payload.views, COMPACT_VIEW_COLUMNS)
-      : Array.isArray(payload.views) ? payload.views : [],
+    rollups: eventRows.filter((row: any) => String(row.bucket_start || row.occurred_at || "").slice(0, 10) >= detailedFrom),
+    views: viewRows.filter((row: any) => String(row.occurred_at || row.day || "").slice(0, 10) >= detailedFrom),
+    compactTotals: Array.isArray(compact.totals) ? compact.totals : [],
+    compactDimensions: Array.isArray(compact.dimensions) ? compact.dimensions : [],
+    detailedFrom,
     truncated: Boolean(payload.truncated),
     sourceRows: Number(payload.sourceRows || 0),
     eventRows: Number(payload.eventRows || 0),
@@ -9008,7 +9168,7 @@ export function buildAnalyticsSummary(
   const toDay = dateKeyInTimeZone(to, timeZone);
   const calendarDays: string[] = [];
   for (let cursor = new Date(`${fromDay}T00:00:00.000Z`), index = 0;
-    cursor <= new Date(`${toDay}T00:00:00.000Z`) && index < 91;
+    cursor <= new Date(`${toDay}T00:00:00.000Z`) && index < 3660;
     cursor = new Date(cursor.valueOf() + 864e5), index += 1)
     calendarDays.push(cursor.toISOString().slice(0, 10));
   const seriesBuckets = days === 1
@@ -9837,6 +9997,108 @@ function errorMessage(e: unknown) {
   return String(e || "unknown_error").slice(0, 500);
 }
 
+function historicalCompactRows(window: AnalyticsWindowData) {
+  const cutoff = window.detailedFrom || new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+  const totals = window.compactTotals.filter((row) => String(row.period_start || "") < cutoff);
+  const keys = new Set(totals.map((row) => `${row.grain}:${row.period_start}`));
+  const dimensions = window.compactDimensions.filter((row) => keys.has(`${row.grain}:${row.period_start}`));
+  return { totals, dimensions, cutoff };
+}
+
+function hasUnsupportedHistoricalFilters(filters: AnalyticsFilters) {
+  return Boolean(filters.device || filters.source || filters.country || filters.browser || filters.eventName || filters.sourceType || filters.utmSource || filters.utmMedium || filters.utmCampaign);
+}
+
+function compactPageMatches(value: string, filters: AnalyticsFilters) {
+  const path = normalizeAnalyticsPath(value);
+  const requested = filters.pathValue ? normalizeAnalyticsPath(filters.pathValue) : "";
+  if (filters.pageSearch && !path.toLowerCase().includes(filters.pageSearch.toLowerCase())) return false;
+  if (requested && filters.pathMode === "exact" && path !== requested) return false;
+  if (requested && filters.pathMode === "prefix" && !path.startsWith(requested)) return false;
+  return true;
+}
+
+function mergeCompactAnalyticsSummary(summary: any, window: AnalyticsWindowData, filters: AnalyticsFilters) {
+  const historical = historicalCompactRows(window);
+  if (!historical.totals.length) return { ...summary, dataResolution: "detailed", detailedFrom: historical.cutoff };
+  const pageFiltered = Boolean(filters.pageSearch || filters.pathValue);
+  const dimensions = historical.dimensions.filter((row) => !pageFiltered || row.dimension !== "page" || compactPageMatches(String(row.value || "/"), filters));
+  const pageRows = dimensions.filter((row) => row.dimension === "page");
+  const totals = pageFiltered
+    ? [...new Map(pageRows.map((row) => [`${row.grain}:${row.period_start}`, { grain: row.grain, period_start: row.period_start }])).values()].map((period: any) => {
+        const rows = pageRows.filter((row) => row.grain === period.grain && row.period_start === period.period_start);
+        return { ...period, pageviews: rows.reduce((sum, row) => sum + Number(row.pageviews || 0), 0), events: rows.reduce((sum, row) => sum + Number(row.events || 0), 0), key_events: rows.reduce((sum, row) => sum + Number(row.events || 0), 0), sessions: 0, eligible_views: 0, engaged_views: 0, active_seconds: rows.reduce((sum, row) => sum + Number(row.active_seconds || 0), 0), scroll_25: 0, scroll_50: 0, scroll_75: 0, scroll_90: 0 };
+      })
+    : historical.totals;
+  const sum = (key: string) => totals.reduce((total, row) => total + Number(row[key] || 0), 0);
+  const mergeNamed = (current: any[], dimension: string, labelKey = "name") => {
+    const map = new Map<string, any>();
+    for (const row of current || []) map.set(String(row[labelKey]), { ...row });
+    for (const row of dimensions.filter((item) => item.dimension === dimension)) {
+      const key = String(row.value || "Unknown");
+      const existing = map.get(key) || { [labelKey]: key, count: 0, pageviews: 0, events: 0 };
+      existing.count = Number(existing.count || 0) + Number(row.pageviews || row.events || 0);
+      existing.pageviews = Number(existing.pageviews || 0) + Number(row.pageviews || 0);
+      existing.events = Number(existing.events || 0) + Number(row.events || 0);
+      map.set(key, existing);
+    }
+    return [...map.values()].sort((a, b) => Number(b.pageviews || b.count || 0) - Number(a.pageviews || a.count || 0));
+  };
+  const pageMap = new Map<string, any>((summary.pages || []).map((row: any) => [row.path, { ...row, _activeSeconds: Number(row.averageActiveSeconds || 0) * Number(row.pageviews || 0), _activeViews: row.averageActiveSeconds == null ? 0 : Number(row.pageviews || 0) }]));
+  for (const row of pageRows) {
+    const path = normalizeAnalyticsPath(row.value);
+    const existing = pageMap.get(path) || { path, pageviews: 0, events: 0, averageActiveSeconds: null, _activeSeconds: 0, _activeViews: 0 };
+    existing.pageviews += Number(row.pageviews || 0);
+    existing.events += Number(row.events || 0);
+    existing._activeSeconds += Number(row.active_seconds || 0);
+    existing._activeViews += Number(row.active_views || 0);
+    existing.averageActiveSeconds = existing._activeViews ? existing._activeSeconds / existing._activeViews : null;
+    pageMap.set(path, existing);
+  }
+  const seriesMap = new Map<string, any>((summary.series || []).map((row: any) => [row.day, { ...row }]));
+  for (const row of totals) {
+    const key = String(row.period_start);
+    const existing = seriesMap.get(key) || { day: key, pageviews: 0, events: 0, dailyVisitors: 0, grain: row.grain };
+    existing.pageviews += Number(row.pageviews || 0);
+    existing.events += Number(row.key_events || 0);
+    existing.dailyVisitors += Number(row.sessions || 0);
+    if (row.grain !== "day") existing.grain = row.grain;
+    seriesMap.set(key, existing);
+  }
+  const eligibleViews = Number(summary.engagement?.eligiblePageviews || 0) + sum("eligible_views");
+  const engagedViews = Number(summary.engagement?.engagedPageviews || 0) + sum("engaged_views");
+  const activeSeconds = Number(summary.engagement?.averageActiveSeconds || 0) * Number(summary.engagement?.eligiblePageviews || 0) + sum("active_seconds");
+  const scroll = [25, 50, 75, 90].map((depth) => ({ depth, pageviews: Number(summary.engagement?.scrollDepth?.find((row: any) => row.depth === depth)?.pageviews || 0) + sum(`scroll_${depth}`) }));
+  return {
+    ...summary,
+    pageviews: Number(summary.pageviews || 0) + sum("pageviews"),
+    events: Number(summary.events || 0) + sum("events"),
+    keyEvents: Number(summary.keyEvents || 0) + sum("key_events"),
+    sessions: Number(summary.sessions || 0) + sum("sessions"),
+    pages: [...pageMap.values()].map(({ _activeSeconds, _activeViews, ...row }) => row).sort((a, b) => b.pageviews - a.pageviews),
+    series: [...seriesMap.values()].sort((a, b) => String(a.day).localeCompare(String(b.day))),
+    sources: pageFiltered ? [] : mergeNamed(summary.sources, "source"),
+    countries: pageFiltered ? [] : mergeNamed(summary.countries, "country"),
+    devices: pageFiltered ? [] : mergeNamed(summary.devices, "device"),
+    browsers: pageFiltered ? [] : mergeNamed(summary.browsers, "browser"),
+    screens: pageFiltered ? [] : mergeNamed(summary.screens, "screen"),
+    campaigns: pageFiltered ? [] : mergeNamed(summary.campaigns, "campaign"),
+    eventBreakdown: pageFiltered ? [] : mergeNamed(summary.eventBreakdown, "event"),
+    engagement: {
+      ...summary.engagement,
+      eligiblePageviews: eligibleViews,
+      engagedPageviews: eligibleViews ? engagedViews : null,
+      averageActiveSeconds: eligibleViews ? activeSeconds / eligibleViews : null,
+      engagementRate: eligibleViews ? engagedViews / eligibleViews * 100 : null,
+      scrollDepth: scroll,
+      collectionStatus: pageFiltered ? "historical_page_totals_only" : "compact_rollup",
+    },
+    dataResolution: "detailed_and_rollup",
+    detailedFrom: historical.cutoff,
+    historicalGranularities: [...new Set(historical.totals.map((row) => row.grain))],
+  };
+}
+
 function sameSiteHost(left: string, right: string) {
   const normalize = (value: string) =>
     value.toLowerCase().replace(/\.$/, "").replace(/^www\./, "");
@@ -9852,7 +10114,7 @@ function validDateRange(value: string, maximumFutureMs: number) {
     : null;
 }
 
-function requestedWindow(c: any, defaultDays = 30, maximumDays = 90) {
+function requestedWindow(c: any, defaultDays = 30, maximumDays = 3660) {
   const fromValue = c.req.query("from");
   const toValue = c.req.query("to");
   const requestedTimeZone = String(c.req.query("time_zone") || "UTC").slice(0, 80);

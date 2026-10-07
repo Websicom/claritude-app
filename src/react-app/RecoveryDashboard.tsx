@@ -394,6 +394,7 @@ const SUPERADMIN_NAVIGATION = [
     { id: "audits", label: "Audit Controls" },
     { id: "health", label: "Platform Health" },
     { id: "infrastructure", label: "Infrastructure & Usage" },
+    { id: "analytics-rules", label: "Analytics Rules & Storage" },
     { id: "email", label: "Email & Notifications" },
     { id: "alerts", label: "Alerts" },
     { id: "data", label: "Data & Exports" },
@@ -412,6 +413,7 @@ const SUPERADMIN_TABS: Record<string, string[]> = {
   audits: ["Catalogue", "Check health", "Change history"],
   health: ["Services", "Jobs & Queues", "Errors", "Incidents", "Releases"],
   infrastructure: ["Overview", "Audits", "Workers & Queues", "Browser", "Database & Storage", "Allocations & Utilisation", "Operational controls", "Safety limits"],
+  "analytics-rules": ["Package limits", "Storage usage", "Usage warnings"],
   email: ["Overview", "Templates", "Automations", "Campaigns", "Delivery", "Preferences"],
   alerts: ["Active alerts", "Rules", "History", "Weekly digest"],
   data: ["Exports", "Retention", "Cleanup", "Backups & Recovery", "Deletion requests"],
@@ -2994,7 +2996,7 @@ function AnalyticsView({
     if (session) {
       api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}${filterQuery ? `&${filterQuery}` : ""}`)
         .then((next) => !cancelled && setData(next))
-        .catch((reason) => !cancelled && setError(reason.message || "Analytics could not be loaded"))
+        .catch((reason) => !cancelled && setError(reason.message === "historical_filter_requires_detailed_data" ? "That combination of filters is available for the latest 30 days. Older data keeps exact page, traffic and event totals separately, but not every cross-filter combination." : reason.message || "Analytics could not be loaded"))
         .finally(() => !cancelled && setLoading(false));
     } else if (fixture) {
       setData(filterAnalyticsFixture(filters));
@@ -3017,7 +3019,7 @@ function AnalyticsView({
         .catch((reason) => {
           if (!cancelled) {
             setPageList(null);
-            setPageListError(reason.message || "Pages could not be loaded");
+            setPageListError(reason.message === "historical_filter_requires_detailed_data" ? "Device, source and country can be combined with individual pages for the latest 30 days. Remove those filters to view older exact page totals." : reason.message || "Pages could not be loaded");
           }
         })
         .finally(() => !cancelled && setPageListLoading(false));
@@ -3052,8 +3054,8 @@ function AnalyticsView({
   const previousVital = (name: string) => (scoped.previous?.performance?.vitals || []).find((entry: any) => entry.name === name);
   const selectedPerformanceMetric = filters.metric || "LCP";
   const seriesKey = trafficSeriesKey(chartMetric);
-  const chartPoints = (scoped.series || []).map((point: any) => ({ label: point.day, value: point[seriesKey] || 0 }));
-  const previousChartPoints = (scoped.previous?.series || []).map((point: any) => ({ label: point.day, value: point[seriesKey] || 0 }));
+  const chartPoints = (scoped.series || []).map((point: any) => ({ label: point.day, value: point[seriesKey] == null ? null : Number(point[seriesKey]) }));
+  const previousChartPoints = (scoped.previous?.series || []).map((point: any) => ({ label: point.day, value: point[seriesKey] == null ? null : Number(point[seriesKey]) }));
   const performancePoints = (performance.series?.[selectedPerformanceMetric] || [])
     .filter((point: any) => point.value != null)
     .map((point: any) => ({ label: point.day, value: point.value }));
@@ -3090,6 +3092,16 @@ function AnalyticsView({
         </div>
       )}
       <Tabs labels={tabs} value={tab} onChange={changeTab} />
+      {scoped.dataResolution === "detailed_and_rollup" && (
+        <div className="analytics-data-warning" role="status">
+          <b>This range includes rolled-up history.</b> Full event-level filtering is available from {scoped.detailedFrom ? fmtDate(scoped.detailedFrom) : "the latest 30 days"}. Older data retains exact page totals and uses {Array.isArray(scoped.historicalGranularities) ? scoped.historicalGranularities.join(" / ") : "daily, monthly or yearly"} reporting; unavailable cross-filters are never estimated.
+        </div>
+      )}
+      {scoped.monthlyUsage && Number(scoped.monthlyUsage.percent || 0) >= 70 && (
+        <div className="analytics-data-warning" role="status">
+          <b>{scoped.monthlyUsage.collectionPaused ? "Analytics collection is paused for this month." : `${Math.round(scoped.monthlyUsage.percent)}% of monthly pageviews used.`}</b> {fmt(scoped.monthlyUsage.used)} of {fmt(scoped.monthlyUsage.limit)} included pageviews have been recorded across this account. {scoped.monthlyUsage.collectionPaused ? "Audits, uptime monitoring and other features continue normally. Uncollected dates are not shown as zero traffic." : `Collection resets ${fmtDate(scoped.monthlyUsage.resetsAt)}.`}
+        </div>
+      )}
       {loading ? (
         <Empty title="Loading analytics…" detail="Applying the selected property, dates and filters." />
       ) : error ? (
@@ -4927,12 +4939,18 @@ const fixturePlatformPayload: any = {
     { key: "email_settings", value: { senderName: "Claritude", replyTo: "", enabledCategories: ["uptime_down", "uptime_recovered", "report"], suppressionHandling: "enforce", hourlySendLimit: 1000 }, description: "Sender identity and delivery rules", source: "application", updated_at: new Date().toISOString() },
     { key: "alert_digest", value: { enabled: false, recipients: [], schedule: "0 9 * * 1", timezone: "Europe/London", includedMetrics: ["active_alerts"] }, description: "Weekly operational digest", source: "application", updated_at: new Date().toISOString() },
     { key: "staff_sessions", value: { defaultMinutes: 30, maximumMinutes: 60, writeModeAllowed: true, requireReason: true }, description: "Scoped customer-session safeguards", source: "application", updated_at: new Date().toISOString() },
-    { key: "retention_policy", value: { adminLogsDays: 730, usageLedgerDays: 2555, exportsDays: 7, evidenceDays: 90, analyticsRawDays: 90, uptimeChecksDays: 365, auditResultsDays: 730, freeAuditExpiryEnabled: true, freeAuditExpiryDays: 30 }, description: "Retention and cleanup policy", source: "application", updated_at: new Date().toISOString() },
+    { key: "retention_policy", value: { adminLogsDays: 730, usageLedgerDays: 2555, exportsDays: 7, evidenceDays: 90, analyticsRawDays: 30, uptimeChecksDays: 365, auditResultsDays: 730, freeAuditExpiryEnabled: true, freeAuditExpiryDays: 30 }, description: "Retention and cleanup policy", source: "application", updated_at: new Date().toISOString() },
     { key: "safety_limits", value: { platformAuditStartsPerDay: 200, concurrentAudits: 5, auditWallTimeSeconds: 600, httpResponseBytes: 5000000, linksPerAudit: 5000, resourcesPerAudit: 5000, redirects: 5, queueRetries: 3, analyticsPayloadBytes: 262144, analyticsEventsPerPropertyPerDay: 50000, exportsPerAccountPerDay: 10 }, description: "Application safety ceilings", source: "application", updated_at: new Date().toISOString() },
   ], settingHistory: [], controls: [{ key: "new_audits", paused: false }, { key: "analytics_ingestion", paused: false }, { key: "uptime_checks", paused: false }, { key: "campaigns", paused: false }], featureStates: { campaigns: { state: "awaiting_configuration", reason: "Safe recipients are not configured", permitted: true, runningJobs: 0 }, weeklyDigest: { state: "awaiting_configuration", reason: "Recipients are not configured", permitted: true, runningJobs: 0 } }, alerts: [], alertRules: [{ id: "fixture-alert-rule", name: "Audit failure rate", metric: "audit.failure_rate", operator: "gte", threshold: 5, observation_minutes: 15, minimum_samples: 3, cooldown_minutes: 60, scope: {}, evaluation_state: "telemetry_unavailable", enabled: false }], alertHistory: [], alertCoverage: { enabledRuleCount: 0, lastEvaluationAt: null, evaluatorHealth: "no_rules" }, incidents: [],
   packages: [{ id: "12345678-1234-1234-1234-123456789abc", package_key: "pro_early_access", version: 1, display_name: "Pro early access", state: "published", allowances: { customEventsPerProperty: null }, features: { complimentaryEarlyAccess: true }, hard_ceilings: { propertiesPerAccount: 25 }, unresolved_values: ["futurePrice", "auditCreditsPerWeek"] }], grants: [], overrides: [], inactivity: [],
   audits: { technicalChecks: [], groups: [], today: { queued: 0, running: 0, completed: 6, partial: 0, failed: 0 }, source: "application_measured", period: "UTC day" },
   infrastructure: { database: { databaseSizeBytes: 184549376, activeConnections: 7, maxConnections: 60, accountsTableBytes: 98304, propertiesTableBytes: 131072, analyticsTableBytes: 134217728, auditTableBytes: 16777216, measuredAt: new Date().toISOString(), source: "postgres_reported" }, databaseError: null, events: [{ service: "analytics", metric: "events_ingested", value: 1240, unit: "events", source: "application_ledger", observed_at: new Date().toISOString() }], leases: [], period: "UTC day" },
+  analyticsManagement: { rules: [
+    { package_key: "free", display_name: "Free", properties_limit: 2, monthly_pageview_limit: 10000, grace_percent: 0, detailed_days: 30, hourly_days: 30, daily_months: 13, monthly_months: 24, yearly_lifetime: true, cap_action: "pause_analytics" },
+    { package_key: "essentials", display_name: "Essentials", properties_limit: 5, monthly_pageview_limit: 100000, grace_percent: 5, detailed_days: 30, hourly_days: 30, daily_months: 36, monthly_months: 60, yearly_lifetime: true, cap_action: "pause_analytics" },
+    { package_key: "scale", display_name: "Scale", properties_limit: 50, monthly_pageview_limit: 1000000, grace_percent: 5, detailed_days: 30, hourly_days: 30, daily_months: 60, monthly_months: 84, yearly_lifetime: true, cap_action: "pause_analytics" },
+    { package_key: "pro", display_name: "Pro", properties_limit: 200, monthly_pageview_limit: 5000000, grace_percent: 5, detailed_days: 30, hourly_days: 30, daily_months: 84, monthly_months: null, yearly_lifetime: true, cap_action: "pause_analytics" },
+  ], storage: [], usage: [], warnings: [], storageError: null },
   exports: [{ id: "fixture-export", scope: "accounts", format: "csv", state: "completed", progress: 100, row_count: 2, expires_at: new Date(Date.now() + 86400000).toISOString(), created_at: new Date().toISOString() }], deletionRequests: [], email: { templates: [{ id: "fixture-template", template_key: "uptime_recovered", version: 1, subject: "{{propertyName}} has recovered", variables: ["propertyName", "propertyUrl"], state: "active", sending_path: "Worker uptime notification queue", provider_managed: false }], automations: [{ key: "uptime_recovered", trigger_key: "incident.resolved", template_key: "uptime_recovered", delay_minutes: 0, eligibility: { honourSuppressions: true }, enabled: true, sent_count: 4, skipped_count: 0, failed_count: 0 }], campaigns: [{ id: "fixture-campaign", name: "October product update", recipient_preview_count: 2, state: "draft", scheduled_at: null, result: {} }], deliveries: [{ id: "fixture-delivery", kind: "uptime_recovered", recipient: "test@example.com", status: "sent", provider: "Resend", provider_id: "fixture-provider-id", provider_status: "accepted", is_test: true, automation_key: "uptime_recovered", created_at: new Date().toISOString() }] },
   billing: { environment: "test", configured: false, providerMode: "unconfigured", configuration: { checkout_enabled: false, tax_enabled: false }, catalogueReady: false, catalogueRequirements: { requiredCount: 18, basePriceCount: 18, maximumWithSeatPrices: 36, missing: [], unresolvedSeatPackages: ["essentials", "scale", "pro"], explanation: "Eighteen base prices are required; seat prices are conditional on approved per-package overage policy." }, catalogue: [], customers: [], subscriptions: [], invoices: [], payments: [], refunds: [], disputes: [], payouts: [], reconciliation: [], daily: [], events: [], promotions: [], calculations: [], currencyPolicy: "Currencies and environments remain separate." },
 };
@@ -5274,6 +5292,7 @@ function SuperAdminView({ session, fixture = false, staff }: { session: Session 
   else if (view === "audits") content = <AuditControlsDesk activeTab={activeTab} platform={platform} session={session} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("audits.write"))} refresh={load} />;
   else if (view === "health") content = <PlatformHealthDesk activeTab={activeTab} platform={platform} payload={payload} />;
   else if (view === "infrastructure") content = <InfrastructureDesk activeTab={activeTab} platform={platform} payload={payload} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("operations.write"))} toggleControl={toggleControl} session={session} refresh={load} />;
+  else if (view === "analytics-rules") content = <AnalyticsRulesDesk activeTab={activeTab} platform={platform} session={session} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("operations.write"))} refresh={load} />;
   else if (view === "email") content = <EmailControlDesk activeTab={activeTab} platform={platform} session={session} fixture={fixture} refresh={load} />;
   else if (view === "alerts") content = <AlertsControlDesk activeTab={activeTab} platform={platform} session={session} fixture={fixture} refresh={load} />;
   else if (view === "data") content = activeTab === "Exports" ? <ExportControlDesk jobs={platform?.exports || []} session={session} fixture={fixture} refresh={load} /> : activeTab === "Backups & Recovery" ? <Panel title="Backups & recovery"><UnavailableState title="Provider backup status is unverified" detail="Account exports are not labelled as backups. Supabase backup/PITR capability and a tested restoration runbook require provider access." /></Panel> : activeTab === "Retention" ? <SettingsControlDesk platform={platform} session={session} fixture={fixture} refresh={load} onlyKey="retention_policy" /> : <Panel title={activeTab}><pre className="json-preview">{JSON.stringify(platform?.deletionRequests || [], null, 2)}</pre><p className="subtle">Cleanup and deletion are preview/review workflows. Irreversible automatic production deletion is disabled.</p></Panel>;
@@ -5496,6 +5515,41 @@ function PackagesControlDesk({ activeTab, platform, payload, session, fixture, c
   const valueRows = (section: Record<string, any>) => Object.entries(section || {}).map(([key, value]) => { const meta = friendlyLabels[key] || { label: cap(key.replace(/([A-Z])/g, " $1")), help: "Package-controlled value." }; return [meta.label, value === null ? "Unlimited" : typeof value === "boolean" ? (value ? "Enabled" : "Disabled") : `${String(value)}${meta.unit ? ` ${meta.unit}` : ""}`, meta.help]; });
   const prices = selected ? (platform?.billing?.catalogue || []).filter((price: any) => price.package_version_id === selected.id && price.component === "base") : [];
   return <><Panel title={activeTab === "Versions & Grandfathering" ? "Package version history" : "Packages and limits"}><DataTable headers={["Package", "Version", "State", "Allowances", "Features", "Unresolved values", "Effective"]} rows={rows} rowActions={visiblePackages.map((item: any) => [{ label: "Open package details", onClick: () => setSelected(item) }, { label: "Create edited version", disabled: !canWrite || fixture, onClick: () => edit(item) }, ...(item.state === "draft" ? [{ label: "Publish version", disabled: !canWrite || fixture, onClick: () => { setPublishing(item); setPublishReason(""); } }] : [])])} /><p className="subtle">Pro early access remains a distinct historical version for existing assignments. Editing creates a new version and never changes existing customer pricing or allocations.</p>{message && <p role="status">{message}</p>}</Panel>{selected && <Panel title={`${packageName(selected)} · version ${selected.version}`} actions={<button className="icon-button" aria-label="Close package details" onClick={() => setSelected(null)}><X /></button>}><div className="overview-grid"><div><h3>Pricing</h3><DataTable headers={["Currency", "Interval", "Amount", "State"]} rows={prices.map((price: any) => [price.currency.toUpperCase(), cap(price.interval), formatMinor(price.unit_amount_minor, price.currency), price.active ? <StatusPill tone="success">Verified</StatusPill> : <StatusPill tone="neutral">Inactive</StatusPill>])} />{!prices.length && <Empty title="Approved pricing unresolved" detail="No verified Stripe base-price mapping exists for this package version. No price has been invented." />}</div><div><h3>Version effect</h3><KeyValues rows={[["State", cap(selected.state)], ["New sign-ups", selected.state === "published" ? "Available only when explicitly selected by signup/billing rules" : "Unaffected while draft"], ["Existing accounts", "Remain on assigned or grandfathered version"], ["Overrides", "Resolved per account after the assigned version"], ["Unresolved", selected.unresolved_values?.join(", ") || "None"]]} /></div></div><div className="overview-grid"><div><h3>Allowances</h3><DataTable headers={["Feature", "Value", "Meaning"]} rows={valueRows(selected.allowances)} /></div><div><h3>Features</h3><DataTable headers={["Feature", "Value", "Meaning"]} rows={valueRows(selected.features)} /></div><div><h3>Retention</h3><DataTable headers={["Feature", "Value", "Meaning"]} rows={valueRows(selected.retention)} /></div><div><h3>Safety ceilings</h3><DataTable headers={["Feature", "Value", "Meaning"]} rows={valueRows(selected.hard_ceilings)} /></div></div></Panel>}{editing && <Panel title={`Edit ${editing.display_name} v${editing.version} as a new version`} actions={<button className="icon-button" aria-label="Close editor" onClick={() => setEditing(null)}><X /></button>}><label className="field">Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></label><div className="grid equal"><KeyValueEditor label="Allowances" value={allowances} onChange={setAllowances} /><KeyValueEditor label="Features" value={features} onChange={setFeatures} /><KeyValueEditor label="Retention" value={retention} onChange={setRetention} /><KeyValueEditor label="Hard safety ceilings" value={ceilings} onChange={setCeilings} /></div><label className="field">Administrative reason<input value={reason} onChange={(event) => setReason(event.target.value)} /></label><button className="primary" disabled={!canWrite || reason.trim().length < 3} onClick={() => void createVersion()}>Create draft version</button></Panel>}{publishing && <SimpleDialog title={`Publish ${publishing.display_name} v${publishing.version}`} close={() => setPublishing(null)} action="Publish version" onSave={() => publish(publishing)} disabled={publishReason.trim().length < 3}><p className="subtle">Publishing makes this immutable version available for deliberate new assignment. Existing accounts and grandfathered subscriptions are not migrated.</p><label className="field">Administrative reason<input autoFocus value={publishReason} onChange={(event) => setPublishReason(event.target.value)} /></label></SimpleDialog>}</>;
+}
+
+function AnalyticsRulesDesk({ activeTab, platform, session, fixture, canWrite, refresh }: any) {
+  const management = platform?.analyticsManagement || {};
+  const rules = management.rules || [];
+  const snapshots = management.storage || [];
+  const newestDate = snapshots.map((row: any) => row.snapshot_date).sort().at(-1);
+  const latest = snapshots.filter((row: any) => row.snapshot_date === newestDate);
+  const [refreshing, setRefreshing] = useState(false);
+  const [message, setMessage] = useState("");
+  const refreshStorage = async () => {
+    if (!session || fixture) return;
+    setRefreshing(true); setMessage("");
+    try {
+      await api(session, "/api/superadmin/analytics-storage/refresh", { method: "POST", body: "{}" });
+      setMessage("Storage estimates refreshed from current database rows.");
+      await refresh();
+    } catch (error: any) { setMessage(error.message || "Storage refresh failed"); }
+    finally { setRefreshing(false); }
+  };
+  if (activeTab === "Package limits") return <div className="superadmin-overview">
+    <Panel title="Analytics package limits"><p className="subtle">Pageviews are pooled across every property in an account and reset at the start of each UTC month. Paid packages receive 5% grace; Free has no grace.</p><DataTable headers={["Package", "Properties", "Pageviews / month", "Detailed", "Hourly", "Exact daily", "Exact monthly", "Yearly", "At hard cap"]} rows={rules.map((rule: any) => [<b>{rule.display_name}</b>, fmt(rule.properties_limit), fmt(rule.monthly_pageview_limit), `${rule.detailed_days} days`, `${rule.hourly_days} days`, `${rule.daily_months} months`, rule.monthly_months == null ? "Account lifetime" : `${rule.monthly_months} months`, rule.yearly_lifetime ? "Account lifetime" : "Not retained", "Pause analytics only"])} /></Panel>
+    <Panel title="Rollup and cleanup rules"><DataTable headers={["Layer", "Purpose", "Cleanup rule", "Customer effect"]} rows={[
+      ["Detailed events and visit state", "Full filtering, journeys, engagement and performance", "Delete after 30 days, only after a daily rollup exists", "All filter combinations within 30 days"],
+      ["Hourly rollups", "Short-range charts", "Delete after 30 days, only after daily rollup", "Hourly reporting within 30 days"],
+      ["Daily rollups", "Exact daily totals and every canonical page", "Tier retention shown above", "Historic page-by-page comparisons remain available"],
+      ["Monthly rollups", "Compact long-range reporting", "Tier retention shown above", "Older charts switch to monthly points"],
+      ["Yearly rollups", "Lifetime trend", "Never automatically deleted while account exists", "Year-over-year totals remain available"],
+      ["High-cardinality combinations", "Page × source × browser × campaign combinations", "Not retained beyond detailed history", "Older cross-filters explain the limitation instead of guessing"],
+    ]} /><p className="subtle">Canonical page paths are never collapsed into “Other”. Deleting a property or account still cascades its analytics records.</p></Panel>
+  </div>;
+  if (activeTab === "Usage warnings") return <div className="superadmin-overview"><Panel title="Current UTC month"><DataTable headers={["Account", "Pageviews", "Rejected", "Updated"]} rows={(management.usage || []).map((row: any) => [row.accounts?.name || row.account_id, fmt(row.accepted_pageviews), fmt(row.rejected_pageviews), fmtDate(row.updated_at)])} />{!(management.usage || []).length && <Empty title="No pageview usage recorded this month" detail="Usage appears after analytics ingestion." />}</Panel><Panel title="Warning delivery queue"><DataTable headers={["Account", "Threshold", "Usage", "State", "Created"]} rows={(management.warnings || []).map((row: any) => [row.accounts?.name || row.account_id, row.threshold === 101 ? "Hard cap" : `${row.threshold}%`, `${fmt(row.pageviews)} / ${fmt(row.limit_pageviews)}`, <StatusPill tone={row.state === "failed" ? "danger" : row.state === "sent" ? "success" : "neutral"}>{cap(row.state)}</StatusPill>, fmtDate(row.created_at)])} /><p className="subtle">In-app warnings are created at 70%, 80%, 90% and 100%; hard-cap notification is separate. Email starts at 80%. At the hard cap only analytics collection pauses; audits and monitoring continue.</p></Panel></div>;
+  const accounts = latest.filter((row: any) => row.scope_type === "account").sort((a: any, b: any) => Number(b.total_bytes) - Number(a.total_bytes));
+  const properties = latest.filter((row: any) => row.scope_type === "property").sort((a: any, b: any) => Number(b.total_bytes) - Number(a.total_bytes));
+  return <div className="superadmin-overview"><Panel title="Analytics storage estimates" actions={<button className="btn" disabled={!canWrite || fixture || refreshing} onClick={() => void refreshStorage()}><RefreshCw className={refreshing ? "audit-spin" : ""} />{refreshing ? "Refreshing…" : "Refresh estimates"}</button>}><p className="subtle">Cached daily logical row-size estimates. A manual refresh scans analytics rows, so use it for investigation rather than live polling. Values exclude shared indexes, TOAST overhead and Supabase platform overhead.</p>{message && <p role="status">{message}</p>}<KeyValues rows={[["Snapshot", newestDate ? fmtDate(newestDate) : "Not measured"], ["Source", latest[0]?.source ? cap(latest[0].source.replaceAll("_", " ")) : "Unavailable"], ["Accounts measured", accounts.length], ["Properties measured", properties.length]]} /></Panel><Panel title="Account sizes"><DataTable headers={["Account", "Detailed data", "Rollups", "Estimated total", "Measured"]} rows={accounts.map((row: any) => [row.accounts?.name || row.account_id, formatBytes(row.detailed_bytes), formatBytes(row.rollup_bytes), <b>{formatBytes(row.total_bytes)}</b>, fmtDate(row.measured_at)])} />{!accounts.length && <Empty title="No storage snapshot yet" detail="Run Refresh estimates or wait for the daily maintenance task." />}</Panel><Panel title="Property sizes"><DataTable headers={["Property", "Domain", "Detailed data", "Rollups", "Estimated total"]} rows={properties.map((row: any) => [row.properties?.name || row.property_id, row.properties?.canonical_host || "—", formatBytes(row.detailed_bytes), formatBytes(row.rollup_bytes), <b>{formatBytes(row.total_bytes)}</b>])} /></Panel></div>;
 }
 
 function InfrastructureDesk({ activeTab, platform, payload, fixture, canWrite, toggleControl, session, refresh }: any) {
@@ -7861,8 +7915,8 @@ function SeriesChart({
   dateGranularity,
   tone = "default",
 }: {
-  points: { label: string; value: number }[];
-  previousPoints?: { label: string; value: number }[];
+  points: { label: string; value: number | null }[];
+  previousPoints?: { label: string; value: number | null }[];
   emptyTitle: string;
   unit?: string;
   label?: string;
@@ -7899,15 +7953,15 @@ function SeriesChart({
     coords = points.map((point, i) => ({
       ...point,
       x: points.length === 1 ? (plotLeft + plotRight) / 2 : plotLeft + (i / (points.length - 1)) * (plotRight - plotLeft),
-      y: plotBottom - ((Number(point.value) || 0) / max) * (plotBottom - plotTop),
+      y: point.value == null ? null : plotBottom - ((Number(point.value) || 0) / max) * (plotBottom - plotTop),
     })),
     previousCoords = previousPoints.map((point, i) => ({
       ...point,
       x: previousPoints.length === 1 ? (plotLeft + plotRight) / 2 : plotLeft + (i / (previousPoints.length - 1)) * (plotRight - plotLeft),
-      y: plotBottom - ((Number(point.value) || 0) / max) * (plotBottom - plotTop),
+      y: point.value == null ? null : plotBottom - ((Number(point.value) || 0) / max) * (plotBottom - plotTop),
     })),
-    polyline = coords.map((x) => `${x.x},${x.y}`).join(" "),
-    previousPolyline = previousCoords.map((x) => `${x.x},${x.y}`).join(" "),
+    segments = coords.reduce<string[][]>((all, point) => { if (point.y == null) { if (all.at(-1)?.length) all.push([]); } else { if (!all.length) all.push([]); all.at(-1)!.push(`${point.x},${point.y}`); } return all; }, []).filter((segment) => segment.length),
+    previousSegments = previousCoords.reduce<string[][]>((all, point) => { if (point.y == null) { if (all.at(-1)?.length) all.push([]); } else { if (!all.length) all.push([]); all.at(-1)!.push(`${point.x},${point.y}`); } return all; }, []).filter((segment) => segment.length),
     ticks = [max, max * 2 / 3, max / 3, 0],
     xLabelIndexes = [...new Set([0, Math.floor((points.length - 1) / 3), Math.floor((points.length - 1) * 2 / 3), points.length - 1])];
   return (
@@ -7922,12 +7976,9 @@ function SeriesChart({
           const y = plotTop + index * (plotBottom - plotTop) / 3;
           return <line key={index} className="chart-grid" x1={plotLeft} x2={plotRight} y1={y} y2={y} />;
         })}
-        <polygon
-          className="series-fill"
-          points={`${plotLeft},${plotBottom} ${polyline} ${plotRight},${plotBottom}`}
-        />
-        {previousPolyline && <polyline className="compare" points={previousPolyline} />}
-        <polyline className="series" points={polyline} />
+        {segments.map((segment, index) => <polygon key={`fill-${index}`} className="series-fill" points={`${segment[0]!.split(",")[0]},${plotBottom} ${segment.join(" ")} ${segment.at(-1)!.split(",")[0]},${plotBottom}`} />)}
+        {previousSegments.map((segment, index) => <polyline key={`previous-${index}`} className="compare" points={segment.join(" ")} />)}
+        {segments.map((segment, index) => <polyline key={`series-${index}`} className="series" points={segment.join(" ")} />)}
         {coords.map((point, index) => (
           <g key={`${point.label}-${index}`}>
             <rect
@@ -7939,9 +7990,9 @@ function SeriesChart({
               onMouseEnter={() => setHover(index)}
               onFocus={() => setHover(index)}
               tabIndex={0}
-              aria-label={`${point.label}: ${formatChartTooltip(point.value, unit)}`}
+              aria-label={`${point.label}: ${point.value == null ? "Not collected" : formatChartTooltip(point.value, unit)}`}
             />
-            {hover === index && (
+            {hover === index && point.y != null && (
               <>
                 <line className="chart-cursor" x1={point.x} x2={point.x} y1="12" y2={height - 12} />
                 <circle className="chart-dot" cx={point.x} cy={point.y} r="4" />
@@ -7976,8 +8027,8 @@ function SeriesChart({
           style={{ left: `${Math.min(86, Math.max(4, (coords[hover].x / width) * 100))}%` }}
         >
           <b>{chartDateLabel(coords[hover].label, timeZone, dateGranularity)}</b>
-          <small>{formatChartTooltip(coords[hover].value, unit)}</small>
-          {previousCoords[hover] && <small>Previous: {formatChartTooltip(previousCoords[hover].value, unit)}</small>}
+          <small>{coords[hover].value == null ? "Not collected" : formatChartTooltip(coords[hover].value, unit)}</small>
+          {previousCoords[hover] && <small>Previous: {previousCoords[hover].value == null ? "Not collected" : formatChartTooltip(previousCoords[hover].value, unit)}</small>}
         </div>
       )}
     </div>
@@ -11247,11 +11298,11 @@ function formatVital(name: string, value: number) {
 }
 
 function downloadSeriesCsv(
-  points: Array<{ label: string; value: number }>,
+  points: Array<{ label: string; value: number | null }>,
   filename: string,
   valueHeader: string,
 ) {
-  const rows = [["Date", valueHeader], ...points.map((point) => [point.label, String(point.value)])];
+  const rows = [["Date", valueHeader], ...points.map((point) => [point.label, point.value == null ? "Not collected" : String(point.value)])];
   const csv = rows
     .map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","))
     .join("\n");
