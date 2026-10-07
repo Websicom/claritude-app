@@ -425,7 +425,7 @@ function fallbackUserFacingSnapshot(technicalSnapshot: AuditRegistrySnapshot[]):
 }
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
-const TRACKER_VERSION = "2.2.0";
+const TRACKER_VERSION = "2.3.0";
 const SUPPORTED_TRACKER_VERSIONS = new Set(["2.0.0", "2.1.0", "2.1.1", "2.1.2", "2.1.3", "2.1.4", "2.1.5", TRACKER_VERSION]);
 app.use("*", secureHeaders({ crossOriginResourcePolicy: false }));
 app.use("*", async (c, next) => {
@@ -716,9 +716,6 @@ app.post("/collect", async (c) => {
     .maybeSingle();
   if (!property?.tracking_enabled)
     return c.json({ error: "unknown_property" }, 404);
-  const collectionAccess = await processingAccess(c.env, "analytics_ingestion", property.account_id);
-  if (!collectionAccess.allowed || property.access_state !== "active")
-    return c.json({ error: collectionAccess.error || "property_processing_paused" }, 503);
   const origin = c.req.header("origin");
   if (origin) {
     try {
@@ -729,63 +726,35 @@ app.post("/collect", async (c) => {
     }
   }
   const now = new Date().toISOString();
-  const dayStart = `${now.slice(0, 10)}T00:00:00.000Z`;
-  const { count: receivedToday } = await db
-    .from("analytics_events")
-    .select("id", { count: "exact", head: true })
-    .eq("property_id", property.id)
-    .gte("received_at", dayStart);
   const eventInputs = events.filter((event: any) => event?.type !== "view_state");
-  if ((receivedToday || 0) + eventInputs.length > LIMITS.analyticsEventsPerPropertyPerDay)
-    return c.json({ error: "analytics_daily_limit_reached" }, 429);
   const requestCountry = String(
     (c.req.raw as Request & { cf?: { country?: string } }).cf?.country || "",
   ).toUpperCase();
   const userAgent = c.req.header("user-agent") || "";
-  const { data: definitions } = await db
-    .from("event_definitions")
-    .select("name,event_type")
-    .eq("property_id", property.id)
-    .eq("enabled", true);
-  const configuredEvents = new Set(
-    (definitions || []).map((definition) => `${definition.event_type}:${definition.name}`),
-  );
   const rows = eventInputs
     .map((e: any) =>
       sanitizeEvent(e, property.id, now, requestCountry, userAgent),
     )
-    .filter((row: any) => {
-      if (!row) return false;
-      if (!["click", "form_success"].includes(row.event_type) || !row.name) return true;
-      return configuredEvents.has(`${row.event_type}:${row.name}`);
-    });
+    .filter(Boolean);
   const viewStates = events
     .filter((event: any) => event?.type === "view_state")
-    .map((event: any) => sanitizeViewState(event, property.id, now, requestCountry, userAgent, configuredEvents))
+    .map((event: any) => sanitizeViewState(event, property.id, now, requestCountry, userAgent))
     .filter(Boolean);
   if (!rows.length && !viewStates.length) return c.json({ error: "no_valid_events" }, 400);
-  // A batch can be retried by sendBeacon/fetch or by the browser. Insert each
-  // observation independently so a duplicate event_id never rejects otherwise
-  // valid observations in the same delivery.
-  const insertResults = await Promise.all([
-    ...rows.map((row: any) => db.from("analytics_events").insert(row)),
-    ...viewStates.map((state: any) => db.rpc("merge_analytics_view_state", {
-      p_property_id: property.id,
-      p_state: state,
-    })),
-  ]);
-  const insertionFailure = insertResults.find(
-    (result) => result.error && result.error.code !== "23505",
-  )?.error;
-  if (insertionFailure) return c.json({ error: "ingestion_failed" }, 503);
-  await db
-    .from("properties")
-    .update({
-      tracking_last_received_at: now,
-      verification_status: "verified",
-      verified_at: now,
-    })
-    .eq("id", property.id);
+  const { data: ingestion, error: ingestionError } = await db.rpc("ingest_analytics_batch", {
+    p_property_id: property.id,
+    p_events: rows,
+    p_view_states: viewStates,
+    p_daily_limit: LIMITS.analyticsEventsPerPropertyPerDay,
+  });
+  if (ingestionError) return c.json({ error: "ingestion_failed" }, 503);
+  if (!ingestion?.ok) {
+    const error = String(ingestion?.error || "ingestion_failed");
+    const status = error === "analytics_daily_limit_reached" ? 429
+      : error === "unknown_property" ? 404
+        : error === "invalid_batch" ? 400 : 503;
+    return c.json({ error }, status as any);
+  }
   return c.body(null, 202);
 });
 
@@ -2186,7 +2155,7 @@ app.get("/api/superadmin/overview", async (c) => {
   const propertyIdList = [...propertyIds];
   const [monitorsResult, uptimeChecksResult, analyticsResult, auditsResult, incidentsResult, reportsResult, operationalResult] = await Promise.all([
     propertyIdList.length ? service.from("uptime_monitors").select("id,property_id,enabled,last_status,last_checked_at").in("property_id", propertyIdList).limit(20000) : Promise.resolve({ data: [], error: null }),
-    propertyIdList.length ? service.from("uptime_checks").select("property_id,checked_at,status").in("property_id", propertyIdList).gte("checked_at", rangeFrom).lte("checked_at", rangeTo).limit(50000) : Promise.resolve({ data: [], error: null }),
+    propertyIdList.length ? service.from("uptime_checks").select("monitor_id,checked_at,success,uptime_monitors!inner(property_id)").in("uptime_monitors.property_id", propertyIdList).gte("checked_at", rangeFrom).lte("checked_at", rangeTo).limit(50000) : Promise.resolve({ data: [], error: null }),
     propertyIdList.length ? service.from("analytics_events").select("property_id,event_type,occurred_at").in("property_id", propertyIdList).gte("occurred_at", rangeFrom).lte("occurred_at", rangeTo).limit(50000) : Promise.resolve({ data: [], error: null }),
     propertyIdList.length ? service.from("audit_runs").select("id,property_id,status,page_url,created_at").in("property_id", propertyIdList).gte("created_at", rangeFrom).lte("created_at", rangeTo).limit(50000) : Promise.resolve({ data: [], error: null }),
     propertyIdList.length ? service.from("incidents").select("property_id,opened_at,resolved_at").in("property_id", propertyIdList).gte("opened_at", rangeFrom).lte("opened_at", rangeTo).limit(50000) : Promise.resolve({ data: [], error: null }),
@@ -3220,7 +3189,7 @@ app.get("/api/superadmin/platform", async (c) => {
     service.from("audit_user_facing_groups").select("id,name,category,subcategory,lifecycle,enabled_by_default,configuration_version,failure_severity,weight,changed_at").order("sort_order"),
     service.from("audit_group_history").select("id,group_id,snapshot,reason,changed_by,changed_at").order("changed_at", { ascending: false }).limit(250),
     service.from("audit_catalogue_package_availability").select("target_kind,target_id,entitlement,enabled,changed_at").order("entitlement").limit(5000),
-    service.from("audit_runs").select("id,status,duration_ms,error,created_at,execution_telemetry").gte("created_at", `${today}T00:00:00.000Z`).limit(1000),
+    service.from("audit_runs").select("id,status,duration_ms,error,created_at").gte("created_at", `${today}T00:00:00.000Z`).limit(1000),
     service.from("admin_export_jobs").select("id,scope,format,state,progress,row_count,error,expires_at,created_at,completed_at").order("created_at", { ascending: false }).limit(100),
     service.from("deletion_requests").select("*").order("created_at", { ascending: false }).limit(100),
     service.from("email_templates").select("id,template_key,version,subject,html_body,text_body,variables,state,description,provider_managed,sending_path,published_at,supersedes_id,created_at").order("template_key").order("version", { ascending: false }),
@@ -7171,118 +7140,40 @@ export function auditCheckHasExecutableLogic(id: string) {
 
 async function runUptime(env: Env, id: string) {
   const db = admin(env);
-  const { data: monitor } = await db
-    .from("uptime_monitors")
-    .select("*,properties(*)")
-    .eq("id", id)
-    .single();
-  if (!monitor?.enabled) return;
-  const accountId = monitor.properties?.account_id;
-  const processing = await processingAccess(env, "uptime_checks", accountId);
-  if (!processing.allowed || monitor.properties?.access_state !== "active") {
-    await db.from("uptime_monitors").update({
-      last_status: "monitoring_unavailable",
-      next_check_at: new Date(Date.now() + Math.max(5, monitor.interval_minutes) * 60_000).toISOString(),
-    }).eq("id", id);
-    await db.from("operational_events").insert({ service: "uptime", metric: "check_suppressed", value: 1, unit: "check", source: "application_measured", account_id: accountId, property_id: monitor.property_id, metadata: { reason: processing.error || "property_processing_paused" } });
-    return;
-  }
-  const now = new Date().toISOString();
-  const { data: maintenance } = await db
-    .from("maintenance_windows")
-    .select("id")
-    .eq("monitor_id", id)
-    .lte("starts_at", now)
-    .gt("ends_at", now)
-    .limit(1)
-    .maybeSingle();
+  const { data: monitor, error: prepareError } = await db.rpc("prepare_uptime_check", {
+    p_monitor_id: id,
+  });
+  if (prepareError) throw prepareError;
+  if (!monitor?.run) return;
   const started = Date.now();
   let status: number | null = null,
     ok = false,
     failure: string | null = null;
   try {
-    const r = await safeFetch(monitor.properties.url, {
+    const r = await safeFetch(monitor.url, {
       method: "GET",
       headers: { "user-agent": "Claritude-Uptime/1.0" },
-      signal: AbortSignal.timeout(monitor.timeout_ms),
+      signal: AbortSignal.timeout(monitor.timeoutMs),
     });
     status = r.status;
     ok =
-      status >= monitor.expected_status_min &&
-      status <= monitor.expected_status_max;
+      status >= monitor.expectedStatusMin &&
+      status <= monitor.expectedStatusMax;
   } catch (e) {
     failure = errorMessage(e);
   }
   const checkedAt = new Date().toISOString();
-  await db
-    .from("uptime_checks")
-    .insert({
-      monitor_id: id,
-      checked_at: checkedAt,
-      success: ok,
-      status_code: status,
-      response_ms: Date.now() - started,
-      error_code: failure,
-      suppressed_by_maintenance: Boolean(maintenance),
-    });
-  const failures = maintenance
-    ? monitor.consecutive_failures || 0
-    : ok
-      ? 0
-      : (monitor.consecutive_failures || 0) + 1;
-  const monitorStatus = ok ? "online" : failures >= monitor.failure_threshold ? "offline" : "suspected_down";
-  await db
-    .from("uptime_monitors")
-    .update({
-      last_checked_at: checkedAt,
-      last_status: monitorStatus,
-      last_response_ms: Date.now() - started,
-      consecutive_failures: failures,
-      next_check_at: new Date(
-        Date.now() + monitor.interval_minutes * 60_000,
-      ).toISOString(),
-    })
-    .eq("id", id);
-  const { data: open } = await db
-    .from("incidents")
-    .select("*")
-    .eq("monitor_id", id)
-    .is("resolved_at", null)
-    .maybeSingle();
-  if (maintenance) return;
-  let platformFailure = false;
-  if (!ok && failures >= monitor.failure_threshold) {
-    const since = new Date(Date.now() - 3 * 60_000).toISOString();
-    const { data: recentFailures } = await db.from("uptime_checks").select("monitor_id").eq("success", false).gte("checked_at", since).limit(100);
-    platformFailure = new Set((recentFailures || []).map((check) => check.monitor_id)).size >= 5;
-    if (platformFailure) {
-      await db.from("uptime_monitors").update({ last_status: "monitoring_unavailable" }).eq("id", id);
-      await db.from("platform_alerts").insert({
-        title: "Uptime monitoring failures span unrelated properties",
-        details: { distinctMonitors: new Set((recentFailures || []).map((check) => check.monitor_id)).size, windowMinutes: 3, notificationSuppressedForProperty: monitor.property_id },
-      });
-    }
-  }
-  if (platformFailure) return;
-  if (!ok && failures >= monitor.failure_threshold && !open) {
-    const { data: incident } = await db
-      .from("incidents")
-      .insert({
-        property_id: monitor.property_id,
-        monitor_id: id,
-        opened_at: checkedAt,
-        cause: failure || `HTTP ${status}`,
-      })
-      .select()
-      .single();
-    if (incident) await sendAlert(env, db, incident, "down");
-  } else if (ok && open) {
-    await db
-      .from("incidents")
-      .update({ resolved_at: checkedAt })
-      .eq("id", open.id);
-    await sendAlert(env, db, { ...open, resolved_at: checkedAt }, "recovered");
-  }
+  const { data: persisted, error: persistenceError } = await db.rpc("persist_uptime_check", {
+    p_monitor_id: id,
+    p_checked_at: checkedAt,
+    p_success: ok,
+    p_status_code: status,
+    p_response_ms: Date.now() - started,
+    p_error_code: failure,
+  });
+  if (persistenceError || !persisted?.ok) throw persistenceError || new Error(persisted?.error || "uptime_persistence_failed");
+  if (persisted.transition && persisted.incident)
+    await sendAlert(env, db, persisted.incident, persisted.transition);
 }
 
 async function sendAlert(
@@ -7852,7 +7743,6 @@ function sanitizeViewState(
   receivedAt: string,
   requestCountry = "",
   userAgent = "",
-  configuredEvents = new Set<string>(),
 ) {
   const meta = event?.meta && typeof event.meta === "object" ? event.meta : {};
   const viewId = String(meta.view_id || "").trim().slice(0, 200);
@@ -7867,9 +7757,9 @@ function sanitizeViewState(
       const type = rawKey.slice(0, separator);
       const name = rawKey.slice(separator + 1).trim().slice(0, 80);
       if (!name || !["click", "outbound", "form_success"].includes(type)) continue;
-      if (type !== "outbound" && !configuredEvents.has(`${type}:${name}`)) continue;
       const count = Math.max(0, Math.min(10000, Math.floor(Number(rawCount) || 0)));
-      keyEventCounts[name] = Math.max(keyEventCounts[name] || 0, count);
+      const typedName = `${type}:${name}`;
+      keyEventCounts[typedName] = Math.max(keyEventCounts[typedName] || 0, count);
     }
   }
   const visibleSections = Array.isArray(meta.visible_sections)
@@ -9924,7 +9814,7 @@ export const TRACKER_SOURCE = `(()=>{
   const common=()=>({session,view_id:view,browser,screen:innerWidth<768?'small':innerWidth<1280?'medium':'large',language:navigator.language||'',tracker_version:'${TRACKER_VERSION}',acquisition_source:acquisition.source,original_referrer:acquisition.referrer,landing_page:acquisition.landingPage,utm_source:acquisition.utmSource,utm_medium:acquisition.utmMedium,utm_campaign:acquisition.utmCampaign,utm_content:acquisition.utmContent,utm_term:acquisition.utmTerm});
   const retry=()=>{if(retryTimer)return;retryTimer=setTimeout(()=>{retryTimer=0;send()},retryDelay);retryDelay=Math.min(retryDelay*2,30000)};
   const send=async()=>{if(sending||!q.length)return;sending=true;const batch=q.splice(0,20),body=JSON.stringify(batch);try{if(navigator.sendBeacon&&document.visibilityState==='hidden'){if(!navigator.sendBeacon(endpoint,new Blob([body],{type:'application/json'})))throw new Error('beacon-rejected')}else{const response=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/json'},body,keepalive:true});if(!response.ok)throw new Error('collect-'+response.status)}retryDelay=1000}catch(sendError){q=batch.concat(q).slice(0,200);retry()}finally{sending=false;if(q.length&&!retryTimer){clearTimeout(timer);timer=setTimeout(send,500)}}};
-  const emit=(type,data={})=>{const supplied=data.meta&&typeof data.meta==='object'?data.meta:{},event_id=uuid(),baseMeta=common();q.push(Object.assign({},data,{type,property:p,path:location.pathname,source:data.source||acquisition.source,referrer:document.referrer,at:new Date().toISOString(),device:innerWidth<768?'mobile':innerWidth<1024?'tablet':'desktop',meta:Object.assign({event_id},baseMeta,supplied,baseMeta,{event_id})}));if(q.length>200)q=q.slice(-200);clearTimeout(timer);timer=setTimeout(send,500)};
+  const emit=(type,data={})=>{const supplied=data.meta&&typeof data.meta==='object'?data.meta:{},event_id=uuid(),baseMeta=common();q.push(Object.assign({},data,{type,property:p,path:location.pathname,source:data.source||acquisition.source,referrer:document.referrer,at:new Date().toISOString(),device:innerWidth<768?'mobile':innerWidth<1024?'tablet':'desktop',meta:Object.assign({event_id},baseMeta,supplied,baseMeta,{event_id})}));if(q.length>200)q=q.slice(-200);clearTimeout(timer);timer=setTimeout(send,5000)};
   const scheduleCheckpoint=()=>{dirty=true;if(!stateTimer)stateTimer=setTimeout(()=>{stateTimer=0;checkpoint()},2000)};
   const checkpoint=(force=false)=>{if(!force&&!dirty)return;checkpointSequence+=1;emit('view_state',{meta:{view_started_at:pageStartedAt,checkpoint_sequence:checkpointSequence,active_seconds:active,max_scroll:maxScroll,key_events:Object.assign({},keyEventCounts),javascript_errors:errorCount,visible_sections:Array.from(visibleSections),vitals:Object.assign({},vitalState)}});dirty=false;lastCheckpointActive=active};
   const recordKeyEvent=(type,name)=>{const key=type+':'+name;keyEventCounts[key]=(keyEventCounts[key]||0)+1;scheduleCheckpoint()};

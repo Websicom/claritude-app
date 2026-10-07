@@ -301,6 +301,10 @@ describe("worker evidence pipelines", () => {
     expect(TRACKER_SOURCE).toContain("_claritude_acquisition");
     expect(TRACKER_SOURCE).toContain("view_state");
     expect(TRACKER_SOURCE).toContain("active-lastCheckpointActive>=30");
+    expect(TRACKER_SOURCE).toContain("batch=q.splice(0,20)");
+    expect(TRACKER_SOURCE).toContain("timer=setTimeout(send,5000)");
+    expect(TRACKER_SOURCE).toContain("visibilityState==='hidden'){checkpoint(true);send()");
+    expect(TRACKER_SOURCE).toContain("pagehide',()=>{clearInterval(tick);clearTimeout(stateTimer);checkpoint(true);send()");
     expect(TRACKER_SOURCE).not.toContain("emit('active_time'");
     expect(TRACKER_SOURCE).not.toContain("emit('scroll'");
     expect(TRACKER_SOURCE).not.toContain("emit('visible_section'");

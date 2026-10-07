@@ -3487,7 +3487,16 @@ function AuditView({
   const activeRunId = propertyActiveRun?.id;
   useEffect(() => {
     if (!activeRunId || !session || !property || !selectedPage) return;
-    const interval = window.setInterval(() => {
+    let stopped = false;
+    let timer: number | null = null;
+    const startedAt = Date.parse(propertyActiveRun?.created_at || "");
+    const schedule = () => {
+      if (stopped) return;
+      const elapsed = Number.isFinite(startedAt) ? Date.now() - startedAt : 0;
+      const delay = elapsed < 30_000 ? 1800 : elapsed < 120_000 ? 3000 : 5000;
+      timer = window.setTimeout(poll, delay);
+    };
+    const poll = () => {
       const sequence = ++requestSequence.current;
       api<AuditRun[]>(session, `/api/properties/${property.id}/audits?${livePeriod}&pageId=${encodeURIComponent(selectedPage.id)}`)
         .then((nextRuns) => {
@@ -3506,11 +3515,17 @@ function AuditView({
               }, 700);
             }
             notify(finished.status === "failed" ? "Audit failed" : "Audit results are ready");
+            stopped = true;
           }
         })
-        .catch(() => undefined);
-    }, 1800);
-    return () => window.clearInterval(interval);
+        .catch(() => undefined)
+        .finally(schedule);
+    };
+    schedule();
+    return () => {
+      stopped = true;
+      if (timer != null) window.clearTimeout(timer);
+    };
   }, [activeRunId, session, property?.id, selectedPage?.id, livePeriod]);
   const latestRunId = runs.find((run) => ["completed", "partial"].includes(run.status))?.id;
   useEffect(() => {
