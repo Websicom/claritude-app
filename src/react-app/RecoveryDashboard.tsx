@@ -5570,7 +5570,7 @@ function SafetyLimitsEditor({ platform, session, fixture, canWrite, refresh }: a
   return <Panel title="Global system safety ceilings"><p className="subtle">Shared production-wide controls. These are distinct from package allocations and provider billing allowances. Changes take effect for new work after save; in-flight work retains the values it started with.</p><div className="settings-list">{Object.entries(values).map(([key, value]) => { const definition = definitions[key] || { name: cap(key.replace(/([A-Z])/g, " $1")), unit: "units", explanation: "Existing configured safety setting.", scope: "Global platform", enforcement: "Execution-path evidence unavailable." }; return <div className="settings-row" key={key}><div><b>{definition.name}</b><p>{definition.explanation}</p><small>{definition.scope} · {definition.enforcement}</small></div><label className="field">Current value<input type="number" min="0" step="1" value={String(value ?? "")} onChange={(event) => setValues((current) => ({ ...current, [key]: Number(event.target.value) }))} /><small>{definition.unit}</small></label></div>; })}</div><label className="field">Administrative reason<input value={reason} onChange={(event) => setReason(event.target.value)} /></label><button className="primary" disabled={!canWrite || fixture || reason.trim().length < 3} onClick={() => void save()}>Validate and save ceilings</button>{message && <p role="status">{message}</p>}</Panel>;
 }
 
-const EMAIL_LABELS: Record<string, string> = { registration: "Registration", confirmation: "Email confirmation", password_reset: "Password reset", uptime_down: "Uptime down", uptime_recovered: "Uptime recovered", scheduled_report: "Scheduled report", report: "Report", billing: "Billing", inactivity: "Inactivity notice", campaign: "Campaign", staff_digest: "Staff digest", weekly_digest: "Weekly digest" };
+const EMAIL_LABELS: Record<string, string> = { registration: "Registration", confirmation: "Email confirmation", password_reset: "Password reset", uptime_down: "Uptime down", uptime_recovered: "Uptime recovered", scheduled_report: "Scheduled report", report: "Report", billing: "Billing", inactivity: "Inactivity notice", campaign: "Campaign", staff_digest: "Staff digest", weekly_digest: "Weekly digest", acceptance_test: "Controlled delivery test" };
 function emailLabel(kind: string) { return EMAIL_LABELS[kind] || cap(String(kind || "Email").replaceAll("_", " ")); }
 
 function EmailControlDesk({ activeTab, platform, session, fixture, refresh }: any) {
@@ -5597,6 +5597,10 @@ function EmailControlDesk({ activeTab, platform, session, fixture, refresh }: an
   const [suppressionReason, setSuppressionReason] = useState("");
   const [emailAction, setEmailAction] = useState<any>(null);
   const [actionForm, setActionForm] = useState<Record<string, string>>({});
+  const [testSubject, setTestSubject] = useState("Email delivery acceptance");
+  const [testBody, setTestBody] = useState("This is a controlled Claritude sandbox delivery test. It contains sample content only.");
+  const [testReason, setTestReason] = useState("");
+  const [testOperationKey, setTestOperationKey] = useState(() => crypto.randomUUID());
   const filteredDeliveries = deliveries.filter((item: any) => (deliveryKind === "all" || item.kind === deliveryKind) && (deliveryClass === "all" || (deliveryClass === "test" ? item.is_test === true : deliveryClass === "production" ? item.is_test === false : item.is_test == null)) && (!dateFrom || Date.parse(item.created_at) >= Date.parse(`${dateFrom}T00:00:00`)) && (!dateTo || Date.parse(item.created_at) <= Date.parse(`${dateTo}T23:59:59.999`)));
   const mutate = async (url: string, options: any) => { if (!session || fixture) return; setMessage(""); try { await api(session, url, options); setMessage("Saved. Refresh confirmed the effective state."); await refresh(); } catch (error: any) { setMessage(error.message); } };
   const editTemplate = (item: any) => { setTemplateKey(item.template_key); setTemplateSubject(item.subject || ""); setTemplateHtml(item.html_body || ""); setTemplateReason(""); setTemplatePreview(null); window.scrollTo({ top: 0, behavior: "smooth" }); };
@@ -5638,6 +5642,29 @@ function EmailControlDesk({ activeTab, platform, session, fixture, refresh }: an
     const unknown = filteredDeliveries.filter((item: any) => item.is_test == null).length;
     return <><Panel title="Activity period"><div className="button-row"><label className="field">From<input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /></label><label className="field">To<input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></label></div></Panel><Metrics values={[["Recorded activity", filteredDeliveries.length, "Application delivery ledger"], ["Production", production, "Explicit metadata"], ["Tests", tests, "Explicit metadata"], ["Historical classification unknown", unknown, "Not guessed"]]} /><Panel title="Sending-path coverage and trend"><DataTable headers={["Category", "Recorded in period", "Coverage"]} rows={Object.entries(EMAIL_LABELS).map(([key, label]) => [label, filteredDeliveries.filter((item: any) => item.kind === key || (key === "report" && item.kind === "scheduled_report")).length, ["confirmation", "password_reset", "registration"].includes(key) ? "Provider-managed Supabase Auth; delivery evidence is not imported" : "Claritude notification delivery ledger"])} /><p className="subtle">The period comparison updates from recorded delivery activity. Accepted by a provider is not treated as delivered; Resend webhooks are required for delivered, bounced and complained evidence.</p></Panel></>;
   }
+  if (activeTab === "Delivery") return <>
+    <Panel title="Controlled delivery test">
+      <p className="subtle">Locked to sales@websi.com. The server enforces the [Claritude TEST] prefix, rejects links and secret-like content, and records an idempotent delivery operation.</p>
+      <div className="settings-grid">
+        <label className="field">Recipient<input value="sales@websi.com" readOnly /></label>
+        <label className="field">Subject prefix<input value="[Claritude TEST]" readOnly /></label>
+        <label className="field settings-span-2">Subject<input value={testSubject} onChange={(event) => setTestSubject(event.target.value)} /></label>
+        <label className="field settings-span-2">Sample content<textarea rows={4} value={testBody} onChange={(event) => setTestBody(event.target.value)} /></label>
+        <label className="field settings-span-2">Administrative reason<input value={testReason} onChange={(event) => setTestReason(event.target.value)} /></label>
+      </div>
+      <button className="primary" disabled={fixture || testSubject.trim().length < 1 || testBody.trim().length < 1 || testReason.trim().length < 3} onClick={async () => {
+        await mutate("/api/superadmin/email/test-delivery", { method: "POST", body: JSON.stringify({ recipient: "sales@websi.com", subject: testSubject, htmlBody: testBody, reason: testReason, operationKey: testOperationKey }) });
+        setTestOperationKey(crypto.randomUUID());
+      }}>Send controlled test</button>
+      {message && <p role="status">{message}</p>}
+    </Panel>
+    <Panel title="Delivery evidence">
+      <div className="button-row"><select value={deliveryKind} onChange={(event) => { setDeliveryKind(event.target.value); setDeliveryPage(1); }}><option value="all">All types</option>{[...new Set(deliveries.map((item: any) => item.kind))].map((kind: any) => <option key={kind} value={kind}>{emailLabel(kind)}</option>)}</select><select value={deliveryClass} onChange={(event) => { setDeliveryClass(event.target.value); setDeliveryPage(1); }}><option value="all">All classifications</option><option value="production">Production</option><option value="test">Test</option><option value="unknown">Historical unknown</option></select><input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /><input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></div>
+      <DataTable headers={["Type", "Recipient", "Classification", "Claritude state", "Provider", "Provider message ID", "Provider evidence", "Related record", "Created"]} rows={filteredDeliveries.slice((deliveryPage - 1) * 50, deliveryPage * 50).map((item: any) => [emailLabel(item.kind), item.recipient, item.is_test === true ? "Test" : item.is_test === false ? "Production" : "Unknown (historical)", cap(item.status), item.provider || (item.provider_id ? "Resend" : "—"), item.provider_id || "—", item.provider_status || (item.status === "sent" ? "Accepted only" : "—"), item.campaign_id || item.automation_key || item.property_id || item.account_id || "—", fmtDate(item.created_at)])} />
+      <div className="button-row"><button className="btn" disabled={deliveryPage === 1} onClick={() => setDeliveryPage((page) => page - 1)}>Previous</button><span>Page {deliveryPage} · {filteredDeliveries.length} records</span><button className="btn" disabled={deliveryPage * 50 >= filteredDeliveries.length} onClick={() => setDeliveryPage((page) => page + 1)}>Next</button></div>
+      <p className="subtle">Technical event keys and payload metadata remain available in record details; labels here are human-readable.</p>
+    </Panel>
+  </>;
   if (activeTab === "Templates") return withEmailDialog(<>
     <Panel title="Create template version">
       <div className="settings-grid">

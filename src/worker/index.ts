@@ -3647,7 +3647,7 @@ app.get("/api/superadmin/platform", async (c) => {
   const [billingConfiguration, billingCatalogue, billingSubscriptions, billingInvoices, billingPayments, billingRefunds, billingDisputes, billingReconciliation, billingDaily, billingPayouts] = await Promise.all([
     service.from("billing_environment_configurations").select("*").eq("environment", billingEnvironment).maybeSingle(),
     service.from("billing_catalogue_prices").select("*,package_versions(package_key,display_name,version,state,allowances,unresolved_values)").eq("billing_environment", billingEnvironment).order("currency").order("interval"),
-    service.from("billing_subscriptions").select("*,accounts(name),billing_subscription_items(*),billing_subscription_discounts(*)").eq("billing_environment", billingEnvironment).order("updated_at", { ascending: false }).limit(2000),
+    service.from("billing_subscriptions").select("*,accounts(name),package_versions(package_key,display_name,version,allowances),billing_subscription_items(*),billing_subscription_discounts(*)").eq("billing_environment", billingEnvironment).order("updated_at", { ascending: false }).limit(2000),
     service.from("billing_invoices").select("*,accounts(name)").eq("billing_environment", billingEnvironment).order("provider_created_at", { ascending: false }).limit(2000),
     service.from("billing_payments").select("*,accounts(name)").eq("billing_environment", billingEnvironment).order("provider_created_at", { ascending: false }).limit(2000),
     service.from("billing_refunds").select("*,accounts(name)").eq("billing_environment", billingEnvironment).order("provider_created_at", { ascending: false }).limit(1000),
@@ -3657,6 +3657,16 @@ app.get("/api/superadmin/platform", async (c) => {
     service.from("billing_payouts").select("*").eq("billing_environment", billingEnvironment).order("provider_created_at", { ascending: false }).limit(1000),
   ]);
   const finance = financeMetrics({ subscriptions: billingSubscriptions.data || [], invoices: billingInvoices.data || [], payments: billingPayments.data || [], refunds: billingRefunds.data || [], disputes: billingDisputes.data || [] }, billingEnvironment);
+  const subscriptionRows = (billingSubscriptions.data || []).map((subscription: any) => ({
+    ...subscription,
+    metadata: {
+      ...(subscription.metadata || {}),
+      basePriceId: subscription.package_versions
+        ? `${subscription.package_versions.display_name} v${subscription.package_versions.version}`
+        : subscription.metadata?.basePriceId,
+    },
+    included_editing_seats: subscription.included_editing_seats ?? subscription.package_versions?.allowances?.editingSeats ?? null,
+  }));
   const providerMode = stripeProvider.client ? billingEnvironment : "unconfigured";
   const paidPackages = ["essentials", "scale", "pro"];
   const baseCatalogueKeys = paidPackages.flatMap((packageKey) => ["gbp", "eur", "usd"].flatMap((currency) => ["month", "year"].map((interval) => `${packageKey}:${currency}:${interval}:base`)));
@@ -3682,7 +3692,7 @@ app.get("/api/superadmin/platform", async (c) => {
     audits: { technicalChecks: auditDefinitions.data || [], groups: auditGroups.data || [], groupChecks: auditGroupChecks.data || [], groupHistory: auditGroupHistory.data || [], packageAvailability: auditPackageAvailability.data || [], today: auditStatus, runs: runs, source: "application_measured", period: "UTC day" },
     infrastructure: { database: databaseMetrics.data || null, databaseError: databaseMetrics.error?.message || null, events: operationalEvents.data || [], leases: leases.data || [], period: "UTC day" },
     exports: exports.data || [], deletionRequests: deletionRequests.data || [], email: { templates: templates.data || [], automations: automations.data || [], campaigns: campaigns.data || [], deliveries: deliveries.data || [], suppressions: suppressions.data || [] },
-    billing: { environment: billingEnvironment, configured: stripeProvider.configured, providerMode, configuration: billingConfiguration.data || null, catalogueReady, liveReadiness, catalogueRequirements: { requiredCount: requiredCatalogueKeys.length, basePriceCount: 18, maximumWithSeatPrices: 36, missing: requiredCatalogueKeys.filter((key) => !catalogueKeys.has(key)), unresolvedSeatPackages, packagesRequiringSeatPrices, explanation: "Eighteen base prices cover 3 paid packages × 3 currencies × 2 billing intervals. The total becomes 36 only if every package separately sells additional seats; a package needs a seat price only when its approved allowance and commercial policy permit paid seat overage." }, catalogue: billingCatalogue.data || [], customers: billingCustomers.data || [], subscriptions: billingSubscriptions.data || [], invoices: billingInvoices.data || [], payments: billingPayments.data || [], refunds: billingRefunds.data || [], disputes: billingDisputes.data || [], payouts: billingPayouts.data || [], reconciliation: billingReconciliation.data || [], daily: billingDaily.data || [], events: billingEvents.data || [], promotions: promotions.data || [], calculations: finance, currencyPolicy: "Every finance query is scoped to one billing environment and each series to one currency. No implicit FX conversion is applied. MRR includes every recurring item, annual values divided by 12, and applicable recurring discounts. Daily activity is distinct from available and pending balances; only succeeded refunds reduce completed refund totals." },
+    billing: { environment: billingEnvironment, configured: stripeProvider.configured, providerMode, configuration: billingConfiguration.data || null, catalogueReady, liveReadiness, catalogueRequirements: { requiredCount: requiredCatalogueKeys.length, basePriceCount: 18, maximumWithSeatPrices: 36, missing: requiredCatalogueKeys.filter((key) => !catalogueKeys.has(key)), unresolvedSeatPackages, packagesRequiringSeatPrices, explanation: "Eighteen base prices cover 3 paid packages × 3 currencies × 2 billing intervals. The total becomes 36 only if every package separately sells additional seats; a package needs a seat price only when its approved allowance and commercial policy permit paid seat overage." }, catalogue: billingCatalogue.data || [], customers: billingCustomers.data || [], subscriptions: subscriptionRows, invoices: billingInvoices.data || [], payments: billingPayments.data || [], refunds: billingRefunds.data || [], disputes: billingDisputes.data || [], payouts: billingPayouts.data || [], reconciliation: billingReconciliation.data || [], daily: billingDaily.data || [], events: billingEvents.data || [], promotions: promotions.data || [], calculations: finance, currencyPolicy: "Every finance query is scoped to one billing environment and each series to one currency. No implicit FX conversion is applied. MRR includes every recurring item, annual values divided by 12, and applicable recurring discounts. Daily activity is distinct from available and pending balances; only succeeded refunds reduce completed refund totals." },
   });
 });
 
@@ -4439,6 +4449,42 @@ app.post("/api/superadmin/email/automations/:key/simulate", async (c) => {
   if (error) return c.json({ error: error.message }, 400);
   if (claimed) await admin(c.env).from("notification_deliveries").update({ status: "simulated", provider: "none", provider_status: "not_sent", is_test: true, automation_key: c.req.param("key"), updated_at: new Date().toISOString() }).eq("dedupe_key", dedupeKey);
   return c.json({ simulated: true, claimed, duplicatePrevented: !claimed, sentToProvider: false });
+});
+
+app.post("/api/superadmin/email/test-delivery", async (c) => {
+  const authorization = await requireStaff(c, "communications.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ recipient?: string; subject?: string; htmlBody?: string; reason?: string; operationKey?: string }>().catch(() => ({} as any));
+  const recipient = String(body.recipient || "").trim().toLowerCase();
+  const subjectText = String(body.subject || "").trim().replace(/^\[Claritude TEST\]\s*/i, "");
+  const htmlBody = String(body.htmlBody || "").trim();
+  const reason = String(body.reason || "").trim();
+  const operationKey = String(body.operationKey || "").trim();
+  if (recipient !== "sales@websi.com") return c.json({ error: "controlled_test_recipient_required" }, 400);
+  if (!subjectText || subjectText.length > 180 || !htmlBody || htmlBody.length > 20_000 || reason.length < 3 || reason.length > 500 || !/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(operationKey)) return c.json({ error: "valid_subject_body_reason_and_operation_key_required" }, 400);
+  if (/(?:password\s*reset|access[_ -]?token|bearer\s+|https?:\/\/)/i.test(`${subjectText}\n${htmlBody}`)) return c.json({ error: "test_content_must_not_include_links_or_secrets" }, 400);
+  if (!c.env.RESEND_API_KEY || !c.env.RESEND_FROM) return c.json({ error: "email_delivery_not_configured" }, 503);
+  const dedupeKey = `superadmin:test-delivery:${operationKey}`;
+  const service = admin(c.env);
+  const { data: claimed, error: claimError } = await service.rpc("claim_notification", { p_key: dedupeKey, p_kind: "acceptance_test", p_recipient: recipient, p_payload: { controlledTest: true, staffUserId: authorization.staff!.userId, subject: `[Claritude TEST] ${subjectText}` } });
+  if (claimError) return c.json({ error: claimError.message }, 400);
+  if (!claimed) {
+    const existing = await service.from("notification_deliveries").select("id,status,provider,provider_status,provider_id,created_at").eq("dedupe_key", dedupeKey).maybeSingle();
+    return c.json({ submitted: true, duplicatePrevented: true, delivery: existing.data || null });
+  }
+  const escapedBody = htmlBody.replace(/[<>&]/g, (character) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[character] || character).replace(/\n/g, "<br>");
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${c.env.RESEND_API_KEY}`, "content-type": "application/json", "Idempotency-Key": dedupeKey },
+    body: JSON.stringify({ from: c.env.RESEND_FROM, to: [recipient], subject: `[Claritude TEST] ${subjectText}`, html: `<p>${escapedBody}</p>` }),
+  });
+  const providerBody = response.ok ? await response.json().catch(() => ({})) : null;
+  const providerId = String((providerBody as any)?.id || response.headers.get("x-message-id") || "") || null;
+  const providerError = response.ok ? null : (await response.text()).slice(0, 1000);
+  const delivery = await service.from("notification_deliveries").update({ status: response.ok ? "sent" : "failed", provider: "Resend", provider_status: response.ok ? "accepted" : "rejected", provider_id: providerId, is_test: true, automation_key: "acceptance_test", error: providerError, updated_at: new Date().toISOString() }).eq("dedupe_key", dedupeKey).select("id,kind,recipient,status,provider,provider_status,provider_id,is_test,created_at,updated_at").single();
+  await recordAdminActivity(c.env, authorization.staff!.userId, "email.test_delivery_submitted", response.ok ? "success" : "failed", { targetType: "notification_delivery", targetId: delivery.data?.id || dedupeKey, reason, metadata: { recipient, providerId, operationKey } });
+  if (!response.ok) return c.json({ error: "email_provider_rejected_request", delivery: delivery.data || null }, 502);
+  return c.json({ submitted: true, duplicatePrevented: false, delivery: delivery.data });
 });
 
 app.post("/api/superadmin/email/campaigns", async (c) => {
