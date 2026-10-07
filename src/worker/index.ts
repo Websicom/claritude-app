@@ -1161,7 +1161,7 @@ async function provisionSandboxAcceptanceScenarios(env: Env, runId: string) {
       type: "card",
       card: { token: paymentToken },
       metadata: { claritudeAccountId: account.id, billingEnvironment: "test", sandboxAcceptanceFixture: "true", fixtureRunId: runId },
-    } as any, { idempotencyKey: `sandbox-acceptance-payment-method:${account.id}:${paymentToken}` });
+    } as any, { idempotencyKey: `sandbox-acceptance-payment-method:v2:${account.id}:${paymentToken}` });
     if (existing.data?.provider_customer_id) {
       const customerId = existing.data.provider_customer_id as string;
       try { await stripe.paymentMethods.attach(paymentMethod.id, { customer: customerId }); } catch (error) { if (!/already been attached/i.test(errorMessage(error))) throw error; }
