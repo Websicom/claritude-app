@@ -1148,12 +1148,17 @@ async function provisionSandboxAcceptanceScenarios(env: Env, runId: string) {
     if (created.error) throw created.error;
     return { id: (created.data as any).accountId, name };
   }
-  async function ensureCustomer(account: { id: string; name: string }, paymentMethod = "pm_card_visa", testClock?: string) {
+  async function ensureCustomer(account: { id: string; name: string }, paymentToken = "tok_visa", testClock?: string) {
     const existing = await db.from("billing_customers").select("provider_customer_id").eq("account_id", account.id).eq("billing_environment", "test").maybeSingle();
     if (existing.data?.provider_customer_id) return existing.data.provider_customer_id as string;
+    const paymentMethod = await stripe.paymentMethods.create({
+      type: "card",
+      card: { token: paymentToken },
+      metadata: { claritudeAccountId: account.id, billingEnvironment: "test", sandboxAcceptanceFixture: "true", fixtureRunId: runId },
+    } as any, { idempotencyKey: `sandbox-acceptance-payment-method:${account.id}:${paymentToken}` });
     const customer = await stripe.customers.create({
-      name: account.name, email: testRecipient, payment_method: paymentMethod,
-      invoice_settings: { default_payment_method: paymentMethod },
+      name: account.name, email: testRecipient, payment_method: paymentMethod.id,
+      invoice_settings: { default_payment_method: paymentMethod.id },
       ...(testClock ? { test_clock: testClock } : {}),
       metadata: { claritudeAccountId: account.id, billingEnvironment: "test", sandboxAcceptanceScenario: "true", fixtureRunId: runId },
     } as any, { idempotencyKey: `sandbox-acceptance-customer:${account.id}` });
@@ -1165,15 +1170,22 @@ async function provisionSandboxAcceptanceScenarios(env: Env, runId: string) {
   async function ensureSubscription(scenario: string, account: { id: string; name: string }, customerId: string, priceId: string, extra: Record<string, unknown> = {}) {
     const existing = await stripe.subscriptions.list({ customer: customerId, status: "all", limit: 100, expand: ["data.discounts"] });
     let subscription: any = existing.data.find((item: any) => item.metadata?.sandboxAcceptanceScenario === scenario);
-    if (!subscription) subscription = await stripe.subscriptions.create({
+    if (!subscription) {
+      const customer: any = await stripe.customers.retrieve(customerId);
+      const defaultPaymentMethod = typeof customer.invoice_settings?.default_payment_method === "string"
+        ? customer.invoice_settings.default_payment_method
+        : customer.invoice_settings?.default_payment_method?.id;
+      if (!defaultPaymentMethod) throw new Error(`sandbox_payment_method_missing:${account.id}`);
+      subscription = await stripe.subscriptions.create({
       customer: customerId,
       items: [{ price: priceId, quantity: 1 }],
-      default_payment_method: "pm_card_visa",
+      default_payment_method: defaultPaymentMethod,
       payment_behavior: "error_if_incomplete",
       metadata: { claritudeAccountId: account.id, billingEnvironment: "test", sandboxAcceptanceScenario: scenario, fixtureRunId: runId },
       expand: ["latest_invoice.payment_intent", "discounts"],
       ...extra,
     } as any, { idempotencyKey: `sandbox-acceptance-subscription:${scenario}:${account.id}` });
+    }
     if (subscription.livemode) throw new Error("sandbox_subscription_environment_mismatch");
     await reconcileBillingAccount(env, account.id, "manual");
     return subscription;
@@ -1224,8 +1236,8 @@ async function provisionSandboxAcceptanceScenarios(env: Env, runId: string) {
 
   const failureClock = await stripe.testHelpers.testClocks.create({ frozen_time: Math.floor(Date.now() / 1000), name: "Claritude sandbox past-due acceptance" }, { idempotencyKey: "sandbox-acceptance-clock:past-due" });
   const failedAccount = await ensureAccount("Sandbox Past Due Pro");
-  const failedCustomer = await ensureCustomer(failedAccount, "pm_card_chargeDeclined", failureClock.id);
-  const failed = await ensureSubscription("past-due", failedAccount, failedCustomer, proMonth.provider_price_id, { default_payment_method: "pm_card_chargeDeclined", payment_behavior: "default_incomplete", trial_end: failureClock.frozen_time + 3600 });
+  const failedCustomer = await ensureCustomer(failedAccount, "tok_chargeDeclined", failureClock.id);
+  const failed = await ensureSubscription("past-due", failedAccount, failedCustomer, proMonth.provider_price_id, { payment_behavior: "default_incomplete", trial_end: failureClock.frozen_time + 3600 });
   if (failureClock.status === "ready") await stripe.testHelpers.testClocks.advance(failureClock.id, { frozen_time: failureClock.frozen_time + 7200 });
 
   return {
