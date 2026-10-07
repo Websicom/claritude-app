@@ -425,8 +425,8 @@ function fallbackUserFacingSnapshot(technicalSnapshot: AuditRegistrySnapshot[]):
 }
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
-const TRACKER_VERSION = "2.1.5";
-const SUPPORTED_TRACKER_VERSIONS = new Set(["2.0.0", "2.1.0", "2.1.1", "2.1.2", "2.1.3", "2.1.4", TRACKER_VERSION]);
+const TRACKER_VERSION = "2.2.0";
+const SUPPORTED_TRACKER_VERSIONS = new Set(["2.0.0", "2.1.0", "2.1.1", "2.1.2", "2.1.3", "2.1.4", "2.1.5", TRACKER_VERSION]);
 app.use("*", secureHeaders({ crossOriginResourcePolicy: false }));
 app.use("*", async (c, next) => {
   await next();
@@ -735,7 +735,8 @@ app.post("/collect", async (c) => {
     .select("id", { count: "exact", head: true })
     .eq("property_id", property.id)
     .gte("received_at", dayStart);
-  if ((receivedToday || 0) + events.length > LIMITS.analyticsEventsPerPropertyPerDay)
+  const eventInputs = events.filter((event: any) => event?.type !== "view_state");
+  if ((receivedToday || 0) + eventInputs.length > LIMITS.analyticsEventsPerPropertyPerDay)
     return c.json({ error: "analytics_daily_limit_reached" }, 429);
   const requestCountry = String(
     (c.req.raw as Request & { cf?: { country?: string } }).cf?.country || "",
@@ -749,7 +750,7 @@ app.post("/collect", async (c) => {
   const configuredEvents = new Set(
     (definitions || []).map((definition) => `${definition.event_type}:${definition.name}`),
   );
-  const rows = events
+  const rows = eventInputs
     .map((e: any) =>
       sanitizeEvent(e, property.id, now, requestCountry, userAgent),
     )
@@ -758,13 +759,21 @@ app.post("/collect", async (c) => {
       if (!["click", "form_success"].includes(row.event_type) || !row.name) return true;
       return configuredEvents.has(`${row.event_type}:${row.name}`);
     });
-  if (!rows.length) return c.json({ error: "no_valid_events" }, 400);
+  const viewStates = events
+    .filter((event: any) => event?.type === "view_state")
+    .map((event: any) => sanitizeViewState(event, property.id, now, requestCountry, userAgent, configuredEvents))
+    .filter(Boolean);
+  if (!rows.length && !viewStates.length) return c.json({ error: "no_valid_events" }, 400);
   // A batch can be retried by sendBeacon/fetch or by the browser. Insert each
   // observation independently so a duplicate event_id never rejects otherwise
   // valid observations in the same delivery.
-  const insertResults = await Promise.all(
-    rows.map((row: any) => db.from("analytics_events").insert(row)),
-  );
+  const insertResults = await Promise.all([
+    ...rows.map((row: any) => db.from("analytics_events").insert(row)),
+    ...viewStates.map((state: any) => db.rpc("merge_analytics_view_state", {
+      p_property_id: property.id,
+      p_state: state,
+    })),
+  ]);
   const insertionFailure = insertResults.find(
     (result) => result.error && result.error.code !== "23505",
   )?.error;
@@ -5234,13 +5243,10 @@ app.get("/api/properties/:id/events", async (c) => {
       .select("*")
       .eq("property_id", propertyId)
       .order("created_at"),
-    db
-      .from("analytics_events")
-      .select("name,event_type,occurred_at")
-      .eq("property_id", propertyId)
-      .gte("occurred_at", from)
-      .not("name", "is", null)
-      .limit(50000),
+    db.rpc("analytics_event_definition_counts", {
+      p_property_id: propertyId,
+      p_from: from,
+    }),
     db
       .from("properties")
       .select("id,account_id,workspaces(accounts(entitlement))")
@@ -5254,10 +5260,10 @@ app.get("/api/properties/:id/events", async (c) => {
   const counts = new Map<string, { count: number; last: string | null }>();
   for (const event of received) {
     const key = `${event.event_type}:${event.name}`;
-    const current = counts.get(key) || { count: 0, last: null };
-    current.count += 1;
-    if (!current.last || event.occurred_at > current.last) current.last = event.occurred_at;
-    counts.set(key, current);
+    counts.set(key, {
+      count: Number(event.received || 0),
+      last: event.last_received_at || null,
+    });
   }
   const property = propertyResponse.data as any;
   let allowance;
@@ -5447,6 +5453,18 @@ app.post("/api/notifications/read-all", async (c) => {
   return error ? c.json({ error: error.message }, 400) : c.json({ updated: data?.length || 0 });
 });
 
+app.get("/api/properties/:id/uptime-status", async (c) => {
+  const { data, error } = await c.get("db")
+    .from("uptime_monitors")
+    .select("id,enabled,last_status,last_response_ms,last_checked_at")
+    .eq("property_id", c.req.param("id"))
+    .maybeSingle();
+  if (error) return c.json({ error: error.message }, 400);
+  if (!data) return c.json({ error: "uptime_monitor_not_found" }, 404);
+  c.header("Cache-Control", "private, no-store");
+  return c.json(data);
+});
+
 app.get("/api/account/export", async (c) => {
   const db = c.get("db");
   const [profile, accounts, workspaces, properties, incidents, audits, analytics, reports, schedules, activity] =
@@ -5588,6 +5606,7 @@ app.delete("/api/properties/:id/events/:eventId", async (c) => {
 });
 
 app.get("/api/properties/:id/analytics", async (c) => {
+  const startedAt = performance.now();
   const window = requestedWindow(c);
   if (!window) return c.json({ error: "invalid_date_range" }, 400);
   const filters: AnalyticsFilters = {
@@ -5627,18 +5646,26 @@ app.get("/api/properties/:id/analytics", async (c) => {
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : "analytics_query_failed" }, 400);
   }
-  const events = currentResult.events;
-  const previousEvents = previousResult?.events || [];
+  const events = [
+    ...currentResult.events,
+    ...currentResult.rollups.map(analyticsRollupAsEvent),
+  ];
+  const previousEvents = [
+    ...(previousResult?.events || []),
+    ...(previousResult?.rollups || []).map(analyticsRollupAsEvent),
+  ];
   const filtered = filterAnalyticsEvents(events, filters);
   const filteredPrevious = filterAnalyticsEvents(previousEvents, filters);
+  const filteredViews = filterAnalyticsViews(currentResult.views, filters);
+  const filteredPreviousViews = filterAnalyticsViews(previousResult?.views || [], filters);
   const summary = buildAnalyticsSummary(
     filtered,
     window.days,
     window.from,
     window.to,
     window.timeZone,
-    currentResult.rollups,
-    currentResult.views,
+    [],
+    filteredViews,
     { includeVisitTimes: !overviewOnly },
   );
   const previous = previousResult
@@ -5648,23 +5675,27 @@ app.get("/api/properties/:id/analytics", async (c) => {
         previousFrom,
         previousTo,
         window.timeZone,
-        previousResult.rollups,
-        previousResult.views,
+        [],
+        filteredPreviousViews,
       )
     : undefined;
-  return c.json({
+  const response = {
     ...summary,
     ...(previous ? { previous } : {}),
     // Filtering can reduce the returned set below the query ceiling. Preserve
     // whether the underlying property/date result hit that ceiling so the UI
     // never presents a partial result as complete.
     truncated: currentResult.truncated,
-    filterOptions: buildAnalyticsFilterOptions([
-      ...events,
-      ...currentResult.rollups.map(analyticsRollupAsEvent),
-    ]),
+    filterOptions: buildAnalyticsFilterOptions(events),
     appliedFilters: filters,
-  });
+  };
+  const responseBytes = new TextEncoder().encode(JSON.stringify(response)).byteLength;
+  c.header("Server-Timing", `analytics;dur=${(performance.now() - startedAt).toFixed(1)}`);
+  c.header("X-Analytics-Source-Rows", String(currentResult.sourceRows || 0));
+  c.header("X-Analytics-Aggregate-Rows", String((currentResult.eventRows || 0) + (currentResult.viewRows || 0)));
+  c.header("X-Analytics-DB-Bytes", String(currentResult.dbResponseBytes || 0));
+  c.header("X-Analytics-Response-Bytes", String(responseBytes));
+  return c.json(response);
 });
 
 app.get("/api/properties/:id/analytics/pages", async (c) => {
@@ -5704,6 +5735,7 @@ app.get("/api/properties/:id/analytics/pages", async (c) => {
 });
 
 app.get("/api/properties/:id/ai-visibility", async (c) => {
+  const startedAt = performance.now();
   const window = requestedWindow(c);
   if (!window) return c.json({ error: "invalid_date_range" }, 400);
   const filters: AnalyticsFilters = {
@@ -5742,23 +5774,31 @@ app.get("/api/properties/:id/ai-visibility", async (c) => {
         .maybeSingle(),
     ]);
     if (auditResult.error) throw new Error(auditResult.error.message);
-    const currentEvents = filterAnalyticsEvents(currentData.events, filters);
-    const previousEvents = filterAnalyticsEvents(previousData.events, filters);
+    const currentEvents = filterAnalyticsEvents([
+      ...currentData.events,
+      ...currentData.rollups.map(analyticsRollupAsEvent),
+    ], filters);
+    const previousEvents = filterAnalyticsEvents([
+      ...previousData.events,
+      ...previousData.rollups.map(analyticsRollupAsEvent),
+    ], filters);
+    const currentViews = filterAnalyticsViews(currentData.views, filters);
+    const previousViews = filterAnalyticsViews(previousData.views, filters);
     const current = buildAiVisibilitySummary(
-      currentEvents,
-      currentData.views,
+      [],
+      currentViews,
       window.from,
       window.to,
       window.timeZone,
     );
     const previous = buildAiVisibilitySummary(
-      previousEvents,
-      previousData.views,
+      [],
+      previousViews,
       previousWindow.from,
       previousWindow.to,
       window.timeZone,
     );
-    return c.json({
+    const response = {
       ...current,
       previous,
       insight: aiVisibilityInsight(current, previous),
@@ -5766,24 +5806,18 @@ app.get("/api/properties/:id/ai-visibility", async (c) => {
       trackingInstalled: Boolean(property.tracking_last_received_at),
       truncated: currentData.truncated || previousData.truncated,
       filterOptions: buildAnalyticsFilterOptions([
-        ...currentData.events,
-        ...currentData.views.map((view: any) => ({
-          event_type: "pageview",
-          path: view.path,
-          source: view.source,
-          referrer_host: view.referrer_host,
-          device: view.device,
-          country_code: view.country_code,
-          metadata: {
-            browser: view.browser,
-            utm_source: view.utm_source,
-            utm_medium: view.utm_medium,
-            utm_campaign: view.utm_campaign,
-          },
-        })),
+        ...currentEvents,
+        ...currentData.views.map(analyticsViewAsEvent),
       ]),
       appliedFilters: filters,
-    });
+    };
+    const responseBytes = new TextEncoder().encode(JSON.stringify(response)).byteLength;
+    c.header("Server-Timing", `ai-visibility;dur=${(performance.now() - startedAt).toFixed(1)}`);
+    c.header("X-Analytics-Source-Rows", String(currentData.sourceRows || 0));
+    c.header("X-Analytics-Aggregate-Rows", String((currentData.eventRows || 0) + (currentData.viewRows || 0)));
+    c.header("X-Analytics-DB-Bytes", String(currentData.dbResponseBytes || 0));
+    c.header("X-Analytics-Response-Bytes", String(responseBytes));
+    return c.json(response);
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : "ai_visibility_query_failed" }, 400);
   }
@@ -7426,10 +7460,15 @@ async function scheduled(env: Env, cron: string) {
       (data || []).map((m) => env.JOBS.send({ type: "uptime", id: m.id })),
     );
   } else {
+    const aggregateDay = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
     const aggregateResult = await db.rpc("aggregate_analytics_day_v2", {
-      p_day: new Date(Date.now() - 864e5).toISOString().slice(0, 10),
+      p_day: aggregateDay,
     });
     if (aggregateResult.error) throw aggregateResult.error;
+    const viewAggregateResult = await db.rpc("aggregate_analytics_view_states_day", {
+      p_day: aggregateDay,
+    });
+    if (viewAggregateResult.error) throw viewAggregateResult.error;
     // The product exposes at most a 90-day analytics window. Keep an extra
     // 30-day safety margin before pruning source events in bounded batches.
     const pruneResult = await db.rpc("prune_analytics_raw", {
@@ -7437,6 +7476,11 @@ async function scheduled(env: Env, cron: string) {
       p_limit: 50000,
     });
     if (pruneResult.error) throw pruneResult.error;
+    const viewPruneResult = await db.rpc("prune_analytics_view_states", {
+      p_before: new Date(Date.now() - 120 * 864e5).toISOString(),
+      p_limit: 50000,
+    });
+    if (viewPruneResult.error) throw viewPruneResult.error;
     await runDueReportSchedules(env, db);
     await expireComplimentaryPackageGrants(db);
     await expireFreeAccountAudits(db);
@@ -7507,6 +7551,13 @@ async function expireFreeAccountAudits(db: SupabaseClient) {
   const setting = await db.from("platform_settings").select("value").eq("key", "retention_policy").maybeSingle();
   if (setting.error) throw setting.error;
   const policy = (setting.data?.value || {}) as Record<string, unknown>;
+  const summaryDays = Number(policy.auditSummaryDays ?? policy.auditResultsDays);
+  if (!Number.isInteger(summaryDays) || summaryDays < 1 || summaryDays > 3650)
+    throw new Error("invalid_audit_summary_retention_policy");
+  const summaryPrune = await db.rpc("prune_audit_summaries", {
+    p_before: new Date(Date.now() - summaryDays * 864e5).toISOString(),
+  });
+  if (summaryPrune.error) throw summaryPrune.error;
   if (policy.freeAuditExpiryEnabled !== true) return;
   const days = Number(policy.freeAuditExpiryDays);
   if (!Number.isInteger(days) || days < 1 || days > 3650) throw new Error("invalid_free_audit_retention_policy");
@@ -7532,12 +7583,11 @@ async function expireFreeAccountAudits(db: SupabaseClient) {
   const propertyIds = (properties.data || []).map((property) => property.id);
   if (!propertyIds.length) return;
   const before = new Date(Date.now() - days * 864e5).toISOString();
-  const [summaries, runs] = await Promise.all([
-    db.from("audit_run_summaries").delete().in("property_id", propertyIds).lt("created_at", before),
-    db.from("audit_runs").delete().in("property_id", propertyIds).lt("created_at", before).not("status", "in", "(queued,running)"),
-  ]);
-  if (summaries.error) throw summaries.error;
-  if (runs.error) throw runs.error;
+  const expired = await db.rpc("expire_free_audit_details", {
+    p_property_ids: propertyIds,
+    p_before: before,
+  });
+  if (expired.error) throw expired.error;
 }
 
 export function meaningfulAccountActivity(action: string) {
@@ -7796,6 +7846,74 @@ function sanitizeEvent(
   };
 }
 
+function sanitizeViewState(
+  event: any,
+  propertyId: string,
+  receivedAt: string,
+  requestCountry = "",
+  userAgent = "",
+  configuredEvents = new Set<string>(),
+) {
+  const meta = event?.meta && typeof event.meta === "object" ? event.meta : {};
+  const viewId = String(meta.view_id || "").trim().slice(0, 200);
+  const sessionId = String(meta.session || "").trim().slice(0, 200);
+  const path = cleanPath(event?.path);
+  if (!viewId || !path) return null;
+  const keyEventCounts: Record<string, number> = {};
+  if (meta.key_events && typeof meta.key_events === "object" && !Array.isArray(meta.key_events)) {
+    for (const [rawKey, rawCount] of Object.entries(meta.key_events).slice(0, 50)) {
+      const separator = rawKey.indexOf(":");
+      if (separator < 1) continue;
+      const type = rawKey.slice(0, separator);
+      const name = rawKey.slice(separator + 1).trim().slice(0, 80);
+      if (!name || !["click", "outbound", "form_success"].includes(type)) continue;
+      if (type !== "outbound" && !configuredEvents.has(`${type}:${name}`)) continue;
+      const count = Math.max(0, Math.min(10000, Math.floor(Number(rawCount) || 0)));
+      keyEventCounts[name] = Math.max(keyEventCounts[name] || 0, count);
+    }
+  }
+  const visibleSections = Array.isArray(meta.visible_sections)
+    ? [...new Set(meta.visible_sections.map((value: unknown) => String(value || "").trim().slice(0, 80)).filter(Boolean))].slice(0, 50)
+    : [];
+  const vitals: Record<string, number> = {};
+  if (meta.vitals && typeof meta.vitals === "object" && !Array.isArray(meta.vitals)) {
+    for (const metric of ["LCP", "INP", "CLS"]) {
+      const value = Number(meta.vitals[metric]);
+      if (Number.isFinite(value)) vitals[metric] = Math.max(0, Math.min(600000, value));
+    }
+  }
+  const text = (value: unknown, maximum: number) => String(value || "").trim().slice(0, maximum);
+  return {
+    property_id: propertyId,
+    view_id: viewId,
+    session_id: sessionId,
+    occurred_at: validDate(meta.view_started_at) || validDate(event?.at) || receivedAt,
+    checkpoint_sequence: Math.max(0, Math.min(1_000_000, Math.floor(Number(meta.checkpoint_sequence) || 0))),
+    path,
+    referrer_host: cleanHost(event?.referrer),
+    source: text(event?.source || meta.acquisition_source, 200),
+    device: ["desktop", "mobile", "tablet"].includes(event?.device) ? event.device : "",
+    country_code: /^[A-Z]{2}$/.test(requestCountry) ? requestCountry : text(event?.country, 20),
+    browser: text(meta.browser || browserFromUserAgent(userAgent), 80),
+    screen: text(meta.screen, 40),
+    tracker_version: text(meta.tracker_version, 40),
+    acquisition_source: text(meta.acquisition_source, 200),
+    original_referrer: text(meta.original_referrer, 200),
+    landing_page: text(meta.landing_page, 500),
+    utm_source: text(meta.utm_source, 200),
+    utm_medium: text(meta.utm_medium, 200),
+    utm_campaign: text(meta.utm_campaign, 200),
+    utm_content: text(meta.utm_content, 200),
+    utm_term: text(meta.utm_term, 200),
+    active_seconds: Math.max(0, Math.min(600000, Number(meta.active_seconds) || 0)),
+    max_scroll: Math.max(0, Math.min(100, Number(meta.max_scroll) || 0)),
+    key_event_counts: keyEventCounts,
+    javascript_errors: Math.max(0, Math.min(50, Math.floor(Number(meta.javascript_errors) || 0))),
+    visible_sections: visibleSections,
+    vitals,
+  };
+}
+
 function browserFromUserAgent(value: string) {
   if (/Edg\//i.test(value)) return "Edge";
   if (/OPR\//i.test(value)) return "Opera";
@@ -7811,6 +7929,10 @@ type AnalyticsWindowData = {
   rollups: any[];
   views: any[];
   truncated: boolean;
+  sourceRows?: number;
+  eventRows?: number;
+  viewRows?: number;
+  dbResponseBytes?: number;
 };
 
 const utcDayStart = (value: number) => {
@@ -7906,44 +8028,24 @@ async function loadAnalyticsWindow(
   to: string,
   useRollups: boolean,
 ): Promise<AnalyticsWindowData> {
-  if (!useRollups) {
-    const raw = await fetchRawAnalyticsRange(db, propertyId, { from, to });
-    return { events: raw.events, rollups: [], views: [], truncated: raw.truncated };
-  }
-  const plan = analyticsRollupPlan(from, to);
-  if (!plan.rollupFrom || !plan.rollupTo) {
-    const raw = await fetchRawAnalyticsRange(db, propertyId, plan.rawRanges[0]);
-    return { events: raw.events, rollups: [], views: [], truncated: raw.truncated };
-  }
-  const { data, error } = await db.rpc("analytics_rollup_window", {
+  const { data, error } = await db.rpc("analytics_compact_window", {
     p_property_id: propertyId,
-    p_from: plan.rollupFrom,
-    p_to: plan.rollupTo,
+    p_from: from,
+    p_to: to,
+    p_use_rollups: useRollups,
   });
   if (error) throw new Error(error.message);
   const payload = data && typeof data === "object" ? data as Record<string, any> : {};
-  const coveredDays = new Set(
-    (Array.isArray(payload.coveredDays) ? payload.coveredDays : []).map(String),
-  );
-  const missingRanges = plan.expectedDays
-    .filter((day) => !coveredDays.has(day))
-    .map((day) => ({
-      from: `${day}T00:00:00.000Z`,
-      to: new Date(Date.parse(`${day}T00:00:00.000Z`) + 864e5 - 1).toISOString(),
-    }));
-  const rawResults = await Promise.all(
-    mergeAnalyticsRanges([...plan.rawRanges, ...missingRanges])
-      .map((range) => fetchRawAnalyticsRange(db, propertyId, range)),
-  );
-  const rollups = (Array.isArray(payload.events) ? payload.events : [])
-    .filter((row: any) => coveredDays.has(String(row.bucket_start || "").slice(0, 10)));
-  const views = (Array.isArray(payload.views) ? payload.views : [])
-    .filter((row: any) => coveredDays.has(String(row.day || "")));
+  const responseBytes = new TextEncoder().encode(JSON.stringify(payload)).byteLength;
   return {
-    events: rawResults.flatMap((result) => result.events),
-    rollups,
-    views,
-    truncated: rawResults.some((result) => result.truncated),
+    events: [],
+    rollups: Array.isArray(payload.events) ? payload.events : [],
+    views: Array.isArray(payload.views) ? payload.views : [],
+    truncated: Boolean(payload.truncated),
+    sourceRows: Number(payload.sourceRows || 0),
+    eventRows: Number(payload.eventRows || 0),
+    viewRows: Number(payload.viewRows || 0),
+    dbResponseBytes: responseBytes,
   };
 }
 
@@ -8282,10 +8384,32 @@ export function buildAnalyticsSummary(
     const viewVitals = new Map<string, number>();
     if (row.vitals && typeof row.vitals === "object") {
       for (const [name, values] of Object.entries(row.vitals)) {
-        const samples = Array.isArray(values) ? values.map(Number).filter(Number.isFinite) : [];
-        if (samples.length) viewVitals.set(name.toUpperCase(), samples.at(-1)!);
+        const samples = Array.isArray(values)
+          ? values.map(Number).filter(Number.isFinite)
+          : Number.isFinite(Number(values)) ? [Number(values)] : [];
+        if (!samples.length) continue;
+        const metric = name.toUpperCase();
+        viewVitals.set(metric, samples.at(-1)!);
+        if (row.tracker_version === TRACKER_VERSION) {
+          const allSamples = vitals.get(metric) || [];
+          allSamples.push(...samples);
+          vitals.set(metric, allSamples);
+          const daily = vitalDays.get(metric) || new Map<string, number[]>();
+          const dailySamples = daily.get(day) || [];
+          dailySamples.push(...samples);
+          daily.set(day, dailySamples);
+          vitalDays.set(metric, daily);
+          const device = String(row.device || "Unknown").toLocaleLowerCase();
+          const deviceSamples = deviceVitals.get(device) || new Map<string, number[]>();
+          const metricSamples = deviceSamples.get(metric) || [];
+          metricSamples.push(...samples);
+          deviceSamples.set(metric, metricSamples);
+          deviceVitals.set(device, deviceSamples);
+        }
       }
     }
+    if (row.tracker_version === TRACKER_VERSION)
+      javascriptErrors += Number(row.javascript_errors || 0);
     views.set(`${row.day}:${row.view_key}`, {
       path: normalizeAnalyticsPath(row.path),
       sessionId,
@@ -8707,6 +8831,58 @@ export function filterAnalyticsEvents(events: any[], filters: AnalyticsFilters) 
     if (utmMedium && String(event.metadata?.utm_medium || "").toLocaleLowerCase() !== utmMedium) return false;
     if (utmCampaign && String(event.metadata?.utm_campaign || "").toLocaleLowerCase() !== utmCampaign) return false;
     return true;
+  });
+}
+
+function analyticsViewAsEvent(view: any) {
+  return {
+    event_type: "pageview",
+    path: view.path,
+    referrer_host: view.referrer_host || null,
+    source: view.source || null,
+    device: view.device || null,
+    country_code: view.country_code || null,
+    metadata: {
+      session: view.session_id || undefined,
+      view_id: view.view_key || undefined,
+      browser: view.browser || undefined,
+      screen: view.screen || undefined,
+      tracker_version: view.tracker_version || undefined,
+      acquisition_source: view.source || undefined,
+      original_referrer: view.referrer_host || undefined,
+      utm_source: view.utm_source || undefined,
+      utm_medium: view.utm_medium || undefined,
+      utm_campaign: view.utm_campaign || undefined,
+    },
+    occurred_at: view.occurred_at,
+  };
+}
+
+function filterAnalyticsViews(views: any[], filters: AnalyticsFilters) {
+  return views.flatMap((view) => {
+    if (!filterAnalyticsEvents([analyticsViewAsEvent(view)], filters).length) return [];
+    const next = { ...view };
+    if (filters.eventName) {
+      const counts = view.key_event_counts && typeof view.key_event_counts === "object"
+        ? view.key_event_counts
+        : {};
+      const requested = filters.eventName.toLocaleLowerCase();
+      next.key_events = Object.entries(counts)
+        .filter(([name]) => name.toLocaleLowerCase() === requested)
+        .reduce((total, [, count]) => total + Number(count || 0), 0);
+      // This matches the existing raw-event filter: selecting a named event
+      // keeps pageviews and that event, while excluding unrelated engagement
+      // signal rows from the scoped summary.
+      next.active_seconds = 0;
+      next.max_scroll = 0;
+      next.javascript_errors = 0;
+      next.visible_sections = [];
+      next.vitals = {};
+    } else if (filters.metric && next.vitals && typeof next.vitals === "object") {
+      const requested = filters.metric.toLocaleUpperCase();
+      next.vitals = next.vitals[requested] == null ? {} : { [requested]: next.vitals[requested] };
+    }
+    return [next];
   });
 }
 
@@ -9709,7 +9885,7 @@ export const TRACKER_SOURCE = `(()=>{
   const p=s&&s.getAttribute('data-property'),endpoint=s&&new URL('/collect',s.src).href,base=s&&new URL('/',s.src).href;
   if(!p||!endpoint||window.__claritude)return;window.__claritude=1;
   const uuid=()=>{try{return crypto.randomUUID()}catch(uuidError){const b=new Uint8Array(16);try{crypto.getRandomValues(b)}catch(randomError){for(let i=0;i<b.length;i++)b[i]=Math.floor(Math.random()*256)}b[6]=b[6]&15|64;b[8]=b[8]&63|128;return Array.prototype.map.call(b,(x,i)=>(i===4||i===6||i===8||i===10?'-':'')+x.toString(16).padStart(2,'0')).join('')}};
-  let q=[],timer,retryTimer,retryDelay=1000,sending=false,lastUrl=location.href,view=uuid(),generation=0,active=0,reportedActive=0,lastActivity=Date.now(),errorCount=0,vitalsReady=null;
+  let q=[],timer,retryTimer,stateTimer,retryDelay=1000,sending=false,lastUrl=location.href,view=uuid(),generation=0,active=0,lastCheckpointActive=0,lastActivity=Date.now(),errorCount=0,maxScroll=0,checkpointSequence=0,pageStartedAt=new Date().toISOString(),dirty=true,vitalsReady=null,vitalState={},keyEventCounts={};
   const marks=new Set,visibleSections=new Set,observedSections=new WeakSet;
   const session=sessionStorage.getItem('_claritude_session')||uuid();
   sessionStorage.setItem('_claritude_session',session);
@@ -9719,27 +9895,29 @@ export const TRACKER_SOURCE = `(()=>{
   const retry=()=>{if(retryTimer)return;retryTimer=setTimeout(()=>{retryTimer=0;send()},retryDelay);retryDelay=Math.min(retryDelay*2,30000)};
   const send=async()=>{if(sending||!q.length)return;sending=true;const batch=q.splice(0,20),body=JSON.stringify(batch);try{if(navigator.sendBeacon&&document.visibilityState==='hidden'){if(!navigator.sendBeacon(endpoint,new Blob([body],{type:'application/json'})))throw new Error('beacon-rejected')}else{const response=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/json'},body,keepalive:true});if(!response.ok)throw new Error('collect-'+response.status)}retryDelay=1000}catch(sendError){q=batch.concat(q).slice(0,200);retry()}finally{sending=false;if(q.length&&!retryTimer){clearTimeout(timer);timer=setTimeout(send,500)}}};
   const emit=(type,data={})=>{const supplied=data.meta&&typeof data.meta==='object'?data.meta:{},event_id=uuid(),baseMeta=common();q.push(Object.assign({},data,{type,property:p,path:location.pathname,source:data.source||acquisition.source,referrer:document.referrer,at:new Date().toISOString(),device:innerWidth<768?'mobile':innerWidth<1024?'tablet':'desktop',meta:Object.assign({event_id},baseMeta,supplied,baseMeta,{event_id})}));if(q.length>200)q=q.slice(-200);clearTimeout(timer);timer=setTimeout(send,500)};
-  addEventListener('click',e=>{lastActivity=Date.now();const a=e.target.closest('[data-claritude-event],a[href]');if(!a)return;const name=a.dataset.claritudeEvent;if(name)emit('click',{name});if(a.href&&new URL(a.href,location.href).host!==location.host)emit('outbound',{name:new URL(a.href).host})},{passive:true});
+  const scheduleCheckpoint=()=>{dirty=true;if(!stateTimer)stateTimer=setTimeout(()=>{stateTimer=0;checkpoint()},2000)};
+  const checkpoint=(force=false)=>{if(!force&&!dirty)return;checkpointSequence+=1;emit('view_state',{meta:{view_started_at:pageStartedAt,checkpoint_sequence:checkpointSequence,active_seconds:active,max_scroll:maxScroll,key_events:Object.assign({},keyEventCounts),javascript_errors:errorCount,visible_sections:Array.from(visibleSections),vitals:Object.assign({},vitalState)}});dirty=false;lastCheckpointActive=active};
+  const recordKeyEvent=(type,name)=>{const key=type+':'+name;keyEventCounts[key]=(keyEventCounts[key]||0)+1;scheduleCheckpoint()};
+  addEventListener('click',e=>{lastActivity=Date.now();const a=e.target.closest('[data-claritude-event],a[href]');if(!a)return;const name=a.dataset.claritudeEvent;if(name){emit('click',{name});recordKeyEvent('click',name)}if(a.href&&new URL(a.href,location.href).host!==location.host){const host=new URL(a.href).host;emit('outbound',{name:host});recordKeyEvent('outbound',host)}},{passive:true});
   ['keydown','pointerdown','touchstart'].forEach(name=>addEventListener(name,()=>{lastActivity=Date.now()},{passive:true}));
-  const checkScroll=()=>{const root=document.documentElement,height=Math.max(root.scrollHeight,document.body&&document.body.scrollHeight||0,1),n=Math.min(100,Math.round((scrollY+innerHeight)/height*100));[25,50,75,90].forEach(x=>{if(n>=x&&!marks.has(x)){marks.add(x);emit('scroll',{value:x})}})};
+  const checkScroll=()=>{const root=document.documentElement,height=Math.max(root.scrollHeight,document.body&&document.body.scrollHeight||0,1),n=Math.min(100,Math.round((scrollY+innerHeight)/height*100));if(n>maxScroll){maxScroll=n;dirty=true}[25,50,75,90].forEach(x=>{if(n>=x&&!marks.has(x)){marks.add(x);scheduleCheckpoint()}})};
   addEventListener('scroll',checkScroll,{passive:true});addEventListener('resize',checkScroll,{passive:true});
-  const reportActive=()=>{const delta=active-reportedActive;if(delta>0){reportedActive=active;emit('active_time',{value:delta})}};
-  const tick=setInterval(()=>{if(document.visibilityState==='visible'&&document.hasFocus()&&Date.now()-lastActivity<30000)active+=1;if(active-reportedActive>=5)reportActive()},1000);
-  const sectionObserver='IntersectionObserver'in window?new IntersectionObserver(entries=>entries.forEach(entry=>{const name=entry.target.dataset.claritudeSection;if(entry.isIntersecting&&name&&!visibleSections.has(name)){visibleSections.add(name);emit('visible_section',{name})}}),{threshold:.5}):null;
+  const tick=setInterval(()=>{if(document.visibilityState==='visible'&&document.hasFocus()&&Date.now()-lastActivity<30000){active+=1;dirty=true}if(active-lastCheckpointActive>=30)checkpoint()},1000);
+  const sectionObserver='IntersectionObserver'in window?new IntersectionObserver(entries=>entries.forEach(entry=>{const name=entry.target.dataset.claritudeSection;if(entry.isIntersecting&&name&&!visibleSections.has(name)){visibleSections.add(name);scheduleCheckpoint()}}),{threshold:.5}):null;
   const observeSections=()=>{if(!sectionObserver)return;document.querySelectorAll('[data-claritude-section]').forEach(node=>{if(!observedSections.has(node)){observedSections.add(node);sectionObserver.observe(node)}})};
-  const initVitals=()=>{if(!window.webVitals)return;const own=generation,record=metric=>{if(own===generation&&metric&&Number.isFinite(metric.value))emit('web_vital',{name:metric.name,value:metric.value,meta:{metric_id:metric.id,navigation_type:metric.navigationType}})};try{webVitals.onLCP(record)}catch(lcpError){}try{webVitals.onINP(record)}catch(inpError){}try{webVitals.onCLS(record)}catch(clsError){}};
+  const initVitals=()=>{if(!window.webVitals)return;const own=generation,record=metric=>{if(own===generation&&metric&&Number.isFinite(metric.value)){vitalState[metric.name]=metric.value;scheduleCheckpoint()}};try{webVitals.onLCP(record)}catch(lcpError){}try{webVitals.onINP(record)}catch(inpError){}try{webVitals.onCLS(record)}catch(clsError){}};
   const loadVitals=()=>vitalsReady||(vitalsReady=new Promise(resolve=>{if(window.webVitals){resolve();return}const script=document.createElement('script');script.src=new URL('/vendor/web-vitals.js',base).href;script.async=true;script.crossOrigin='anonymous';script.onload=resolve;script.onerror=resolve;document.head.appendChild(script)}));
-  const page=()=>{emit('pageview',{source:acquisition.source});observeSections();requestAnimationFrame(checkScroll);loadVitals().then(initVitals)};page();
-  const navigation=(forcedPath)=>{if(!forcedPath&&location.href===lastUrl)return;reportActive();send();lastUrl=location.href;view=uuid();generation+=1;active=0;reportedActive=0;lastActivity=Date.now();errorCount=0;marks.clear();visibleSections.clear();page()};
+  const page=()=>{emit('pageview',{source:acquisition.source});checkpoint(true);observeSections();requestAnimationFrame(checkScroll);loadVitals().then(initVitals)};page();
+  const navigation=(forcedPath)=>{if(!forcedPath&&location.href===lastUrl)return;checkpoint(true);send();lastUrl=location.href;view=uuid();generation+=1;active=0;lastCheckpointActive=0;lastActivity=Date.now();errorCount=0;maxScroll=0;checkpointSequence=0;pageStartedAt=new Date().toISOString();dirty=true;vitalState={};keyEventCounts={};marks.clear();visibleSections.clear();page()};
   new MutationObserver(()=>{navigation();observeSections();checkScroll()}).observe(document,{subtree:true,childList:true});
   ['pushState','replaceState'].forEach(k=>{const original=history[k];history[k]=function(){const result=original.apply(this,arguments);Promise.resolve().then(()=>navigation());return result}});
   addEventListener('popstate',()=>navigation());
-  const reportError=(name,source)=>{if(errorCount>=5)return;errorCount+=1;let resource_origin='';try{resource_origin=source?new URL(source,location.href).origin:''}catch(urlError){}emit('js_error',{name,meta:{resource_origin}})};
+  const reportError=(name,source)=>{if(errorCount>=5)return;errorCount+=1;scheduleCheckpoint()};
   addEventListener('error',event=>reportError('script-error',event.filename||''),true);
   addEventListener('unhandledrejection',()=>reportError('promise-rejection',''));
-  addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){reportActive();send()}else lastActivity=Date.now()});
-  addEventListener('pagehide',()=>{clearInterval(tick);reportActive();send()});
-  window.claritude={version:'${TRACKER_VERSION}',event:(name,meta)=>emit('click',{name,meta}),formSuccess:(name,meta)=>emit('form_success',{name,meta}),pageview:details=>navigation(details&&details.path),flush:send};
+  addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){checkpoint(true);send()}else lastActivity=Date.now()});
+  addEventListener('pagehide',()=>{clearInterval(tick);clearTimeout(stateTimer);checkpoint(true);send()});
+  window.claritude={version:'${TRACKER_VERSION}',event:(name,meta)=>{emit('click',{name,meta});recordKeyEvent('click',name)},formSuccess:(name,meta)=>{emit('form_success',{name,meta});recordKeyEvent('form_success',name)},pageview:details=>navigation(details&&details.path),flush:()=>{checkpoint(true);return send()}};
 })();`;
 
 export default {

@@ -1,12 +1,4 @@
 import type { Session } from "@supabase/supabase-js";
-import chromeLogo from "@browser-logos/chrome/chrome.svg";
-import edgeLogo from "@browser-logos/edge/edge.svg";
-import firefoxLogo from "@browser-logos/firefox/firefox.svg";
-import internetExplorerLogo from "@browser-logos/internet-explorer_9-11/internet-explorer_9-11.svg";
-import operaLogo from "@browser-logos/opera/opera.svg";
-import safariLogo from "@browser-logos/safari/safari.svg";
-import samsungInternetLogo from "@browser-logos/samsung-internet/samsung-internet.svg";
-import "flag-icons/css/flag-icons.min.css";
 import {
   Activity,
   BarChart3,
@@ -24,7 +16,6 @@ import {
   ExternalLink,
   FileChartColumn,
   Filter,
-  Earth,
   Globe2,
   HelpCircle,
   Home,
@@ -44,7 +35,6 @@ import {
   Sparkles,
   ShieldAlert,
   Smartphone,
-  Tablet,
   Trash2,
   TriangleAlert,
   Upload,
@@ -62,6 +52,8 @@ import {
   createContext,
   Fragment,
   isValidElement,
+  lazy,
+  Suspense,
   useEffect,
   useId,
   useMemo,
@@ -84,6 +76,8 @@ import { supabase } from "./supabase";
 import { estimateIncidentDowntime } from "../shared/uptime";
 import { USER_FACING_AUDIT_GROUPS } from "../shared/audit-user-facing-registry.generated";
 import { AI_PLATFORMS, aiPlatformPromptUrl, type AiPlatform } from "../shared/ai-platforms";
+
+const LazyDimensionMark = lazy(() => import("./analytics/DimensionMark"));
 
 type Monitor = {
   id: string;
@@ -1908,7 +1902,27 @@ function PropertyOverview({
     [trafficMetric, setTrafficMetric] = useState<TrafficMetric>("Pageviews"),
     [analytics, setAnalytics] = useState<any>(null),
     [analyticsLoading, setAnalyticsLoading] = useState(!fixture),
-    [latestAudit, setLatestAudit] = useState<AuditRun | null>(null);
+    [latestAudit, setLatestAudit] = useState<AuditRun | null>(null),
+    [uptimeStatus, setUptimeStatus] = useState<Monitor | undefined>(property?.uptime_monitors?.[0]),
+    [uptimeRefreshing, setUptimeRefreshing] = useState(false);
+  useEffect(() => {
+    setUptimeStatus(property?.uptime_monitors?.[0]);
+  }, [property?.id, property?.uptime_monitors?.[0]?.last_checked_at, property?.uptime_monitors?.[0]?.last_status]);
+  async function refreshUptimeStatus() {
+    if (!property || uptimeRefreshing) return;
+    if (!session) {
+      setUptimeStatus(property.uptime_monitors?.[0]);
+      return;
+    }
+    setUptimeRefreshing(true);
+    try {
+      setUptimeStatus(await api<Monitor>(session, `/api/properties/${property.id}/uptime-status`));
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Uptime status could not be refreshed");
+    } finally {
+      setUptimeRefreshing(false);
+    }
+  }
   useEffect(() => {
     const controller = new AbortController();
     if (session && property) {
@@ -1947,7 +1961,7 @@ function PropertyOverview({
         detail="Choose a property to open its overview."
       />
     );
-  const monitor = property.uptime_monitors?.[0],
+  const monitor = uptimeStatus || property.uptime_monitors?.[0],
     audit = latestAudit || property.audit_runs?.[0],
     views = analytics?.pageviews || 0,
     sessions = fixture ? property.demo?.visitors || 0 : analytics?.sessions || 0,
@@ -1984,9 +1998,19 @@ function PropertyOverview({
       </Link>,
       fixture
         ? "35 min estimated downtime"
-        : monitor?.last_checked_at
-          ? `Checked ${relative(monitor.last_checked_at)}`
-          : "Awaiting first check",
+        : <span className="uptime-last-checked">
+            <span>{monitor?.last_checked_at ? `Checked ${relative(monitor.last_checked_at)}` : "Awaiting first check"}</span>
+            <button
+              type="button"
+              className="iconbtn uptime-status-refresh"
+              title="Refresh uptime status"
+              aria-label="Refresh uptime status"
+              disabled={uptimeRefreshing}
+              onClick={() => void refreshUptimeStatus()}
+            >
+              <RefreshCw className={uptimeRefreshing ? "audit-spin" : ""} />
+            </button>
+          </span>,
     ],
     [
       "Pageviews",
@@ -8778,31 +8802,15 @@ function InCellBar({
 }
 
 function DimensionMark({ kind, value }: { kind: string; value: string }) {
-  const clean = value.toLocaleLowerCase();
-  if (kind === "device") {
-    const Icon = clean.includes("mobile") ? Smartphone : clean.includes("tablet") ? Tablet : Monitor;
-    return <span className="dimension-mark neutral"><Icon /></span>;
+  if (kind === "source") {
+    const sourceIcon = sourceIconPath(value);
+    return <span className="dimension-mark source" aria-hidden="true"><img src={sourceIcon} alt="" /></span>;
   }
-  if (kind === "country") {
-    const code = clean === "uk" ? "gb" : clean;
-    return /^[a-z]{2}$/.test(code) ? <span className={`dimension-flag fi fi-${code}`} aria-hidden="true" /> : <span className="dimension-mark neutral"><Earth /></span>;
-  }
-  if (kind === "browser") {
-    const logos: Record<string, string> = {
-      chrome: chromeLogo,
-      edge: edgeLogo,
-      firefox: firefoxLogo,
-      opera: operaLogo,
-      safari: safariLogo,
-      "samsung internet": samsungInternetLogo,
-      "internet explorer": internetExplorerLogo,
-    };
-    return logos[clean]
-      ? <span className="dimension-mark browser"><img src={logos[clean]} alt="" /></span>
-      : <span className="dimension-mark neutral"><Globe2 /></span>;
-  }
-  const sourceIcon = sourceIconPath(clean);
-  return <span className="dimension-mark source" aria-hidden="true"><img src={sourceIcon} alt="" /></span>;
+  return (
+    <Suspense fallback={<span className="dimension-mark neutral"><Globe2 /></span>}>
+      <LazyDimensionMark kind={kind} value={value} />
+    </Suspense>
+  );
 }
 
 function sourceIconPath(value: string) {

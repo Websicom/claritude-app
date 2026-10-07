@@ -289,6 +289,11 @@ describe("worker evidence pipelines", () => {
     expect(() => new Function(TRACKER_SOURCE)).not.toThrow();
     expect(TRACKER_SOURCE).toContain("/Chrome\\//.test");
     expect(TRACKER_SOURCE).toContain("_claritude_acquisition");
+    expect(TRACKER_SOURCE).toContain("view_state");
+    expect(TRACKER_SOURCE).toContain("active-lastCheckpointActive>=30");
+    expect(TRACKER_SOURCE).not.toContain("emit('active_time'");
+    expect(TRACKER_SOURCE).not.toContain("emit('scroll'");
+    expect(TRACKER_SOURCE).not.toContain("emit('visible_section'");
     expect(TRACKER_SOURCE).not.toContain("document.cookie");
     expect(TRACKER_SOURCE).not.toContain("localStorage");
   });

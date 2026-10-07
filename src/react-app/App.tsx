@@ -1,10 +1,17 @@
 import { type Session } from "@supabase/supabase-js";
 import { Check } from "lucide-react";
-import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type FormEvent, lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { apiRequest as api } from "./api";
-import { ClaritudeApplication } from "./RecoveryDashboard";
 import { supabase } from "./supabase";
+
+const ClaritudeApplication = lazy(() =>
+  import("./RecoveryDashboard").then((module) => ({ default: module.ClaritudeApplication })),
+);
+
+function DashboardBoundary({ children }: { children: React.ReactNode }) {
+  return <Suspense fallback={<Splash />}>{children}</Suspense>;
+}
 type Bootstrap = {
   superadmin: boolean;
   staff: {
@@ -148,13 +155,15 @@ export function App() {
   if (!ready) return <Splash />;
   if (fixture)
     return (
-      <ClaritudeApplication
-        session={null}
-        data={fixtureData}
-        reload={() => undefined}
-        fixture
-        onSignOut={() => undefined}
-      />
+      <DashboardBoundary>
+        <ClaritudeApplication
+          session={null}
+          data={fixtureData}
+          reload={() => undefined}
+          fixture
+          onSignOut={() => undefined}
+        />
+      </DashboardBoundary>
     );
   return (
     <Routes>
@@ -209,12 +218,14 @@ function Workspace({ session }: { session: Session }) {
   if (!data.superadmin && !data.accounts?.length && !data.properties?.length)
     return <Onboarding session={session} done={load} />;
   return (
-    <ClaritudeApplication
-      session={session}
-      data={data}
-      reload={load}
-      onSignOut={() => void supabase.auth.signOut()}
-    />
+    <DashboardBoundary>
+      <ClaritudeApplication
+        session={session}
+        data={data}
+        reload={load}
+        onSignOut={() => void supabase.auth.signOut()}
+      />
+    </DashboardBoundary>
   );
 }
 

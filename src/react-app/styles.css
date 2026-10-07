@@ -812,6 +812,20 @@ tbody tr:hover {
 .property-uptime-status.online { color: var(--green); }
 .property-uptime-status.offline { color: var(--red); }
 .property-uptime-status.pending { color: var(--muted); }
+.uptime-last-checked {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.uptime-status-refresh {
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+}
+.uptime-status-refresh svg {
+  width: 13px;
+  height: 13px;
+}
 .seg {
   display: inline-flex;
   border: 1px solid var(--line);
