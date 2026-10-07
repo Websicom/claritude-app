@@ -18,6 +18,7 @@ import {
   editableWorkspaceRole,
   encodeAuditContinuationPayload,
   decodeAuditContinuationPayload,
+  expandCompactAnalyticsRows,
   filterAnalyticsEvents,
   isFreshAuditRun,
   inactivityLifecycleState,
@@ -61,6 +62,15 @@ import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
 
 describe("worker evidence pipelines", () => {
+  it("expands positional analytics rows without changing legacy object rows", () => {
+    expect(expandCompactAnalyticsRows(
+      [["2026-10-07T00:00:00Z", "pageview", "/"]],
+      ["bucket_start", "event_type", "path"],
+    )).toEqual([{ bucket_start: "2026-10-07T00:00:00Z", event_type: "pageview", path: "/" }]);
+    const legacy = { event_type: "pageview", path: "/legacy/" };
+    expect(expandCompactAnalyticsRows([legacy], ["event_type", "path"])).toEqual([legacy]);
+  });
+
   it("deduplicates AI referral visits, keeps landing pages and excludes AI visits from the comparison group", () => {
     const events = [
       { event_type: "pageview", path: "/services/", occurred_at: "2026-10-01T10:00:00Z", source: "chatgpt.com", referrer_host: "chatgpt.com", metadata: { session: "ai-one", tracker_version: "2.1.5", landing_page: "/services/", acquisition_source: "chatgpt.com", original_referrer: "chatgpt.com" } },

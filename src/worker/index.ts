@@ -8021,6 +8021,31 @@ async function fetchRawAnalyticsRange(
   return { events, truncated: events.length >= 50000 };
 }
 
+const COMPACT_EVENT_COLUMNS = [
+  "bucket_start", "event_type", "path", "name", "device", "source",
+  "referrer_host", "country_code", "browser", "screen", "utm_source",
+  "utm_medium", "utm_campaign", "tracker_version", "event_count",
+  "value_sum", "values_json",
+] as const;
+const COMPACT_VIEW_COLUMNS = [
+  "view_key", "occurred_at", "path", "device", "source", "referrer_host",
+  "country_code", "browser", "screen", "utm_source", "utm_medium",
+  "utm_campaign", "tracker_version", "session_id", "active_seconds",
+  "max_scroll", "key_events", "javascript_errors", "visible_sections",
+  "vitals", "key_event_counts",
+] as const;
+
+export function expandCompactAnalyticsRows(
+  rows: unknown,
+  columns: readonly string[],
+) {
+  if (!Array.isArray(rows)) return [];
+  return rows.map((row) => {
+    if (!Array.isArray(row)) return row;
+    return Object.fromEntries(columns.map((column, index) => [column, row[index]]));
+  });
+}
+
 async function loadAnalyticsWindow(
   db: SupabaseClient,
   propertyId: string,
@@ -8037,10 +8062,15 @@ async function loadAnalyticsWindow(
   if (error) throw new Error(error.message);
   const payload = data && typeof data === "object" ? data as Record<string, any> : {};
   const responseBytes = new TextEncoder().encode(JSON.stringify(payload)).byteLength;
+  const compactFormat = Number(payload.formatVersion || 1);
   return {
     events: [],
-    rollups: Array.isArray(payload.events) ? payload.events : [],
-    views: Array.isArray(payload.views) ? payload.views : [],
+    rollups: compactFormat >= 2
+      ? expandCompactAnalyticsRows(payload.events, COMPACT_EVENT_COLUMNS)
+      : Array.isArray(payload.events) ? payload.events : [],
+    views: compactFormat >= 2
+      ? expandCompactAnalyticsRows(payload.views, COMPACT_VIEW_COLUMNS)
+      : Array.isArray(payload.views) ? payload.views : [],
     truncated: Boolean(payload.truncated),
     sourceRows: Number(payload.sourceRows || 0),
     eventRows: Number(payload.eventRows || 0),
