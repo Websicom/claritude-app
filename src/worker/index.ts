@@ -4820,6 +4820,28 @@ export function uptimeCheckResponseSeries(checks: Array<{ checked_at: string; re
   });
 }
 
+export function uptimeDailyStatus({
+  incidentCount,
+  total,
+  suppressed,
+  partial,
+  dayEnd,
+  monitorCreated,
+}: {
+  incidentCount: number;
+  total: number;
+  suppressed: number;
+  partial: boolean;
+  dayEnd: number;
+  monitorCreated: number;
+}) {
+  if (dayEnd <= monitorCreated) return "not_started" as const;
+  if (incidentCount > 0) return "incident" as const;
+  if (total > 0) return partial ? "partial" as const : "available" as const;
+  if (suppressed > 0) return "suppressed" as const;
+  return "missing" as const;
+}
+
 app.get("/api/monitors/:id/checks", async (c) => {
   const individualChecks = c.req.query("response_mode") === "checks";
   const window = requestedWindow(c, individualChecks ? 1 : 30, UPTIME_MAXIMUM_DAYS);
@@ -4961,7 +4983,14 @@ app.get("/api/monitors/:id/checks", async (c) => {
       suppressed: value.suppressed,
       expected,
       partial,
-      status: value.incidents.length ? "incident" : value.total ? (partial ? "partial" : "available") : value.suppressed ? "suppressed" : "missing",
+      status: uptimeDailyStatus({
+        incidentCount: value.incidents.length,
+        total: value.total,
+        suppressed: value.suppressed,
+        partial,
+        dayEnd,
+        monitorCreated,
+      }),
       statusCode: latestObserved?.status_code ?? null,
       incidents: value.incidents,
     };

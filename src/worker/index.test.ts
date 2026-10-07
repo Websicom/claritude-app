@@ -29,6 +29,7 @@ import {
   TRACKER_SOURCE,
   trackerSessionAcquisition,
   uptimeDueHorizon,
+  uptimeDailyStatus,
   uptimeCheckResponseSeries,
   uptimeResponseBucket,
   validAvatarBytes,
@@ -1018,6 +1019,25 @@ describe("worker evidence pipelines", () => {
     expect(uptimeDueHorizon(Date.parse("2026-10-02T12:25:00.000Z"))).toBe(
       "2026-10-02T12:26:00.000Z",
     );
+  });
+
+  it("distinguishes days before monitor setup from genuine missing coverage", () => {
+    expect(uptimeDailyStatus({
+      incidentCount: 0,
+      total: 0,
+      suppressed: 0,
+      partial: false,
+      dayEnd: Date.parse("2026-10-01T00:00:00.000Z"),
+      monitorCreated: Date.parse("2026-10-02T22:07:44.000Z"),
+    })).toBe("not_started");
+    expect(uptimeDailyStatus({
+      incidentCount: 0,
+      total: 0,
+      suppressed: 0,
+      partial: false,
+      dayEnd: Date.parse("2026-10-04T00:00:00.000Z"),
+      monitorCreated: Date.parse("2026-10-02T22:07:44.000Z"),
+    })).toBe("missing");
   });
 
   it("normalizes saved audit pages to property-relative paths", () => {

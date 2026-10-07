@@ -2200,8 +2200,12 @@ function UptimeView({
     );
   };
   useEffect(() => {
-    if (session && property?.uptime_monitors?.[0])
-      Promise.all([
+    let active = true;
+    let requestNumber = 0;
+    const loadUptime = () => {
+      if (!session || !property?.uptime_monitors?.[0]) return Promise.resolve();
+      const currentRequest = ++requestNumber;
+      return Promise.all([
         api<any>(
           session,
           `/api/monitors/${property.uptime_monitors[0].id}/checks?${livePeriod}`,
@@ -2209,16 +2213,36 @@ function UptimeView({
         api<any[]>(session, `/api/properties/${property.id}/incidents?${livePeriod}`),
       ])
         .then(([checks, storedIncidents]) => {
+          if (!active || currentRequest !== requestNumber) return;
           setCheckData(checks);
           setIncidentData(storedIncidents);
           setUptimeError("");
         })
         .catch((error: any) => {
+          if (!active || currentRequest !== requestNumber) return;
           setCheckData(null);
           setIncidentData([]);
           setUptimeError(error.message || "Uptime data could not be loaded");
         });
-    else if (fixture) {
+    };
+    if (session && property?.uptime_monitors?.[0]) {
+      setCheckData(null);
+      setIncidentData([]);
+      setUptimeError("");
+      void loadUptime();
+      const refreshVisibleUptime = () => {
+        if (document.visibilityState === "visible") void loadUptime();
+      };
+      window.addEventListener("focus", refreshVisibleUptime);
+      document.addEventListener("visibilitychange", refreshVisibleUptime);
+      return () => {
+        active = false;
+        requestNumber += 1;
+        window.removeEventListener("focus", refreshVisibleUptime);
+        document.removeEventListener("visibilitychange", refreshVisibleUptime);
+      };
+    }
+    if (fixture) {
       const fixtureStart = new Date("2026-09-01T09:00:00.000Z").valueOf();
       const checks = Array.from({ length: 60 }, (_, i) => ({
         checked_at: new Date(fixtureStart + i * 12 * 60 * 60_000).toISOString(),
@@ -2273,6 +2297,10 @@ function UptimeView({
         dailyScope: { timeZone: "Europe/London" },
       });
     }
+    return () => {
+      active = false;
+      requestNumber += 1;
+    };
   }, [property?.id, property?.uptime_monitors?.[0]?.last_checked_at, session, fixture, livePeriod]);
   useEffect(() => {
     void loadMaintenance().catch(() => setMaintenance([]));
@@ -2473,7 +2501,8 @@ function UptimeView({
             actions={
               <span>
                 <i className="status-dot online" /> Available &nbsp;{" "}
-                <i className="status-dot down" /> Days with incidents
+                <i className="status-dot down" /> Days with incidents &nbsp;{" "}
+                <i className="status-dot not-started" /> Before monitoring started
               </span>
             }
           >
@@ -7796,6 +7825,7 @@ function DailyUptimeStrip({ days, timeZone }: { days: any[]; timeZone: string })
           <b>{formatDailyDate(selected.day, timeZone)}</b>
           {selected.status === "available" && <span>Available · {selected.statusCode ? `HTTP ${selected.statusCode}` : "Successful response"}</span>}
           {selected.status === "partial" && <span>Partially monitored · {selected.successful}/{selected.total} successful observations</span>}
+          {selected.status === "not_started" && <span>Monitoring had not started yet</span>}
           {selected.status === "missing" && <span>No monitoring evidence</span>}
           {selected.status === "suppressed" && <span>Checks suppressed by maintenance</span>}
           {selected.status === "incident" && !selected.incidents?.length && <span>Confirmed downtime recorded</span>}
@@ -7819,10 +7849,11 @@ function DailyUptimeStrip({ days, timeZone }: { days: any[]; timeZone: string })
   );
 }
 
-function dailyStatusLabel(day: any) {
+export function dailyStatusLabel(day: any) {
   if (day.status === "incident") return "confirmed downtime";
   if (day.status === "available") return `available${day.statusCode ? `, HTTP ${day.statusCode}` : ""}`;
   if (day.status === "partial") return "partial monitoring coverage";
+  if (day.status === "not_started") return "monitoring had not started yet";
   if (day.status === "suppressed") return "monitoring suppressed for maintenance";
   return "no monitoring evidence";
 }

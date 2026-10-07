@@ -37,6 +37,7 @@ import {
   trafficSeriesKey,
   uptimePeriodQuery,
   responseChartLabel,
+  dailyStatusLabel,
   workspaceKeyEventCount,
 } from "./RecoveryDashboard";
 
@@ -175,6 +176,11 @@ describe("top selector searches", () => {
     expect(uptimePeriodQuery("?from=2026-10-01&to=2026-10-06")).toBe("from=2026-10-01&to=2026-10-06");
     expect(responseChartLabel("check")).toBe("Response time by monitor check");
     expect(responseChartLabel("day")).toBe("Median response time by day");
+  });
+
+  it("labels pre-monitoring days separately from missed checks", () => {
+    expect(dailyStatusLabel({ status: "not_started" })).toBe("monitoring had not started yet");
+    expect(dailyStatusLabel({ status: "missing" })).toBe("no monitoring evidence");
   });
 
   it("shows finite custom-event usage and Pro's separate unlimited entitlement", () => {
