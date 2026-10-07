@@ -2144,31 +2144,30 @@ app.get("/api/superadmin/overview", async (c) => {
   const accounts = accountsResult.data || [];
   const accountIds = new Set(accounts.map((item: any) => item.id));
   const accountIdList = [...accountIds];
-  const [propertiesResult, workspacesResult, deliveriesResult] = await Promise.all([
+  const [propertiesResult, workspacesResult, activityResult] = await Promise.all([
     accountIdList.length ? service.from("properties").select("id,account_id,workspace_id,access_state,tracking_enabled,tracking_last_received_at,created_at").in("account_id", accountIdList).lte("created_at", rangeTo).limit(20000) : Promise.resolve({ data: [], error: null }),
     accountIdList.length ? service.from("workspaces").select("id,account_id,created_at").in("account_id", accountIdList).lte("created_at", rangeTo).limit(10000) : Promise.resolve({ data: [], error: null }),
-    accountIdList.length ? service.from("notification_deliveries").select("account_id,status,created_at").in("account_id", accountIdList).gte("created_at", rangeFrom).lte("created_at", rangeTo).limit(50000) : Promise.resolve({ data: [], error: null }),
+    service.rpc("superadmin_overview_activity", { p_billing_environment: billingEnvironment, p_from: fromText, p_to: toText }),
   ]);
-  if (propertiesResult.error || workspacesResult.error || deliveriesResult.error) return c.json({ error: "superadmin_overview_resources_unavailable" }, 503);
+  const resourceError = propertiesResult.error || workspacesResult.error;
+  if (resourceError) {
+    console.error("superadmin_overview_resources_failed", resourceError);
+    return c.json({ error: "superadmin_overview_resources_unavailable" }, 503);
+  }
+  if (activityResult.error) {
+    console.error("superadmin_overview_activity_rollup_failed", activityResult.error);
+    return c.json({ error: "superadmin_overview_activity_unavailable", source: "postgres_aggregated" }, 503);
+  }
   const properties = propertiesResult.data || [];
   const propertyIds = new Set(properties.map((item: any) => item.id));
   const propertyIdList = [...propertyIds];
-  const [monitorsResult, uptimeChecksResult, analyticsResult, auditsResult, incidentsResult, reportsResult, operationalResult] = await Promise.all([
-    propertyIdList.length ? service.from("uptime_monitors").select("id,property_id,enabled,last_status,last_checked_at").in("property_id", propertyIdList).limit(20000) : Promise.resolve({ data: [], error: null }),
-    propertyIdList.length ? service.from("uptime_checks").select("monitor_id,checked_at,success,uptime_monitors!inner(property_id)").in("uptime_monitors.property_id", propertyIdList).gte("checked_at", rangeFrom).lte("checked_at", rangeTo).limit(50000) : Promise.resolve({ data: [], error: null }),
-    propertyIdList.length ? service.from("analytics_events").select("property_id,event_type,occurred_at").in("property_id", propertyIdList).gte("occurred_at", rangeFrom).lte("occurred_at", rangeTo).limit(50000) : Promise.resolve({ data: [], error: null }),
-    propertyIdList.length ? service.from("audit_runs").select("id,property_id,status,page_url,created_at").in("property_id", propertyIdList).gte("created_at", rangeFrom).lte("created_at", rangeTo).limit(50000) : Promise.resolve({ data: [], error: null }),
-    propertyIdList.length ? service.from("incidents").select("property_id,opened_at,resolved_at").in("property_id", propertyIdList).gte("opened_at", rangeFrom).lte("opened_at", rangeTo).limit(50000) : Promise.resolve({ data: [], error: null }),
-    propertyIdList.length ? service.from("saved_reports").select("property_id,created_at").in("property_id", propertyIdList).gte("created_at", rangeFrom).lte("created_at", rangeTo).limit(50000) : Promise.resolve({ data: [], error: null }),
-    service.from("operational_events").select("service,metric,value,unit,source,account_id,property_id,observed_at").gte("observed_at", rangeFrom).lte("observed_at", rangeTo).order("observed_at").limit(50000),
-  ]);
-  const activityError = [monitorsResult, uptimeChecksResult, analyticsResult, auditsResult, incidentsResult, reportsResult, operationalResult].find((result) => result.error)?.error;
-  if (activityError) return c.json({ error: "superadmin_overview_activity_unavailable" }, 503);
-  const auditRunIds = (auditsResult.data || []).map((item: any) => item.id);
-  const auditResultsResult = auditRunIds.length
-    ? await service.from("audit_results").select("audit_run_id,created_at").in("audit_run_id", auditRunIds).gte("created_at", rangeFrom).lte("created_at", rangeTo).limit(50000)
+  const monitorsResult = propertyIdList.length
+    ? await service.from("uptime_monitors").select("id,property_id,enabled,last_status,last_checked_at").in("property_id", propertyIdList).limit(20000)
     : { data: [], error: null };
-  if (auditResultsResult.error) return c.json({ error: "superadmin_overview_audit_results_unavailable" }, 503);
+  if (monitorsResult.error) {
+    console.error("superadmin_overview_monitors_failed", monitorsResult.error);
+    return c.json({ error: "superadmin_overview_monitors_unavailable" }, 503);
+  }
   const monitors = monitorsResult.data || [];
   const enabledMonitorPropertyIds = new Set(monitors.filter((item: any) => item.enabled).map((item: any) => item.property_id));
   const activeSubscriptions = (subscriptionsResult.data || []).filter((item: any) => ["active", "trialing", "past_due", "unpaid"].includes(item.status));
@@ -2197,27 +2196,17 @@ app.get("/api/superadmin/overview", async (c) => {
     inactive: properties.filter((item: any) => item.access_state !== "active").length,
   };
   const today = now.toISOString().slice(0, 10);
-  const dayKey = (value: string) => value.slice(0, 10);
   const dayRows = new Map<string, any>();
   for (let cursor = Date.parse(`${fromText}T00:00:00.000Z`); cursor <= Date.parse(`${toText}T00:00:00.000Z`); cursor += 86400_000) {
     const day = new Date(cursor).toISOString().slice(0, 10);
     dayRows.set(day, { day, accounts: null, properties: null, workload: { audits: 0, auditsCompleted: 0, auditsFailed: 0, auditsPartial: 0, pagesAudited: 0, auditEvaluations: 0, analyticsEvents: 0, analyticsPageviews: 0, analyticsCustomEvents: 0, uptimeChecks: 0, incidents: 0, reports: 0, notifications: 0, queueJobs: null, queueFailures: null, queueRetries: null }, infrastructure: null, sources: [] });
   }
   for (const snapshot of snapshotsResult.data || []) dayRows.set(snapshot.day, { ...(dayRows.get(snapshot.day) || { day: snapshot.day }), accounts: snapshot.accounts, properties: snapshot.properties, workload: { ...(dayRows.get(snapshot.day)?.workload || {}), ...(snapshot.workload || {}) }, infrastructure: snapshot.infrastructure, sources: [snapshot.source] });
-  const increment = (collection: any[], field: string, metric: string, filter?: (item: any) => boolean) => collection.forEach((item: any) => { if (filter && !filter(item)) return; const row = dayRows.get(dayKey(item[field])); if (row) row.workload[metric] = Number(row.workload[metric] || 0) + 1; });
-  increment(auditsResult.data || [], "created_at", "audits");
-  increment(auditsResult.data || [], "created_at", "auditsCompleted", (item) => item.status === "completed");
-  increment(auditsResult.data || [], "created_at", "auditsFailed", (item) => item.status === "failed");
-  increment(auditsResult.data || [], "created_at", "auditsPartial", (item) => item.status === "partial");
-  increment(auditsResult.data || [], "created_at", "pagesAudited");
-  increment(auditResultsResult.data || [], "created_at", "auditEvaluations");
-  increment(analyticsResult.data || [], "occurred_at", "analyticsEvents");
-  increment(analyticsResult.data || [], "occurred_at", "analyticsPageviews", (item) => item.event_type === "pageview");
-  increment(analyticsResult.data || [], "occurred_at", "analyticsCustomEvents", (item) => item.event_type !== "pageview");
-  increment(uptimeChecksResult.data || [], "checked_at", "uptimeChecks");
-  increment(incidentsResult.data || [], "opened_at", "incidents");
-  increment(reportsResult.data || [], "created_at", "reports");
-  increment(deliveriesResult.data || [], "created_at", "notifications", (item) => item.status === "sent");
+  const activity = (activityResult.data || {}) as any;
+  for (const daily of activity.days || []) {
+    const row = dayRows.get(String(daily.day));
+    if (row) dayRows.set(String(daily.day), { ...row, workload: { ...row.workload, ...(daily.workload || {}) }, sources: [...new Set([...(row.sources || []), activity.source || "postgres_aggregated"])] });
+  }
   for (const counter of countersResult.data || []) { const row = dayRows.get(counter.day); if (row) row.workload[counter.metric] = Number(counter.value || 0); }
   const infrastructure = databaseResult.error ? { state: "unavailable", reason: "postgres_metrics_unavailable" } : { ...(databaseResult.data || {}), state: "measured" };
   const workloadToday = dayRows.get(today)?.workload || { audits: 0, auditsCompleted: 0, auditsFailed: 0, auditsPartial: 0, pagesAudited: 0, auditEvaluations: 0, analyticsEvents: 0, analyticsPageviews: 0, analyticsCustomEvents: 0, uptimeChecks: 0, incidents: 0, reports: 0, notifications: 0, queueJobs: null, queueFailures: null, queueRetries: null };
@@ -2227,25 +2216,81 @@ app.get("/api/superadmin/overview", async (c) => {
     if (!stored.error) dayRows.set(today, { ...dayRows.get(today), ...snapshot, sources: [snapshot.source] });
   }
   const limits = Object.fromEntries((settingsResult.data || []).map((item: any) => [item.key, item.value]));
-  const latestOperationalByMetric = new Map<string, any>();
-  for (const item of operationalResult.data || []) {
-    if ((item.account_id && !accountIds.has(item.account_id)) || (item.property_id && !propertyIds.has(item.property_id))) continue;
-    latestOperationalByMetric.set(`${item.service}:${item.metric}`, item);
-  }
+  const operational = activity.operational || [];
   return c.json({
     billingEnvironment,
     range: { from: fromText, to: toText, maximumDays: 3651 },
     current: { accounts: accountSnapshot, properties: propertySnapshot, workload: workloadToday, infrastructure },
     history: [...dayRows.values()],
-    capacity: { limits, operational: [...latestOperationalByMetric.values()], leases: { runningAudits: Number((countersResult.data || []).find((item: any) => item.day === today && item.metric === "running_audits")?.value || 0) } },
+    capacity: { limits, operational, leases: { runningAudits: Number((countersResult.data || []).find((item: any) => item.day === today && item.metric === "running_audits")?.value || 0) } },
     provenance: {
       accountHistory: "Daily account-category history begins when measured snapshots are recorded; missing earlier category values are shown as unavailable, not backfilled.",
-      activity: "Application source records grouped by UTC day. Counts are capped only if the API reports truncation.",
+      activity: "PostgreSQL aggregates authoritative application records by UTC day within the selected billing environment; source rows are not truncated in transit.",
       infrastructure: databaseResult.error ? "PostgreSQL provider measurements unavailable." : "Current PostgreSQL-reported measurements; daily history begins with stored snapshots.",
       properties: "Active properties have active resource access and at least one enabled application service: analytics tracking or uptime monitoring.",
       uptimeChecks: "Persisted uptime_checks records grouped by checked_at UTC day.",
     },
   });
+});
+
+app.get("/api/superadmin/allocations", async (c) => {
+  const authorization = await requireStaff(c, "packages.read");
+  if (authorization.response) return authorization.response;
+  const billingEnvironment = c.req.query("billingEnvironment") as BillingEnvironment;
+  if (!["test", "live"].includes(billingEnvironment)) return c.json({ error: "valid_billing_environment_required" }, 400);
+  const db = admin(c.env);
+  const now = new Date().toISOString();
+  const accountsResult = await db.from("accounts").select("id,name,billing_environment,is_test_account").eq("billing_environment", billingEnvironment).order("name").limit(5000);
+  if (accountsResult.error) return c.json({ error: "allocation_accounts_unavailable" }, 503);
+  const accounts = accountsResult.data || [];
+  const accountIds = accounts.map((account) => account.id);
+  if (!accountIds.length) return c.json({ billingEnvironment, accounts: [], measuredAt: now, source: "effective_package_configuration_and_usage_ledgers" });
+  const [assignments, grants, overrides, properties, workspaces, memberships, usage] = await Promise.all([
+    db.from("account_package_assignments").select("account_id,price_grandfathered,allowances_grandfathered,complimentary,billing_state,starts_at,ends_at,package_versions(package_key,version,display_name,allowances,features,retention,hard_ceilings)").in("account_id", accountIds).is("ends_at", null),
+    db.from("account_package_grants").select("id,account_id,status,starts_at,expires_at,package_versions(package_key,version,display_name,allowances,features,retention,hard_ceilings)").in("account_id", accountIds).eq("status", "active").lte("starts_at", now).or(`expires_at.is.null,expires_at.gt.${now}`),
+    db.from("account_entitlement_overrides").select("account_id,key,value,starts_at,expires_at,grant_id").in("account_id", accountIds).is("revoked_at", null).lte("starts_at", now).or(`expires_at.is.null,expires_at.gt.${now}`),
+    db.from("properties").select("id,account_id").in("account_id", accountIds),
+    db.from("workspaces").select("id,account_id").in("account_id", accountIds),
+    db.from("account_memberships").select("account_id,user_id,role").in("account_id", accountIds),
+    db.from("account_usage_periods").select("account_id,metric,period_start,period_end,consumed,reserved,restored,updated_at").in("account_id", accountIds).lte("period_start", now).gt("period_end", now),
+  ]);
+  const dataError = [assignments, grants, overrides, properties, workspaces, memberships, usage].find((result) => result.error)?.error;
+  if (dataError) {
+    console.error("superadmin_allocations_failed", dataError);
+    return c.json({ error: "superadmin_allocations_unavailable" }, 503);
+  }
+  const rows = accounts.map((account) => {
+    const grant = (grants.data || []).find((item: any) => item.account_id === account.id);
+    const assignment = (assignments.data || []).find((item: any) => item.account_id === account.id);
+    const version = (grant?.package_versions || assignment?.package_versions) as any;
+    const effective = resolveEffectiveEntitlements({ packageKey: version?.package_key || "free", version: Number(version?.version || 0), allowances: version?.allowances || {}, features: version?.features || {}, retention: version?.retention || {}, hardCeilings: version?.hard_ceilings || {} }, (overrides.data || []).filter((item: any) => item.account_id === account.id).map((item: any) => ({ key: item.key, value: item.value })));
+    const usagePeriod = (usage.data || []).filter((item: any) => item.account_id === account.id);
+    return {
+      accountId: account.id,
+      accountName: account.name,
+      billingEnvironment,
+      packageKey: effective.packageKey,
+      packageName: version?.display_name || String(effective.packageKey).replaceAll("_", " "),
+      packageVersion: effective.version,
+      billingArrangement: grant ? "complimentary" : "standard",
+      grandfathered: Boolean(assignment?.allowances_grandfathered || assignment?.price_grandfathered),
+      overrideCount: (overrides.data || []).filter((item: any) => item.account_id === account.id).length,
+      allocations: {
+        properties: effective.values.propertiesPerAccount ?? effective.hardCeilings.propertiesPerAccount ?? null,
+        workspaces: effective.values.workspacesPerAccount ?? effective.hardCeilings.workspacesPerAccount ?? null,
+        editingSeats: effective.values.editingSeats ?? null,
+        auditCreditsPerWeek: effective.values.auditCreditsPerWeek ?? null,
+      },
+      utilisation: {
+        properties: (properties.data || []).filter((item: any) => item.account_id === account.id).length,
+        workspaces: (workspaces.data || []).filter((item: any) => item.account_id === account.id).length,
+        editingSeats: new Set((memberships.data || []).filter((item: any) => item.account_id === account.id).map((item: any) => item.user_id)).size,
+        auditCreditsPerWeek: usagePeriod.filter((item: any) => item.metric === "page_audit_credit").reduce((sum: number, item: any) => sum + Number(item.consumed || 0) + Number(item.reserved || 0) - Number(item.restored || 0), 0),
+      },
+      usagePeriods: usagePeriod,
+    };
+  });
+  return c.json({ billingEnvironment, accounts: rows, measuredAt: now, source: "effective_package_configuration_and_usage_ledgers" });
 });
 
 app.post("/api/superadmin/test-accounts", async (c) => {
@@ -2828,23 +2873,31 @@ app.get("/api/superadmin/search", async (c) => {
   if (authorization.response) return authorization.response;
   const query = safeSearchTerm(c.req.query("q"));
   if (query.length < 2) return c.json({ results: [] });
+  const billingEnvironment = c.req.query("billingEnvironment") || "live";
+  if (!["test", "live"].includes(billingEnvironment)) return c.json({ error: "valid_billing_environment_required" }, 400);
   const service = admin(c.env);
-  const [accounts, workspaces, properties, audits, users, billingEvents] = await Promise.all([
-    service.from("accounts").select("id,name").ilike("name", `%${query}%`).limit(8),
-    service.from("workspaces").select("id,name,account_id").ilike("name", `%${query}%`).limit(8),
-    service.from("properties").select("id,name,canonical_host,account_id").or(`name.ilike.%${query}%,canonical_host.ilike.%${query}%`).limit(8),
-    /^[0-9a-f-]{4,}$/i.test(query) ? service.from("audit_runs").select("id,property_id,status,created_at").ilike("id", `${query}%`).limit(8) : Promise.resolve({ data: [], error: null }),
+  const scopedAccounts = await service.from("accounts").select("id,name").eq("billing_environment", billingEnvironment).limit(5000);
+  const accountIds = (scopedAccounts.data || []).map((item) => item.id);
+  const scopedProperties = accountIds.length ? await service.from("properties").select("id").in("account_id", accountIds).limit(10000) : { data: [] };
+  const [workspaces, properties, memberships, users, invoices] = await Promise.all([
+    accountIds.length ? service.from("workspaces").select("id,name,account_id").in("account_id", accountIds).ilike("name", `%${query}%`).limit(8) : Promise.resolve({ data: [], error: null }),
+    accountIds.length ? service.from("properties").select("id,name,canonical_host,account_id").in("account_id", accountIds).or(`name.ilike.%${query}%,canonical_host.ilike.%${query}%`).limit(8) : Promise.resolve({ data: [], error: null }),
+    accountIds.length ? service.from("account_memberships").select("user_id").in("account_id", accountIds).limit(10000) : Promise.resolve({ data: [], error: null }),
     service.auth.admin.listUsers({ page: 1, perPage: 1000 }),
-    service.from("billing_events").select("id,provider_event_id,event_type,processing_state").ilike("provider_event_id", `%${query}%`).limit(8),
+    service.from("billing_invoices").select("id,provider_invoice_id,number,status,account_id").eq("billing_environment", billingEnvironment).or(`provider_invoice_id.ilike.%${query}%,number.ilike.%${query}%`).limit(8),
   ]);
-  const matchedUsers = users.data.users.filter((user) => `${user.email || ""} ${user.user_metadata?.full_name || ""}`.toLowerCase().includes(query.toLowerCase())).slice(0, 8);
+  const scopedUserIds = new Set((memberships.data || []).map((item: any) => item.user_id));
+  const matchedUsers = users.data.users.filter((user) => scopedUserIds.has(user.id) && `${user.email || ""} ${user.user_metadata?.full_name || ""}`.toLowerCase().includes(query.toLowerCase())).slice(0, 8);
+  const matchedAccounts = (scopedAccounts.data || []).filter((item) => item.name.toLowerCase().includes(query.toLowerCase())).slice(0, 8);
+  const propertyIds = (scopedProperties.data || []).map((item: any) => item.id);
+  const audits = /^[0-9a-f-]{4,}$/i.test(query) && propertyIds.length ? await service.from("audit_runs").select("id,property_id,status,created_at").in("property_id", propertyIds).ilike("id", `${query}%`).limit(8) : { data: [] };
   return c.json({ results: [
-    ...(accounts.data || []).map((item) => ({ type: "account", id: item.id, label: item.name, href: `/superadmin?view=accounts&account=${item.id}` })),
-    ...(matchedUsers).map((item) => ({ type: "user", id: item.id, label: item.email || item.id, href: `/superadmin?view=users&user=${item.id}` })),
-    ...(workspaces.data || []).map((item) => ({ type: "workspace", id: item.id, label: item.name, href: `/superadmin?view=resources&workspace=${item.id}` })),
-    ...(properties.data || []).map((item) => ({ type: "property", id: item.id, label: `${item.name} · ${item.canonical_host}`, href: `/superadmin?view=resources&property=${item.id}` })),
-    ...(audits.data || []).map((item) => ({ type: "audit", id: item.id, label: `${item.id} · ${item.status}`, href: `/superadmin?view=audits&audit=${item.id}` })),
-    ...(billingEvents.data || []).map((item) => ({ type: "billing_event", id: item.id, label: `${item.provider_event_id} · ${item.event_type}`, href: `/superadmin?view=financials&event=${item.id}` })),
+    ...matchedAccounts.map((item) => ({ type: "account", id: item.id, label: item.name, href: `/superadmin?view=accounts&account=${item.id}&billingEnvironment=${billingEnvironment}` })),
+    ...matchedUsers.map((item) => ({ type: "user", id: item.id, label: item.email || item.id, href: `/superadmin?view=users&user=${item.id}&billingEnvironment=${billingEnvironment}` })),
+    ...(workspaces.data || []).map((item) => ({ type: "workspace", id: item.id, label: item.name, href: `/superadmin?view=resources&workspace=${item.id}&billingEnvironment=${billingEnvironment}` })),
+    ...(properties.data || []).map((item) => ({ type: "property", id: item.id, label: `${item.name} · ${item.canonical_host}`, href: `/superadmin?view=resources&property=${item.id}&billingEnvironment=${billingEnvironment}` })),
+    ...(audits.data || []).map((item) => ({ type: "audit", id: item.id, label: `${item.id} · ${item.status}`, href: `/superadmin?view=audits&audit=${item.id}&billingEnvironment=${billingEnvironment}` })),
+    ...(invoices.data || []).map((item) => ({ type: "invoice", id: item.id, label: `${item.number || item.provider_invoice_id} · ${item.status}`, href: `/superadmin?view=financials&tab=Invoices+%26+Payments&billingEnvironment=${billingEnvironment}` })),
   ] });
 });
 
@@ -3173,7 +3226,7 @@ app.get("/api/superadmin/platform", async (c) => {
   const stripeProvider = stripeContext(c.env, billingEnvironment);
   const service = admin(c.env);
   const today = new Date().toISOString().slice(0, 10);
-  const [settings, settingHistory, controls, alerts, alertRules, alertHistory, incidents, packages, grants, overrides, inactivity, auditDefinitions, auditGroups, auditGroupHistory, auditPackageAvailability, auditRuns, exports, deletionRequests, templates, automations, campaigns, billingCustomers, billingEvents, promotions, deliveries, suppressions, databaseMetrics, operationalEvents, leases] = await Promise.all([
+  const [settings, settingHistory, controls, alerts, alertRules, alertHistory, incidents, packages, grants, overrides, inactivity, auditDefinitions, auditGroups, auditGroupChecks, auditGroupHistory, auditPackageAvailability, auditRuns, exports, deletionRequests, templates, automations, campaigns, billingCustomers, billingEvents, promotions, deliveries, suppressions, databaseMetrics, operationalEvents, leases] = await Promise.all([
     service.from("platform_settings").select("*").order("key"),
     service.from("platform_setting_history").select("*").order("changed_at", { ascending: false }).limit(250),
     service.from("emergency_controls").select("*").order("key"),
@@ -3186,7 +3239,8 @@ app.get("/api/superadmin/platform", async (c) => {
     service.from("account_entitlement_overrides").select("id,account_id,key,value,reason,starts_at,expires_at,created_at,grant_id,revoked_at").order("created_at", { ascending: false }).limit(250),
     service.from("account_inactivity").select("*").order("updated_at", { ascending: false }).limit(5000),
     service.from("audit_check_definitions").select("id,title,primary_category,subcategory,severity,lifecycle,configuration_version,changed_at,thresholds,weight,timeout_class,execution_method").order("id"),
-    service.from("audit_user_facing_groups").select("id,name,category,subcategory,lifecycle,enabled_by_default,configuration_version,failure_severity,weight,changed_at").order("sort_order"),
+    service.from("audit_user_facing_groups").select("*").order("sort_order"),
+    service.from("audit_user_facing_group_checks").select("group_id,check_id,sort_order").order("sort_order"),
     service.from("audit_group_history").select("id,group_id,snapshot,reason,changed_by,changed_at").order("changed_at", { ascending: false }).limit(250),
     service.from("audit_catalogue_package_availability").select("target_kind,target_id,entitlement,enabled,changed_at").order("entitlement").limit(5000),
     service.from("audit_runs").select("id,status,duration_ms,error,created_at").gte("created_at", `${today}T00:00:00.000Z`).limit(1000),
@@ -3252,7 +3306,7 @@ app.get("/api/superadmin/platform", async (c) => {
     environment: { name: c.env.APP_ORIGIN.includes("app.claritude.io") ? "Production" : "Preview", commitSha: c.env.DEPLOY_COMMIT_SHA || null, refreshedAt: new Date().toISOString() },
     providers: { stripe: { configured: stripeProvider.configured, mode: providerMode, keyType: stripeKeyEnvironment(billingEnvironment === "test" ? c.env.STRIPE_TEST_SECRET_KEY || c.env.STRIPE_SECRET_KEY : c.env.STRIPE_LIVE_SECRET_KEY || c.env.STRIPE_SECRET_KEY), webhookConfigured: Boolean(stripeProvider.webhookSecret), portalConfigured: Boolean(billingConfiguration.data?.portal_configuration_id || stripeProvider.portalConfigurationId), tax: billingConfiguration.data?.tax_enabled ? "enabled" : "disabled" }, resend: { configured: Boolean(c.env.RESEND_API_KEY), from: c.env.RESEND_FROM || null }, cloudflareTelemetry: "unavailable", supabaseBackups: "unverified" },
     settings: settings.data || [], settingHistory: settingHistory.data || [], controls: controls.data || [], featureStates, alerts: alerts.data || [], alertRules: alertRules.data || [], alertHistory: alertHistory.data || [], alertCoverage: { enabledRuleCount: (alertRules.data || []).filter((item) => item.enabled).length, lastEvaluationAt: (alertRules.data || []).map((item) => item.last_evaluated_at).filter(Boolean).sort().at(-1) || null, evaluatorHealth: !(alertRules.data || []).length ? "no_rules" : (alertRules.data || []).some((item) => item.evaluation_state === "failing") ? "failing" : (alertRules.data || []).every((item) => item.evaluation_state === "not_started") ? "not_started" : (alertRules.data || []).some((item) => item.evaluation_state === "telemetry_unavailable") ? "telemetry_unavailable" : "healthy" }, incidents: incidents.data || [], packages: packages.data || [], grants: grants.data || [], overrides: overrides.data || [], inactivity: inactivity.data || [],
-    audits: { technicalChecks: auditDefinitions.data || [], groups: auditGroups.data || [], groupHistory: auditGroupHistory.data || [], packageAvailability: auditPackageAvailability.data || [], today: auditStatus, runs: runs, source: "application_measured", period: "UTC day" },
+    audits: { technicalChecks: auditDefinitions.data || [], groups: auditGroups.data || [], groupChecks: auditGroupChecks.data || [], groupHistory: auditGroupHistory.data || [], packageAvailability: auditPackageAvailability.data || [], today: auditStatus, runs: runs, source: "application_measured", period: "UTC day" },
     infrastructure: { database: databaseMetrics.data || null, databaseError: databaseMetrics.error?.message || null, events: operationalEvents.data || [], leases: leases.data || [], period: "UTC day" },
     exports: exports.data || [], deletionRequests: deletionRequests.data || [], email: { templates: templates.data || [], automations: automations.data || [], campaigns: campaigns.data || [], deliveries: deliveries.data || [], suppressions: suppressions.data || [] },
     billing: { environment: billingEnvironment, configured: stripeProvider.configured, providerMode, configuration: billingConfiguration.data || null, catalogueReady, liveReadiness, catalogueRequirements: { requiredCount: requiredCatalogueKeys.length, basePriceCount: 18, maximumWithSeatPrices: 36, missing: requiredCatalogueKeys.filter((key) => !catalogueKeys.has(key)), unresolvedSeatPackages, packagesRequiringSeatPrices, explanation: "Eighteen base prices cover 3 paid packages × 3 currencies × 2 billing intervals. The total becomes 36 only if every package separately sells additional seats; a package needs a seat price only when its approved allowance and commercial policy permit paid seat overage." }, catalogue: billingCatalogue.data || [], customers: billingCustomers.data || [], subscriptions: billingSubscriptions.data || [], invoices: billingInvoices.data || [], payments: billingPayments.data || [], refunds: billingRefunds.data || [], disputes: billingDisputes.data || [], payouts: billingPayouts.data || [], reconciliation: billingReconciliation.data || [], daily: billingDaily.data || [], events: billingEvents.data || [], promotions: promotions.data || [], calculations: finance, currencyPolicy: "Every finance query is scoped to one billing environment and each series to one currency. No implicit FX conversion is applied. MRR includes every recurring item, annual values divided by 12, and applicable recurring discounts. Daily activity is distinct from available and pending balances; only succeeded refunds reduce completed refund totals." },
@@ -3303,6 +3357,88 @@ app.post("/api/superadmin/billing/catalogue", async (c) => {
   if (saved.error) return c.json({ error: saved.error.message }, 400);
   await recordAdminActivity(c.env, authorization.staff!.userId, "billing.catalogue_price_verified", "success", { targetType: "stripe_price", targetId: price.id, reason, newValues: row, metadata: { packageKey: packageVersion.data.package_key } });
   return c.json({ price: saved.data });
+});
+
+app.post("/api/superadmin/billing/promotions", async (c) => {
+  const authorization = await requireStaff(c, "financials.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{
+    billingEnvironment?: BillingEnvironment; operationKey?: string; code?: string; internalName?: string; description?: string;
+    discountType?: "percentage" | "fixed"; percentage?: number; fixedAmountMinor?: number; currency?: string;
+    durationType?: "once" | "billing_periods" | "forever"; durationCount?: number; eligiblePackages?: string[];
+    eligibleIntervals?: string[]; newCustomersOnly?: boolean; redemptionLimit?: number; expiresAt?: string;
+    enabled?: boolean; reason?: string;
+  }>().catch(() => ({} as any));
+  const billingEnvironment = body.billingEnvironment;
+  const operationKey = String(body.operationKey || "");
+  const code = String(body.code || "").trim().toUpperCase();
+  const internalName = String(body.internalName || "").trim();
+  const description = String(body.description || "").trim();
+  const reason = String(body.reason || "").trim();
+  const eligiblePackages: string[] = [...new Set<string>(((body.eligiblePackages || []) as unknown[]).map((value: unknown) => String(value).trim().toLowerCase()).filter(Boolean))];
+  const eligibleIntervals: string[] = [...new Set<string>(((body.eligibleIntervals || []) as unknown[]).map((value: unknown) => String(value).trim().toLowerCase()).filter(Boolean))];
+  const percentage = Number(body.percentage || 0);
+  const fixedAmountMinor = Math.trunc(Number(body.fixedAmountMinor || 0));
+  const durationCount = Math.trunc(Number(body.durationCount || 0));
+  const redemptionLimit = body.redemptionLimit == null || body.redemptionLimit === 0 ? null : Math.trunc(Number(body.redemptionLimit));
+  const expiresAt = body.expiresAt ? new Date(body.expiresAt) : null;
+  if (!billingEnvironment || !["test", "live"].includes(billingEnvironment) || !/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(operationKey) || !/^[A-Z0-9-]{3,40}$/.test(code) || internalName.length < 3 || internalName.length > 120 || description.length > 500 || reason.length < 3 || reason.length > 500) return c.json({ error: "valid_environment_operation_code_name_and_reason_required" }, 400);
+  if (!body.discountType || !["percentage", "fixed"].includes(body.discountType) || !body.durationType || !["once", "billing_periods", "forever"].includes(body.durationType)) return c.json({ error: "valid_discount_and_duration_required" }, 400);
+  if (body.discountType === "percentage" ? !(percentage > 0 && percentage <= 100) : !(fixedAmountMinor > 0 && /^[a-z]{3}$/.test(String(body.currency || "").toLowerCase()))) return c.json({ error: "valid_discount_value_required" }, 400);
+  if (body.durationType === "billing_periods" && (durationCount < 1 || durationCount > 36)) return c.json({ error: "valid_billing_period_duration_required" }, 400);
+  if (redemptionLimit != null && (redemptionLimit < 1 || redemptionLimit > 1_000_000)) return c.json({ error: "valid_redemption_limit_required" }, 400);
+  if (expiresAt && (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= Date.now() || expiresAt.getTime() > Date.now() + 5 * 365 * 86400_000)) return c.json({ error: "redemption_expiry_must_be_future_within_five_years" }, 400);
+  if (eligiblePackages.some((key) => !["essentials", "scale", "pro"].includes(key))) return c.json({ error: "unsupported_eligible_package" }, 400);
+  if (eligibleIntervals.some((interval) => !["month", "year"].includes(interval))) return c.json({ error: "unsupported_eligible_interval" }, 400);
+  if (eligibleIntervals.length) return c.json({ error: "stripe_promotion_interval_restrictions_not_supported", detail: "Stripe promotion codes cannot safely restrict Checkout redemption by recurring interval for this catalogue. Create a package-scoped code without an interval restriction." }, 409);
+  const stripe = stripeClient(c.env, billingEnvironment);
+  if (!stripe) return c.json({ error: "stripe_credentials_required", environment: billingEnvironment }, 409);
+  const db = admin(c.env);
+  const existing = await db.from("promotion_rules").select("*").eq("billing_environment", billingEnvironment).eq("operation_key", operationKey).maybeSingle();
+  if (existing.data?.provider_sync_state === "synced") return c.json({ promotion: existing.data, reused: true });
+  const catalogue = eligiblePackages.length
+    ? await db.from("billing_catalogue_prices").select("provider_product_id,package_versions(package_key)").eq("billing_environment", billingEnvironment).eq("active", true)
+    : { data: [], error: null };
+  if (catalogue.error) return c.json({ error: "promotion_catalogue_unavailable" }, 503);
+  const productIds = [...new Set((catalogue.data || []).filter((row: any) => eligiblePackages.includes(row.package_versions?.package_key)).map((row: any) => row.provider_product_id))];
+  const mappedPackageKeys = new Set((catalogue.data || []).filter((row: any) => productIds.includes(row.provider_product_id)).map((row: any) => row.package_versions?.package_key));
+  const missingPackages = eligiblePackages.filter((key) => !mappedPackageKeys.has(key));
+  if (missingPackages.length) return c.json({ error: "verified_catalogue_products_required", missingPackages }, 409);
+  const row = {
+    billing_environment: billingEnvironment, operation_key: operationKey, code, internal_name: internalName, description: description || null,
+    discount_type: body.discountType, percentage: body.discountType === "percentage" ? percentage : null,
+    fixed_amount_minor: body.discountType === "fixed" ? fixedAmountMinor : null, currency: body.discountType === "fixed" ? String(body.currency).toLowerCase() : null,
+    duration_type: body.durationType, duration_count: body.durationType === "billing_periods" ? durationCount : null,
+    eligible_packages: eligiblePackages, eligible_intervals: [], new_customers_only: body.newCustomersOnly === true,
+    redemption_limit: redemptionLimit, expires_at: expiresAt?.toISOString() || null, enabled: body.enabled !== false,
+    provider_sync_state: "draft", provider_sync_error: null, created_by: authorization.staff!.userId, updated_at: new Date().toISOString(),
+  };
+  const stored = existing.data
+    ? await db.from("promotion_rules").update(row).eq("id", existing.data.id).select().single()
+    : await db.from("promotion_rules").insert(row).select().single();
+  if (stored.error || !stored.data) return c.json({ error: stored.error?.code === "23505" ? "promotion_code_already_exists" : stored.error?.message || "promotion_persistence_failed" }, stored.error?.code === "23505" ? 409 : 503);
+  try {
+    const couponParams: Stripe.CouponCreateParams = {
+      name: internalName,
+      duration: body.durationType === "billing_periods" ? "repeating" : body.durationType,
+      ...(body.durationType === "billing_periods" ? { duration_in_months: durationCount } : {}),
+      ...(body.discountType === "percentage" ? { percent_off: percentage } : { amount_off: fixedAmountMinor, currency: String(body.currency).toLowerCase() }),
+      ...(productIds.length ? { applies_to: { products: productIds } } : {}),
+      metadata: { claritudePromotionRuleId: stored.data.id, billingEnvironment, operationKey },
+    };
+    const coupon = await stripe.coupons.create(couponParams, { idempotencyKey: `promotion-coupon:${billingEnvironment}:${operationKey}` });
+    const promotion = await stripe.promotionCodes.create({ promotion: { type: "coupon", coupon: coupon.id }, code, active: body.enabled !== false, ...(expiresAt ? { expires_at: Math.floor(expiresAt.getTime() / 1000) } : {}), ...(redemptionLimit ? { max_redemptions: redemptionLimit } : {}), restrictions: { first_time_transaction: body.newCustomersOnly === true }, metadata: { claritudePromotionRuleId: stored.data.id, billingEnvironment, operationKey } }, { idempotencyKey: `promotion-code:${billingEnvironment}:${operationKey}` });
+    if (coupon.livemode !== (billingEnvironment === "live") || promotion.livemode !== (billingEnvironment === "live")) throw new Error("stripe_environment_mismatch");
+    const synced = await db.from("promotion_rules").update({ provider_coupon_id: coupon.id, provider_promotion_code_id: promotion.id, provider_sync_state: "synced", provider_sync_error: null, provider_times_redeemed: promotion.times_redeemed, synced_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", stored.data.id).select().single();
+    if (synced.error) throw synced.error;
+    await recordAdminActivity(c.env, authorization.staff!.userId, "billing.promotion_created", "success", { targetType: "promotion", targetId: stored.data.id, reason, newValues: { ...row, providerCouponId: coupon.id, providerPromotionCodeId: promotion.id } });
+    return c.json({ promotion: synced.data }, 201);
+  } catch (error) {
+    const detail = errorMessage(error).slice(0, 1000);
+    await db.from("promotion_rules").update({ provider_sync_state: "failed", provider_sync_error: detail, updated_at: new Date().toISOString() }).eq("id", stored.data.id);
+    await recordAdminActivity(c.env, authorization.staff!.userId, "billing.promotion_created", "failed", { targetType: "promotion", targetId: stored.data.id, reason, metadata: { error: detail } });
+    return c.json({ error: "promotion_synchronisation_failed", detail }, 503);
+  }
 });
 
 app.patch("/api/superadmin/billing/configuration", async (c) => {
