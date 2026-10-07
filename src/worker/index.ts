@@ -1253,7 +1253,14 @@ async function provisionSandboxAcceptanceScenarios(env: Env, runId: string) {
   try { await stripe.paymentMethods.attach(declinedMethod.id, { customer: failedCustomer }); } catch (error) { if (!/already been attached/i.test(errorMessage(error))) throw error; }
   await stripe.customers.update(failedCustomer, { invoice_settings: { default_payment_method: declinedMethod.id } });
   await stripe.subscriptions.update(failed.id, { default_payment_method: declinedMethod.id });
-  if (failureClock.status === "ready") await stripe.testHelpers.testClocks.advance(failureClock.id, { frozen_time: failureClock.frozen_time + 172800 });
+  if (failureClock.status === "ready") {
+    try {
+      await stripe.testHelpers.testClocks.advance(failureClock.id, { frozen_time: failureClock.frozen_time + 172800 });
+    } catch (error) {
+      if (!/card was declined/i.test(errorMessage(error))) throw error;
+    }
+  }
+  await reconcileBillingAccount(env, failedAccount.id, "manual");
 
   return {
     environment: "test", livemode: false,
