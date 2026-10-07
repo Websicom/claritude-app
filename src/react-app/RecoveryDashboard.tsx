@@ -6843,6 +6843,17 @@ function AccountView({
 }
 
 function Billing({ fixture, notify, data, session }: { fixture: boolean; notify: Notify; data: Bootstrap; session: Session | null }) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const accountOptions = data.accounts
+    .map((membership: any) => membership.accounts)
+    .filter((account: any) => account?.id);
+  const requestedBillingAccount = new URLSearchParams(location.search).get("billingAccount");
+  const [selectedAccountId, setSelectedAccountId] = useState(() =>
+    accountOptions.some((account: any) => account.id === requestedBillingAccount)
+      ? requestedBillingAccount!
+      : accountOptions[0]?.id || "",
+  );
   const [annual, setAnnual] = useState(true);
   const [currency, setCurrency] = useState("gbp");
   const [billingData, setBillingData] = useState<any>(null);
@@ -6853,9 +6864,19 @@ function Billing({ fixture, notify, data, session }: { fixture: boolean; notify:
   const [changePreview, setChangePreview] = useState<any>(null);
   const [pendingChange, setPendingChange] = useState<any>(null);
   const [eventUsage, setEventUsage] = useState<{ used: number; limit: number | null } | null>(fixture ? { used: 2, limit: 20 } : null);
-  const accountId = data.accounts?.[0]?.accounts?.id;
+  useEffect(() => {
+    if (requestedBillingAccount && accountOptions.some((account: any) => account.id === requestedBillingAccount)) {
+      setSelectedAccountId(requestedBillingAccount);
+    } else if (!accountOptions.some((account: any) => account.id === selectedAccountId)) {
+      setSelectedAccountId(accountOptions[0]?.id || "");
+    }
+  }, [requestedBillingAccount, accountOptions.map((account: any) => account.id).join("|"), selectedAccountId]);
+  const accountId = selectedAccountId;
+  const selectedAccount = accountOptions.find((account: any) => account.id === accountId);
+  const selectedWorkspaceIds = new Set(data.workspaces.filter((entry: any) => entry.workspaces?.account_id === accountId).map((entry: any) => entry.workspaces?.id));
+  const selectedProperties = data.properties.filter((property) => selectedWorkspaceIds.has(property.workspace_id));
   const effective = accountId ? data.accountEntitlements?.[accountId] : null;
-  const entitlement = String(effective?.packageKey || data.accounts?.[0]?.accounts?.entitlement || (fixture ? "Scale" : "Pro"));
+  const entitlement = String(effective?.packageKey || selectedAccount?.entitlement || (fixture ? "Scale" : "Pro"));
   const plan = /essentials/i.test(entitlement) ? "Essentials" : /scale/i.test(entitlement) ? "Scale" : /pro/i.test(entitlement) ? "Pro" : "Free";
   const complimentary = effective?.arrangement === "complimentary" || (!effective && /early.?access/i.test(entitlement));
   async function loadBilling() {
@@ -6865,9 +6886,9 @@ function Billing({ fixture, notify, data, session }: { fixture: boolean; notify:
   }
   useEffect(() => { void loadBilling(); }, [session, accountId, fixture]);
   useEffect(() => {
-    if (!session || !data.properties.length) return;
+    if (!session || !selectedProperties.length) { setEventUsage({ used: 0, limit: 0 }); return; }
     let cancelled = false;
-    Promise.all(data.properties.map((property) => api<EventDefinitionsResponse | EventDefinition[]>(session, `/api/properties/${property.id}/events`).catch(() => null)))
+    Promise.all(selectedProperties.map((property) => api<EventDefinitionsResponse | EventDefinition[]>(session, `/api/properties/${property.id}/events`).catch(() => null)))
       .then((results) => {
         if (cancelled) return;
         let used = 0;
@@ -6884,9 +6905,10 @@ function Billing({ fixture, notify, data, session }: { fixture: boolean; notify:
         setEventUsage({ used, limit });
       });
     return () => { cancelled = true; };
-  }, [session, data.properties.map((property) => property.id).join("|")]);
-  const auditCount = data.properties.reduce((total, property) => total + (property.audit_runs || []).filter((run) => new Date(run.created_at).getMonth() === new Date().getMonth() && new Date(run.created_at).getFullYear() === new Date().getFullYear()).length, 0);
-  const viewerCount = (data.propertyMemberships || []).length;
+  }, [session, selectedProperties.map((property) => property.id).join("|")]);
+  const auditCount = selectedProperties.reduce((total, property) => total + (property.audit_runs || []).filter((run) => new Date(run.created_at).getMonth() === new Date().getMonth() && new Date(run.created_at).getFullYear() === new Date().getFullYear()).length, 0);
+  const selectedPropertyIds = new Set(selectedProperties.map((property) => property.id));
+  const viewerCount = (data.propertyMemberships || []).filter((membership: any) => selectedPropertyIds.has(membership.property_id)).length;
   const currentSubscription = billingData?.subscriptions?.find((item: any) => ["active", "trialing", "past_due", "unpaid", "incomplete"].includes(item.status));
   async function openPortal() {
     if (!session || !accountId) return;
@@ -6933,6 +6955,9 @@ function Billing({ fixture, notify, data, session }: { fixture: boolean; notify:
   }
   return (
     <>
+      {accountOptions.length > 1 && <Panel title="Billing account"><label className="field">Account<select value={accountId} onChange={(event) => { const nextId = event.target.value; setSelectedAccountId(nextId); const params = new URLSearchParams(location.search); params.set("accountTab", "Billing & plan"); params.set("billingAccount", nextId); navigate(`${location.pathname}?${params.toString()}`, { replace: true }); }}>
+        {accountOptions.map((account: any) => <option key={account.id} value={account.id}>{account.name}{account.is_test_account ? " · Test" : " · Live"}</option>)}
+      </select></label><p className="subtle">Billing data, checkout and entitlements are isolated to the selected account’s server-validated environment.</p></Panel>}
       {billingData?.billingEnvironment === "test" && <div className="test-environment-banner" role="status"><b>Test environment: no real payments</b><span>Use Stripe test cards. Sandbox purchases never grant live-paid access.</span></div>}
       <div className="grid equal">
         <Panel title="Subscription">
@@ -6946,8 +6971,8 @@ function Billing({ fixture, notify, data, session }: { fixture: boolean; notify:
         </Panel>
         <Panel title="Current usage">
           <div className="usage-list">
-            <UsageBar label="Properties" used={data.properties.length} />
-            <UsageBar label="Workspaces" used={data.workspaces.length} />
+            <UsageBar label="Properties" used={selectedProperties.length} />
+            <UsageBar label="Workspaces" used={selectedWorkspaceIds.size} />
             <UsageBar label="Custom events" used={eventUsage?.used ?? 0} limit={eventUsage?.limit} loading={!eventUsage} />
             <UsageBar label="Audits this month" used={auditCount} />
             <UsageBar label="Property viewers" used={viewerCount} />

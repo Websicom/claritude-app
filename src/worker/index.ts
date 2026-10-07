@@ -9547,7 +9547,16 @@ function methodReason(method?: string) {
   return "No reliable automated evaluator is implemented for this catalogue entry";
 }
 function errorMessage(e: unknown) {
-  return e instanceof Error ? e.message.slice(0, 500) : "unknown_error";
+  if (e instanceof Error) return e.message.slice(0, 500);
+  if (e && typeof e === "object") {
+    const providerError = e as { message?: unknown; details?: unknown; hint?: unknown; code?: unknown };
+    const detail = [providerError.message, providerError.details, providerError.hint, providerError.code]
+      .filter((value) => typeof value === "string" && value.length)
+      .join(" · ");
+    if (detail) return detail.slice(0, 500);
+    try { return JSON.stringify(e).slice(0, 500); } catch { /* fall through */ }
+  }
+  return String(e || "unknown_error").slice(0, 500);
 }
 
 function sameSiteHost(left: string, right: string) {
