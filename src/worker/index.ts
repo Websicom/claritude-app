@@ -4857,7 +4857,7 @@ app.get("/api/monitors/:id/checks", async (c) => {
   const dailyStartKey = shiftDateKey(currentLocalDay, -29);
   const dailyFrom = zonedDateBoundary(dailyStartKey, window.timeZone, false).toISOString();
   const dailyTo = zonedDateBoundary(currentLocalDay, window.timeZone, true).toISOString();
-  const [currentResult, previousResult, dailyResult, monitorResult, currentChecksResult, previousChecksResult] = await Promise.all([
+  const [currentResult, previousResult, dailyResult, monitorResult, currentChecksResult, previousChecksResult, latestCheckResult] = await Promise.all([
     c.get("db").rpc("uptime_response_window", {
       p_monitor_id: c.req.param("id"),
       p_from: window.from,
@@ -4872,14 +4872,12 @@ app.get("/api/monitors/:id/checks", async (c) => {
       p_time_zone: window.timeZone,
       p_bucket: responseBucket,
     }),
-    c.get("db")
-      .from("uptime_checks")
-      .select(fields)
-      .eq("monitor_id", c.req.param("id"))
-      .gte("checked_at", dailyFrom)
-      .lt("checked_at", dailyTo)
-      .order("checked_at", { ascending: true })
-      .limit(10000),
+    c.get("db").rpc("uptime_daily_window", {
+      p_monitor_id: c.req.param("id"),
+      p_from: dailyFrom,
+      p_to: dailyTo,
+      p_time_zone: window.timeZone,
+    }),
     c.get("db")
       .from("uptime_monitors")
       .select("id,property_id,interval_minutes,created_at")
@@ -4905,12 +4903,19 @@ app.get("/api/monitors/:id/checks", async (c) => {
           .order("checked_at", { ascending: true })
           .limit(2000)
       : Promise.resolve({ data: [], error: null }),
+    c.get("db")
+      .from("uptime_checks")
+      .select(fields)
+      .eq("monitor_id", c.req.param("id"))
+      .order("checked_at", { ascending: false })
+      .limit(1),
   ]);
   if (currentResult.error) return c.json({ error: currentResult.error.message }, 400);
   if (previousResult.error) return c.json({ error: previousResult.error.message }, 400);
   if (dailyResult.error) return c.json({ error: dailyResult.error.message }, 400);
   if (currentChecksResult.error) return c.json({ error: currentChecksResult.error.message }, 400);
   if (previousChecksResult.error) return c.json({ error: previousChecksResult.error.message }, 400);
+  if (latestCheckResult.error) return c.json({ error: latestCheckResult.error.message }, 400);
   if (monitorResult.error || !monitorResult.data)
     return c.json({ error: "monitor_not_found" }, 404);
   const responseWindow = currentResult.data && typeof currentResult.data === "object"
@@ -4919,7 +4924,7 @@ app.get("/api/monitors/:id/checks", async (c) => {
   const previousResponseWindow = previousResult.data && typeof previousResult.data === "object"
     ? previousResult.data as Record<string, any>
     : {};
-  const dailyChecks = dailyResult.data || [];
+  const dailyRows = Array.isArray(dailyResult.data) ? dailyResult.data : [];
   const { data: dailyIncidents, error: dailyIncidentError } = await c.get("db")
     .from("incidents")
     .select("id,opened_at,resolved_at,cause")
@@ -4942,18 +4947,15 @@ app.get("/api/monitors/:id/checks", async (c) => {
   );
   const byDay = new Map<string, any>();
   for (let index = 0; index < 30; index += 1)
-    byDay.set(shiftDateKey(dailyStartKey, index), { total: 0, successful: 0, suppressed: 0, checks: [], incidents: [] });
-  for (const check of dailyChecks) {
-    const day = localDateKey(new Date(check.checked_at), window.timeZone);
-    const current = byDay.get(day);
+    byDay.set(shiftDateKey(dailyStartKey, index), { total: 0, successful: 0, suppressed: 0, statusCode: null, incidents: [] });
+  for (const row of dailyRows) {
+    const current = byDay.get(row.day);
     if (!current) continue;
-    if (check.suppressed_by_maintenance) current.suppressed += 1;
-    else {
-      current.total += 1;
-      if (check.success) current.successful += 1;
-    }
-    current.checks.push(check);
-    byDay.set(day, current);
+    current.total = Number(row.total || 0);
+    current.successful = Number(row.successful || 0);
+    current.suppressed = Number(row.suppressed || 0);
+    current.statusCode = row.statusCode ?? null;
+    byDay.set(row.day, current);
   }
   for (const incident of dailyIncidents || []) {
     const startKey = localDateKey(new Date(Math.max(Date.parse(incident.opened_at), Date.parse(dailyFrom))), window.timeZone);
@@ -4974,8 +4976,7 @@ app.get("/api/monitors/:id/checks", async (c) => {
     const dayEnd = Math.min(zonedDateBoundary(day, window.timeZone, true).valueOf(), Date.now());
     const coveredStart = Math.max(dayStart, monitorCreated);
     const expected = dayEnd > coveredStart ? Math.max(1, Math.floor((dayEnd - coveredStart) / (intervalMinutes * 60_000))) : 0;
-    const partial = value.total + value.suppressed > 0 && expected > 0 && value.total + value.suppressed < expected * 0.8;
-    const latestObserved = [...value.checks].reverse().find((check: any) => !check.suppressed_by_maintenance);
+    const partial = false;
     return {
       day,
       total: value.total,
@@ -4991,7 +4992,7 @@ app.get("/api/monitors/:id/checks", async (c) => {
         dayEnd,
         monitorCreated,
       }),
-      statusCode: latestObserved?.status_code ?? null,
+      statusCode: value.statusCode,
       incidents: value.incidents,
     };
   });
@@ -5008,7 +5009,7 @@ app.get("/api/monitors/:id/checks", async (c) => {
       responseBucket: individualChecks ? "check" : previousResponseWindow.bucket || responseBucket,
       summary: previousResponseWindow.summary || {},
     },
-    latestCheck: dailyChecks.at(-1) || null,
+    latestCheck: latestCheckResult.data?.[0] || null,
     range: { from: window.from, to: window.to, timeZone: window.timeZone },
     days: dailyDays,
     dailyScope: { from: dailyFrom, to: dailyTo, timeZone: window.timeZone, days: 30 },
