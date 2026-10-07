@@ -1161,7 +1161,7 @@ async function provisionSandboxAcceptanceScenarios(env: Env, runId: string) {
       invoice_settings: { default_payment_method: paymentMethod.id },
       ...(testClock ? { test_clock: testClock } : {}),
       metadata: { claritudeAccountId: account.id, billingEnvironment: "test", sandboxAcceptanceScenario: "true", fixtureRunId: runId },
-    } as any, { idempotencyKey: `sandbox-acceptance-customer:${account.id}` });
+    } as any, { idempotencyKey: `sandbox-acceptance-customer:v2:${account.id}` });
     if (customer.livemode) throw new Error("sandbox_customer_environment_mismatch");
     const stored = await db.from("billing_customers").upsert({ account_id: account.id, billing_environment: "test", provider_customer_id: customer.id, provider: "stripe", currency: "gbp", sync_state: "pending", metadata: { livemode: false, sandboxAcceptanceScenario: true } }, { onConflict: "account_id,billing_environment" });
     if (stored.error) throw stored.error;
