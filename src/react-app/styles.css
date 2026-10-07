@@ -4323,7 +4323,7 @@ input[type="checkbox"]:checked:after {
 .audit-information-panel p,
 .audit-recommendation-panel p { margin: 5px 0 0; color: #3f4652; line-height: 1.55; }
 
-.audit-checks-box { margin-top: 2px; padding: 5px 14px 0; border: 1px solid var(--line); border-radius: 10px; background: #f5f6f8; }
+.audit-checks-box { margin-top: 2px; padding: 5px 14px 0; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
 .audit-checks-box .audit-subfindings { margin: 0; }
 .audit-subfinding-row { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: 10px; }
 .audit-subfinding-outcome { width: auto; min-width: 0; padding: 3px 8px; border-radius: 999px; background: #f3f4f6; color: #626872; font-size: 11px; font-weight: 700; line-height: 1.2; white-space: nowrap; }
@@ -4336,7 +4336,7 @@ input[type="checkbox"]:checked:after {
 .audit-subfinding-outcome.outcome-unable_to_test,
 .audit-subfinding-outcome.outcome-not_applicable { background: #f1f2f4; color: #686e77; }
 .audit-advisory-note { margin: 0 -2px; padding: 12px 2px 14px; border-top: 1px solid var(--line); color: var(--muted); line-height: 1.5; }
-.audit-finding-evidence { display: grid; gap: 7px; margin: 10px 0 0 82px; }
+.audit-finding-evidence { display: grid; gap: 7px; margin: 10px 0 0; }
 .audit-finding-evidence > span { color: var(--muted); font-size: 11px; font-weight: 650; }
 .audit-finding-evidence > div { display: grid; gap: 6px; }
 .audit-finding-evidence code { display: block; padding: 9px 10px; border: 1px solid #d9dce2; border-radius: 8px; background: #fff; color: #1f2937; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -4364,7 +4364,6 @@ input[type="checkbox"]:checked:after {
   .audit-item-state { grid-column: 2; grid-row: 2; justify-self: start; }
   .audit-item-toggle > svg { grid-column: 3; grid-row: 1; }
   .audit-detail { padding-left: 4px; padding-right: 4px; }
-  .audit-finding-evidence { margin-left: 0; }
   .audit-check-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .audit-filter-wrap .audit-filter-actions { position: fixed; top: 70px; left: 10px; right: 10px; width: auto; }
 }
@@ -4723,7 +4722,7 @@ input[type="checkbox"]:checked:after {
 }
 
 :root[data-theme="dark"] .audit-checks-box {
-  background: var(--soft);
+  background: var(--bg);
   border-color: var(--line);
 }
 
