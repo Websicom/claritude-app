@@ -1121,6 +1121,132 @@ async function receiveStripeWebhook(c: any, billingEnvironment: BillingEnvironme
   return c.json({ received: true }, 202);
 }
 
+async function sha256Hex(value: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function provisionSandboxAcceptanceFixtures(env: Env, runId: string, request: any) {
+  const db = admin(env);
+  const provider = stripeContext(env, "test");
+  if (!provider.client || !provider.webhookSecret) throw new Error("stripe_test_credentials_and_webhook_required");
+  const stripe = provider.client;
+  const configured = request?.packages || {};
+  const packageKeys = ["essentials", "scale", "pro"] as const;
+  const currencies = ["gbp", "eur", "usd"] as const;
+  const intervals = ["month", "year"] as const;
+  const versions = await db.from("package_versions").select("id,package_key,display_name,state,allowances").in("package_key", packageKeys);
+  if (versions.error) throw versions.error;
+  const versionByKey = new Map((versions.data || []).map((version: any) => [version.package_key, version]));
+  for (const packageKey of packageKeys) if (!versionByKey.has(packageKey)) throw new Error(`package_version_missing:${packageKey}`);
+
+  const products = await stripe.products.list({ active: true, limit: 100 });
+  const catalogue: any[] = [];
+  for (const packageKey of packageKeys) {
+    const version: any = versionByKey.get(packageKey);
+    let product = products.data.find((candidate) => candidate.metadata?.claritudeSandboxFixture === "true" && candidate.metadata?.claritudePackageKey === packageKey);
+    if (!product) product = await stripe.products.create({
+      name: `Claritude ${version.display_name} — Sandbox fixture`,
+      description: "Isolated Claritude acceptance fixture. No real payments; not approved live pricing.",
+      metadata: { claritudeSandboxFixture: "true", claritudePackageKey: packageKey, billingEnvironment: "test", fixtureRunId: runId },
+    }, { idempotencyKey: `sandbox-fixture-product:${packageKey}` });
+    if (product.livemode) throw new Error("sandbox_fixture_product_environment_mismatch");
+    const existingPrices = await stripe.prices.list({ product: product.id, active: true, limit: 100 });
+    for (const currency of currencies) for (const interval of intervals) {
+      const amountMinor = Number(configured?.[packageKey]?.[interval === "month" ? "monthMinor" : "yearMinor"]);
+      if (!Number.isSafeInteger(amountMinor) || amountMinor < 1) throw new Error(`sandbox_fixture_amount_invalid:${packageKey}:${interval}`);
+      let price = existingPrices.data.find((candidate) => candidate.currency === currency && candidate.recurring?.interval === interval && candidate.unit_amount === amountMinor && candidate.metadata?.claritudeSandboxFixture === "true");
+      if (!price) price = await stripe.prices.create({
+        product: product.id, currency, unit_amount: amountMinor,
+        recurring: { interval }, tax_behavior: "unspecified",
+        nickname: `${version.display_name} ${currency.toUpperCase()} ${interval} — sandbox fixture`,
+        metadata: { claritudeSandboxFixture: "true", claritudePackageKey: packageKey, billingEnvironment: "test", additionalSeatsEnabled: "false", fixtureRunId: runId },
+      }, { idempotencyKey: `sandbox-fixture-price:${packageKey}:${currency}:${interval}:${amountMinor}` });
+      if (price.livemode) throw new Error("sandbox_fixture_price_environment_mismatch");
+      const row = {
+        package_version_id: version.id, provider_product_id: product.id, provider_price_id: price.id,
+        currency, interval, component: "base", unit_amount_minor: amountMinor, tax_behavior: "unspecified",
+        active: true, provider_livemode: false, billing_environment: "test",
+        metadata: { sandboxFixture: true, fixtureLabel: "Sandbox fixture — no real payments", additionalSeatsEnabled: false, fixtureRunId: runId },
+        verified_at: new Date().toISOString(),
+      };
+      const saved = await db.from("billing_catalogue_prices").upsert(row, { onConflict: "billing_environment,package_version_id,currency,interval,component" }).select("id").single();
+      if (saved.error) throw saved.error;
+      catalogue.push({ packageKey, currency, interval, amountMinor, productId: product.id, priceId: price.id });
+    }
+  }
+
+  const websi = await db.from("accounts").select("id").eq("name", "Websi").eq("billing_environment", "live").maybeSingle();
+  if (!websi.data) throw new Error("websi_account_required_for_test_owner");
+  const ownerMembership = await db.from("account_memberships").select("user_id").eq("account_id", websi.data.id).eq("role", "owner").limit(1).maybeSingle();
+  if (!ownerMembership.data?.user_id) throw new Error("websi_owner_required_for_test_accounts");
+  const ownerUser = await db.auth.admin.getUserById(ownerMembership.data.user_id);
+  const testRecipient = ownerUser.data.user?.email;
+  if (!testRecipient) throw new Error("designated_test_recipient_required");
+  const accountSpecs = [
+    { key: "free", name: "Sandbox Free", assignment: "free" },
+    { key: "essentials", name: "Sandbox Essentials", assignment: "essentials" },
+    { key: "scale", name: "Sandbox Scale", assignment: "scale" },
+    { key: "pro", name: "Sandbox Pro Checkout", assignment: "free" },
+    { key: "complimentary_pro", name: "Sandbox Complimentary Pro", assignment: "free", complimentary: true },
+  ];
+  const accounts: any[] = [];
+  for (const spec of accountSpecs) {
+    let account = await db.from("accounts").select("id,name").eq("billing_environment", "test").eq("name", spec.name).maybeSingle();
+    if (!account.data) {
+      const created = await db.rpc("create_superadmin_test_account", { p_name: spec.name, p_owner: ownerMembership.data.user_id, p_test_recipients: [testRecipient] });
+      if (created.error) throw created.error;
+      account = { data: { id: (created.data as any).accountId, name: spec.name }, error: null } as any;
+    }
+    const accountId = account.data!.id;
+    const targetVersion: any = spec.assignment === "free"
+      ? (await db.from("package_versions").select("id,package_key").eq("package_key", "free").eq("state", "published").order("version", { ascending: false }).limit(1).single()).data
+      : versionByKey.get(spec.assignment);
+    if (!targetVersion?.id) throw new Error(`test_assignment_package_missing:${spec.assignment}`);
+    await db.from("account_package_assignments").update({ package_version_id: targetVersion.id, billing_state: "unconfigured", complimentary: false }).eq("account_id", accountId).is("ends_at", null);
+    await db.from("accounts").update({ entitlement: targetVersion.package_key }).eq("id", accountId);
+    const workspace = await db.from("workspaces").select("id").eq("account_id", accountId).order("created_at").limit(1).single();
+    if (workspace.data) {
+      const host = `${spec.key.replaceAll("_", "-")}.sandbox.invalid`;
+      await db.from("properties").upsert({ workspace_id: workspace.data.id, name: `${spec.name} Property`, url: `https://${host}/`, canonical_host: host, verification_status: "pending", tracking_id: `sandbox_${accountId.replaceAll("-", "")}`, tracking_enabled: false }, { onConflict: "tracking_id" });
+    }
+    if (spec.complimentary) {
+      const historicPro = await db.from("package_versions").select("id").eq("package_key", "pro_early_access").eq("state", "published").order("version", { ascending: false }).limit(1).single();
+      if (!historicPro.data) throw new Error("published_historic_pro_required");
+      const grant = await db.rpc("apply_complimentary_package_grant_internal", { p_account_id: accountId, p_package_version_id: historicPro.data.id, p_expires_at: null, p_reason: "Isolated sandbox complimentary Pro acceptance fixture", p_overrides: { editingSeats: 3 }, p_actor: null });
+      if (grant.error) throw grant.error;
+    }
+    accounts.push({ key: spec.key, id: accountId, name: spec.name, complimentary: Boolean(spec.complimentary) });
+  }
+  const configuration = await db.from("billing_environment_configurations").update({ checkout_enabled: true, tax_enabled: false, tax_reviewed_at: null, tax_reviewed_by: null, portal_configuration_id: provider.portalConfigurationId, webhook_configured: true, updated_at: new Date().toISOString() }).eq("environment", "test").select().single();
+  if (configuration.error) throw configuration.error;
+  const websiGrant = await db.from("account_package_grants").select("id,status,expires_at,accounts!inner(name)").eq("status", "active").eq("accounts.name", "Websi").maybeSingle();
+  if (!websiGrant.data) throw new Error("websi_complimentary_grant_not_preserved");
+  return { catalogue, accounts, configuration: configuration.data, websiComplimentaryGrantPreserved: true };
+}
+
+app.post("/webhooks/sandbox-acceptance-fixtures", async (c) => {
+  const token = String(c.req.header("authorization") || "").replace(/^Bearer\s+/i, "");
+  if (token.length < 40) return c.json({ error: "fixture_token_required" }, 401);
+  const tokenHash = await sha256Hex(token);
+  const db = admin(c.env);
+  const run = await db.from("sandbox_acceptance_fixture_runs").select("*").eq("token_hash", tokenHash).maybeSingle();
+  if (!run.data || new Date(run.data.expires_at).getTime() <= Date.now()) return c.json({ error: "fixture_request_missing_or_expired" }, 403);
+  if (run.data.state === "completed") return c.json({ runId: run.data.id, state: "completed", result: run.data.result, reused: true });
+  if (run.data.state === "processing") return c.json({ runId: run.data.id, state: "processing" }, 409);
+  const claimed = await db.from("sandbox_acceptance_fixture_runs").update({ state: "processing", started_at: new Date().toISOString(), error: null, updated_at: new Date().toISOString() }).eq("id", run.data.id).in("state", ["requested", "failed"]).select("id").maybeSingle();
+  if (!claimed.data) return c.json({ error: "fixture_request_already_claimed" }, 409);
+  try {
+    const result = await provisionSandboxAcceptanceFixtures(c.env, run.data.id, run.data.request);
+    await db.from("sandbox_acceptance_fixture_runs").update({ state: "completed", result, completed_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", run.data.id);
+    return c.json({ runId: run.data.id, state: "completed", result });
+  } catch (error) {
+    const detail = errorMessage(error).slice(0, 2000);
+    await db.from("sandbox_acceptance_fixture_runs").update({ state: "failed", error: detail, updated_at: new Date().toISOString() }).eq("id", run.data.id);
+    return c.json({ error: "sandbox_fixture_provisioning_failed", detail }, 503);
+  }
+});
+
 app.post("/webhooks/stripe/test", (c) => receiveStripeWebhook(c, "test"));
 app.post("/webhooks/stripe/live", (c) => receiveStripeWebhook(c, "live"));
 app.post("/webhooks/stripe", (c) => c.json({ error: "environment_specific_webhook_required", endpoints: ["/webhooks/stripe/test", "/webhooks/stripe/live"] }, 410));
@@ -2643,7 +2769,7 @@ app.get("/api/billing/:accountId", async (c) => {
     db.from("billing_payments").select("*").eq("account_id", accountId).eq("billing_environment", billingEnvironment).order("provider_created_at", { ascending: false }).limit(100),
     db.from("billing_refunds").select("*").eq("account_id", accountId).eq("billing_environment", billingEnvironment).order("provider_created_at", { ascending: false }).limit(100),
     db.from("billing_disputes").select("*").eq("account_id", accountId).eq("billing_environment", billingEnvironment).order("provider_created_at", { ascending: false }).limit(100),
-    db.from("billing_catalogue_prices").select("id,package_version_id,currency,interval,component,unit_amount_minor,tax_behavior,active,provider_livemode,billing_environment,package_versions(package_key,display_name,state,allowances,unresolved_values)").eq("billing_environment", billingEnvironment).eq("active", true).order("currency"),
+    db.from("billing_catalogue_prices").select("id,package_version_id,currency,interval,component,unit_amount_minor,tax_behavior,active,provider_livemode,billing_environment,metadata,package_versions(package_key,display_name,state,allowances,unresolved_values)").eq("billing_environment", billingEnvironment).eq("active", true).order("currency"),
     db.from("account_package_grants").select("id,status,starts_at,expires_at,reason,overrides,package_versions(package_key,display_name)").eq("account_id", accountId).eq("status", "active").lte("starts_at", new Date().toISOString()).or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`).maybeSingle(),
   ]);
   const config = configuration.data;
