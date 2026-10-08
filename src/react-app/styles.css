@@ -1276,6 +1276,8 @@ tbody tr:hover {
 .snippet-card h3 { margin: 0 0 6px; }
 .event-trigger { display: inline-flex; align-items: center; gap: 7px; }
 .event-trigger svg { width: 15px; height: 15px; }
+.analytics-custom-event-label { display: inline-flex; min-width: 0; align-items: center; gap: 7px; }
+.analytics-custom-event-label svg { width: 15px; height: 15px; flex: 0 0 auto; }
 .event-data-attribute { white-space: nowrap; font-size: 12px; }
 .event-attribute-guidance {
   display: grid;

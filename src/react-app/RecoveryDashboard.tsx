@@ -5359,6 +5359,10 @@ export function configuredEventAttributeNames(events: EventDefinition[]) {
   });
 }
 
+export function configuredEventType(events: EventDefinition[], name: string) {
+  return events.find((event) => event.name === name)?.event_type || null;
+}
+
 export function nextConfiguredEventAttribute(events: EventDefinition[]) {
   const used = new Set(configuredEventAttributeNames(events).filter((value): value is string => Boolean(value)));
   let index = 1;
@@ -7735,7 +7739,7 @@ function DataTable({
                 <td className={isPendingDataText(x) ? "pending-data-text" : ""} key={j}>{x}</td>
               ))}
               {rowActions && <td className="admin-actions-column"><div className="admin-row-menu">
-                <button className="icon-button" aria-label="Open row actions" aria-expanded={openMenu === originalIndex} onClick={() => setOpenMenu((current) => current === originalIndex ? null : originalIndex)}><MoreHorizontal /></button>
+                <button className="iconbtn" aria-label="Open row actions" aria-expanded={openMenu === originalIndex} onClick={() => setOpenMenu((current) => current === originalIndex ? null : originalIndex)}><MoreHorizontal /></button>
                 {openMenu === originalIndex && <div className="admin-row-menu-popover" role="menu">{(rowActions[originalIndex] || []).map((action) => action.to
                   ? <Link key={action.label} role="menuitem" className={action.danger ? "danger" : ""} to={action.to} onClick={() => setOpenMenu(null)}>{action.label}</Link>
                   : <button key={action.label} role="menuitem" className={action.danger ? "danger" : ""} disabled={action.disabled} onClick={() => { setOpenMenu(null); action.onClick?.(); }}>{action.label}</button>
@@ -9767,12 +9771,17 @@ function EventsPanel({
             <AnalyticsPageFilterToolbar filters={filters} options={options} onChange={onFilterChange} title="Events" categories={analyticsFilterConfigs.Events.categories} />
             <AnalyticsValueTable
               headers={["Event", "Count", "Share"]}
-              rows={shownEventBreakdown.map((event: any) => ({
-                label: eventLabel(event.name),
-                value: event.count,
-                secondary: data.keyEvents ? `${(event.count / data.keyEvents * 100).toFixed(1)}%` : "0.0%",
-                onClick: onOpenEvent ? () => onOpenEvent(event.name) : undefined,
-              }))}
+              rows={shownEventBreakdown.map((event: any) => {
+                const type = configuredEventType(events, event.name);
+                return {
+                  label: type
+                    ? <span className="analytics-custom-event-label" title={eventTriggerLabel(type)}><EventTriggerIcon type={type} />{eventLabel(event.name)}</span>
+                    : eventLabel(event.name),
+                  value: event.count,
+                  secondary: data.keyEvents ? `${(event.count / data.keyEvents * 100).toFixed(1)}%` : "0.0%",
+                  onClick: onOpenEvent ? () => onOpenEvent(event.name) : undefined,
+                };
+              })}
             />
             {eventBreakdown.length > 20 && <ResultsPagination page={eventPage} total={eventBreakdown.length} label="events" onPage={(page) => setEventPage(Math.min(eventPageCount, page))} />}
             <p className="subtle">Event share is the proportion of all recorded key events in the selected scope.</p>
@@ -9791,7 +9800,7 @@ function EventsPanel({
                 headers={["Event", "Trigger", "Data attribute", "Key event", "Received", "Status"]}
                 rows={events.map((event, index) => [
                   event.name,
-                  <span className="event-trigger"><EventTriggerIcon type={event.event_type} />{event.event_type === "form_success" ? "Confirmed success" : event.event_type === "pageview" ? "Page view" : "Element click"}</span>,
+                  <span className="event-trigger"><EventTriggerIcon type={event.event_type} />{eventTriggerLabel(event.event_type)}</span>,
                   eventAttributeNames[index]
                     ? <code className="event-data-attribute" title={`${eventAttributeNames[index]}="${event.name}"`}>{eventAttributeNames[index]}</code>
                     : "—",
@@ -9925,9 +9934,15 @@ function EventsPanel({
 }
 
 function EventTriggerIcon({ type }: { type: EventDefinition["event_type"] }) {
-  if (type === "form_success") return <ClipboardCheck />;
-  if (type === "pageview") return <Globe2 />;
-  return <SquareDashedMousePointer />;
+  if (type === "form_success") return <ClipboardCheck aria-hidden="true" />;
+  if (type === "pageview") return <Globe2 aria-hidden="true" />;
+  return <SquareDashedMousePointer aria-hidden="true" />;
+}
+
+function eventTriggerLabel(type: EventDefinition["event_type"]) {
+  if (type === "form_success") return "Confirmed form success";
+  if (type === "pageview") return "Page view";
+  return "Element click";
 }
 const auditPreparingMessages = [
   "Preparing your audit",

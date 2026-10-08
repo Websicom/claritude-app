@@ -9,6 +9,7 @@ import {
   auditScoreBand,
   buildAuditFixPrompt,
   configuredEventAttributeNames,
+  configuredEventType,
   customEventUsageText,
   durationLabel,
   eventLabel,
@@ -206,6 +207,8 @@ describe("top selector searches", () => {
       "data-claritude-event-2",
     ]);
     expect(nextConfiguredEventAttribute(events)).toBe("data-claritude-event-4");
+    expect(configuredEventType(events, "third")).toBe("click");
+    expect(configuredEventType(events, "automatic-outbound-event")).toBeNull();
   });
 
   it("spaces date-range separators consistently", () => {

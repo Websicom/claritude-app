@@ -425,8 +425,8 @@ function fallbackUserFacingSnapshot(technicalSnapshot: AuditRegistrySnapshot[]):
 }
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
-const TRACKER_VERSION = "2.3.2";
-const SUPPORTED_TRACKER_VERSIONS = new Set(["2.0.0", "2.1.0", "2.1.1", "2.1.2", "2.1.3", "2.1.4", "2.1.5", "2.3.0", TRACKER_VERSION]);
+const TRACKER_VERSION = "2.3.3";
+const SUPPORTED_TRACKER_VERSIONS = new Set(["2.0.0", "2.1.0", "2.1.1", "2.1.2", "2.1.3", "2.1.4", "2.1.5", "2.3.0", "2.3.2", TRACKER_VERSION]);
 app.use("*", secureHeaders({ crossOriginResourcePolicy: false }));
 app.use("*", async (c, next) => {
   await next();
@@ -10778,7 +10778,7 @@ export const TRACKER_SOURCE = `(()=>{
   const checkpoint=(force=false)=>{if(!force&&!dirty)return;checkpointSequence+=1;emit('view_state',{meta:{view_started_at:pageStartedAt,checkpoint_sequence:checkpointSequence,active_seconds:active,max_scroll:maxScroll,key_events:Object.assign({},keyEventCounts),visible_sections:Array.from(visibleSections),vitals:Object.assign({},vitalState)}});dirty=false;lastCheckpointActive=active};
   const recordKeyEvent=(type,name)=>{const key=type+':'+name;keyEventCounts[key]=(keyEventCounts[key]||0)+1;scheduleCheckpoint()};
   const eventNames=${trackerEventNames.toString()};
-  addEventListener('click',e=>{lastActivity=Date.now();let node=e.target&&e.target.nodeType===1?e.target:e.target&&e.target.parentElement,names=[];while(node&&node!==document){names=eventNames(node);if(names.length)break;node=node.parentElement}for(const name of names){emit('click',{name});recordKeyEvent('click',name)}const link=e.target&&e.target.closest?e.target.closest('a[href]'):null;if(link&&new URL(link.href,location.href).host!==location.host){const host=new URL(link.href).host;emit('outbound',{name:host});recordKeyEvent('outbound',host)}},{passive:true});
+  addEventListener('click',e=>{lastActivity=Date.now();let node=e.target&&e.target.nodeType===1?e.target:e.target&&e.target.parentElement,names=[];while(node&&node!==document){names=eventNames(node);if(names.length)break;node=node.parentElement}for(const name of names){emit('click',{name});recordKeyEvent('click',name)}const link=e.target&&e.target.closest?e.target.closest('a[href]'):null;if(link&&new URL(link.href,location.href).host!==location.host){const host=new URL(link.href).host;emit('outbound',{name:host});recordKeyEvent('outbound',host)}},{capture:true,passive:true});
   ['keydown','pointerdown','touchstart'].forEach(name=>addEventListener(name,()=>{lastActivity=Date.now()},{passive:true}));
   const checkScroll=()=>{const root=document.documentElement,height=Math.max(root.scrollHeight,document.body&&document.body.scrollHeight||0,1),n=Math.min(100,Math.round((scrollY+innerHeight)/height*100));if(n>maxScroll){maxScroll=n;dirty=true}[25,50,75,90].forEach(x=>{if(n>=x&&!marks.has(x)){marks.add(x);scheduleCheckpoint()}})};
   addEventListener('scroll',checkScroll,{passive:true});addEventListener('resize',checkScroll,{passive:true});
