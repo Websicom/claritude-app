@@ -3585,6 +3585,24 @@ app.post("/api/superadmin/accounts/:id/deletion-preview", async (c) => {
   return c.json({ request: data, dryRun });
 });
 
+app.post("/api/superadmin/deletion-requests/:id/execute", async (c) => {
+  const authorization = await requireStaff(c, "customers.write");
+  if (authorization.response) return authorization.response;
+  if (authorization.staff!.role !== "owner") return c.json({ error: "owner_permission_required" }, 403);
+  const body = await c.req.json<{ accountName?: string; confirmation?: string; reason?: string }>().catch(() => ({} as any));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3 || reason.length > 500 || body.confirmation !== "DELETE") return c.json({ error: "reason_and_delete_confirmation_required" }, 400);
+  const service = admin(c.env);
+  const request = await service.from("deletion_requests").select("id,account_id,state,accounts(name)").eq("id", c.req.param("id")).maybeSingle();
+  if (!request.data) return c.json({ error: "deletion_request_not_found" }, 404);
+  const accountName = String((request.data.accounts as any)?.name || "");
+  if (!accountName || String(body.accountName || "") !== accountName) return c.json({ error: "account_name_confirmation_required" }, 400);
+  const execution = await service.rpc("execute_account_master_deletion_internal", { p_request_id: request.data.id, p_actor: authorization.staff!.userId, p_reason: reason });
+  if (execution.error) return c.json({ error: execution.error.message }, 409);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "account.master_deletion_completed", "success", { targetType: "account", targetId: request.data.account_id, accountId: request.data.account_id, reason, metadata: execution.data });
+  return c.json({ completed: true, result: execution.data });
+});
+
 app.patch("/api/superadmin/accounts/:id/state", async (c) => {
   const authorization = await requireStaff(c, "customers.write");
   if (authorization.response) return authorization.response;
@@ -4698,9 +4716,15 @@ app.post("/api/superadmin/email/campaigns", async (c) => {
   if (name.length < 3) return c.json({ error: "campaign_name_required" }, 400);
   const service = admin(c.env);
   const segment = body.segment && typeof body.segment === "object" ? body.segment : {};
-  const members = await service.from("account_memberships").select("user_id,account_id").limit(50000);
-  const uniqueUsers = new Set((members.data || []).filter((item) => !segment.accountId || item.account_id === segment.accountId).map((item) => item.user_id));
-  const { data, error } = await service.from("email_campaigns").insert({ name, template_id: body.templateId || null, subject: String(body.subject || "").trim() || null, segment, recipient_preview_count: uniqueUsers.size, state: "draft", created_by: authorization.staff!.userId }).select().single();
+  const subject = String(body.subject || "").trim();
+  const htmlBody = String(body.htmlBody || "").trim();
+  if (!subject || !htmlBody) return c.json({ error: "campaign_subject_and_html_required" }, 400);
+  if (segment.role && !["owner", "member", "viewer"].includes(segment.role)) return c.json({ error: "valid_campaign_role_required" }, 400);
+  if (segment.billingEnvironment && !["test", "live"].includes(segment.billingEnvironment)) return c.json({ error: "valid_billing_environment_required" }, 400);
+  const members = await service.from("account_memberships").select("user_id,account_id,role,accounts(billing_environment)").limit(50000);
+  const uniqueUsers = new Set((members.data || []).filter((item: any) => (!segment.accountId || item.account_id === segment.accountId) && (!segment.role || item.role === segment.role) && (!segment.billingEnvironment || item.accounts?.billing_environment === segment.billingEnvironment)).map((item: any) => item.user_id));
+  const variables = [...new Set([...subject.matchAll(/{{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*}}/g), ...htmlBody.matchAll(/{{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*}}/g)].map((match) => match[1]))];
+  const { data, error } = await service.from("email_campaigns").insert({ name, template_id: body.templateId || null, subject, html_body: htmlBody, text_body: String(body.textBody || "").trim() || null, variables, segment, recipient_preview_count: uniqueUsers.size, state: "draft", created_by: authorization.staff!.userId }).select().single();
   if (error) return c.json({ error: error.message }, 400);
   return c.json({ campaign: data, preview: { eligibleBeforePreferences: uniqueUsers.size, executionRechecksPreferences: true, sentToCustomers: false } }, 201);
 });
@@ -4716,6 +4740,7 @@ app.patch("/api/superadmin/email/campaigns/:id", async (c) => {
   if (body.action === "schedule") {
     const scheduledAt = String(body.scheduledAt || "");
     if (!scheduledAt || Date.parse(scheduledAt) <= Date.now()) return c.json({ error: "future_schedule_required" }, 400);
+    if (!String(previous.subject || "").trim() || !String(previous.html_body || "").trim()) return c.json({ error: "campaign_content_required_before_scheduling" }, 409);
     changes = { state: "scheduled", scheduled_at: scheduledAt };
   } else if (body.action === "cancel") changes = { state: "cancelled", cancelled_at: new Date().toISOString() };
   else if (body.action === "edit") {
@@ -4723,7 +4748,16 @@ app.patch("/api/superadmin/email/campaigns/:id", async (c) => {
     const name = String(body.name || "").trim();
     if (previous.state !== "draft") return c.json({ error: "draft_campaign_required" }, 409);
     if (name.length < 3 || reason.length < 3 || reason.length > 500) return c.json({ error: "campaign_name_and_reason_required" }, 400);
-    changes = { name, subject: String(body.subject || "").trim() || null, template_id: body.templateId || null, segment: body.segment && typeof body.segment === "object" ? body.segment : {} };
+    const subject = String(body.subject || "").trim();
+    const htmlBody = String(body.htmlBody || "").trim();
+    const segment = body.segment && typeof body.segment === "object" ? body.segment : {};
+    if (!subject || !htmlBody) return c.json({ error: "campaign_subject_and_html_required" }, 400);
+    if (segment.role && !["owner", "member", "viewer"].includes(segment.role)) return c.json({ error: "valid_campaign_role_required" }, 400);
+    if (segment.billingEnvironment && !["test", "live"].includes(segment.billingEnvironment)) return c.json({ error: "valid_billing_environment_required" }, 400);
+    const members = await service.from("account_memberships").select("user_id,account_id,role,accounts(billing_environment)").limit(50000);
+    const uniqueUsers = new Set((members.data || []).filter((candidate: any) => (!segment.accountId || candidate.account_id === segment.accountId) && (!segment.role || candidate.role === segment.role) && (!segment.billingEnvironment || candidate.accounts?.billing_environment === segment.billingEnvironment)).map((candidate: any) => candidate.user_id));
+    const variables = [...new Set([...subject.matchAll(/{{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*}}/g), ...htmlBody.matchAll(/{{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*}}/g)].map((match) => match[1]))];
+    changes = { name, subject, html_body: htmlBody, text_body: String(body.textBody || "").trim() || null, variables, template_id: body.templateId || null, segment, recipient_preview_count: uniqueUsers.size };
   } else return c.json({ error: "valid_campaign_action_required" }, 400);
   const { data, error } = await service.from("email_campaigns").update(changes).eq("id", previous.id).select().single();
   if (error) return c.json({ error: error.message }, 400);
@@ -4737,7 +4771,7 @@ app.post("/api/superadmin/email/campaigns/:id/duplicate", async (c) => {
   const service = admin(c.env);
   const { data: source } = await service.from("email_campaigns").select("*").eq("id", c.req.param("id")).maybeSingle();
   if (!source) return c.json({ error: "campaign_not_found" }, 404);
-  const { data, error } = await service.from("email_campaigns").insert({ name: `${source.name} copy`, template_id: source.template_id, subject: source.subject, segment: source.segment, recipient_preview_count: source.recipient_preview_count, state: "draft", duplicated_from: source.id, created_by: authorization.staff!.userId }).select().single();
+  const { data, error } = await service.from("email_campaigns").insert({ name: `${source.name} copy`, template_id: source.template_id, subject: source.subject, html_body: source.html_body, text_body: source.text_body, variables: source.variables || [], segment: source.segment, recipient_preview_count: source.recipient_preview_count, state: "draft", duplicated_from: source.id, created_by: authorization.staff!.userId }).select().single();
   return error ? c.json({ error: error.message }, 400) : c.json({ campaign: data }, 201);
 });
 
