@@ -24,6 +24,7 @@ import {
   isFixFirstAuditResult,
   nextConfiguredEventAttribute,
   paginateResults,
+  planName,
   pageActiveTimeLabel,
   periodLabel,
   prepareAvatarImage,
@@ -39,6 +40,7 @@ import {
   supportedTimezones,
   trafficSeriesKey,
   uptimePeriodQuery,
+  uptimeIntervalsForPlan,
   responseChartLabel,
   dailyStatusLabel,
   workspaceKeyEventCount,
@@ -48,6 +50,17 @@ describe("property switching", () => {
   it("keeps the current product page and removes property-specific drilldown ids", () => {
     expect(propertySwitchDestination("/audit", "?property=old&auditPage=old-page&auditTab=History&from=2026-09-01", "new"))
       .toBe("/audit?property=new&auditTab=History&from=2026-09-01");
+  });
+});
+
+describe("plan presentation", () => {
+  it("uses Free as the safe fallback and exposes only valid uptime intervals", () => {
+    expect(planName(undefined)).toBe("Free");
+    expect(planName("pro_early_access")).toBe("Pro");
+    expect(uptimeIntervalsForPlan("Free")).toEqual([15, 30, 60]);
+    expect(uptimeIntervalsForPlan("Essentials")[0]).toBe(5);
+    expect(uptimeIntervalsForPlan("Scale")[0]).toBe(2);
+    expect(uptimeIntervalsForPlan("Pro")[0]).toBe(1);
   });
 });
 

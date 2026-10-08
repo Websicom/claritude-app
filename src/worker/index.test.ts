@@ -14,6 +14,8 @@ import {
   compactAuditResult,
   customEventAllowance,
   customEventPlan,
+  allowedUptimeIntervals,
+  uptimeMinimumInterval,
   cleanPath,
   editableWorkspaceRole,
   encodeAuditContinuationPayload,
@@ -64,6 +66,15 @@ import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
 
 describe("worker evidence pipelines", () => {
+  it("enforces the plan-specific uptime frequency floor", () => {
+    expect(uptimeMinimumInterval("free")).toBe(15);
+    expect(uptimeMinimumInterval("essentials")).toBe(5);
+    expect(uptimeMinimumInterval("scale")).toBe(2);
+    expect(uptimeMinimumInterval("pro_early_access")).toBe(1);
+    expect(allowedUptimeIntervals("free")).toEqual([15, 30, 60]);
+    expect(allowedUptimeIntervals("scale")).toEqual([2, 5, 10, 15, 30, 60]);
+  });
+
   it("collects every configured custom event on the same clicked element", () => {
     const attributes = [
       { name: "class", value: "submit" },

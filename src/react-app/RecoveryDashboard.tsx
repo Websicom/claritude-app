@@ -148,6 +148,20 @@ export function isPrimaryAuditPage(page: Pick<AuditPage, "path">) {
   return page.path === "/";
 }
 
+export function planName(entitlement: unknown): "Free" | "Essentials" | "Scale" | "Pro" {
+  const normalized = String(entitlement || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if (normalized === "proearlyaccess" || normalized.startsWith("pro")) return "Pro";
+  if (normalized.startsWith("scale")) return "Scale";
+  if (normalized.startsWith("essentials")) return "Essentials";
+  return "Free";
+}
+
+export function uptimeIntervalsForPlan(entitlement: unknown) {
+  const plan = planName(entitlement);
+  const minimum = plan === "Pro" ? 1 : plan === "Scale" ? 2 : plan === "Essentials" ? 5 : 15;
+  return [1, 2, 5, 10, 15, 30, 60].filter((interval) => interval >= minimum);
+}
+
 export function squareImageCrop(width: number, height: number) {
   const size = Math.min(width, height);
   return {
@@ -506,6 +520,13 @@ export function ClaritudeApplication({
   );
   const canManageAccount =
     fixture || ["owner", "member"].includes(activeAccountMembership?.role);
+  const activeEntitlements = activeAccountId ? data.accountEntitlements?.[activeAccountId] : null;
+  const activePlan = fixture ? "Scale" : planName(activeEntitlements?.packageKey || activeAccountMembership?.accounts?.entitlement);
+  const configuredWorkspaceLimit = activeEntitlements?.values?.workspacesPerAccount;
+  const workspaceLimit = typeof configuredWorkspaceLimit === "number" && Number.isSafeInteger(configuredWorkspaceLimit)
+    ? configuredWorkspaceLimit
+    : activePlan === "Free" ? 1 : null;
+  const canCreateWorkspace = canManageAccount && (workspaceLimit == null || workspaceMemberships.length < workspaceLimit);
   const eligiblePropertyWorkspaces: WorkspaceOption[] = workspaceMemberships
     .filter((entry: any) => ["owner", "member"].includes(entry.role))
     .map((entry: any) => ({
@@ -585,8 +606,10 @@ export function ClaritudeApplication({
         }
       : property && !property.tracking_last_received_at
         ? {
-            title: "Tracking script not installed",
-            detail: "Install the tracking snippet or run the guided test.",
+            title: property.verification_status === "verified" ? "Tracking installed — awaiting first visit" : "Tracking script not installed",
+            detail: property.verification_status === "verified"
+              ? "Visit the published site once to start analytics collection. Clear site or CDN caches if the code was just added."
+              : "Install the tracking snippet, clear site or CDN caches, then verify the public page.",
           }
         : scopedNotifications[0]
           ? {
@@ -677,7 +700,7 @@ export function ClaritudeApplication({
             <img src="/assets/building-complex.svg" alt="" />
           </span>
           <b>{platformContext ? "Claritude platform" : fixture ? "Websi workspace" : workspace.name || "Shared properties"}</b>
-          <span className="badge">{platformContext ? "SuperAdmin" : fixture ? "Scale" : "Pro"}</span>
+          <span className="badge">{platformContext ? "SuperAdmin" : activePlan}</span>
           <img className="selector-chevrons" src="/assets/chevrons-up-down.svg" alt="" />
         </button>
         <button
@@ -718,7 +741,7 @@ export function ClaritudeApplication({
             setWorkspaceMenu(false);
             navigate(fixture ? "/" : `/?workspace=${id}`);
           }}
-          add={canManageAccount ? () => {
+          add={canCreateWorkspace ? () => {
             setWorkspaceMenu(false);
             setWorkspaceOpen(true);
           } : undefined}
@@ -1057,6 +1080,7 @@ export function ClaritudeApplication({
                 <PropertySettingsView
                   session={session}
                   property={property}
+                  plan={activePlan}
                   reload={reload}
                   notify={notify}
                 />
@@ -1121,7 +1145,7 @@ export function ClaritudeApplication({
           }}
         />
       )}
-      {workspaceOpen && canManageAccount && (
+      {workspaceOpen && canCreateWorkspace && (
         <SimpleDialog
           title="Create workspace"
           close={() => setWorkspaceOpen(false)}
@@ -1911,7 +1935,8 @@ function PropertyOverview({
     [analyticsLoading, setAnalyticsLoading] = useState(!fixture),
     [latestAudit, setLatestAudit] = useState<AuditRun | null>(null),
     [uptimeStatus, setUptimeStatus] = useState<Monitor | undefined>(property?.uptime_monitors?.[0]),
-    [uptimeRefreshing, setUptimeRefreshing] = useState(false);
+    [uptimeRefreshing, setUptimeRefreshing] = useState(false),
+    [auditStarting, setAuditStarting] = useState(false);
   useEffect(() => {
     setUptimeStatus(property?.uptime_monitors?.[0]);
   }, [property?.id, property?.uptime_monitors?.[0]?.last_checked_at, property?.uptime_monitors?.[0]?.last_status]);
@@ -1928,6 +1953,38 @@ function PropertyOverview({
       notify(error instanceof Error ? error.message : "Uptime status could not be refreshed");
     } finally {
       setUptimeRefreshing(false);
+    }
+  }
+  async function startAudit() {
+    if (!property || auditStarting) return;
+    if (!session) {
+      navigate(`/audit?property=${property.id}`);
+      return;
+    }
+    setAuditStarting(true);
+    let auditPage: AuditPage | null = null;
+    try {
+      const pages = await api<AuditPage[]>(session, `/api/properties/${property.id}/audit-pages`);
+      auditPage = pages.find((page) => page.path === "/") || pages[0] || null;
+      if (!auditPage) {
+        auditPage = await api<AuditPage>(session, `/api/properties/${property.id}/audit-pages`, {
+          method: "POST",
+          body: JSON.stringify({ name: "Homepage", path: "/" }),
+        });
+      }
+      await api(session, "/api/audits", {
+        method: "POST",
+        body: JSON.stringify({ propertyId: property.id, pageId: auditPage.id, idempotencyKey: crypto.randomUUID() }),
+      });
+      notify("Audit queued");
+      navigate(`/audit?property=${property.id}&auditPage=${auditPage.id}`);
+    } catch (error: any) {
+      if (auditPage && error.message === "audit_already_active") {
+        notify("An audit is already running");
+        navigate(`/audit?property=${property.id}&auditPage=${auditPage.id}`);
+      } else notify(error.message);
+    } finally {
+      setAuditStarting(false);
     }
   }
   useEffect(() => {
@@ -2042,10 +2099,10 @@ function PropertyOverview({
       showOptions={tab === "Overview"}
       relocateMobileControls={tab === "Overview"}
       actions={
-        <Link className="primary" to={`/audit?property=${property.id}`}>
-          <RefreshCw />
-          Run audit
-        </Link>
+        <button className="primary" onClick={() => void startAudit()} disabled={auditStarting}>
+          <RefreshCw className={auditStarting ? "audit-spin" : ""} />
+          {auditStarting ? "Queuing…" : "Run audit"}
+        </button>
       }
     >
       {(mobilePageControls) => (
@@ -3406,6 +3463,7 @@ function AuditView({
   }
   useEffect(() => {
     if (session && property) {
+      setAuditDataLoading(true);
       api<any[]>(session, `/api/properties/${property.id}/audit-pages`)
         .then((pages) => {
           const next = [...pages].sort((left, right) => left.path === "/" ? -1 : right.path === "/" ? 1 : left.name.localeCompare(right.name));
@@ -3413,8 +3471,9 @@ function AuditView({
           const chosen = next.find((page) => page.id === requestedPageId) || next[0] || null;
           setSelectedPage(chosen);
           if (chosen && chosen.id !== requestedPageId) updateAuditLocation({ auditPage: chosen.id });
+          if (!chosen) setAuditDataLoading(false);
         })
-        .catch(() => { setAuditPages([]); setSelectedPage(null); });
+        .catch(() => { setAuditPages([]); setSelectedPage(null); setAuditDataLoading(false); });
     } else if (fixture) {
       const pages = [
         { id: "fixture-homepage", name: "Homepage", path: "/" },
@@ -4288,11 +4347,13 @@ export function suggestedAiPhrase(property?: Property) {
 function PropertySettingsView({
   session,
   property,
+  plan,
   reload,
   notify,
 }: {
   session: Session | null;
   property?: Property;
+  plan: "Free" | "Essentials" | "Scale" | "Pro";
   reload: () => void;
   notify: Notify;
 }) {
@@ -4522,6 +4583,7 @@ function PropertySettingsView({
         <>
           <Panel title="Install analytics code">
             <p className="settings-intro">Add the script to the site-wide <code>&lt;head&gt;</code> template so it loads once on every measured page. Claritude automatically detects common browser history navigation in single-page applications; call <code>claritude.pageview()</code> only when a router does not update browser history.</p>
+            <p className="settings-intro"><b>Tracking begins after the first real visit.</b> Publish the change, clear any website, plugin or CDN cache, then open the public site in a new or private tab. Installation verification confirms that the code is present; Online appears after Claritude receives that visit.</p>
             <pre className="install-code install-code-dark">{snippet}</pre>
             <CopyButton text={snippet} label="Copy snippet" successMessage="Tracking snippet copied" notify={notify} />
           </Panel>
@@ -4553,7 +4615,11 @@ function PropertySettingsView({
                   setBusy(true);
                   try {
                     const result = await api<any>(session, `/api/properties/${property.id}/verify`, { method: "POST" });
-                    notify(result.verified ? "Tracking installation verified" : "Tracking identifier was not found on the public page");
+                    notify(result.verified
+                      ? result.trackingActive
+                        ? "Tracking code found and live data has been received"
+                        : "Tracking code found. Visit the published site once to bring tracking online"
+                      : "Tracking identifier was not found on the public page. Clear caches after publishing and try again");
                     reload();
                   } catch (error: any) {
                     notify(error.message);
@@ -4580,6 +4646,7 @@ function PropertySettingsView({
           <MonitorPanel
             session={session}
             monitor={property.uptime_monitors?.[0]}
+            plan={plan}
             reload={reload}
             notify={notify}
           />
@@ -7041,7 +7108,7 @@ function Billing({ fixture, notify, data, session }: { fixture: boolean; notify:
   const selectedWorkspaceIds = new Set(data.workspaces.filter((entry: any) => entry.workspaces?.account_id === accountId).map((entry: any) => entry.workspaces?.id));
   const selectedProperties = data.properties.filter((property) => selectedWorkspaceIds.has(property.workspace_id));
   const effective = accountId ? data.accountEntitlements?.[accountId] : null;
-  const entitlement = String(effective?.packageKey || selectedAccount?.entitlement || (fixture ? "Scale" : "Pro"));
+  const entitlement = String(effective?.packageKey || selectedAccount?.entitlement || (fixture ? "Scale" : "Free"));
   const plan = /essentials/i.test(entitlement) ? "Essentials" : /scale/i.test(entitlement) ? "Scale" : /pro/i.test(entitlement) ? "Pro" : "Free";
   const complimentary = effective?.arrangement === "complimentary" || (!effective && /early.?access/i.test(entitlement));
   async function loadBilling() {
@@ -8595,16 +8662,24 @@ function AlertPanel({
 function MonitorPanel({
   session,
   monitor,
+  plan,
   reload,
   notify,
 }: {
   session: Session | null;
   monitor?: Monitor;
+  plan: "Free" | "Essentials" | "Scale" | "Pro";
   reload: () => void;
   notify: Notify;
 }) {
-  const [interval, setInterval] = useState(monitor?.interval_minutes || 10),
+  const availableIntervals = uptimeIntervalsForPlan(plan);
+  const [interval, setInterval] = useState(monitor?.interval_minutes || availableIntervals[0]),
     [threshold, setThreshold] = useState(monitor?.failure_threshold || 2);
+  useEffect(() => {
+    const nextInterval = monitor?.interval_minutes || availableIntervals[0];
+    setInterval(availableIntervals.includes(nextInterval) ? nextInterval : availableIntervals[0]);
+    setThreshold(monitor?.failure_threshold || 2);
+  }, [monitor?.id, monitor?.interval_minutes, monitor?.failure_threshold, plan]);
   async function save(enabled = monitor?.enabled !== false) {
     if (!monitor) return;
     try {
@@ -8636,7 +8711,7 @@ function MonitorPanel({
             value={interval}
             onChange={(e) => setInterval(Number(e.target.value))}
           >
-            {[5, 10, 15, 30, 60].map((x) => (
+            {availableIntervals.map((x) => (
               <option key={x} value={x}>
                 {x} minutes
               </option>

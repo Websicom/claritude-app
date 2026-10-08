@@ -405,8 +405,8 @@ function Onboarding({ session, done }: { session: Session; done: () => void }) {
               <>
                 <h1>Name your account</h1>
                 <p>
-                  The account owns access and future billing. Pro is included
-                  during early access.
+                  The account owns access and future billing. New accounts
+                  start on the Free plan.
                 </p>
                 <label className="field">
                   Account name

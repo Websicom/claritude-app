@@ -129,6 +129,16 @@ export function customEventAllowance(entitlement: unknown, used: number) {
   };
 }
 
+export function uptimeMinimumInterval(entitlement: unknown) {
+  const plan = customEventPlan(entitlement);
+  return plan === "Pro" ? 1 : plan === "Scale" ? 2 : plan === "Essentials" ? 5 : 15;
+}
+
+export function allowedUptimeIntervals(entitlement: unknown) {
+  const minimum = uptimeMinimumInterval(entitlement);
+  return [1, 2, 5, 10, 15, 30, 60].filter((interval) => interval >= minimum);
+}
+
 function effectiveCustomEventAllowance(effective: Awaited<ReturnType<typeof effectiveEntitlements>>, used: number) {
   const configured = effective.values.customEventsPerProperty;
   const limit = configured === null ? null : Number(configured);
@@ -210,7 +220,11 @@ async function effectiveEntitlements(env: Env, accountId: string) {
   const configuration = packageVersion || {
     package_key: fallbackKey,
     version: 0,
-    allowances: { customEventsPerProperty: customEventPlan(fallbackKey) === "Pro" ? null : customEventPlan(fallbackKey) === "Scale" ? 20 : customEventPlan(fallbackKey) === "Essentials" ? 5 : 2 },
+    allowances: {
+      customEventsPerProperty: customEventPlan(fallbackKey) === "Pro" ? null : customEventPlan(fallbackKey) === "Scale" ? 20 : customEventPlan(fallbackKey) === "Essentials" ? 5 : 2,
+      uptimeIntervalMinutes: uptimeMinimumInterval(fallbackKey),
+      ...(customEventPlan(fallbackKey) === "Free" ? { workspacesPerAccount: 1 } : {}),
+    },
     features: {}, retention: {}, hard_ceilings: { propertiesPerAccount: LIMITS.propertiesPerAccount }, unresolved_values: ["packageVersion"],
   };
   return {
@@ -1764,7 +1778,26 @@ app.post("/api/onboarding", async (c) => {
     p_property_name: body.propertyName?.trim().slice(0, 100) || null,
     p_url: body.url || null,
   });
-  return error ? c.json({ error: error.message }, 400) : c.json(data);
+  if (error) return c.json({ error: error.message }, 400);
+  const propertyId = String((data as any)?.propertyId || "");
+  if (propertyId) {
+    const service = admin(c.env);
+    const { data: monitor, error: monitorError } = await service
+      .from("uptime_monitors")
+      .select("id")
+      .eq("property_id", propertyId)
+      .maybeSingle();
+    if (monitorError) console.error("onboarding_monitor_lookup_failed", monitorError);
+    else if (monitor?.id) {
+      try { await c.env.JOBS.send({ type: "uptime", id: monitor.id }); }
+      catch (queueError) {
+        // The due monitor remains eligible for the scheduled dispatcher, so a
+        // transient queue failure must not undo otherwise-complete onboarding.
+        console.error("onboarding_initial_uptime_queue_failed", errorMessage(queueError));
+      }
+    }
+  }
+  return c.json(data);
 });
 
 app.post("/api/accounts/:id/reactivate", async (c) => {
@@ -1818,6 +1851,11 @@ app.post("/api/properties", async (c) => {
   let entitlements;
   try { entitlements = await effectiveEntitlements(c.env, accountId); }
   catch { return c.json({ error: "effective_entitlements_unavailable" }, 503); }
+  const configuredUptimeValue = entitlements.values.uptimeIntervalMinutes;
+  const configuredUptimeInterval = typeof configuredUptimeValue === "number" ? configuredUptimeValue : NaN;
+  const uptimeInterval = Number.isSafeInteger(configuredUptimeInterval)
+    ? configuredUptimeInterval
+    : uptimeMinimumInterval(entitlements.packageKey);
   const normalizedPackageKey = String(entitlements.packageKey || "free").toLowerCase().startsWith("pro")
     ? "pro"
     : String(entitlements.packageKey || "free").toLowerCase();
@@ -1887,24 +1925,27 @@ app.post("/api/properties", async (c) => {
     });
     return c.json({ error: "property_created_but_reload_required" }, 500);
   }
+  const { error: monitorUpdateError } = await service
+    .from("uptime_monitors")
+    .update({ interval_minutes: uptimeInterval, next_check_at: new Date().toISOString(), enabled: true })
+    .eq("property_id", data.id);
+  if (monitorUpdateError)
+    return c.json({ error: `property_created_monitor_failed: ${monitorUpdateError.message}` }, 500);
   const { data: monitor, error: monitorError } = await service
     .from("uptime_monitors")
-    .upsert(
-      { property_id: data.id },
-      { onConflict: "property_id", ignoreDuplicates: true },
-    )
     .select("id")
+    .eq("property_id", data.id)
     .single();
   if (monitorError || !monitor)
     return c.json({ error: `property_created_monitor_failed: ${monitorError?.message || "monitor_not_returned"}` }, 500);
   const { error: auditPageError } = await service
     .from("property_audit_pages")
-    .insert({
+    .upsert({
       property_id: data.id,
       name: "Homepage",
       path: "/",
       created_by: c.get("userId"),
-    });
+    }, { onConflict: "property_id,path", ignoreDuplicates: true });
   if (auditPageError)
     return c.json({ error: `property_created_audit_page_failed: ${auditPageError.message}` }, 500);
   await c.env.JOBS.send({ type: "uptime", id: monitor.id });
@@ -2110,7 +2151,9 @@ app.post("/api/workspaces", async (c) => {
     p_account_id: body.accountId,
     p_name: body.name,
   });
-  return error ? c.json({ error: error.message }, 400) : c.json(data, 201);
+  return error
+    ? c.json({ error: error.message }, error.message.includes("workspace_limit_reached") ? 409 : 400)
+    : c.json(data, 201);
 });
 
 app.get("/api/users", async (c) => {
@@ -4831,7 +4874,7 @@ app.post("/api/properties/:id/verify", async (c) => {
   const db = c.get("db");
   const { data: property, error } = await db
     .from("properties")
-    .select("id,url,tracking_id,workspace_id")
+    .select("id,url,tracking_id,workspace_id,tracking_last_received_at")
     .eq("id", c.req.param("id"))
     .single();
   if (error || !property) return c.json({ error: "property_not_found" }, 404);
@@ -4856,6 +4899,7 @@ app.post("/api/properties/:id/verify", async (c) => {
     if (updateError) return c.json({ error: updateError.message }, 400);
     return c.json({
       verified,
+      trackingActive: Boolean(property.tracking_last_received_at),
       method: verified
         ? html.includes(property.tracking_id.toLowerCase())
           ? "tracking_script"
@@ -5663,7 +5707,7 @@ app.get("/api/monitors/:id/checks", async (c) => {
 });
 
 app.patch("/api/monitors/:id", async (c) => {
-  const allowed = (({
+  const requested = (({
     enabled,
     interval_minutes,
     timeout_ms,
@@ -5678,10 +5722,29 @@ app.patch("/api/monitors/:id", async (c) => {
     expected_status_max,
     failure_threshold,
   }))(await c.req.json());
-  const { data, error } = await c
-    .get("db")
+  const db = c.get("db");
+  const { data: monitorAccess, error: accessError } = await db
     .from("uptime_monitors")
-    .update(allowed)
+    .select("id,properties(account_id)")
+    .eq("id", c.req.param("id"))
+    .maybeSingle();
+  const accountId = (monitorAccess?.properties as any)?.account_id;
+  if (accessError || !monitorAccess || !accountId)
+    return c.json({ error: "monitor_not_found" }, 404);
+  let entitlements;
+  try { entitlements = await effectiveEntitlements(c.env, accountId); }
+  catch { return c.json({ error: "effective_entitlements_unavailable" }, 503); }
+  const configuredMinimumValue = entitlements.values.uptimeIntervalMinutes;
+  const configuredMinimum = typeof configuredMinimumValue === "number" ? configuredMinimumValue : NaN;
+  const minimum = Number.isSafeInteger(configuredMinimum)
+    ? configuredMinimum
+    : uptimeMinimumInterval(entitlements.packageKey);
+  const permittedIntervals = [1, 2, 5, 10, 15, 30, 60].filter((interval) => interval >= minimum);
+  if (!Number.isSafeInteger(Number(requested.interval_minutes)) || !permittedIntervals.includes(Number(requested.interval_minutes)))
+    return c.json({ error: "uptime_interval_not_available_for_plan", minimumMinutes: minimum }, 409);
+  const { data, error } = await db
+    .from("uptime_monitors")
+    .update({ ...requested, interval_minutes: Number(requested.interval_minutes) })
     .eq("id", c.req.param("id"))
     .select()
     .single();
