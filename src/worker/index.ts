@@ -5967,11 +5967,32 @@ app.post("/api/properties/:id/events", async (c) => {
 });
 
 app.patch("/api/properties/:id/events/:eventId", async (c) => {
-  const body = await c.req.json<{ enabled: boolean }>();
+  const body = await c.req.json<{
+    enabled?: boolean;
+    name?: string;
+    eventType?: string;
+    description?: string;
+    matchSettings?: Record<string, unknown>;
+  }>();
+  const updates: Record<string, unknown> = {};
+  if (Object.prototype.hasOwnProperty.call(body, "enabled")) updates.enabled = Boolean(body.enabled);
+  if (body.name !== undefined || body.eventType !== undefined || body.description !== undefined || body.matchSettings !== undefined) {
+    const name = String(body.name || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").slice(0, 80);
+    const eventType = ["click", "pageview", "form_success"].includes(String(body.eventType)) ? String(body.eventType) : "";
+    const matchSettings = sanitizeEventMatchSettings(eventType, body.matchSettings);
+    if (!name) return c.json({ error: "event_name_required" }, 400);
+    if (!eventType) return c.json({ error: "unsupported_event_type" }, 400);
+    if (!matchSettings) return c.json({ error: "valid_event_match_settings_required" }, 400);
+    updates.name = name;
+    updates.event_type = eventType;
+    updates.description = String(body.description || "").trim().slice(0, 240) || null;
+    updates.match_settings = matchSettings;
+  }
+  if (!Object.keys(updates).length) return c.json({ error: "event_update_required" }, 400);
   const { data, error } = await c
     .get("db")
     .from("event_definitions")
-    .update({ enabled: Boolean(body.enabled) })
+    .update(updates)
     .eq("property_id", c.req.param("id"))
     .eq("id", c.req.param("eventId"))
     .select()
@@ -10339,8 +10360,12 @@ function sanitizeNotificationPreferences(input: Record<string, boolean>) {
   return Object.fromEntries(keys.map((key) => [key, input[key] !== false]));
 }
 
-function sanitizeEventMatchSettings(eventType: string, input?: Record<string, unknown>) {
-  if (eventType === "click") return { method: "data_attribute" };
+export function sanitizeEventMatchSettings(eventType: string, input?: Record<string, unknown>) {
+  if (eventType === "click") {
+    const attribute = String(input?.attribute || "").trim().toLowerCase();
+    if (attribute && !/^data-claritude-event(?:-[2-9]\d*)?$/.test(attribute)) return null;
+    return { method: "data_attribute", ...(attribute ? { attribute } : {}) };
+  }
   if (eventType === "form_success") return { method: "confirmed_callback" };
   if (eventType !== "pageview") return null;
   const mode = input?.mode === "prefix" ? "prefix" : input?.mode === "exact" ? "exact" : null;

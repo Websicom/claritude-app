@@ -8,6 +8,7 @@ import {
   auditRunCategoryScores,
   auditScoreBand,
   buildAuditFixPrompt,
+  configuredEventAttributeNames,
   customEventUsageText,
   durationLabel,
   eventLabel,
@@ -20,6 +21,7 @@ import {
   filterWorkspaceMemberships,
   isPrimaryAuditPage,
   isFixFirstAuditResult,
+  nextConfiguredEventAttribute,
   paginateResults,
   pageActiveTimeLabel,
   periodLabel,
@@ -188,6 +190,22 @@ describe("top selector searches", () => {
       .toBe("2 of 5 events used");
     expect(customEventUsageText({ plan: "Pro", used: 37, limit: null, remaining: null, unlimited: true, canCreate: true }))
       .toBe("37 events used · Unlimited on Pro");
+  });
+
+  it("assigns stable, incrementing data attributes to click events", () => {
+    const events = [
+      { name: "first", event_type: "click", enabled: true },
+      { name: "page", event_type: "pageview", enabled: true },
+      { name: "third", event_type: "click", enabled: true, match_settings: { attribute: "data-claritude-event-3" } },
+      { name: "second", event_type: "click", enabled: true },
+    ] as any;
+    expect(configuredEventAttributeNames(events)).toEqual([
+      "data-claritude-event",
+      null,
+      "data-claritude-event-3",
+      "data-claritude-event-2",
+    ]);
+    expect(nextConfiguredEventAttribute(events)).toBe("data-claritude-event-4");
   });
 
   it("spaces date-range separators consistently", () => {

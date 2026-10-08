@@ -354,7 +354,12 @@ type EventDefinition = {
   name: string;
   event_type: "click" | "pageview" | "form_success";
   description?: string | null;
-  match_settings?: { mode: "exact" | "prefix"; path: string } | null;
+  match_settings?: {
+    mode?: "exact" | "prefix";
+    path?: string;
+    method?: "data_attribute" | "confirmed_callback";
+    attribute?: string;
+  } | null;
   enabled: boolean;
   received?: number;
 };
@@ -4589,7 +4594,7 @@ function PropertySettingsView({
         <EventsPanel
           session={session}
           property={property}
-          fixture={false}
+          fixture={property.id === "fixture-property"}
           notify={notify}
         />
       ) : tab === "Sharing" ? (
@@ -5330,6 +5335,35 @@ function FinanceTrend({ rows, metric, currency, days = 30 }: { rows: any[]; metr
     <polyline points={line} className="chart-line" />
     {points.map((row, index) => <g key={`${row.day}:${row.currency}`}><circle cx={x(index)} cy={y(Number(row[metric] || 0))} r="4" className="chart-point"><title>{row.day}: {formatMinor(row[metric], row.currency)}</title></circle>{(index === 0 || index === points.length - 1 || index === Math.floor(points.length / 2)) && <text x={x(index)} y={height - 15} textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"}>{row.day.slice(5)}</text>}</g>)}
   </svg></div>;
+}
+
+function customEventAttributeSlot(index: number) {
+  return index <= 1 ? "data-claritude-event" : `data-claritude-event-${index}`;
+}
+
+export function configuredEventAttributeNames(events: EventDefinition[]) {
+  const used = new Set<string>();
+  let candidateIndex = 1;
+  return events.map((event) => {
+    if (event.event_type !== "click") return null;
+    const saved = String(event.match_settings?.attribute || "").toLowerCase();
+    if (/^data-claritude-event(?:-[2-9]\d*)?$/.test(saved) && !used.has(saved)) {
+      used.add(saved);
+      return saved;
+    }
+    while (used.has(customEventAttributeSlot(candidateIndex))) candidateIndex += 1;
+    const attribute = customEventAttributeSlot(candidateIndex);
+    used.add(attribute);
+    candidateIndex += 1;
+    return attribute;
+  });
+}
+
+export function nextConfiguredEventAttribute(events: EventDefinition[]) {
+  const used = new Set(configuredEventAttributeNames(events).filter((value): value is string => Boolean(value)));
+  let index = 1;
+  while (used.has(customEventAttributeSlot(index))) index += 1;
+  return customEventAttributeSlot(index);
 }
 
 function PromotionsControlDesk({ activeTab, platform, payload, session, fixture, billingEnvironment, canWrite, refresh }: any) {
@@ -9517,6 +9551,14 @@ function EventsPanel({
   const [eventPage, setEventPage] = useState(1);
   const [eventToDelete, setEventToDelete] = useState<EventDefinition | null>(null);
   const [eventDeleteConfirmation, setEventDeleteConfirmation] = useState("");
+  const [eventToEdit, setEventToEdit] = useState<EventDefinition | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editEventType, setEditEventType] = useState<EventDefinition["event_type"]>("click");
+  const [editPathMode, setEditPathMode] = useState<"exact" | "prefix">("exact");
+  const [editPathValue, setEditPathValue] = useState("/");
+  const [editDataAttribute, setEditDataAttribute] = useState("data-claritude-event");
+  const [editError, setEditError] = useState("");
   useEffect(() => {
     if (fixture) {
       setEvents([
@@ -9577,7 +9619,12 @@ function EventsPanel({
       if (!normalizedName) throw new Error("Enter a stable event name");
       if (eventType === "pageview" && !normalisePagePath(pathValue))
         throw new Error("Enter a valid page path");
-      const matchSettings = eventType === "pageview" ? { mode: pathMode, path: normalisePagePath(pathValue) } : undefined;
+      const dataAttribute = eventType === "click" ? nextConfiguredEventAttribute(events) : undefined;
+      const matchSettings = eventType === "click"
+        ? { attribute: dataAttribute }
+        : eventType === "pageview"
+          ? { mode: pathMode, path: normalisePagePath(pathValue) }
+          : undefined;
       const created: EventDefinition = session
         ? await api<EventDefinition>(session, `/api/properties/${property.id}/events`, {
             method: "POST",
@@ -9600,7 +9647,7 @@ function EventsPanel({
       setEventError("");
       setInstruction(
         eventType === "click"
-          ? `<button data-claritude-event="${normalizedName}">…</button>`
+          ? `<button ${created.match_settings?.attribute || dataAttribute}="${normalizedName}">…</button>`
           : eventType === "pageview"
             ? `claritude.pageview({ path: "${normalisePagePath(pathValue)}" });`
             : `claritude.formSuccess("${normalizedName}", { page: location.pathname });`,
@@ -9613,6 +9660,39 @@ function EventsPanel({
       } else {
         setEventError(error.message);
       }
+    }
+  }
+  function beginEditEvent(event: EventDefinition, index: number) {
+    setEventToEdit(event);
+    setEditName(event.name);
+    setEditDescription(event.description || "");
+    setEditEventType(event.event_type);
+    setEditPathMode(event.match_settings?.mode === "prefix" ? "prefix" : "exact");
+    setEditPathValue(event.match_settings?.path || "/");
+    setEditDataAttribute(configuredEventAttributeNames(events)[index] || nextConfiguredEventAttribute(events));
+    setEditError("");
+  }
+  async function saveEditedEvent() {
+    if (!eventToEdit?.id || !session) return;
+    try {
+      const normalizedName = editName.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+      if (!normalizedName) throw new Error("Enter a stable event name");
+      if (editEventType === "pageview" && !normalisePagePath(editPathValue)) throw new Error("Enter a valid page path");
+      const matchSettings = editEventType === "click"
+        ? { attribute: editDataAttribute }
+        : editEventType === "pageview"
+          ? { mode: editPathMode, path: normalisePagePath(editPathValue) }
+          : undefined;
+      const updated = await api<EventDefinition>(session, `/api/properties/${property.id}/events/${eventToEdit.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: normalizedName, eventType: editEventType, description: editDescription, matchSettings }),
+      });
+      setEvents((current) => current.map((event) => event.id === updated.id ? { ...event, ...updated } : event));
+      setEventToEdit(null);
+      setEditError("");
+      notify("Event updated");
+    } catch (error: any) {
+      setEditError(error.message);
     }
   }
   async function toggleEvent(event: EventDefinition) {
@@ -9651,6 +9731,8 @@ function EventsPanel({
   const shownEventBreakdown = paginateResults(eventBreakdown, eventPage);
   const eventLimitReached = Boolean(eventAllowance && !eventAllowance.canCreate);
   const eventUsage = customEventUsageText(eventAllowance);
+  const eventAttributeNames = configuredEventAttributeNames(events);
+  const nextClickAttribute = nextConfiguredEventAttribute(events);
   useEffect(() => setEventPage(1), [eventBreakdown.length, property.id]);
   return (
     <>
@@ -9706,14 +9788,21 @@ function EventsPanel({
               </div>
             ) : events.length ? (
               <DataTable
-                headers={["Event", "Trigger", "Key event", "Received", "Status", ""]}
-                rows={events.map((event) => [
+                headers={["Event", "Trigger", "Data attribute", "Key event", "Received", "Status"]}
+                rows={events.map((event, index) => [
                   event.name,
                   <span className="event-trigger"><EventTriggerIcon type={event.event_type} />{event.event_type === "form_success" ? "Confirmed success" : event.event_type === "pageview" ? "Page view" : "Element click"}</span>,
+                  eventAttributeNames[index]
+                    ? <code className="event-data-attribute" title={`${eventAttributeNames[index]}="${event.name}"`}>{eventAttributeNames[index]}</code>
+                    : "—",
                   "Yes",
                   event.received ?? "—",
                   <StatusPill tone={event.enabled === false ? "neutral" : "success"}>{event.enabled === false ? "Paused" : "Active"}</StatusPill>,
-                  <div className="row-actions"><button className="btn" onClick={() => void toggleEvent(event)}>{event.enabled ? "Disable" : "Enable"}</button><button className="iconbtn danger-icon" aria-label={`Delete ${event.name}`} onClick={() => setEventToDelete(event)}><Trash2 /></button></div>,
+                ])}
+                rowActions={events.map((event, index) => [
+                  { label: "Edit", onClick: () => beginEditEvent(event, index) },
+                  { label: event.enabled ? "Disable" : "Enable", onClick: () => void toggleEvent(event) },
+                  { label: "Delete", danger: true, onClick: () => setEventToDelete(event) },
                 ])}
               />
             ) : (
@@ -9728,10 +9817,10 @@ function EventsPanel({
           <div className="snippet-grid">
             <div className="snippet-card">
               <h3>Buttons and link clicks</h3>
-              <p>Add <code>data-claritude-event</code> to the clicked element. This records the interaction itself, not the downstream result.</p>
-              <pre className="install-code install-code-dark">{`<button data-claritude-event="enquiry-submit-click">\n  Submit enquiry\n</button>`}</pre>
-              <CopyButton text={'<button data-claritude-event="enquiry-submit-click">\n  Submit enquiry\n</button>'} label="Copy snippet" successMessage="Event snippet copied" notify={notify} />
-              <p className="subtle">One interaction can record multiple configured events. Put comma-separated names in one attribute, for example <code>data-claritude-event=&quot;apply-for-job-button,looking-to-hire-button,upload-your-cv-button&quot;</code>. Numbered attributes such as <code>data-claritude-event-2</code> are also supported.</p>
+              <p>Use the exact attribute shown in the <b>Data attribute</b> column. The first click event uses <code>data-claritude-event</code>; each additional click event increments the suffix: <code>-2</code>, <code>-3</code>, <code>-4</code>, and so on.</p>
+              <pre className="install-code install-code-dark">{`<button\n  data-claritude-event="apply-for-job-button"\n  data-claritude-event-2="looking-to-hire-button"\n  data-claritude-event-3="upload-your-cv-button"\n>\n  Submit\n</button>`}</pre>
+              <CopyButton text={'<button\n  data-claritude-event="apply-for-job-button"\n  data-claritude-event-2="looking-to-hire-button"\n  data-claritude-event-3="upload-your-cv-button"\n>\n  Submit\n</button>'} label="Copy example" successMessage="Multi-event example copied" notify={notify} />
+              <p className="subtle"><b>Important:</b> never repeat the same attribute name on one element—browsers and form builders normally keep only one value. As an alternative, put all names in a single comma-separated attribute: <code>data-claritude-event=&quot;apply-for-job-button,looking-to-hire-button,upload-your-cv-button&quot;</code>.</p>
               <p className="subtle">Use short, stable, lowercase names. Do not capture form values or unrestricted button text.</p>
             </div>
             <div className="snippet-card">
@@ -9781,19 +9870,42 @@ function EventsPanel({
             </div>
           )}
           {eventError && <div className="error-note" role="alert">{eventError}</div>}
-          <p className="subtle">
-            Property: {property.canonical_host}. For click events, add{" "}
-            <code>data-claritude-event=&quot;{name}&quot;</code> to the tracked element.
-            Confirmed form successes must be emitted only after the provider reports success.
-          </p>
+          <p className="subtle">Property: {property.canonical_host}.</p>
+          {eventType === "click" ? (
+            <div className="event-attribute-guidance">
+              <b>This event&apos;s data attribute</b>
+              <code>{nextClickAttribute}=&quot;{name.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}&quot;</code>
+              <small>The suffix increments for each additional click event. If several events sit on the same element, every attribute name must be unique; do not repeat <code>data-claritude-event</code>.</small>
+            </div>
+          ) : eventType === "form_success" ? (
+            <p className="subtle">Confirmed form successes must be emitted only after the provider reports success.</p>
+          ) : (
+            <p className="subtle">This event records page views matching the selected path rule.</p>
+          )}
         </SimpleDialog>
       )}
       {instruction && (
         <Modal title="Installation instructions" close={() => setInstruction("")}>
           <p>Use this on <b>{property.canonical_host}</b>. The tracker accepts no form values or unrestricted text.</p>
           <code className="instruction-code">{instruction}</code>
+          <div className="notice info"><b>Adding more events to the same element?</b><span>Use a different numbered attribute for each one: <code>data-claritude-event</code>, then <code>data-claritude-event-2</code>, <code>-3</code>, <code>-4</code>, and so on. Never repeat the same attribute name.</span></div>
           <div className="dialog-actions"><button className="primary" onClick={() => setInstruction("")}>Done</button></div>
         </Modal>
+      )}
+      {eventToEdit && (
+        <SimpleDialog
+          title="Edit event"
+          close={() => { setEventToEdit(null); setEditError(""); }}
+          action="Save changes"
+          onSave={saveEditedEvent}
+        >
+          <label className="field">Event name<input value={editName} onChange={(event) => setEditName(event.target.value)} /></label>
+          <label className="field">Description<input value={editDescription} onChange={(event) => setEditDescription(event.target.value)} placeholder="What this event records" /></label>
+          <label className="field">Trigger type<select value={editEventType} onChange={(event) => setEditEventType(event.target.value as EventDefinition["event_type"])}><option value="click">Element click</option><option value="pageview">Page view</option><option value="form_success">Confirmed form success</option></select></label>
+          {editEventType === "pageview" && <div className="dialog-grid"><label className="field">Path match<select value={editPathMode} onChange={(event) => setEditPathMode(event.target.value as "exact" | "prefix")}><option value="exact">Exact path</option><option value="prefix">Path prefix</option></select></label><label className="field">Page path<input value={editPathValue} onChange={(event) => setEditPathValue(event.target.value)} placeholder="/thank-you/" /></label></div>}
+          {editEventType === "click" && <div className="event-attribute-guidance"><b>Data attribute</b><code>{editDataAttribute}=&quot;{editName.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}&quot;</code><small>If you change the event name, update the attribute value on the website. Previously collected records keep their original event name.</small></div>}
+          {editError && <div className="error-note" role="alert">{editError}</div>}
+        </SimpleDialog>
       )}
       {eventToDelete && (
         <SimpleDialog

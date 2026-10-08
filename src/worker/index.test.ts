@@ -28,6 +28,7 @@ import {
   normalizePropertyRelations,
   meaningfulAccountActivity,
   TRACKER_SOURCE,
+  sanitizeEventMatchSettings,
   trackerEventNames,
   trackerSessionAcquisition,
   uptimeDueHorizon,
@@ -77,6 +78,15 @@ describe("worker evidence pipelines", () => {
     expect(trackerEventNames({ attributes: [
       { name: "data-claritude-event", value: "one one;two|three" },
     ] })).toEqual(["one", "two", "three"]);
+  });
+
+  it("stores only supported numbered event attributes", () => {
+    expect(sanitizeEventMatchSettings("click", { attribute: "data-claritude-event-4" })).toEqual({
+      method: "data_attribute",
+      attribute: "data-claritude-event-4",
+    });
+    expect(sanitizeEventMatchSettings("click", { attribute: "data-claritude-event-1" })).toBeNull();
+    expect(sanitizeEventMatchSettings("click", { attribute: "onclick" })).toBeNull();
   });
 
   it("expands positional analytics rows without changing legacy object rows", () => {

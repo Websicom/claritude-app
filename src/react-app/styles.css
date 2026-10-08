@@ -1276,6 +1276,17 @@ tbody tr:hover {
 .snippet-card h3 { margin: 0 0 6px; }
 .event-trigger { display: inline-flex; align-items: center; gap: 7px; }
 .event-trigger svg { width: 15px; height: 15px; }
+.event-data-attribute { white-space: nowrap; font-size: 12px; }
+.event-attribute-guidance {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--soft);
+}
+.event-attribute-guidance code { width: fit-content; overflow-wrap: anywhere; }
+.event-attribute-guidance small { color: var(--muted); line-height: 1.45; }
 .danger-icon { color: var(--red); }
 .audit-six-stats .audit-six-stat:first-child { padding-left: 24px; }
 .profile-avatar-actions {
