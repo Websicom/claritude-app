@@ -1650,20 +1650,21 @@ app.get("/api/bootstrap", async (c) => {
   const delegation = c.get("delegation");
   if (delegation) {
     const service = admin(c.env);
-    const [account, workspaces, memberships, profile, notifications, activity] = await Promise.all([
+    const [account, workspaces, memberships, profile, notifications, activity, accountServiceControls] = await Promise.all([
       service.from("accounts").select("*").eq("id", delegation.account_id).single(),
       service.from("workspaces").select("*").eq("account_id", delegation.account_id).order("created_at"),
       service.from("account_memberships").select("role").eq("account_id", delegation.account_id).eq("user_id", delegation.represented_user_id).single(),
       service.from("profiles").select("*").eq("id", delegation.represented_user_id).maybeSingle(),
       service.from("notifications").select("*").eq("account_id", delegation.account_id).eq("user_id", delegation.represented_user_id).order("created_at", { ascending: false }).limit(50),
       service.from("activity_log").select("*").eq("account_id", delegation.account_id).order("created_at", { ascending: false }).limit(100),
+      service.from("account_service_controls").select("account_id,service,paused,reason,changed_at").eq("account_id", delegation.account_id).eq("paused", true),
     ]);
     const workspaceRows = workspaces.data || [];
     const workspaceIds = workspaceRows.map((item) => item.id);
     const properties = workspaceIds.length ? await service.from("properties").select("*,uptime_monitors(*),audit_runs(id,status,score,coverage,created_at)").in("workspace_id", workspaceIds).order("created_at") : { data: [], error: null };
     const propertyIds = (properties.data || []).map((item: any) => item.id);
     const incidents = propertyIds.length ? await service.from("incidents").select("*").in("property_id", propertyIds).order("opened_at", { ascending: false }).limit(50) : { data: [], error: null };
-    return c.json({ superadmin: true, staff: null, delegated: { ...delegation, actorUserId: delegation.staff_user_id }, profile: profile.data, accounts: [{ role: memberships.data?.role || delegation.represented_role, accounts: account.data }], accountEntitlements: { [delegation.account_id]: await effectiveEntitlements(c.env, delegation.account_id) }, workspaces: workspaceRows.map((item) => ({ role: memberships.data?.role || delegation.represented_role, workspaces: item })), properties: normalizePropertyRelations(properties.data || []), incidents: incidents.data || [], notifications: notifications.data || [], activity: activity.data || [], propertyMemberships: [] });
+    return c.json({ superadmin: true, staff: null, delegated: { ...delegation, actorUserId: delegation.staff_user_id }, profile: profile.data, accounts: [{ role: memberships.data?.role || delegation.represented_role, accounts: account.data }], accountEntitlements: { [delegation.account_id]: await effectiveEntitlements(c.env, delegation.account_id) }, accountServiceControls: accountServiceControls.data || [], workspaces: workspaceRows.map((item) => ({ role: memberships.data?.role || delegation.represented_role, workspaces: item })), properties: normalizePropertyRelations(properties.data || []), incidents: incidents.data || [], notifications: notifications.data || [], activity: activity.data || [], propertyMemberships: [] });
   }
   const staff = await requestStaffAccess(c);
   const superadmin = staff?.status === "active";
@@ -1744,7 +1745,10 @@ app.get("/api/bootstrap", async (c) => {
     try { return [accountId, await effectiveEntitlements(c.env, accountId)]; }
     catch { return [accountId, null]; }
   })));
-  const billingMemberships = await admin(c.env).from("account_billing_memberships").select("account_id,can_view,can_manage,created_at").eq("user_id", c.get("userId"));
+  const [billingMemberships, accountServiceControls] = await Promise.all([
+    admin(c.env).from("account_billing_memberships").select("account_id,can_view,can_manage,created_at").eq("user_id", c.get("userId")),
+    accessibleAccountIds.length ? admin(c.env).from("account_service_controls").select("account_id,service,paused,reason,changed_at").in("account_id", accessibleAccountIds).eq("paused", true) : Promise.resolve({ data: [], error: null }),
+  ]);
   return c.json({
     superadmin,
     staff: staff ? {
@@ -1757,6 +1761,7 @@ app.get("/api/bootstrap", async (c) => {
     profile: profile.data,
     accounts: accounts.data,
     accountEntitlements,
+    accountServiceControls: accountServiceControls.data || [],
     billingMemberships: billingMemberships.data || [],
     workspaces: [
       ...(workspaces.data || []),
@@ -2487,7 +2492,7 @@ app.get("/api/superadmin/bootstrap", async (c) => {
     service.from("audit_runs").select("id", { count: "exact", head: true }).gte("created_at", `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`),
     service.auth.admin.listUsers({ page: 1, perPage: 1000 }),
     service.from("account_package_assignments").select("account_id,billing_state,package_versions(package_key,display_name,version)").is("ends_at", null).limit(1000),
-    service.from("account_package_grants").select("account_id,status,expires_at,package_versions(package_key,display_name,version)").eq("status", "active").lte("starts_at", new Date().toISOString()).or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`).limit(1000),
+    service.from("account_package_grants").select("account_id,arrangement,status,expires_at,package_versions(package_key,display_name,version)").eq("status", "active").lte("starts_at", new Date().toISOString()).or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`).limit(1000),
   ]);
   const databaseError = [
     accountResult,
@@ -2554,7 +2559,7 @@ app.get("/api/superadmin/bootstrap", async (c) => {
         ...account,
         effectivePackageKey: packageVersion?.package_key || account.entitlement,
         effectivePackageName: packageVersion?.display_name || String(account.entitlement).replaceAll("_", " "),
-        billingArrangement: packageGrant ? "complimentary" : "standard",
+        billingArrangement: packageGrant?.arrangement || "standard",
         workspaceCount: workspaceIds.size,
         propertyCount: propertyIds.size,
         userCount: new Set(memberships.filter((membership) => membership.account_id === account.id).map((membership) => membership.user_id)).size,
@@ -2579,6 +2584,7 @@ app.get("/api/superadmin/bootstrap", async (c) => {
       createdAt: user.created_at,
       accountCount: new Set(memberships.filter((membership) => membership.user_id === user.id).map((membership) => membership.account_id)).size,
       accountIds: [...new Set(memberships.filter((membership) => membership.user_id === user.id).map((membership) => membership.account_id))],
+      roles: [...new Set(memberships.filter((membership) => membership.user_id === user.id).map((membership) => membership.role))],
     })),
   });
 });
@@ -2603,7 +2609,7 @@ app.get("/api/superadmin/overview", async (c) => {
   const [accountsResult, assignmentsResult, grantsResult, subscriptionsResult, databaseResult, settingsResult, countersResult, snapshotsResult] = await Promise.all([
     service.from("accounts").select("id,entitlement,access_state,created_at,is_test_account,billing_environment").eq("billing_environment", billingEnvironment).lte("created_at", rangeTo).limit(10000),
     service.from("account_package_assignments").select("account_id,billing_state,complimentary,starts_at,ends_at,package_versions(package_key)").limit(10000),
-    service.from("account_package_grants").select("account_id,status,starts_at,expires_at,package_versions(package_key)").limit(10000),
+    service.from("account_package_grants").select("account_id,arrangement,status,starts_at,expires_at,package_versions(package_key)").limit(10000),
     service.from("billing_subscriptions").select("account_id,status,mrr_minor,provider_created_at,trial_end,cancelled_at,ended_at").eq("billing_environment", billingEnvironment).limit(10000),
     service.rpc("superadmin_database_metrics"),
     service.from("platform_settings").select("key,value").in("key", ["safety_limits", "retention_policy"]),
@@ -2650,7 +2656,7 @@ app.get("/api/superadmin/overview", async (c) => {
   const payingIds = new Set(activeSubscriptions.filter((item: any) => item.status !== "trialing").map((item: any) => item.account_id));
   const trialIds = new Set(activeSubscriptions.filter((item: any) => item.status === "trialing").map((item: any) => item.account_id));
   const delinquentIds = new Set(activeSubscriptions.filter((item: any) => ["past_due", "unpaid"].includes(item.status)).map((item: any) => item.account_id));
-  const complimentaryIds = new Set(activeGrants.map((item: any) => item.account_id));
+  const complimentaryIds = new Set(activeGrants.filter((item: any) => item.arrangement === "complimentary").map((item: any) => item.account_id));
   const freeIds = new Set(assignments.filter((item: any) => (item.package_versions as any)?.package_key === "free").map((item: any) => item.account_id));
   const accountSnapshot = {
     total: accounts.length,
@@ -2673,7 +2679,7 @@ app.get("/api/superadmin/overview", async (c) => {
   const dayRows = new Map<string, any>();
   for (let cursor = Date.parse(`${fromText}T00:00:00.000Z`); cursor <= Date.parse(`${toText}T00:00:00.000Z`); cursor += 86400_000) {
     const day = new Date(cursor).toISOString().slice(0, 10);
-    dayRows.set(day, { day, accounts: null, properties: null, workload: { audits: 0, auditsCompleted: 0, auditsFailed: 0, auditsPartial: 0, pagesAudited: 0, auditEvaluations: 0, analyticsEvents: 0, analyticsPageviews: 0, analyticsCustomEvents: 0, uptimeChecks: 0, incidents: 0, reports: 0, notifications: 0, queueJobs: null, queueFailures: null, queueRetries: null }, infrastructure: null, sources: [] });
+    dayRows.set(day, { day, accounts: null, properties: null, workload: { audits: 0, auditsCompleted: 0, auditsFailed: 0, auditsPartial: 0, auditEvaluations: 0, analyticsEvents: 0, analyticsPageviews: 0, analyticsSessions: 0, uptimeChecks: 0, uptimePassed: 0, uptimeFailed: 0, incidents: 0, reports: 0, notifications: 0, queueJobs: null, queueFailures: null, queueRetries: null }, infrastructure: null, sources: [] });
   }
   for (const snapshot of snapshotsResult.data || []) dayRows.set(snapshot.day, { ...(dayRows.get(snapshot.day) || { day: snapshot.day }), accounts: snapshot.accounts, properties: snapshot.properties, workload: { ...(dayRows.get(snapshot.day)?.workload || {}), ...(snapshot.workload || {}) }, infrastructure: snapshot.infrastructure, sources: [snapshot.source] });
   const activity = (activityResult.data || {}) as any;
@@ -2683,7 +2689,7 @@ app.get("/api/superadmin/overview", async (c) => {
   }
   for (const counter of countersResult.data || []) { const row = dayRows.get(counter.day); if (row) row.workload[counter.metric] = Number(counter.value || 0); }
   const infrastructure = databaseResult.error ? { state: "unavailable", reason: "postgres_metrics_unavailable" } : { ...(databaseResult.data || {}), state: "measured" };
-  const workloadToday = dayRows.get(today)?.workload || { audits: 0, auditsCompleted: 0, auditsFailed: 0, auditsPartial: 0, pagesAudited: 0, auditEvaluations: 0, analyticsEvents: 0, analyticsPageviews: 0, analyticsCustomEvents: 0, uptimeChecks: 0, incidents: 0, reports: 0, notifications: 0, queueJobs: null, queueFailures: null, queueRetries: null };
+  const workloadToday = dayRows.get(today)?.workload || { audits: 0, auditsCompleted: 0, auditsFailed: 0, auditsPartial: 0, auditEvaluations: 0, analyticsEvents: 0, analyticsPageviews: 0, analyticsSessions: 0, uptimeChecks: 0, uptimePassed: 0, uptimeFailed: 0, incidents: 0, reports: 0, notifications: 0, queueJobs: null, queueFailures: null, queueRetries: null };
   if (dayRows.has(today)) {
     const snapshot = { billing_environment: billingEnvironment, day: today, accounts: accountSnapshot, properties: propertySnapshot, workload: workloadToday, infrastructure, measured_at: now.toISOString(), source: databaseResult.error ? "application_measured" : "postgres_reported" };
     const stored = await service.from("superadmin_overview_daily_snapshots").upsert(snapshot, { onConflict: "billing_environment,day" });
@@ -2719,17 +2725,25 @@ app.get("/api/superadmin/allocations", async (c) => {
   const accounts = accountsResult.data || [];
   const accountIds = accounts.map((account) => account.id);
   if (!accountIds.length) return c.json({ billingEnvironment, accounts: [], measuredAt: now, source: "effective_package_configuration_and_usage_ledgers" });
-  const [assignments, grants, overrides, properties, workspaces, memberships, usage, storage] = await Promise.all([
+  const monthStart = `${now.slice(0, 7)}-01`;
+  const [assignments, grants, overrides, properties, workspaces, memberships, usage, storage, analyticsUsage] = await Promise.all([
     db.from("account_package_assignments").select("account_id,price_grandfathered,allowances_grandfathered,complimentary,billing_state,starts_at,ends_at,package_versions(package_key,version,display_name,allowances,features,retention,hard_ceilings)").in("account_id", accountIds).is("ends_at", null),
-    db.from("account_package_grants").select("id,account_id,status,starts_at,expires_at,package_versions(package_key,version,display_name,allowances,features,retention,hard_ceilings)").in("account_id", accountIds).eq("status", "active").lte("starts_at", now).or(`expires_at.is.null,expires_at.gt.${now}`),
+    db.from("account_package_grants").select("id,account_id,arrangement,status,starts_at,expires_at,package_versions(package_key,version,display_name,allowances,features,retention,hard_ceilings)").in("account_id", accountIds).eq("status", "active").lte("starts_at", now).or(`expires_at.is.null,expires_at.gt.${now}`),
     db.from("account_entitlement_overrides").select("account_id,key,value,starts_at,expires_at,grant_id").in("account_id", accountIds).is("revoked_at", null).lte("starts_at", now).or(`expires_at.is.null,expires_at.gt.${now}`),
     db.from("properties").select("id,account_id").in("account_id", accountIds),
     db.from("workspaces").select("id,account_id").in("account_id", accountIds),
     db.from("account_memberships").select("account_id,user_id,role").in("account_id", accountIds),
     db.from("account_usage_periods").select("account_id,metric,period_start,period_end,consumed,reserved,restored,updated_at").in("account_id", accountIds).lte("period_start", now).gt("period_end", now),
     db.from("analytics_storage_snapshots").select("account_id,total_bytes,detailed_bytes,rollup_bytes,measured_at,source").eq("snapshot_date", now.slice(0, 10)).eq("scope_type", "account").in("account_id", accountIds),
+    db.from("account_analytics_monthly_usage").select("account_id,accepted_pageviews,rejected_pageviews,period_start,updated_at").eq("period_start", monthStart).in("account_id", accountIds),
   ]);
-  const dataError = [assignments, grants, overrides, properties, workspaces, memberships, usage, storage].find((result) => result.error)?.error;
+  const propertyIds = (properties.data || []).map((item: any) => item.id);
+  const [analyticsTotals, eventDefinitions, alertRecipients] = propertyIds.length ? await Promise.all([
+    db.from("analytics_compact_totals").select("property_id,pageviews,events,sessions,period_start").eq("grain", "day").gte("period_start", monthStart).in("property_id", propertyIds),
+    db.from("event_definitions").select("property_id,id,enabled").in("property_id", propertyIds),
+    db.from("alert_recipients").select("property_id,id,enabled").in("property_id", propertyIds),
+  ]) : [{ data: [], error: null }, { data: [], error: null }, { data: [], error: null }];
+  const dataError = [assignments, grants, overrides, properties, workspaces, memberships, usage, storage, analyticsUsage, analyticsTotals, eventDefinitions, alertRecipients].find((result) => result.error)?.error;
   if (dataError) {
     console.error("superadmin_allocations_failed", dataError);
     return c.json({ error: "superadmin_allocations_unavailable" }, 503);
@@ -2741,6 +2755,11 @@ app.get("/api/superadmin/allocations", async (c) => {
     const effective = resolveEffectiveEntitlements({ packageKey: version?.package_key || "free", version: Number(version?.version || 0), allowances: version?.allowances || {}, features: version?.features || {}, retention: version?.retention || {}, hardCeilings: version?.hard_ceilings || {} }, (overrides.data || []).filter((item: any) => item.account_id === account.id).map((item: any) => ({ key: item.key, value: item.value })));
     const usagePeriod = (usage.data || []).filter((item: any) => item.account_id === account.id);
     const storageSnapshot = (storage.data || []).find((item: any) => item.account_id === account.id) || null;
+    const accountProperties = (properties.data || []).filter((item: any) => item.account_id === account.id);
+    const accountPropertyIds = new Set(accountProperties.map((item: any) => item.id));
+    const pageviewUsage = (analyticsUsage.data || []).find((item: any) => item.account_id === account.id);
+    const monthlyAnalytics = (analyticsTotals.data || []).filter((item: any) => accountPropertyIds.has(item.property_id));
+    const chartWorkspaceLimit = effective.values.workspacesPerAccount ?? effective.hardCeilings.workspacesPerAccount ?? (effective.packageKey === "pro" || effective.packageKey === "pro_early_access" ? 200 : effective.packageKey === "scale" ? 50 : null);
     return {
       accountId: account.id,
       accountName: account.name,
@@ -2748,20 +2767,30 @@ app.get("/api/superadmin/allocations", async (c) => {
       packageKey: effective.packageKey,
       packageName: version?.display_name || String(effective.packageKey).replaceAll("_", " "),
       packageVersion: effective.version,
-      billingArrangement: grant ? "complimentary" : "standard",
+      billingArrangement: grant?.arrangement || "standard",
       grandfathered: Boolean(assignment?.allowances_grandfathered || assignment?.price_grandfathered),
       overrideCount: (overrides.data || []).filter((item: any) => item.account_id === account.id).length,
       allocations: {
         properties: effective.values.propertiesPerAccount ?? effective.hardCeilings.propertiesPerAccount ?? null,
-        workspaces: effective.values.workspacesPerAccount ?? effective.hardCeilings.workspacesPerAccount ?? null,
+        workspaces: chartWorkspaceLimit,
         editingSeats: effective.values.editingSeats ?? null,
         auditCreditsPerWeek: effective.values.auditCreditsPerWeek ?? null,
+        trackedPageviewsPerMonth: effective.values.trackedPageviewsPerMonth ?? effective.hardCeilings.trackedPageviewsPerMonth ?? null,
+        analyticsEventsPerMonth: effective.values.analyticsEventsPerMonth ?? null,
+        customEventsPerProperty: effective.values.customEventsPerProperty ?? null,
+        auditPagesPerProperty: effective.values.auditPagesPerProperty ?? null,
+        alertContacts: effective.values.alertContacts ?? effective.values.emailAlertLimit ?? null,
       },
       utilisation: {
-        properties: (properties.data || []).filter((item: any) => item.account_id === account.id).length,
+        properties: accountProperties.length,
         workspaces: (workspaces.data || []).filter((item: any) => item.account_id === account.id).length,
         editingSeats: new Set((memberships.data || []).filter((item: any) => item.account_id === account.id).map((item: any) => item.user_id)).size,
         auditCreditsPerWeek: usagePeriod.filter((item: any) => item.metric === "page_audit_credit").reduce((sum: number, item: any) => sum + Number(item.consumed || 0) + Number(item.reserved || 0) - Number(item.restored || 0), 0),
+        trackedPageviewsPerMonth: Number(pageviewUsage?.accepted_pageviews || 0),
+        analyticsEventsPerMonth: monthlyAnalytics.reduce((sum: number, item: any) => sum + Number(item.events || 0), 0),
+        customEventsPerProperty: Math.max(0, ...[...accountPropertyIds].map((propertyId) => (eventDefinitions.data || []).filter((item: any) => item.property_id === propertyId && item.enabled).length)),
+        auditPagesPerProperty: usagePeriod.some((item: any) => item.metric === "page_audit_credit" && Number(item.consumed || 0) > 0) ? 1 : 0,
+        alertContacts: Math.max(0, ...[...accountPropertyIds].map((propertyId) => (alertRecipients.data || []).filter((item: any) => item.property_id === propertyId && item.enabled).length)),
         databaseBytes: storageSnapshot?.total_bytes == null ? null : Number(storageSnapshot.total_bytes),
       },
       databaseStorage: storageSnapshot,
@@ -3721,7 +3750,7 @@ app.get("/api/superadmin/platform", async (c) => {
     service.from("platform_alert_history").select("*").order("created_at", { ascending: false }).limit(250),
     service.from("platform_incidents").select("*").order("opened_at", { ascending: false }).limit(100),
     service.from("package_versions").select("*").order("package_key").order("version", { ascending: false }),
-    service.from("account_package_grants").select("id,account_id,package_version_id,status,starts_at,expires_at,reason,created_at,package_versions(display_name,package_key,version)").order("created_at", { ascending: false }).limit(250),
+    service.from("account_package_grants").select("id,account_id,package_version_id,arrangement,status,starts_at,expires_at,reason,created_at,package_versions(display_name,package_key,version)").order("created_at", { ascending: false }).limit(250),
     service.from("account_entitlement_overrides").select("id,account_id,key,value,reason,starts_at,expires_at,created_at,grant_id,revoked_at").order("created_at", { ascending: false }).limit(250),
     service.from("account_inactivity").select("*").order("updated_at", { ascending: false }).limit(5000),
     service.from("audit_check_definitions").select("id,title,primary_category,subcategory,severity,lifecycle,configuration_version,changed_at,thresholds,weight,timeout_class,execution_method").order("id"),
@@ -3804,9 +3833,14 @@ app.get("/api/superadmin/platform", async (c) => {
     tax: Boolean(billingConfiguration.data?.tax_reviewed_at),
     sandboxAcceptance: Boolean(billingConfiguration.data?.sandbox_acceptance_completed_at),
   };
+  const monthStartIso = `${today.slice(0, 7)}-01T00:00:00.000Z`;
+  const [resendDailyUsage, resendMonthlyUsage] = await Promise.all([
+    service.from("notification_deliveries").select("id", { count: "exact", head: true }).eq("provider", "Resend").in("status", ["sent", "delivered"]).gte("created_at", `${today}T00:00:00.000Z`),
+    service.from("notification_deliveries").select("id", { count: "exact", head: true }).eq("provider", "Resend").in("status", ["sent", "delivered"]).gte("created_at", monthStartIso),
+  ]);
   return c.json({
     environment: { name: c.env.APP_ORIGIN.includes("app.claritude.io") ? "Production" : "Preview", commitSha: c.env.DEPLOY_COMMIT_SHA || null, refreshedAt: new Date().toISOString() },
-    providers: { stripe: { configured: stripeProvider.configured, mode: providerMode, keyType: stripeKeyEnvironment(billingEnvironment === "test" ? c.env.STRIPE_TEST_SECRET_KEY || c.env.STRIPE_SECRET_KEY : c.env.STRIPE_LIVE_SECRET_KEY || c.env.STRIPE_SECRET_KEY), webhookConfigured: Boolean(stripeProvider.webhookSecret), portalConfigured: Boolean(billingConfiguration.data?.portal_configuration_id || stripeProvider.portalConfigurationId), tax: billingConfiguration.data?.tax_enabled ? "enabled" : "disabled" }, resend: { configured: Boolean(c.env.RESEND_API_KEY), from: c.env.RESEND_FROM || null }, cloudflareTelemetry: "unavailable", supabaseBackups: "unverified" },
+    providers: { stripe: { configured: stripeProvider.configured, mode: providerMode, keyType: stripeKeyEnvironment(billingEnvironment === "test" ? c.env.STRIPE_TEST_SECRET_KEY || c.env.STRIPE_SECRET_KEY : c.env.STRIPE_LIVE_SECRET_KEY || c.env.STRIPE_SECRET_KEY), webhookConfigured: Boolean(stripeProvider.webhookSecret), portalConfigured: Boolean(billingConfiguration.data?.portal_configuration_id || stripeProvider.portalConfigurationId), tax: billingConfiguration.data?.tax_enabled ? "enabled" : "disabled" }, resend: { configured: Boolean(c.env.RESEND_API_KEY), from: c.env.RESEND_FROM || null, usage: { daily: resendDailyUsage.error ? null : resendDailyUsage.count || 0, monthly: resendMonthlyUsage.error ? null : resendMonthlyUsage.count || 0, dailyLimit: 100, monthlyLimit: 3000, source: "Claritude delivery ledger; plan limits supplied by administrator" } }, cloudflareTelemetry: "unavailable", supabaseBackups: "unverified" },
     settings: settings.data || [], settingHistory: settingHistory.data || [], controls: controls.data || [], featureStates, alerts: alerts.data || [], alertRules: alertRules.data || [], alertHistory: alertHistory.data || [], alertCoverage: { enabledRuleCount: (alertRules.data || []).filter((item) => item.enabled).length, lastEvaluationAt: (alertRules.data || []).map((item) => item.last_evaluated_at).filter(Boolean).sort().at(-1) || null, evaluatorHealth: !(alertRules.data || []).length ? "no_rules" : (alertRules.data || []).some((item) => item.evaluation_state === "failing") ? "failing" : (alertRules.data || []).every((item) => item.evaluation_state === "not_started") ? "not_started" : (alertRules.data || []).some((item) => item.evaluation_state === "telemetry_unavailable") ? "telemetry_unavailable" : "healthy" }, incidents: incidents.data || [], packages: packages.data || [], grants: grants.data || [], overrides: overrides.data || [], inactivity: inactivity.data || [],
     audits: { technicalChecks: auditDefinitions.data || [], groups: auditGroups.data || [], groupChecks: auditGroupChecks.data || [], groupHistory: auditGroupHistory.data || [], packageAvailability: auditPackageAvailability.data || [], today: auditStatus, runs: runs, source: "application_measured", period: "UTC day" },
     infrastructure: { database: databaseMetrics.data || null, databaseError: databaseMetrics.error?.message || null, events: operationalEvents.data || [], leases: leases.data || [], period: "UTC day" },
@@ -4282,6 +4316,35 @@ app.post("/api/superadmin/packages/:id/versions", async (c) => {
   return c.json({ packageVersion: data }, 201);
 });
 
+app.patch("/api/superadmin/packages/:id", async (c) => {
+  const authorization = await requireStaff(c, "packages.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<any>().catch(() => ({}));
+  const reason = String(body.reason || "").trim();
+  if (reason.length < 3 || reason.length > 500) return c.json({ error: "reason_required" }, 400);
+  const service = admin(c.env);
+  const { data: draft } = await service.from("package_versions").select("*").eq("id", c.req.param("id")).maybeSingle();
+  if (!draft) return c.json({ error: "package_version_not_found" }, 404);
+  if (draft.state !== "draft") return c.json({ error: "draft_package_version_required" }, 409);
+  const objects = ["pricing", "allowances", "features", "retention", "hardCeilings"];
+  if (objects.some((key) => body[key] != null && (typeof body[key] !== "object" || Array.isArray(body[key])))) return c.json({ error: "package_configuration_objects_required" }, 400);
+  const numericValues = Object.values({ ...(body.allowances || {}), ...(body.hardCeilings || {}) }).filter((value) => value !== null);
+  if (numericValues.some((value) => typeof value === "number" && (!Number.isFinite(value) || value < 0))) return c.json({ error: "package_limits_must_be_non_negative" }, 400);
+  const changes = {
+    display_name: String(body.displayName || draft.display_name).trim().slice(0, 120),
+    pricing: body.pricing ?? draft.pricing,
+    allowances: body.allowances ?? draft.allowances,
+    features: body.features ?? draft.features,
+    retention: body.retention ?? draft.retention,
+    hard_ceilings: body.hardCeilings ?? draft.hard_ceilings,
+    unresolved_values: Array.isArray(body.unresolvedValues) ? body.unresolvedValues.map(String).slice(0, 100) : draft.unresolved_values,
+  };
+  const { data, error } = await service.from("package_versions").update(changes).eq("id", draft.id).eq("state", "draft").select().single();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "package.draft_updated", "success", { targetType: "package_version", targetId: data.id, reason, previousValues: draft, newValues: data });
+  return c.json({ packageVersion: data });
+});
+
 app.post("/api/superadmin/packages/:id/publish", async (c) => {
   const authorization = await requireStaff(c, "packages.write");
   if (authorization.response) return authorization.response;
@@ -4322,6 +4385,8 @@ app.post("/api/superadmin/accounts/:id/package-preview", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const parsed = validateComplimentaryGrantInput(body);
   if ("error" in parsed) return c.json({ error: parsed.error, key: parsed.key }, 400);
+  const billingTreatment = body.billingTreatment === "keep_current_price" ? "billing_unchanged" : body.billingTreatment === "complimentary" || body.billingTreatment == null ? "complimentary" : null;
+  if (!billingTreatment) return c.json({ error: "valid_billing_treatment_required" }, 400);
   const accountId = c.req.param("id");
   const db = admin(c.env);
   const [account, packageVersion, properties, memberships, billingCustomer] = await Promise.all([
@@ -4353,7 +4418,7 @@ app.post("/api/superadmin/accounts/:id/package-preview", async (c) => {
     account: account.data,
     current,
     proposed: { ...proposed, displayName: packageVersion.data.display_name, unresolvedValues: packageVersion.data.unresolved_values || [] },
-    arrangement: "complimentary",
+    arrangement: billingTreatment,
     permanent: parsed.value.permanent,
     expiresAt: parsed.value.expiresAt,
     expiryOutcome: "Returns to the underlying standard package and billing state. No charge, subscription creation or cancellation is triggered.",
@@ -4369,6 +4434,8 @@ app.put("/api/superadmin/accounts/:id/package", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const parsed = validateComplimentaryGrantInput(body);
   if ("error" in parsed) return c.json({ error: parsed.error, key: parsed.key }, 400);
+  const billingTreatment = body.billingTreatment === "keep_current_price" ? "billing_unchanged" : body.billingTreatment === "complimentary" || body.billingTreatment == null ? "complimentary" : null;
+  if (!billingTreatment) return c.json({ error: "valid_billing_treatment_required" }, 400);
   const accountId = c.req.param("id");
   const db = admin(c.env);
   const [packageVersion, previousGrant] = await Promise.all([
@@ -4380,22 +4447,24 @@ app.put("/api/superadmin/accounts/:id/package", async (c) => {
     const ceiling = (packageVersion.data.hard_ceilings as Record<string, unknown> || {})[key];
     if (typeof ceiling === "number" && value > ceiling) return c.json({ error: "override_exceeds_platform_ceiling", key, ceiling }, 409);
   }
-  const { data: grant, error } = await db.rpc("apply_complimentary_package_grant_internal", {
+  const { data: grant, error } = await db.rpc("apply_package_access_grant_internal", {
     p_account_id: accountId,
     p_package_version_id: parsed.value.packageVersionId,
+    p_arrangement: billingTreatment,
     p_expires_at: parsed.value.expiresAt,
     p_reason: parsed.value.reason,
     p_overrides: parsed.value.overrides,
     p_actor: authorization.staff!.userId,
   });
   if (error) return c.json({ error: error.message }, 400);
-  await recordAdminActivity(c.env, authorization.staff!.userId, "account.complimentary_package_granted", "success", {
+  const persistedGrant = grant;
+  await recordAdminActivity(c.env, authorization.staff!.userId, billingTreatment === "complimentary" ? "account.complimentary_package_granted" : "account.package_access_granted_billing_unchanged", "success", {
     targetType: "account", targetId: accountId, accountId, reason: parsed.value.reason,
     previousValues: previousGrant.data || null,
-    newValues: { grant, package: packageVersion.data, permanent: parsed.value.permanent, expiresAt: parsed.value.expiresAt, overrides: parsed.value.overrides },
-    metadata: { stripeUnaffected: true, expiryBehavior: parsed.value.expiryBehavior },
+    newValues: { grant: persistedGrant, package: packageVersion.data, billingTreatment, permanent: parsed.value.permanent, expiresAt: parsed.value.expiresAt, overrides: parsed.value.overrides },
+    metadata: { stripeUnaffected: true, existingBillingContinues: billingTreatment === "billing_unchanged", expiryBehavior: parsed.value.expiryBehavior },
   });
-  return c.json({ grant });
+  return c.json({ grant: persistedGrant });
 });
 
 app.delete("/api/superadmin/accounts/:id/package", async (c) => {
