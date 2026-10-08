@@ -2698,7 +2698,7 @@ app.get("/api/superadmin/allocations", async (c) => {
   const accounts = accountsResult.data || [];
   const accountIds = accounts.map((account) => account.id);
   if (!accountIds.length) return c.json({ billingEnvironment, accounts: [], measuredAt: now, source: "effective_package_configuration_and_usage_ledgers" });
-  const [assignments, grants, overrides, properties, workspaces, memberships, usage] = await Promise.all([
+  const [assignments, grants, overrides, properties, workspaces, memberships, usage, storage] = await Promise.all([
     db.from("account_package_assignments").select("account_id,price_grandfathered,allowances_grandfathered,complimentary,billing_state,starts_at,ends_at,package_versions(package_key,version,display_name,allowances,features,retention,hard_ceilings)").in("account_id", accountIds).is("ends_at", null),
     db.from("account_package_grants").select("id,account_id,status,starts_at,expires_at,package_versions(package_key,version,display_name,allowances,features,retention,hard_ceilings)").in("account_id", accountIds).eq("status", "active").lte("starts_at", now).or(`expires_at.is.null,expires_at.gt.${now}`),
     db.from("account_entitlement_overrides").select("account_id,key,value,starts_at,expires_at,grant_id").in("account_id", accountIds).is("revoked_at", null).lte("starts_at", now).or(`expires_at.is.null,expires_at.gt.${now}`),
@@ -2706,8 +2706,9 @@ app.get("/api/superadmin/allocations", async (c) => {
     db.from("workspaces").select("id,account_id").in("account_id", accountIds),
     db.from("account_memberships").select("account_id,user_id,role").in("account_id", accountIds),
     db.from("account_usage_periods").select("account_id,metric,period_start,period_end,consumed,reserved,restored,updated_at").in("account_id", accountIds).lte("period_start", now).gt("period_end", now),
+    db.from("analytics_storage_snapshots").select("account_id,total_bytes,detailed_bytes,rollup_bytes,measured_at,source").eq("snapshot_date", now.slice(0, 10)).eq("scope_type", "account").in("account_id", accountIds),
   ]);
-  const dataError = [assignments, grants, overrides, properties, workspaces, memberships, usage].find((result) => result.error)?.error;
+  const dataError = [assignments, grants, overrides, properties, workspaces, memberships, usage, storage].find((result) => result.error)?.error;
   if (dataError) {
     console.error("superadmin_allocations_failed", dataError);
     return c.json({ error: "superadmin_allocations_unavailable" }, 503);
@@ -2718,6 +2719,7 @@ app.get("/api/superadmin/allocations", async (c) => {
     const version = (grant?.package_versions || assignment?.package_versions) as any;
     const effective = resolveEffectiveEntitlements({ packageKey: version?.package_key || "free", version: Number(version?.version || 0), allowances: version?.allowances || {}, features: version?.features || {}, retention: version?.retention || {}, hardCeilings: version?.hard_ceilings || {} }, (overrides.data || []).filter((item: any) => item.account_id === account.id).map((item: any) => ({ key: item.key, value: item.value })));
     const usagePeriod = (usage.data || []).filter((item: any) => item.account_id === account.id);
+    const storageSnapshot = (storage.data || []).find((item: any) => item.account_id === account.id) || null;
     return {
       accountId: account.id,
       accountName: account.name,
@@ -2739,7 +2741,9 @@ app.get("/api/superadmin/allocations", async (c) => {
         workspaces: (workspaces.data || []).filter((item: any) => item.account_id === account.id).length,
         editingSeats: new Set((memberships.data || []).filter((item: any) => item.account_id === account.id).map((item: any) => item.user_id)).size,
         auditCreditsPerWeek: usagePeriod.filter((item: any) => item.metric === "page_audit_credit").reduce((sum: number, item: any) => sum + Number(item.consumed || 0) + Number(item.reserved || 0) - Number(item.restored || 0), 0),
+        databaseBytes: storageSnapshot?.total_bytes == null ? null : Number(storageSnapshot.total_bytes),
       },
+      databaseStorage: storageSnapshot,
       usagePeriods: usagePeriod,
     };
   });
@@ -3684,6 +3688,9 @@ app.get("/api/superadmin/platform", async (c) => {
   const stripeProvider = stripeContext(c.env, billingEnvironment);
   const service = admin(c.env);
   const today = new Date().toISOString().slice(0, 10);
+  const storageRefresh = c.req.query("refreshStorage") === "force"
+    ? await service.rpc("refresh_analytics_storage_snapshots")
+    : { data: null, error: null };
   const [settings, settingHistory, controls, alerts, alertRules, alertHistory, incidents, packages, grants, overrides, inactivity, auditDefinitions, auditGroups, auditGroupChecks, auditGroupHistory, auditPackageAvailability, auditRuns, exports, deletionRequests, templates, automations, campaigns, billingCustomers, billingEvents, promotions, deliveries, suppressions, databaseMetrics, operationalEvents, leases] = await Promise.all([
     service.from("platform_settings").select("*").order("key"),
     service.from("platform_setting_history").select("*").order("changed_at", { ascending: false }).limit(250),
@@ -3782,7 +3789,7 @@ app.get("/api/superadmin/platform", async (c) => {
     settings: settings.data || [], settingHistory: settingHistory.data || [], controls: controls.data || [], featureStates, alerts: alerts.data || [], alertRules: alertRules.data || [], alertHistory: alertHistory.data || [], alertCoverage: { enabledRuleCount: (alertRules.data || []).filter((item) => item.enabled).length, lastEvaluationAt: (alertRules.data || []).map((item) => item.last_evaluated_at).filter(Boolean).sort().at(-1) || null, evaluatorHealth: !(alertRules.data || []).length ? "no_rules" : (alertRules.data || []).some((item) => item.evaluation_state === "failing") ? "failing" : (alertRules.data || []).every((item) => item.evaluation_state === "not_started") ? "not_started" : (alertRules.data || []).some((item) => item.evaluation_state === "telemetry_unavailable") ? "telemetry_unavailable" : "healthy" }, incidents: incidents.data || [], packages: packages.data || [], grants: grants.data || [], overrides: overrides.data || [], inactivity: inactivity.data || [],
     audits: { technicalChecks: auditDefinitions.data || [], groups: auditGroups.data || [], groupChecks: auditGroupChecks.data || [], groupHistory: auditGroupHistory.data || [], packageAvailability: auditPackageAvailability.data || [], today: auditStatus, runs: runs, source: "application_measured", period: "UTC day" },
     infrastructure: { database: databaseMetrics.data || null, databaseError: databaseMetrics.error?.message || null, events: operationalEvents.data || [], leases: leases.data || [], period: "UTC day" },
-    analyticsManagement: { rules: analyticsRules.data || [], storage: analyticsStorage.data || [], usage: analyticsUsage.data || [], warnings: analyticsWarnings.data || [], storageError: analyticsStorage.error?.message || null },
+    analyticsManagement: { rules: analyticsRules.data || [], storage: analyticsStorage.data || [], usage: analyticsUsage.data || [], warnings: analyticsWarnings.data || [], storageRefresh: storageRefresh.data || null, storageError: storageRefresh.error?.message || analyticsStorage.error?.message || null },
     exports: exports.data || [], deletionRequests: deletionRequests.data || [], email: { templates: templates.data || [], automations: automations.data || [], campaigns: campaigns.data || [], deliveries: deliveries.data || [], suppressions: suppressions.data || [] },
     billing: { environment: billingEnvironment, configured: stripeProvider.configured, providerMode, configuration: billingConfiguration.data || null, catalogueReady, liveReadiness, catalogueRequirements: { requiredCount: requiredCatalogueKeys.length, basePriceCount: 18, maximumWithSeatPrices: 36, missing: requiredCatalogueKeys.filter((key) => !catalogueKeys.has(key)), unresolvedSeatPackages, packagesRequiringSeatPrices, explanation: "Eighteen base prices cover 3 paid packages × 3 currencies × 2 billing intervals. The total becomes 36 only if every package separately sells additional seats; a package needs a seat price only when its approved allowance and commercial policy permit paid seat overage." }, catalogue: billingCatalogue.data || [], customers: billingCustomers.data || [], subscriptions: subscriptionRows, invoices: billingInvoices.data || [], payments: billingPayments.data || [], refunds: billingRefunds.data || [], disputes: billingDisputes.data || [], payouts: billingPayouts.data || [], reconciliation: billingReconciliation.data || [], daily: billingDaily.data || [], events: billingEvents.data || [], promotions: promotions.data || [], calculations: finance, currencyPolicy: "Every finance query is scoped to one billing environment and each series to one currency. No implicit FX conversion is applied. MRR includes every recurring item, annual values divided by 12, and applicable recurring discounts. Daily activity is distinct from available and pending balances; only succeeded refunds reduce completed refund totals." },
   });

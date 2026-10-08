@@ -4549,7 +4549,8 @@ input[type="checkbox"]:checked:after {
 .capacity-list { display: grid; }
 .capacity-row { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(120px, 1.2fr) auto; align-items: center; gap: 14px; padding: 13px 0; border-bottom: 1px solid var(--line); }
 .capacity-row:last-child { border-bottom: 0; }
-.capacity-row > span { display: grid; gap: 3px; }
+.capacity-row > span:first-child { display: grid; gap: 3px; }
+.capacity-row > .status-pill { display: inline-flex; min-width: 52px; justify-content: center; }
 .capacity-row small { color: var(--muted); }
 .capacity-row > i { height: 8px; overflow: hidden; border-radius: 99px; background: var(--soft); }
 .capacity-row > i em { display: block; height: 100%; min-width: 2px; border-radius: inherit; background: #94a3b8; }
