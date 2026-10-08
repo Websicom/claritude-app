@@ -1431,6 +1431,22 @@ input[type="checkbox"]:checked:after {
   border-radius: 9px;
   z-index: 200;
 }
+.plan-limit-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.plan-limit-upgrade,
+.event-allowance a.plan-limit-upgrade {
+  flex: 0 0 auto;
+  color: #fff;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.toast.plan-limit-notice {
+  max-width: min(460px, calc(100vw - 36px));
+}
 .state,
 .splash {
   min-height: 100vh;
@@ -1846,6 +1862,13 @@ input[type="checkbox"]:checked:after {
   }
   .dialog-actions > * {
     flex: 1;
+  }
+  .plan-limit-notice {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .plan-limit-upgrade {
+    text-align: center;
   }
   .privacy-row {
     align-items: flex-start;

@@ -7,6 +7,7 @@ import {
   auditProgressMessagePool,
   auditRunCategoryScores,
   auditScoreBand,
+  billingUpgradeHref,
   buildAuditFixPrompt,
   configuredEventAttributeNames,
   configuredEventType,
@@ -22,8 +23,10 @@ import {
   filterWorkspaceMemberships,
   isPrimaryAuditPage,
   isFixFirstAuditResult,
+  isPlanLimitError,
   nextConfiguredEventAttribute,
   paginateResults,
+  planLimitMessage,
   planName,
   pageActiveTimeLabel,
   periodLabel,
@@ -61,6 +64,18 @@ describe("plan presentation", () => {
     expect(uptimeIntervalsForPlan("Essentials")[0]).toBe(5);
     expect(uptimeIntervalsForPlan("Scale")[0]).toBe(2);
     expect(uptimeIntervalsForPlan("Pro")[0]).toBe(1);
+  });
+
+  it("routes genuine plan-limit failures to Billing & plan", () => {
+    expect(isPlanLimitError("property_limit_reached")).toBe(true);
+    expect(isPlanLimitError("weekly_audit_credit_limit_reached")).toBe(true);
+    expect(isPlanLimitError("platform_concurrent_audit_limit_reached")).toBe(false);
+    expect(planLimitMessage("custom_event_plan_limit_reached")).toBe(
+      "This property has reached its custom event allowance.",
+    );
+    expect(billingUpgradeHref("account-one")).toBe(
+      "/account?accountTab=Billing+%26+plan&billingAccount=account-one",
+    );
   });
 });
 

@@ -162,6 +162,37 @@ export function uptimeIntervalsForPlan(entitlement: unknown) {
   return [1, 2, 5, 10, 15, 30, 60].filter((interval) => interval >= minimum);
 }
 
+const PLAN_LIMIT_ERROR_MESSAGES: Record<string, string> = {
+  property_limit_reached: "This account has reached its property limit.",
+  workspace_limit_reached: "This account has reached its workspace limit.",
+  custom_event_plan_limit_reached: "This property has reached its custom event allowance.",
+  weekly_audit_credit_limit_reached: "This account has used its weekly audit allowance.",
+  uptime_interval_not_available_for_plan: "That monitoring interval is not available on the current plan.",
+};
+
+export function isPlanLimitError(message: unknown) {
+  const value = String(message || "").trim().toLowerCase();
+  return Object.keys(PLAN_LIMIT_ERROR_MESSAGES).some((code) => value.includes(code)) ||
+    value.includes("reached its property limit") ||
+    value.includes("reached its workspace limit") ||
+    value.includes("reached its custom event allowance") ||
+    value.includes("plan allowance has been reached") ||
+    value.includes("used its weekly audit allowance") ||
+    value.includes("monitoring interval is not available on the current plan");
+}
+
+export function planLimitMessage(message: unknown) {
+  const value = String(message || "").trim();
+  const code = Object.keys(PLAN_LIMIT_ERROR_MESSAGES).find((candidate) => value.toLowerCase().includes(candidate));
+  return code ? PLAN_LIMIT_ERROR_MESSAGES[code] : value;
+}
+
+export function billingUpgradeHref(accountId?: string) {
+  const params = new URLSearchParams({ accountTab: "Billing & plan" });
+  if (accountId) params.set("billingAccount", accountId);
+  return `/account?${params.toString()}`;
+}
+
 export function squareImageCrop(width: number, height: number) {
   const size = Math.min(width, height);
   return {
@@ -194,6 +225,7 @@ export async function prepareAvatarImage(file: File) {
 }
 type Property = {
   id: string;
+  account_id?: string;
   workspace_id?: string;
   name: string;
   url: string;
@@ -547,7 +579,7 @@ export function ClaritudeApplication({
     toastTimer.current = window.setTimeout(() => {
       setToast("");
       toastTimer.current = null;
-    }, 2500);
+    }, isPlanLimitError(message) ? 8000 : 2500);
   };
   useEffect(
     () => () => {
@@ -741,7 +773,7 @@ export function ClaritudeApplication({
             setWorkspaceMenu(false);
             navigate(fixture ? "/" : `/?workspace=${id}`);
           }}
-          add={canCreateWorkspace ? () => {
+          add={canManageAccount ? () => {
             setWorkspaceMenu(false);
             setWorkspaceOpen(true);
           } : undefined}
@@ -1150,11 +1182,13 @@ export function ClaritudeApplication({
           }}
         />
       )}
-      {workspaceOpen && canCreateWorkspace && (
+      {workspaceOpen && canManageAccount && (
         <SimpleDialog
           title="Create workspace"
           close={() => setWorkspaceOpen(false)}
           action="Create workspace"
+          disabled={!canCreateWorkspace}
+          upgradeAccountId={activeAccountId}
           onSave={async () => {
             if (!session || !workspaceName.trim()) return;
             const accountId = activeAccountId;
@@ -1174,12 +1208,27 @@ export function ClaritudeApplication({
             Workspace name
             <input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} />
           </label>
+          {!canCreateWorkspace && (
+            <PlanLimitNotice
+              message="workspace_limit_reached"
+              accountId={activeAccountId}
+              onUpgrade={() => setWorkspaceOpen(false)}
+            />
+          )}
         </SimpleDialog>
       )}
       {helpOpen && (
         <HelpDialog close={() => setHelpOpen(false)} property={property} />
       )}{" "}
-      {toast && <div className="toast">{toast}</div>}
+      {toast && (
+        <PlanLimitNotice
+          message={toast}
+          accountId={activeAccountId}
+          className="toast"
+          role="status"
+          onUpgrade={() => setToast("")}
+        />
+      )}
     </div>
   );
 }
@@ -7323,7 +7372,13 @@ function AddPropertyDialog({
             ))}
           </select>
         </label>
-        {error && <div className="notice danger">{error}</div>}
+        {error && (
+          <PlanLimitNotice
+            message={error}
+            accountId={accountId}
+            onUpgrade={close}
+          />
+        )}
         <div className="dialog-actions">
           <button type="button" className="btn" onClick={close}>
             Cancel
@@ -7392,6 +7447,7 @@ function SimpleDialog({
   children,
   danger = false,
   disabled = false,
+  upgradeAccountId,
 }: {
   title: string;
   close: () => void;
@@ -7400,19 +7456,62 @@ function SimpleDialog({
   children: ReactNode;
   danger?: boolean;
   disabled?: boolean;
+  upgradeAccountId?: string;
 }) {
+  const [saveError, setSaveError] = useState("");
+  async function save() {
+    setSaveError("");
+    try {
+      await onSave();
+    } catch (error: any) {
+      setSaveError(error?.message || "The action could not be completed.");
+    }
+  }
   return (
     <Modal title={title} close={close}>
       {children}
+      {saveError && (
+        <PlanLimitNotice
+          message={saveError}
+          accountId={upgradeAccountId}
+          onUpgrade={close}
+        />
+      )}
       <div className="dialog-actions">
         <button className="btn" onClick={close}>
           Cancel
         </button>
-        <button className={danger ? "danger-solid" : "primary"} onClick={onSave} disabled={disabled}>
+        <button className={danger ? "danger-solid" : "primary"} onClick={() => void save()} disabled={disabled}>
           {action}
         </button>
       </div>
     </Modal>
+  );
+}
+
+function PlanLimitNotice({
+  message,
+  accountId,
+  onUpgrade,
+  className = "notice danger",
+  role = "alert",
+}: {
+  message: string;
+  accountId?: string;
+  onUpgrade?: () => void;
+  className?: string;
+  role?: "alert" | "status";
+}) {
+  const limited = isPlanLimitError(message);
+  return (
+    <div className={`${className}${limited ? " plan-limit-notice" : ""}`} role={role}>
+      <span>{limited ? planLimitMessage(message) : message}</span>
+      {limited && (
+        <Link className="primary plan-limit-upgrade" to={billingUpgradeHref(accountId)} onClick={onUpgrade}>
+          Upgrade plan
+        </Link>
+      )}
+    </div>
   );
 }
 function ReportPreview({
@@ -9766,7 +9865,7 @@ function EventsPanel({
     } catch (error: any) {
       if (error.message === "custom_event_plan_limit_reached") {
         setEventAllowance((current) => current ? { ...current, canCreate: false, remaining: 0 } : current);
-        setEventError("This property has reached its custom event allowance. Upgrade the plan to create another event.");
+        setEventError("This property has reached its custom event allowance.");
       } else {
         setEventError(error.message);
       }
@@ -9868,7 +9967,9 @@ function EventsPanel({
           {eventLimitReached && (
             <span>
               Your {eventAllowance?.plan} plan allowance has been reached.{" "}
-              <Link to="/account">Review upgrade options</Link>
+              <Link className="primary plan-limit-upgrade" to={billingUpgradeHref(property.account_id)}>
+                Upgrade plan
+              </Link>
             </span>
           )}
         </div>
@@ -9984,7 +10085,14 @@ function EventsPanel({
               <label className="field">Page path<input value={pathValue} onChange={(event) => setPathValue(event.target.value)} placeholder="/thank-you/" /></label>
             </div>
           )}
-          {eventError && <div className="error-note" role="alert">{eventError}</div>}
+          {eventError && (
+            <PlanLimitNotice
+              message={eventError}
+              accountId={property.account_id}
+              className="error-note"
+              onUpgrade={() => setOpen(false)}
+            />
+          )}
           <p className="subtle">Property: {property.canonical_host}.</p>
           {eventType === "click" ? (
             <div className="event-attribute-guidance">
