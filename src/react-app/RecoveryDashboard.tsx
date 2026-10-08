@@ -6378,7 +6378,8 @@ function AccountView({
   notify: Notify;
 }) {
   const accountLocation = useLocation();
-  const requestedAccountTab = new URLSearchParams(accountLocation.search).get("accountTab");
+  const rawRequestedAccountTab = new URLSearchParams(accountLocation.search).get("accountTab");
+  const requestedAccountTab = ["Security", "Data & privacy"].includes(rawRequestedAccountTab || "") ? "Security & Privacy" : rawRequestedAccountTab;
   const [tab, setTab] = useState(requestedAccountTab || "Profile"),
     [name, setName] = useState(data.profile?.full_name || ""),
     [avatarBusy, setAvatarBusy] = useState(false),
@@ -6404,22 +6405,27 @@ function AccountView({
     [propertyToDelete, setPropertyToDelete] = useState<Property | null>(null),
     [propertyDeleteConfirmation, setPropertyDeleteConfirmation] = useState(""),
     [workspaceToDelete, setWorkspaceToDelete] = useState<any | null>(null),
-    [workspaceDeleteConfirmation, setWorkspaceDeleteConfirmation] = useState("");
+    [workspaceDeleteConfirmation, setWorkspaceDeleteConfirmation] = useState(""),
+    [securityBusy, setSecurityBusy] = useState(false),
+    [deletionAccountId, setDeletionAccountId] = useState(""),
+    [deletionConfirmation, setDeletionConfirmation] = useState(""),
+    [deletionExportAcknowledged, setDeletionExportAcknowledged] = useState(false),
+    [deletionBusy, setDeletionBusy] = useState(false);
   const role = data.accounts?.[0]?.role || data.workspaces?.[0]?.role || "viewer";
   const hasBillingAccess = role === "owner" || Boolean(data.billingMemberships?.some((item) => item.can_view || item.can_manage));
   const tabs = role === "viewer"
-    ? ["Profile", ...(hasBillingAccess ? ["Billing & plan"] : []), "Notification preferences", "Security"]
+    ? ["Profile", ...(hasBillingAccess ? ["Billing & plan"] : []), "Security & Privacy"]
     : [
         "Profile",
         "Workspace",
         "Properties",
         "Billing & plan",
         "Users",
-        "Notification preferences",
         "Activity logs",
-        "Security",
-        "Data & privacy",
+        "Security & Privacy",
       ];
+  const ownedAccounts = data.accounts.filter((membership: any) => membership.role === "owner" && membership.accounts?.id);
+  const deletionAccount = ownedAccounts.find((membership: any) => membership.accounts.id === deletionAccountId)?.accounts;
   useEffect(() => {
     if (!session || role === "viewer") return;
     setUsersError("");
@@ -6512,6 +6518,49 @@ function AccountView({
       notify(error.message);
     }
   }
+  async function exportAccountData() {
+    if (!session) return;
+    try {
+      const exported = await api<any>(session, "/api/account/export");
+      const url = URL.createObjectURL(new Blob([JSON.stringify(exported, null, 2)], { type: "application/json" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "claritude-account-export.json";
+      link.click();
+      URL.revokeObjectURL(url);
+      notify("Account export downloaded");
+    } catch (error: any) {
+      notify(error.message);
+    }
+  }
+  async function signOutAllSessions() {
+    setSecurityBusy(true);
+    const { error } = await supabase.auth.signOut({ scope: "global" });
+    if (error) {
+      notify(error.message);
+      setSecurityBusy(false);
+      return;
+    }
+    window.location.assign("/auth/login");
+  }
+  async function requestAccountDeletion() {
+    if (!session || !deletionAccount) return;
+    setDeletionBusy(true);
+    try {
+      await api(session, "/api/account/deletion-request", {
+        method: "POST",
+        body: JSON.stringify({ accountId: deletionAccount.id, confirmation: deletionConfirmation, dataExportAcknowledged: deletionExportAcknowledged }),
+      });
+      setDeletionAccountId("");
+      setDeletionConfirmation("");
+      setDeletionExportAcknowledged(false);
+      notify("Account deletion request submitted for review");
+    } catch (error: any) {
+      notify(error.message);
+    } finally {
+      setDeletionBusy(false);
+    }
+  }
   return (
     <Page
       title="Account settings"
@@ -6572,6 +6621,7 @@ function AccountView({
           <button className="primary" onClick={save}>
             Save profile
           </button>
+          <Preferences session={session} profile={data.profile} reload={reload} notify={notify} />
         </Panel>
       ) : tab === "Workspace" ? (
         <Panel title="Workspace">
@@ -6680,8 +6730,6 @@ function AccountView({
             <Empty title="Loading workspace users…" detail="Checking workspace access." />
           )}
         </Panel>
-      ) : tab === "Notification preferences" ? (
-        <Preferences session={session} profile={data.profile} reload={reload} notify={notify} />
       ) : tab === "Activity logs" ? (
         <Panel title="Account activity logs">
           <DataTable
@@ -6695,69 +6743,47 @@ function AccountView({
             ])}
           />
         </Panel>
-      ) : tab === "Security" ? (
-        <div className="grid equal">
-          <Panel title="Password">
-            <p>Use the secure recovery flow to change your password.</p>
-            <Link className="primary" to="/auth/forgot">
-              Request reset link
-            </Link>
-          </Panel>
-          <Panel title="Sessions">
-            <KeyValues
-              rows={[
-                ["This browser", "Current authenticated session"],
-                ["Last active", "Now"],
-              ]}
+      ) : tab === "Security & Privacy" ? (
+        <div className="security-privacy-sections">
+          <Panel title="Password & Authentication">
+            <AdvancedRow
+              title="Password"
+              detail="Use the secure recovery flow to change your password. Two-factor authentication will appear here when enabled."
+              action={<Link className="primary" to="/auth/forgot">Request reset link</Link>}
             />
-            <p className="subtle">Other-session management is not exposed by the current authentication provider configuration.</p>
+          </Panel>
+          <Panel title="Active Sessions">
+            <AdvancedRow title="Current session" detail={`${session?.user.email || "Signed-in user"} · active in this browser now`} action={<StatusPill tone="success">Active</StatusPill>} />
+            <AdvancedRow title="Other devices" detail="End every Claritude session associated with this login, including this browser." action={<button className="btn" disabled={securityBusy} onClick={() => void signOutAllSessions()}><LogOut /> Sign out all sessions</button>} />
+          </Panel>
+          <Panel title="Data & Privacy">
+            <AdvancedRow title="Analytics privacy" detail="Claritude does not use cookies or persistent visitor identifiers." action={<span className="tag">Privacy-first</span>} />
+            <AdvancedRow title="Export account data" detail="Download a machine-readable copy of the workspace data available to your account." action={<button className="btn" onClick={() => void exportAccountData()}>Export JSON</button>} />
+          </Panel>
+          <Panel title="Account Deletion" className="account-deletion-panel">
+            <AdvancedRow
+              danger
+              title="Request account deletion"
+              detail="Export your data, confirm the exact account name and submit the request for a final safeguarded review. Nothing is deleted immediately."
+              action={<button className="danger-solid" disabled={!ownedAccounts.length} onClick={() => setDeletionAccountId(ownedAccounts[0]?.accounts?.id || "")}>Request deletion</button>}
+            />
           </Panel>
         </div>
-      ) : (
-        <Panel title="Data & privacy">
-          <AdvancedRow
-            title="Analytics privacy"
-            detail="Claritude does not use cookies or persistent visitor identifiers."
-            action={<span className="tag">Privacy-first</span>}
-          />
-          <AdvancedRow
-            title="Export account data"
-            detail="Prepare a machine-readable export of workspace data."
-            action={
-              <button
-                className="btn"
-                onClick={() => {
-                  if (!session) return;
-                  void api<any>(session, "/api/account/export")
-                    .then((exported) => {
-                      const url = URL.createObjectURL(
-                        new Blob([JSON.stringify(exported, null, 2)], { type: "application/json" }),
-                      );
-                      const link = document.createElement("a");
-                      link.href = url;
-                      link.download = "claritude-account-export.json";
-                      link.click();
-                      URL.revokeObjectURL(url);
-                      notify("Account export downloaded");
-                    })
-                    .catch((error) => notify(error.message));
-                }}
-              >
-                Export JSON
-              </button>
-            }
-          />
-          <AdvancedRow
-            danger
-            title="Delete account"
-            detail="Contact support for destructive account operations."
-            action={
-              <button className="danger-solid" disabled>
-                Delete account
-              </button>
-            }
-          />
-        </Panel>
+      ) : null}
+      {deletionAccountId && deletionAccount && (
+        <SimpleDialog
+          title="Request account deletion"
+          close={() => { setDeletionAccountId(""); setDeletionConfirmation(""); setDeletionExportAcknowledged(false); }}
+          action="Submit deletion request"
+          danger
+          disabled={deletionBusy || deletionConfirmation !== deletionAccount.name || !deletionExportAcknowledged}
+          onSave={requestAccountDeletion}
+        >
+          {ownedAccounts.length > 1 && <label className="field">Account<select value={deletionAccountId} onChange={(event) => { setDeletionAccountId(event.target.value); setDeletionConfirmation(""); }}>{ownedAccounts.map((membership: any) => <option key={membership.accounts.id} value={membership.accounts.id}>{membership.accounts.name}</option>)}</select></label>}
+          <div className="notice danger"><b>This does not delete data immediately.</b> The account enters a safeguarded review so subscriptions, exports, retention obligations and shared access can be checked first.</div>
+          <label className="pref-row"><input type="checkbox" checked={deletionExportAcknowledged} onChange={(event) => setDeletionExportAcknowledged(event.target.checked)} /><span><b>I have exported any data I need</b><small>Deleted account data cannot be restored after the reviewed deletion is completed.</small></span></label>
+          <label className="field">Type <b>{deletionAccount.name}</b> to confirm<input autoFocus value={deletionConfirmation} onChange={(event) => setDeletionConfirmation(event.target.value)} /></label>
+        </SimpleDialog>
       )}
       {workspaceToEdit && (
         <SimpleDialog
@@ -6943,7 +6969,6 @@ function Billing({ fixture, notify, data, session }: { fixture: boolean; notify:
   const [subscriptionOperationKey, setSubscriptionOperationKey] = useState(() => crypto.randomUUID());
   const [changePreview, setChangePreview] = useState<any>(null);
   const [pendingChange, setPendingChange] = useState<any>(null);
-  const [eventUsage, setEventUsage] = useState<{ used: number; limit: number | null } | null>(fixture ? { used: 2, limit: 20 } : null);
   useEffect(() => {
     if (requestedBillingAccount && accountOptions.some((account: any) => account.id === requestedBillingAccount)) {
       setSelectedAccountId(requestedBillingAccount);
@@ -6965,30 +6990,18 @@ function Billing({ fixture, notify, data, session }: { fixture: boolean; notify:
     catch (error: any) { setBillingData({ error: error.message, catalogue: [], invoices: [], subscriptions: [] }); }
   }
   useEffect(() => { void loadBilling(); }, [session, accountId, fixture]);
-  useEffect(() => {
-    if (!session || !selectedProperties.length) { setEventUsage({ used: 0, limit: 0 }); return; }
-    let cancelled = false;
-    Promise.all(selectedProperties.map((property) => api<EventDefinitionsResponse | EventDefinition[]>(session, `/api/properties/${property.id}/events`).catch(() => null)))
-      .then((results) => {
-        if (cancelled) return;
-        let used = 0;
-        let limit: number | null = 0;
-        for (const result of results) {
-          if (!result) continue;
-          if (Array.isArray(result)) used += result.length;
-          else {
-            used += result.allowance.used;
-            if (result.allowance.limit == null) limit = null;
-            else if (limit != null) limit += result.allowance.limit;
-          }
-        }
-        setEventUsage({ used, limit });
-      });
-    return () => { cancelled = true; };
-  }, [session, selectedProperties.map((property) => property.id).join("|")]);
-  const auditCount = selectedProperties.reduce((total, property) => total + (property.audit_runs || []).filter((run) => new Date(run.created_at).getMonth() === new Date().getMonth() && new Date(run.created_at).getFullYear() === new Date().getFullYear()).length, 0);
-  const selectedPropertyIds = new Set(selectedProperties.map((property) => property.id));
-  const viewerCount = (data.propertyMemberships || []).filter((membership: any) => selectedPropertyIds.has(membership.property_id)).length;
+  const fixtureReset = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth() + 1, 1)).toISOString();
+  const accountUsage = billingData?.usage || (fixture ? {
+    properties: { used: selectedProperties.length, limit: 50 },
+    workspaces: { used: selectedWorkspaceIds.size, limit: 10 },
+    customEvents: { used: 2, limit: 20 * Math.max(1, selectedProperties.length) },
+    audits: { used: 11, limit: 100, resetsAt: fixtureReset },
+    pageviews: { used: 3405, limit: 1_000_000, resetsAt: fixtureReset },
+    analyticsEvents: { used: 4011, limit: 1_500_000, resetsAt: fixtureReset },
+    includedUsers: { used: 2, limit: 3 },
+    paidUsers: { used: 0, limit: 0 },
+    viewerUsers: { used: 0, limit: 10 },
+  } : null);
   const currentSubscription = billingData?.subscriptions?.find((item: any) => ["active", "trialing", "past_due", "unpaid", "incomplete"].includes(item.status));
   async function openPortal() {
     if (!session || !accountId) return;
@@ -7051,13 +7064,17 @@ function Billing({ fixture, notify, data, session }: { fixture: boolean; notify:
         </Panel>
         <Panel title="Current usage">
           <div className="usage-list">
-            <UsageBar label="Properties" used={selectedProperties.length} />
-            <UsageBar label="Workspaces" used={selectedWorkspaceIds.size} />
-            <UsageBar label="Custom events" used={eventUsage?.used ?? 0} limit={eventUsage?.limit} loading={!eventUsage} />
-            <UsageBar label="Audits this month" used={auditCount} />
-            <UsageBar label="Property viewers" used={viewerCount} />
+            <UsageBar label="Property total" {...accountUsage?.properties} loading={!accountUsage} />
+            <UsageBar label="Workspace total" {...accountUsage?.workspaces} loading={!accountUsage} />
+            <UsageBar label="Custom events" {...accountUsage?.customEvents} loading={!accountUsage} />
+            <UsageBar label="Audits this month" {...accountUsage?.audits} loading={!accountUsage} />
+            <UsageBar label="Account pageviews" {...accountUsage?.pageviews} loading={!accountUsage} />
+            <UsageBar label="Account analytics count" {...accountUsage?.analyticsEvents} loading={!accountUsage} />
+            <UsageBar label="Included users" {...accountUsage?.includedUsers} loading={!accountUsage} />
+            <UsageBar label="Paid users" {...accountUsage?.paidUsers} loading={!accountUsage} />
+            <UsageBar label="Viewer users" {...accountUsage?.viewerUsers} loading={!accountUsage} />
           </div>
-          <p className="subtle">Only limits currently exposed by the entitlement service are shown as allowances. Infrastructure safety ceilings are deliberately not presented as commercial plan limits.</p>
+          {billingData?.usageError && <p className="error-note" role="alert">Usage could not be loaded. Refresh the page to try again.</p>}
         </Panel>
       </div>
       <div className="grid equal">
@@ -7075,9 +7092,10 @@ function Billing({ fixture, notify, data, session }: { fixture: boolean; notify:
   );
 }
 
-function UsageBar({ label, used, limit, loading = false }: { label: string; used: number; limit?: number | null; loading?: boolean }) {
-  const percentage = limit && limit > 0 ? Math.min(100, used / limit * 100) : 0;
-  return <div className="usage-item"><span><b>{label}</b><small>{loading ? "Loading…" : `${fmt(used)} / ${limit == null ? "Current allowance not published" : fmt(limit)}`}</small></span>{limit != null && <span className="usage-track"><i style={{ width: `${percentage}%` }} /></span>}</div>;
+function UsageBar({ label, used = 0, limit, loading = false, resetsAt }: { label: string; used?: number; limit?: number | null; loading?: boolean; resetsAt?: string }) {
+  const percentage = typeof limit === "number" && limit > 0 ? Math.min(100, used / limit * 100) : 0;
+  const allowance = limit === null ? "Unlimited" : limit === undefined ? "Allowance unavailable" : fmt(limit);
+  return <div className="usage-item"><span><span><b>{label}</b>{resetsAt && <small>Resets {fmtDate(resetsAt)}</small>}</span><small>{loading ? "Loading…" : `${fmt(used)} / ${allowance}`}</small></span><span className="usage-track" aria-hidden="true"><i style={{ width: `${percentage}%` }} /></span></div>;
 }
 
 function AddPropertyDialog({
@@ -9713,6 +9731,7 @@ function EventsPanel({
               <p>Add <code>data-claritude-event</code> to the clicked element. This records the interaction itself, not the downstream result.</p>
               <pre className="install-code install-code-dark">{`<button data-claritude-event="enquiry-submit-click">\n  Submit enquiry\n</button>`}</pre>
               <CopyButton text={'<button data-claritude-event="enquiry-submit-click">\n  Submit enquiry\n</button>'} label="Copy snippet" successMessage="Event snippet copied" notify={notify} />
+              <p className="subtle">One interaction can record multiple configured events. Put comma-separated names in one attribute, for example <code>data-claritude-event=&quot;apply-for-job-button,looking-to-hire-button,upload-your-cv-button&quot;</code>. Numbered attributes such as <code>data-claritude-event-2</code> are also supported.</p>
               <p className="subtle">Use short, stable, lowercase names. Do not capture form values or unrestricted button text.</p>
             </div>
             <div className="snippet-card">
@@ -10879,7 +10898,11 @@ function Preferences({
     }
   }
   return (
-    <Panel title="Notification preferences">
+    <section className="profile-notification-preferences" aria-labelledby="notification-preferences-title">
+      <div className="settings-section-heading">
+        <h3 id="notification-preferences-title">Notification preferences</h3>
+        <p>Choose which account updates are sent by email and shown in the app.</p>
+      </div>
       {labels.map(([key, label]) => (
         <label className="pref-row" key={key}>
           <input
@@ -10893,7 +10916,7 @@ function Preferences({
           </span>
         </label>
       ))}
-    </Panel>
+    </section>
   );
 }
 function AdvancedRow({

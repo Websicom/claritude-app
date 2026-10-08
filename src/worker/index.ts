@@ -425,7 +425,7 @@ function fallbackUserFacingSnapshot(technicalSnapshot: AuditRegistrySnapshot[]):
 }
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
-const TRACKER_VERSION = "2.3.1";
+const TRACKER_VERSION = "2.3.2";
 const SUPPORTED_TRACKER_VERSIONS = new Set(["2.0.0", "2.1.0", "2.1.1", "2.1.2", "2.1.3", "2.1.4", "2.1.5", "2.3.0", TRACKER_VERSION]);
 app.use("*", secureHeaders({ crossOriginResourcePolicy: false }));
 app.use("*", async (c, next) => {
@@ -805,6 +805,76 @@ async function billingAccess(env: Env, userId: string, accountId: string) {
   ]);
   const owner = membership.data?.role === "owner";
   return { canView: owner || billing.data?.can_view === true || billing.data?.can_manage === true, canManage: owner || billing.data?.can_manage === true };
+}
+
+function entitlementLimit(effective: any, ...keys: string[]): number | null | undefined {
+  for (const source of [effective?.values, effective?.hardCeilings]) {
+    for (const key of keys) {
+      if (!source || !Object.prototype.hasOwnProperty.call(source, key)) continue;
+      if (source[key] === null) return null;
+      const value = Number(source[key]);
+      if (Number.isFinite(value) && value >= 0) return value;
+    }
+  }
+  return undefined;
+}
+
+async function accountBillingUsage(env: Env, accountId: string, subscriptions: any[], effective: any) {
+  const db = admin(env);
+  const now = new Date();
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+  const resetsAt = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString();
+  const packageKey = String(effective.packageKey || "free").toLowerCase().startsWith("pro") ? "pro" : String(effective.packageKey || "free").toLowerCase();
+  const [properties, workspaces, accountMembers, monthlyAnalytics, analyticsRule] = await Promise.all([
+    db.from("properties").select("id").eq("account_id", accountId),
+    db.from("workspaces").select("id", { count: "exact", head: true }).eq("account_id", accountId),
+    db.from("account_memberships").select("user_id,role").eq("account_id", accountId),
+    db.from("account_analytics_monthly_usage").select("accepted_pageviews,rejected_pageviews").eq("account_id", accountId).eq("period_start", monthStart.slice(0, 10)).maybeSingle(),
+    db.from("analytics_plan_rules").select("monthly_pageview_limit").eq("package_key", packageKey).maybeSingle(),
+  ]);
+  const baseError = properties.error || workspaces.error || accountMembers.error || monthlyAnalytics.error || analyticsRule.error;
+  if (baseError) throw new Error("account_usage_unavailable");
+  const propertyIds = (properties.data || []).map((property) => property.id);
+  const emptyCount = Promise.resolve({ count: 0, error: null } as any);
+  const [eventDefinitions, audits, analyticsEvents, propertyViewers] = await Promise.all([
+    propertyIds.length ? db.from("event_definitions").select("id", { count: "exact", head: true }).in("property_id", propertyIds) : emptyCount,
+    propertyIds.length ? db.from("audit_runs").select("id", { count: "exact", head: true }).in("property_id", propertyIds).gte("created_at", monthStart) : emptyCount,
+    propertyIds.length ? db.from("analytics_events").select("id", { count: "exact", head: true }).in("property_id", propertyIds).gte("occurred_at", monthStart) : emptyCount,
+    propertyIds.length ? db.from("property_memberships").select("user_id").in("property_id", propertyIds) : Promise.resolve({ data: [], error: null } as any),
+  ]);
+  const scopedError = eventDefinitions.error || audits.error || analyticsEvents.error || propertyViewers.error;
+  if (scopedError) throw new Error("account_usage_unavailable");
+  const editingUserIds = new Set((accountMembers.data || []).filter((member) => member.role !== "viewer").map((member) => member.user_id));
+  const viewerUserIds = new Set([
+    ...(accountMembers.data || []).filter((member) => member.role === "viewer").map((member) => member.user_id),
+    ...(propertyViewers.data || []).map((member: any) => member.user_id),
+  ]);
+  const includedUsers = entitlementLimit(effective, "editingSeats", "includedUsers");
+  const activeSubscription = (subscriptions || []).find((subscription) => ["active", "trialing", "past_due", "unpaid", "incomplete"].includes(subscription.status));
+  const purchasedUsers = Number(activeSubscription?.billable_additional_seats || 0);
+  const customEventsPerProperty = entitlementLimit(effective, "customEventsPerProperty");
+  const customEventsPerAccount = entitlementLimit(effective, "customEventsPerAccount");
+  const customEventLimit = customEventsPerAccount !== undefined
+    ? customEventsPerAccount
+    : customEventsPerProperty == null
+      ? customEventsPerProperty
+      : customEventsPerProperty * propertyIds.length;
+  const pageviewLimit = Number(analyticsRule.data?.monthly_pageview_limit || entitlementLimit(effective, "trackedPageviewsPerMonth", "accountPageviewsPerMonth"));
+  const analyticsLimit = entitlementLimit(effective, "accountAnalyticsCount", "accountAnalyticsPerMonth", "analyticsEventsPerMonth");
+  const auditLimit = entitlementLimit(effective, "auditsPerMonth", "auditCreditsPerMonth");
+  const viewerLimit = entitlementLimit(effective, "propertyViewers", "viewerUsers");
+  return {
+    measuredAt: now.toISOString(),
+    properties: { used: propertyIds.length, limit: entitlementLimit(effective, "propertiesPerAccount") },
+    workspaces: { used: workspaces.count || 0, limit: entitlementLimit(effective, "workspacesPerAccount") },
+    customEvents: { used: eventDefinitions.count || 0, limit: customEventLimit },
+    audits: { used: audits.count || 0, limit: auditLimit, resetsAt },
+    pageviews: { used: Number(monthlyAnalytics.data?.accepted_pageviews || 0), limit: Number.isFinite(pageviewLimit) && pageviewLimit > 0 ? pageviewLimit : undefined, resetsAt },
+    analyticsEvents: { used: analyticsEvents.count || 0, limit: analyticsLimit, resetsAt },
+    includedUsers: { used: includedUsers == null ? editingUserIds.size : Math.min(editingUserIds.size, includedUsers), limit: includedUsers },
+    paidUsers: { used: Math.max(0, editingUserIds.size - (typeof includedUsers === "number" ? includedUsers : editingUserIds.size)), limit: purchasedUsers },
+    viewerUsers: { used: viewerUserIds.size, limit: viewerLimit },
+  };
 }
 
 async function billingAccountForObject(env: Env, object: any, billingEnvironment = billingEnvironmentForLivemode(object?.livemode)) {
@@ -3031,7 +3101,12 @@ app.get("/api/billing/:accountId", async (c) => {
   ]);
   const config = configuration.data;
   const checkoutReady = Boolean(provider.configured && config?.checkout_enabled && catalogue.data?.some((price) => price.billing_environment === billingEnvironment));
-  return c.json({ accountId, billingEnvironment, isTestAccount: account.data.is_test_account, canManage: access.canManage, providerMode: provider.client ? billingEnvironment : "unconfigured", checkoutReady, portalReady: Boolean(provider.client && (config?.portal_configuration_id || provider.portalConfigurationId)), configuration: config || null, customer: customer.data || null, subscriptions: subscriptions.data || [], invoices: invoices.data || [], payments: payments.data || [], refunds: refunds.data || [], disputes: disputes.data || [], catalogue: catalogue.data || [], complimentaryGrant: grant.data || null, effectiveEntitlements: await effectiveEntitlements(c.env, accountId) });
+  const effective = await effectiveEntitlements(c.env, accountId);
+  let usage = null;
+  let usageError = null;
+  try { usage = await accountBillingUsage(c.env, accountId, subscriptions.data || [], effective); }
+  catch (error) { usageError = errorMessage(error); }
+  return c.json({ accountId, billingEnvironment, isTestAccount: account.data.is_test_account, canManage: access.canManage, providerMode: provider.client ? billingEnvironment : "unconfigured", checkoutReady, portalReady: Boolean(provider.client && (config?.portal_configuration_id || provider.portalConfigurationId)), configuration: config || null, customer: customer.data || null, subscriptions: subscriptions.data || [], invoices: invoices.data || [], payments: payments.data || [], refunds: refunds.data || [], disputes: disputes.data || [], catalogue: catalogue.data || [], complimentaryGrant: grant.data || null, effectiveEntitlements: effective, usage, usageError });
 });
 
 app.post("/api/billing/:accountId/checkout", async (c) => {
@@ -6055,6 +6130,44 @@ app.get("/api/account/export", async (c) => {
     reportSchedules: schedules.data,
     activity: activity.data,
   });
+});
+
+app.post("/api/account/deletion-request", async (c) => {
+  const body = await c.req.json<{ accountId?: string; confirmation?: string; dataExportAcknowledged?: boolean }>().catch(() => ({} as any));
+  const accountId = String(body.accountId || "");
+  if (!accountId || body.dataExportAcknowledged !== true) return c.json({ error: "account_and_export_acknowledgement_required" }, 400);
+  const service = admin(c.env);
+  const [membership, account] = await Promise.all([
+    service.from("account_memberships").select("role").eq("account_id", accountId).eq("user_id", c.get("userId")).maybeSingle(),
+    service.from("accounts").select("id,name,access_state").eq("id", accountId).maybeSingle(),
+  ]);
+  if (membership.data?.role !== "owner") return c.json({ error: "account_owner_access_required" }, 403);
+  if (!account.data) return c.json({ error: "account_not_found" }, 404);
+  if (String(body.confirmation || "").trim() !== account.data.name) return c.json({ error: "account_name_confirmation_required" }, 400);
+  const existing = await service.from("deletion_requests").select("id,state,created_at").eq("account_id", accountId).in("state", ["review_hold", "approved", "scheduled"]).order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (existing.data) return c.json({ request: existing.data, reused: true });
+  const [workspaces, properties, members] = await Promise.all([
+    service.from("workspaces").select("id", { count: "exact", head: true }).eq("account_id", accountId),
+    service.from("properties").select("id", { count: "exact", head: true }).eq("account_id", accountId),
+    service.from("account_memberships").select("user_id", { count: "exact", head: true }).eq("account_id", accountId),
+  ]);
+  const dryRun = {
+    generatedAt: new Date().toISOString(),
+    requestedByUserId: c.get("userId"),
+    account: { id: account.data.id, name: account.data.name, accessState: account.data.access_state },
+    accountScopedResources: { workspaces: workspaces.count || 0, properties: properties.count || 0, memberships: members.count || 0 },
+    safeguards: { dataExportAcknowledged: true, reviewRequired: true, immediateDeletion: false },
+  };
+  const request = await service.from("deletion_requests").insert({
+    account_id: accountId,
+    state: "review_hold",
+    dry_run: dryRun,
+    reason: "Account owner requested deletion through Account Settings",
+    requested_by: null,
+  }).select("id,state,created_at").single();
+  if (request.error) return c.json({ error: "account_deletion_request_failed" }, 400);
+  await recordActivity(c.env, c.get("userId"), "account.deletion_requested", undefined, { accountId, deletionRequestId: request.data.id });
+  return c.json({ request: request.data }, 201);
 });
 
 app.get("/api/properties/:id/overview", async (c) => {
@@ -10611,6 +10724,16 @@ export function trackerSessionAcquisition(
   return attribution;
 }
 
+export function trackerEventNames(element: any) {
+  const values = Array.from(element?.attributes || [])
+    .filter((attribute: any) => {
+      const name = String(attribute?.name || "").toLowerCase();
+      return name === "data-claritude-event" || name.startsWith("data-claritude-event-");
+    })
+    .flatMap((attribute: any) => String(attribute?.value || "").split(/[,;|\s]+/));
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
 export const TRACKER_SOURCE = `(()=>{
   let s=document.currentScript;if(!s){const scripts=document.getElementsByTagName('script');for(let i=scripts.length-1;i>=0;i--){const candidate=scripts[i],src=candidate.getAttribute('src')||'';if(candidate.getAttribute('data-property')&&/(?:\\/c|\\/tracker)\\.js(?:[?#]|$)/.test(src)){s=candidate;break}}}
   const p=s&&s.getAttribute('data-property'),endpoint=s&&new URL('/collect',s.src).href,base=s&&new URL('/',s.src).href;
@@ -10629,7 +10752,8 @@ export const TRACKER_SOURCE = `(()=>{
   const scheduleCheckpoint=()=>{dirty=true;if(!stateTimer)stateTimer=setTimeout(()=>{stateTimer=0;checkpoint()},2000)};
   const checkpoint=(force=false)=>{if(!force&&!dirty)return;checkpointSequence+=1;emit('view_state',{meta:{view_started_at:pageStartedAt,checkpoint_sequence:checkpointSequence,active_seconds:active,max_scroll:maxScroll,key_events:Object.assign({},keyEventCounts),visible_sections:Array.from(visibleSections),vitals:Object.assign({},vitalState)}});dirty=false;lastCheckpointActive=active};
   const recordKeyEvent=(type,name)=>{const key=type+':'+name;keyEventCounts[key]=(keyEventCounts[key]||0)+1;scheduleCheckpoint()};
-  addEventListener('click',e=>{lastActivity=Date.now();const a=e.target.closest('[data-claritude-event],a[href]');if(!a)return;const name=a.dataset.claritudeEvent;if(name){emit('click',{name});recordKeyEvent('click',name)}if(a.href&&new URL(a.href,location.href).host!==location.host){const host=new URL(a.href).host;emit('outbound',{name:host});recordKeyEvent('outbound',host)}},{passive:true});
+  const eventNames=${trackerEventNames.toString()};
+  addEventListener('click',e=>{lastActivity=Date.now();let node=e.target&&e.target.nodeType===1?e.target:e.target&&e.target.parentElement,names=[];while(node&&node!==document){names=eventNames(node);if(names.length)break;node=node.parentElement}for(const name of names){emit('click',{name});recordKeyEvent('click',name)}const link=e.target&&e.target.closest?e.target.closest('a[href]'):null;if(link&&new URL(link.href,location.href).host!==location.host){const host=new URL(link.href).host;emit('outbound',{name:host});recordKeyEvent('outbound',host)}},{passive:true});
   ['keydown','pointerdown','touchstart'].forEach(name=>addEventListener(name,()=>{lastActivity=Date.now()},{passive:true}));
   const checkScroll=()=>{const root=document.documentElement,height=Math.max(root.scrollHeight,document.body&&document.body.scrollHeight||0,1),n=Math.min(100,Math.round((scrollY+innerHeight)/height*100));if(n>maxScroll){maxScroll=n;dirty=true}[25,50,75,90].forEach(x=>{if(n>=x&&!marks.has(x)){marks.add(x);scheduleCheckpoint()}})};
   addEventListener('scroll',checkScroll,{passive:true});addEventListener('resize',checkScroll,{passive:true});

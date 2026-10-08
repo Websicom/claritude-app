@@ -28,6 +28,7 @@ import {
   normalizePropertyRelations,
   meaningfulAccountActivity,
   TRACKER_SOURCE,
+  trackerEventNames,
   trackerSessionAcquisition,
   uptimeDueHorizon,
   uptimeDailyStatus,
@@ -62,6 +63,22 @@ import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
 
 describe("worker evidence pipelines", () => {
+  it("collects every configured custom event on the same clicked element", () => {
+    const attributes = [
+      { name: "class", value: "submit" },
+      { name: "data-claritude-event", value: "apply-for-job-button, looking-to-hire-button" },
+      { name: "data-claritude-event-3", value: "upload-your-cv-button" },
+    ];
+    expect(trackerEventNames({ attributes })).toEqual([
+      "apply-for-job-button",
+      "looking-to-hire-button",
+      "upload-your-cv-button",
+    ]);
+    expect(trackerEventNames({ attributes: [
+      { name: "data-claritude-event", value: "one one;two|three" },
+    ] })).toEqual(["one", "two", "three"]);
+  });
+
   it("expands positional analytics rows without changing legacy object rows", () => {
     expect(expandCompactAnalyticsRows(
       [["2026-10-07T00:00:00Z", "pageview", "/"]],
