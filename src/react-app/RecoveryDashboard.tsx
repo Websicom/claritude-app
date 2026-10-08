@@ -1139,9 +1139,14 @@ export function ClaritudeApplication({
           close={() => setAddOpen(false)}
           done={async (created) => {
             setAddOpen(false);
-            await reload();
+            let refreshed = true;
+            try {
+              await reload();
+            } catch {
+              refreshed = false;
+            }
             navigate(`/overview?property=${created.id}&workspace=${created.workspace_id}`);
-            notify("Property added");
+            notify(refreshed ? "Property added" : "Property added. Refresh to load its latest status.");
           }}
         />
       )}
@@ -7274,6 +7279,7 @@ function AddPropertyDialog({
         property_name_required: "Enter a property name.",
         public_http_url_required: "Enter a valid public http or https domain.",
         property_already_exists: "A property for this domain already exists in that workspace.",
+        property_already_exists_in_account: "A property for this domain already exists in this account.",
       };
       setError(
         messages[reason?.message] ||

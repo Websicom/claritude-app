@@ -139,6 +139,18 @@ export function allowedUptimeIntervals(entitlement: unknown) {
   return [1, 2, 5, 10, 15, 30, 60].filter((interval) => interval >= minimum);
 }
 
+export function propertyCreateError(message: string) {
+  if (message.includes("property_limit_reached"))
+    return { error: "property_limit_reached", status: 409 as const };
+  if (message.includes("property_already_exists_in_account"))
+    return { error: "property_already_exists_in_account", status: 409 as const };
+  if (message.includes("workspace_access_denied"))
+    return { error: "workspace_access_denied", status: 403 as const };
+  if (message.includes("analytics_plan_rule_unavailable"))
+    return { error: "analytics_plan_rule_unavailable", status: 503 as const };
+  return { error: "property_create_failed", status: 400 as const };
+}
+
 function effectiveCustomEventAllowance(effective: Awaited<ReturnType<typeof effectiveEntitlements>>, used: number) {
   const configured = effective.values.customEventsPerProperty;
   const limit = configured === null ? null : Number(configured);
@@ -1847,7 +1859,6 @@ app.post("/api/properties", async (c) => {
       console.error("property_create_membership_lookup_failed", membershipError);
     return c.json({ error: "workspace_access_denied" }, 403);
   }
-  const service = admin(c.env);
   let entitlements;
   try { entitlements = await effectiveEntitlements(c.env, accountId); }
   catch { return c.json({ error: "effective_entitlements_unavailable" }, 503); }
@@ -1856,103 +1867,40 @@ app.post("/api/properties", async (c) => {
   const uptimeInterval = Number.isSafeInteger(configuredUptimeInterval)
     ? configuredUptimeInterval
     : uptimeMinimumInterval(entitlements.packageKey);
-  const normalizedPackageKey = String(entitlements.packageKey || "free").toLowerCase().startsWith("pro")
-    ? "pro"
-    : String(entitlements.packageKey || "free").toLowerCase();
-  const analyticsRule = await service
-    .from("analytics_plan_rules")
-    .select("properties_limit")
-    .eq("package_key", normalizedPackageKey)
-    .maybeSingle();
-  if (analyticsRule.error || !analyticsRule.data)
-    return c.json({ error: "analytics_plan_rule_unavailable" }, 503);
-  const { data: accountWorkspaces, error: accountWorkspacesError } = await service
-    .from("workspaces")
-    .select("id")
-    .eq("account_id", accountId);
-  if (accountWorkspacesError) {
-    console.error("property_create_account_scope_failed", accountWorkspacesError);
-    return c.json({ error: "property_create_failed" }, 500);
-  }
-  const workspaceIds = (accountWorkspaces || []).map((workspace) => workspace.id);
-  const { data: accountProperties, error: accountPropertiesError } = await service
-    .from("properties")
-    .select("id,workspace_id,canonical_host,url")
-    .in("workspace_id", workspaceIds);
-  if (accountPropertiesError) {
-    console.error("property_create_limit_lookup_failed", accountPropertiesError);
-    return c.json({ error: "property_create_failed" }, 500);
-  }
-  const configuredPropertyLimit = Number(analyticsRule.data.properties_limit);
-  const propertyLimit = Math.min(LIMITS.propertiesPerAccount, Number.isFinite(configuredPropertyLimit) ? configuredPropertyLimit : LIMITS.propertiesPerAccount);
-  if ((accountProperties || []).length >= propertyLimit)
-    return c.json({ error: "property_limit_reached" }, 409);
-  const duplicate = (accountProperties || []).find((property) => {
-    try { return new URL(property.url).href === target.href; } catch { return false; }
-  });
-  if (duplicate) return c.json({ error: "property_already_exists_in_account", propertyId: duplicate.id, workspaceId: duplicate.workspace_id, canMove: duplicate.workspace_id !== b.workspaceId }, 409);
   const trackingId = `cl_${crypto.randomUUID().replaceAll("-", "")}`;
-  // INSERT ... RETURNING also evaluates the SELECT policy before the new row is
-  // visible to its relationship-based predicate. Keep both operations under RLS,
-  // but commit the insert before reading the new property back.
-  const { error } = await db
-    .from("properties")
-    .insert({
-      workspace_id: b.workspaceId,
-      name,
-      url: target.href,
-      canonical_host: canonicalHost,
-      tracking_id: trackingId,
-    });
-  if (error) {
-    console.error("property_create_insert_failed", {
-      code: error.code,
-      workspaceId: b.workspaceId,
-      userId: c.get("userId"),
-    });
-    return c.json({ error: "property_create_failed" }, 400);
-  }
-  const { data, error: readError } = await db
-    .from("properties")
-    .select("*")
-    .eq("tracking_id", trackingId)
-    .single();
-  if (readError || !data) {
-    console.error("property_create_read_failed", {
-      code: readError?.code,
-      workspaceId: b.workspaceId,
-      userId: c.get("userId"),
-    });
-    return c.json({ error: "property_created_but_reload_required" }, 500);
-  }
-  const { error: monitorUpdateError } = await service
-    .from("uptime_monitors")
-    .update({ interval_minutes: uptimeInterval, next_check_at: new Date().toISOString(), enabled: true })
-    .eq("property_id", data.id);
-  if (monitorUpdateError)
-    return c.json({ error: `property_created_monitor_failed: ${monitorUpdateError.message}` }, 500);
-  const { data: monitor, error: monitorError } = await service
-    .from("uptime_monitors")
-    .select("id")
-    .eq("property_id", data.id)
-    .single();
-  if (monitorError || !monitor)
-    return c.json({ error: `property_created_monitor_failed: ${monitorError?.message || "monitor_not_returned"}` }, 500);
-  const { error: auditPageError } = await service
-    .from("property_audit_pages")
-    .upsert({
-      property_id: data.id,
-      name: "Homepage",
-      path: "/",
-      created_by: c.get("userId"),
-    }, { onConflict: "property_id,path", ignoreDuplicates: true });
-  if (auditPageError)
-    return c.json({ error: `property_created_audit_page_failed: ${auditPageError.message}` }, 500);
-  await c.env.JOBS.send({ type: "uptime", id: monitor.id });
-  await recordActivity(c.env, c.get("userId"), "property.created", data.id, {
-    workspaceId: b.workspaceId,
+  const { data: created, error: createError } = await db.rpc("create_property_atomic", {
+    p_account_id: accountId,
+    p_workspace_id: b.workspaceId,
+    p_name: name,
+    p_url: target.href,
+    p_canonical_host: canonicalHost,
+    p_tracking_id: trackingId,
+    p_uptime_interval: uptimeInterval,
   });
-  return c.json(data, 201);
+  if (createError || !created?.property || !created?.monitorId) {
+    const message = createError?.message || "property_create_failed";
+    console.error("property_create_atomic_failed", {
+      code: createError?.code,
+      message,
+      workspaceId: b.workspaceId,
+      userId: c.get("userId"),
+    });
+    const mapped = propertyCreateError(message);
+    return c.json({ error: mapped.error }, mapped.status);
+  }
+  try {
+    await c.env.JOBS.send({ type: "uptime", id: created.monitorId });
+  } catch (queueError) {
+    // Creation is already complete. The scheduled uptime dispatcher will pick
+    // up this due monitor, so a transient queue failure must not be reported as
+    // a failed property creation.
+    console.error("property_create_initial_uptime_queue_failed", {
+      propertyId: created.property.id,
+      monitorId: created.monitorId,
+      error: queueError instanceof Error ? queueError.message : String(queueError),
+    });
+  }
+  return c.json(created.property, 201);
 });
 
 app.patch("/api/properties/:id", async (c) => {

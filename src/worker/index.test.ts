@@ -47,6 +47,7 @@ import {
   resolveEffectiveEntitlements,
   validateComplimentaryGrantInput,
   packageLimitConflicts,
+  propertyCreateError,
   schemaCompatibleSharedEvidenceRows,
   escapeCsvCell,
   parseAuthAssurance,
@@ -66,6 +67,21 @@ import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
 
 describe("worker evidence pipelines", () => {
+  it("preserves actionable property provisioning errors from the atomic RPC", () => {
+    expect(propertyCreateError("property_limit_reached")).toEqual({
+      error: "property_limit_reached",
+      status: 409,
+    });
+    expect(propertyCreateError("duplicate: property_already_exists_in_account")).toEqual({
+      error: "property_already_exists_in_account",
+      status: 409,
+    });
+    expect(propertyCreateError("unexpected database response")).toEqual({
+      error: "property_create_failed",
+      status: 400,
+    });
+  });
+
   it("enforces the plan-specific uptime frequency floor", () => {
     expect(uptimeMinimumInterval("free")).toBe(15);
     expect(uptimeMinimumInterval("essentials")).toBe(5);
