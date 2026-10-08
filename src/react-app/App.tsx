@@ -4,6 +4,7 @@ import { type FormEvent, lazy, Suspense, useCallback, useEffect, useRef, useStat
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { apiRequest as api } from "./api";
 import { supabase } from "./supabase";
+import { ALERT_BANNER_SNOOZE_KEY } from "../shared/notifications";
 
 const ClaritudeApplication = lazy(() =>
   import("./RecoveryDashboard").then((module) => ({ default: module.ClaritudeApplication })),
@@ -147,9 +148,9 @@ export function App() {
       setSession(data.session);
       setReady(true);
     });
-    const { data } = supabase.auth.onAuthStateChange((_event, next) =>
-      setSession((current) => current?.access_token === next?.access_token && current?.user.id === next?.user.id ? current : next),
-    );
+    const { data } = supabase.auth.onAuthStateChange((_event, next) => {
+      setSession((current) => current?.access_token === next?.access_token && current?.user.id === next?.user.id ? current : next);
+    });
     return () => data.subscription.unsubscribe();
   }, [fixture]);
   if (!ready) return <Splash />;
@@ -223,7 +224,10 @@ function Workspace({ session }: { session: Session }) {
         session={session}
         data={data}
         reload={load}
-        onSignOut={() => void supabase.auth.signOut()}
+        onSignOut={() => {
+          sessionStorage.removeItem(ALERT_BANNER_SNOOZE_KEY);
+          void supabase.auth.signOut();
+        }}
       />
     </DashboardBoundary>
   );
@@ -273,6 +277,7 @@ function Auth() {
           password,
         });
         if (error) throw error;
+        sessionStorage.removeItem(ALERT_BANNER_SNOOZE_KEY);
         navigate("/");
       }
     } catch (reason: any) {

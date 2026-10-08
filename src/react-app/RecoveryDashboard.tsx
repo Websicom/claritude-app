@@ -72,6 +72,7 @@ import {
 import { apiRequest as api } from "./api";
 import { supabase } from "./supabase";
 import { estimateIncidentDowntime } from "../shared/uptime";
+import { ALERT_BANNER_SNOOZE_KEY, notificationCentreHref, notificationMatchesScope } from "../shared/notifications";
 import { USER_FACING_AUDIT_GROUPS } from "../shared/audit-user-facing-registry.generated";
 import { AI_PLATFORMS, aiPlatformPromptUrl, type AiPlatform } from "../shared/ai-platforms";
 
@@ -340,6 +341,7 @@ type DemoMetrics = {
   status?: string;
 };
 type Notify = (message: string) => void;
+type NotificationSummary = { unread: number; latest: any | null };
 let activeDisplayTimezone = "Europe/London";
 let activeDateFormat: "DD/MM/YYYY" | "MM/DD/YYYY" | "YYYY-MM-DD" = "DD/MM/YYYY";
 
@@ -495,7 +497,11 @@ export function ClaritudeApplication({
     [propertyMenu, setPropertyMenu] = useState(false),
     [userMenu, setUserMenu] = useState(false),
     [mobile, setMobile] = useState(false),
-    [alertsSnoozedLocally, setAlertsSnoozedLocally] = useState(false),
+    [alertsSnoozedLocally, setAlertsSnoozedLocally] = useState(() => {
+      const until = Number(sessionStorage.getItem(ALERT_BANNER_SNOOZE_KEY) || 0);
+      return Number.isFinite(until) && until > Date.now();
+    }),
+    [notificationSummary, setNotificationSummary] = useState<NotificationSummary | null>(null),
     [toast, setToast] = useState(""),
     [addOpen, setAddOpen] = useState(false),
     [workspaceOpen, setWorkspaceOpen] = useState(false),
@@ -510,8 +516,10 @@ export function ClaritudeApplication({
     try { return JSON.parse(localStorage.getItem("claritude-delegation") || "null"); } catch { return null; }
   });
   const allProperties = data.properties;
-  const requestedWorkspace = new URLSearchParams(loc.search).get("workspace");
-  const requested = new URLSearchParams(loc.search).get("property");
+  const locationParams = new URLSearchParams(loc.search);
+  const requestedWorkspace = locationParams.get("workspace");
+  const requestedAccount = locationParams.get("account");
+  const requested = locationParams.get("property");
   const platformContext = loc.pathname === "/superadmin";
   const property =
     allProperties.find((p) => p.id === requested) ||
@@ -529,6 +537,9 @@ export function ClaritudeApplication({
     ) ||
     allWorkspaceMemberships.find(
       (entry: any) => entry.workspaces?.id === property?.workspace_id,
+    ) ||
+    allWorkspaceMemberships.find(
+      (entry: any) => entry.workspaces?.account_id === requestedAccount,
     ) ||
     allWorkspaceMemberships[0];
   const activeAccountId =
@@ -603,9 +614,31 @@ export function ClaritudeApplication({
   }, []);
   const href = (path: string, id = property?.id) =>
     `/${path}${id ? `?property=${id}` : ""}`;
+  const notificationAccountId = property ? undefined : activeAccountId;
+  const notificationHref = notificationCentreHref(property?.id, notificationAccountId);
   const scopedNotifications = property
     ? data.notifications.filter((notification: any) => notification.property_id === property.id)
-    : data.notifications;
+    : data.notifications.filter((notification: any) => !notificationAccountId || notification.account_id === notificationAccountId);
+  const fallbackUnreadNotifications = scopedNotifications.filter((notification: any) => !notification.read_at);
+  const effectiveNotificationSummary = notificationSummary || {
+    unread: fallbackUnreadNotifications.length,
+    latest: fallbackUnreadNotifications[0] || null,
+  };
+  useEffect(() => {
+    setNotificationSummary(null);
+    if (fixture || !session || platformContext) return;
+    const controller = new AbortController();
+    const params = new URLSearchParams();
+    if (property?.id) params.set("propertyId", property.id);
+    else if (notificationAccountId) params.set("accountId", notificationAccountId);
+    void api<NotificationSummary>(session, `/api/notifications/summary${params.size ? `?${params}` : ""}`, { signal: controller.signal })
+      .then(setNotificationSummary)
+      .catch((error) => {
+        if (!(error instanceof DOMException && error.name === "AbortError"))
+          console.error("notification_summary_failed", error);
+      });
+    return () => controller.abort();
+  }, [fixture, session, platformContext, property?.id, notificationAccountId, data.notifications]);
   const title = workspaceContext
     ? loc.pathname === "/" ? "Workspace Overview" : "Workspace Notifications"
     : platformContext
@@ -615,10 +648,7 @@ export function ClaritudeApplication({
       : section === "settings"
         ? "Property settings"
         : cap(section);
-  const alertsSnoozed = alertsSnoozedLocally || Boolean(
-    data.profile?.alerts_snoozed_until &&
-    new Date(data.profile.alerts_snoozed_until).valueOf() > Date.now(),
-  );
+  const alertsSnoozed = alertsSnoozedLocally;
   const warning = platformContext || alertsSnoozed
     ? null
     : fixture
@@ -630,28 +660,15 @@ export function ClaritudeApplication({
           ? "HTTP 503 confirmed 6 minutes ago. The property is currently unavailable."
           : "Critical and warning checks remain unresolved since the latest scan.",
       }
-    : property && property.verification_status !== "verified"
-      ? {
-          title: "Property verification is incomplete",
-          detail:
-            "Verify ownership to confirm installation and unlock trusted status.",
-        }
-      : property && !property.tracking_last_received_at
-        ? {
-            title: property.verification_status === "verified" ? "Tracking installed — awaiting first visit" : "Tracking script not installed",
-            detail: property.verification_status === "verified"
-              ? "Visit the published site once to start analytics collection. Clear site or CDN caches if the code was just added."
-              : "Install the tracking snippet, clear site or CDN caches, then verify the public page.",
-          }
-        : scopedNotifications[0]
+    : effectiveNotificationSummary.latest
           ? {
-              title: scopedNotifications[0].title,
-              detail: scopedNotifications[0].body,
+              title: effectiveNotificationSummary.latest.title,
+              detail: effectiveNotificationSummary.latest.body,
             }
           : null;
   const importantAlertCount = fixture
     ? 5
-    : scopedNotifications.filter((notification: any) => !notification.read_at).length || (warning ? 1 : 0);
+    : effectiveNotificationSummary.unread;
   function selectProperty(id?: string) {
     setPropertyMenu(false);
     navigate(
@@ -689,26 +706,10 @@ export function ClaritudeApplication({
     document.documentElement.dataset.theme = appearance;
     localStorage.setItem("claritude-appearance", appearance);
   }, [appearance]);
-  async function snoozeAlerts() {
+  function snoozeAlerts() {
+    sessionStorage.setItem(ALERT_BANNER_SNOOZE_KEY, String(Date.now() + 24 * 60 * 60_000));
     setAlertsSnoozedLocally(true);
-    if (!session) {
-      notify("Alerts snoozed for this session");
-      return;
-    }
-    try {
-      await api(session, "/api/profile", {
-        method: "PATCH",
-        body: JSON.stringify({
-          full_name: data.profile?.full_name,
-          timezone: data.profile?.timezone,
-          alerts_snoozed_until: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
-        }),
-      });
-      notify("Alerts snoozed for 24 hours");
-      reload();
-    } catch (error: any) {
-      notify(`Alerts snoozed for this session. ${error.message}`);
-    }
+    notify("Alert banner snoozed for 24 hours or until your next login");
   }
   return (
     <div className="app reference-app">
@@ -842,10 +843,11 @@ export function ClaritudeApplication({
                 </Link>
                 <Link
                   className={section === "notifications" ? "active" : ""}
-                  to="/notifications"
+                  to={notificationHref}
                 >
                   <Bell />
                   Workspace Notifications
+                  {importantAlertCount > 0 && <i className="nav-notification-count">{importantAlertCount}</i>}
                 </Link>
               </>
             ) : (
@@ -950,17 +952,12 @@ export function ClaritudeApplication({
               <Link
                 className="iconbtn notif-btn"
                 aria-label="Notifications"
-                to={property ? `/notifications?property=${property.id}` : "/notifications"}
+                to={notificationHref}
               >
                 <Bell />
-                {(fixture
-                  ? 5
-                  : scopedNotifications.filter((notification: any) => !notification.read_at).length
-                ) > 0 && (
+                {importantAlertCount > 0 && (
                   <i className="notif-count">
-                    {fixture
-                      ? 5
-                      : scopedNotifications.filter((notification: any) => !notification.read_at).length}
+                    {importantAlertCount}
                   </i>
                 )}
               </Link>
@@ -985,7 +982,7 @@ export function ClaritudeApplication({
               <div className="warning warning-desktop">
                 <Link
                   className="important-alerts-link"
-                  to={property ? `/notifications?property=${property.id}` : "/notifications"}
+                  to={notificationHref}
                 >
                   <i className="dot" />
                   <b>{importantAlertCount} new important {importantAlertCount === 1 ? "alert" : "alerts"}</b>
@@ -1003,7 +1000,7 @@ export function ClaritudeApplication({
               <div className="warning warning-mobile-compact">
                 <Link
                   className="important-alerts-link mobile-important-alerts-link"
-                  to={property ? `/notifications?property=${property.id}` : "/notifications"}
+                  to={notificationHref}
                 >
                   <i className="dot" />
                   <b>{importantAlertCount} new important {importantAlertCount === 1 ? "alert" : "alerts"}</b>
@@ -1043,8 +1040,9 @@ export function ClaritudeApplication({
                   fixture={fixture}
                   reload={reload}
                   notify={notify}
-                  properties={allProperties}
+                  properties={allProperties.filter((item: any) => !activeAccountId || item.account_id === activeAccountId)}
                   propertyId={property?.id}
+                  accountId={activeAccountId}
                 />
               }
             />
@@ -1817,6 +1815,7 @@ function Notifications({
   notify,
   properties,
   propertyId,
+  accountId,
 }: {
   session: Session | null;
   data: Bootstrap;
@@ -1825,42 +1824,87 @@ function Notifications({
   notify: Notify;
   properties: Property[];
   propertyId?: string;
+  accountId?: string;
 }) {
   const notificationLocation = useLocation();
   const notificationNavigate = useNavigate();
-  const [scope, setScope] = useState("All"),
-    [status, setStatus] = useState("All statuses"),
-    [selectedProperty, setSelectedProperty] = useState(propertyId || "");
+  const [scope, setScope] = useState("Active"),
+    [selectedProperty, setSelectedProperty] = useState(propertyId || ""),
+    [liveItems, setLiveItems] = useState<any[]>([]),
+    [total, setTotal] = useState(0),
+    [loading, setLoading] = useState(!fixture),
+    [loadingMore, setLoadingMore] = useState(false);
   useEffect(() => setSelectedProperty(propertyId || ""), [propertyId]);
   const fixtureItems = fixture
     ? [
-        { id: "f1", title: "Monitor alert", body: "North Commerce returned HTTP 503 and is currently unavailable.", category: "monitoring", created_at: new Date().toISOString(), read_at: null },
-        { id: "f2", title: "Audit issues", body: "Five unresolved audit findings need review.", category: "audits", created_at: new Date().toISOString(), read_at: null },
+        { id: "f1", account_id: accountId, property_id: properties[0]?.id, title: "Monitor alert", body: "North Commerce returned HTTP 503 and is currently unavailable.", category: "monitoring", created_at: new Date().toISOString(), read_at: null },
+        { id: "f2", account_id: accountId, property_id: properties[0]?.id, title: "Audit issues", body: "Five unresolved audit findings need review.", category: "audits", created_at: new Date().toISOString(), read_at: null },
+        { id: "f3", account_id: accountId, property_id: properties[0]?.id, title: "Previous tracking alert", body: "Tracking resumed after a temporary interruption.", category: "analytics", created_at: new Date(Date.now() - 86400000).toISOString(), read_at: new Date().toISOString() },
       ]
     : [];
-  const source = (fixture ? fixtureItems : data.notifications).filter((notification: any) =>
-    !selectedProperty || notification.property_id === selectedProperty,
-  );
+  const notificationCategories =
+    scope === "Monitoring" ? ["monitoring", "monitor_incidents", "recoveries"] :
+    scope === "Audits" ? ["audits", "audit_issues"] :
+    scope === "Analytics" ? ["analytics", "tracking_problems"] :
+    scope === "Account" ? ["account"] : [];
+  const notificationState = scope === "Archived" ? "archived" : "active";
+  function notificationListParams(offset = 0) {
+    const params = new URLSearchParams({ limit: "100", offset: String(offset), state: notificationState });
+    if (selectedProperty) params.set("propertyId", selectedProperty);
+    else if (accountId) params.set("accountId", accountId);
+    if (notificationCategories.length) params.set("categories", notificationCategories.join(","));
+    return params;
+  }
+  useEffect(() => {
+    if (fixture || !session) return;
+    const controller = new AbortController();
+    let active = true;
+    const params = notificationListParams();
+    setLoading(true);
+    void api<{ items: any[]; total: number }>(session, `/api/notifications?${params}`, { signal: controller.signal })
+      .then((result) => {
+        if (!active) return;
+        setLiveItems(result.items);
+        setTotal(result.total);
+      })
+      .catch((error) => {
+        if (active && !(error instanceof DOMException && error.name === "AbortError")) notify(error.message);
+      })
+      .finally(() => { if (active) setLoading(false); });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [fixture, session, selectedProperty, accountId, scope, data.notifications]);
+  const source = fixture ? fixtureItems.filter((notification: any) =>
+    notificationMatchesScope(notification, selectedProperty || undefined, selectedProperty ? undefined : accountId),
+  ) : liveItems;
   const items = source.filter((notification: any) => {
     const category = String(notification.category || "account").toLowerCase();
-    const scopeMatch =
-      scope === "All" ||
-      (scope === "Unread" && !notification.read_at) ||
-      (scope === "Monitoring" && ["monitoring", "monitor_incidents", "recoveries"].includes(category)) ||
-      (scope === "Audits" && ["audits", "audit_issues"].includes(category)) ||
-      (scope === "Analytics" && ["analytics", "tracking_problems"].includes(category)) ||
-      (scope === "Account" && category === "account");
-    const statusMatch =
-      status === "All statuses" ||
-      (status === "Unread" && !notification.read_at) ||
-      (status === "Read" && Boolean(notification.read_at));
-    return scopeMatch && statusMatch;
+    const stateMatch = notificationState === "archived" ? Boolean(notification.read_at) : !notification.read_at;
+    return stateMatch && (!notificationCategories.length || notificationCategories.includes(category));
   });
+  async function loadMore() {
+    if (!session || fixture || loadingMore || liveItems.length >= total) return;
+    const params = notificationListParams(liveItems.length);
+    setLoadingMore(true);
+    try {
+      const result = await api<{ items: any[]; total: number }>(session, `/api/notifications?${params}`);
+      setLiveItems((current) => [...current, ...result.items]);
+      setTotal(result.total);
+    } catch (error: any) {
+      notify(error.message);
+    } finally {
+      setLoadingMore(false);
+    }
+  }
   async function markRead(id: string) {
     if (!session) return;
     try {
       await api(session, `/api/notifications/${id}/read`, { method: "PATCH" });
-      reload();
+      setLiveItems((current) => current.filter((item) => item.id !== id));
+      setTotal((current) => Math.max(0, current - 1));
+      void reload();
       notify("Notification marked as read");
     } catch (error: any) {
       notify(error.message);
@@ -1871,9 +1915,15 @@ function Notifications({
     try {
       const result = await api<{ updated: number }>(session, "/api/notifications/read-all", {
         method: "POST",
-        body: JSON.stringify({ propertyId: selectedProperty || null }),
+        body: JSON.stringify({
+          propertyId: selectedProperty || null,
+          accountId: selectedProperty ? null : accountId || null,
+          categories: notificationCategories.length ? notificationCategories : null,
+        }),
       });
-      reload();
+      setLiveItems([]);
+      setTotal(0);
+      void reload();
       notify(`${result.updated} notifications marked as read`);
     } catch (error: any) {
       notify(error.message);
@@ -1895,8 +1945,8 @@ function Notifications({
     >
       <Tabs
         labels={[
-          "All",
-          "Unread",
+          "Active",
+          "Archived",
           "Monitoring",
           "Audits",
           "Analytics",
@@ -1917,7 +1967,11 @@ function Notifications({
                 setSelectedProperty(nextProperty);
                 const next = new URLSearchParams(notificationLocation.search);
                 if (nextProperty) next.set("property", nextProperty);
-                else next.delete("property");
+                else {
+                  next.delete("property");
+                  if (accountId) next.set("account", accountId);
+                }
+                if (nextProperty) next.delete("account");
                 notificationNavigate(`${notificationLocation.pathname}${next.size ? `?${next}` : ""}`);
               }}
             >
@@ -1925,17 +1979,11 @@ function Notifications({
               {properties.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
           </label>
-          <label>
-            Status
-            <select value={status} onChange={(event) => setStatus(event.target.value)}>
-              <option>All statuses</option>
-              <option>Unread</option>
-              <option>Read</option>
-            </select>
-          </label>
-          <small className="subtle">{items.length} notifications</small>
+          <small className="subtle">{items.length} shown · {total || source.length} total</small>
         </div>
-        {items.length ? (
+        {loading ? (
+          <Empty title="Loading notifications" detail="Retrieving notifications for this scope." />
+        ) : items.length ? (
           items.map((notification: any) => (
             <div className="notification-card" key={notification.id}>
               <CircleAlert />
@@ -1949,13 +1997,7 @@ function Notifications({
                 </small>
                 <small>{relative(notification.created_at)}</small>
               </span>
-              <button
-                className="btn"
-                onClick={() => markRead(notification.id)}
-                disabled={!session || Boolean(notification.read_at)}
-              >
-                {notification.read_at ? "Read" : "Mark read"}
-              </button>
+              {!notification.read_at && <button className="btn" onClick={() => markRead(notification.id)} disabled={!session}>Mark read</button>}
             </div>
           ))
         ) : (
@@ -1963,6 +2005,13 @@ function Notifications({
             title="No notifications"
             detail="Monitoring, audit and account alerts appear here."
           />
+        )}
+        {!fixture && liveItems.length < total && (
+          <div className="notification-load-more">
+            <button className="btn" disabled={loadingMore} onClick={() => void loadMore()}>
+              {loadingMore ? "Loading…" : "Load more"}
+            </button>
+          </div>
         )}
       </Panel>
     </Page>

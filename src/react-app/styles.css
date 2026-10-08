@@ -2064,6 +2064,24 @@ input[type="checkbox"]:checked:after {
   place-items: center;
   border: 2px solid #fff;
 }
+.nav-notification-count {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 10px;
+  background: var(--red);
+  color: #fff;
+  font-size: 9px;
+  font-style: normal;
+  display: inline-grid;
+  place-items: center;
+}
+.notification-load-more {
+  display: flex;
+  justify-content: center;
+  padding-top: 14px;
+}
 .filter-chip {
   display: inline-flex;
   align-items: center;

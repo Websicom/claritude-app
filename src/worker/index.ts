@@ -737,7 +737,7 @@ app.post("/collect", async (c) => {
   const db = admin(c.env);
   const { data: property } = await db
     .from("properties")
-    .select("id,account_id,canonical_host,tracking_enabled,access_state")
+    .select("id,account_id,canonical_host,tracking_enabled,access_state,tracking_last_received_at")
     .eq("tracking_id", trackingId)
     .maybeSingle();
   if (!property?.tracking_enabled)
@@ -780,6 +780,13 @@ app.post("/collect", async (c) => {
       : error === "unknown_property" ? 404
         : error === "invalid_batch" ? 400 : 503;
     return c.json({ error }, status as any);
+  }
+  if (!property.tracking_last_received_at) {
+    await db.from("notifications")
+      .update({ read_at: now })
+      .eq("property_id", property.id)
+      .eq("category", "tracking_problems")
+      .is("read_at", null);
   }
   return c.body(null, 202);
 });
@@ -1697,7 +1704,6 @@ app.get("/api/bootstrap", async (c) => {
       db
         .from("notifications")
         .select("*")
-        .neq("title", "Audit completed")
         .order("created_at", { ascending: false })
         .limit(50),
       db
@@ -1808,6 +1814,18 @@ app.post("/api/onboarding", async (c) => {
         console.error("onboarding_initial_uptime_queue_failed", errorMessage(queueError));
       }
     }
+    await createPropertyNotification(c.env, propertyId, {
+      category: "tracking_problems",
+      title: "Tracking script not installed",
+      body: "Install the tracking snippet, clear site or CDN caches, then verify the public page.",
+      severity: "warning",
+      dedupeKey: `tracking-install:${propertyId}`,
+    }).catch((notificationError) => {
+      console.error("onboarding_notification_failed", {
+        propertyId,
+        error: errorMessage(notificationError),
+      });
+    });
   }
   return c.json(data);
 });
@@ -1900,6 +1918,18 @@ app.post("/api/properties", async (c) => {
       error: queueError instanceof Error ? queueError.message : String(queueError),
     });
   }
+  await createPropertyNotification(c.env, created.property.id, {
+    category: "tracking_problems",
+    title: "Tracking script not installed",
+    body: "Install the tracking snippet, clear site or CDN caches, then verify the public page.",
+    severity: "warning",
+    dedupeKey: `tracking-install:${created.property.id}`,
+  }).catch((notificationError) => {
+    console.error("property_create_notification_failed", {
+      propertyId: created.property.id,
+      error: errorMessage(notificationError),
+    });
+  });
   return c.json(created.property, 201);
 });
 
@@ -4845,6 +4875,22 @@ app.post("/api/properties/:id/verify", async (c) => {
       })
       .eq("id", property.id);
     if (updateError) return c.json({ error: updateError.message }, 400);
+    if (verified) {
+      const service = admin(c.env);
+      await service.from("notifications")
+        .update({ read_at: new Date().toISOString() })
+        .eq("property_id", property.id)
+        .eq("category", "tracking_problems")
+        .is("read_at", null);
+      if (!property.tracking_last_received_at)
+        await createPropertyNotification(c.env, property.id, {
+          category: "tracking_problems",
+          title: "Tracking installed — awaiting first visit",
+          body: "Visit the published site once to start analytics collection. Clear site or CDN caches if the code was just added.",
+          severity: "warning",
+          dedupeKey: `tracking-first-visit:${property.id}`,
+        });
+    }
     return c.json({
       verified,
       trackingActive: Boolean(property.tracking_last_received_at),
@@ -6097,27 +6143,108 @@ app.post("/api/properties/:id/saved-reports", async (c) => {
   return error ? c.json({ error: error.message }, 400) : c.json(data, 201);
 });
 
+async function validateDelegatedNotificationScope(
+  c: any,
+  accountId?: string,
+  propertyId?: string,
+) {
+  const delegation = c.get("delegation");
+  if (!delegation) return true;
+  if (accountId && accountId !== delegation.account_id) return false;
+  if (!propertyId) return true;
+  const { data: scopedProperty } = await admin(c.env)
+    .from("properties")
+    .select("workspaces(account_id)")
+    .eq("id", propertyId)
+    .maybeSingle();
+  return (scopedProperty?.workspaces as any)?.account_id === delegation.account_id;
+}
+
+app.get("/api/notifications/summary", async (c) => {
+  const accountId = c.req.query("accountId") || undefined;
+  const propertyId = c.req.query("propertyId") || undefined;
+  if (accountId && propertyId) return c.json({ error: "single_notification_scope_required" }, 400);
+  if (!(await validateDelegatedNotificationScope(c, accountId, propertyId)))
+    return c.json({ error: "delegation_scope_violation" }, 403);
+  const db = c.get("db");
+  const userId = c.get("userId");
+  let countQuery = db.from("notifications").select("id", { count: "exact", head: true }).eq("user_id", userId).is("read_at", null);
+  let latestQuery = db.from("notifications").select("*").eq("user_id", userId).is("read_at", null);
+  if (propertyId) {
+    countQuery = countQuery.eq("property_id", propertyId);
+    latestQuery = latestQuery.eq("property_id", propertyId);
+  } else if (accountId) {
+    countQuery = countQuery.eq("account_id", accountId);
+    latestQuery = latestQuery.eq("account_id", accountId);
+  }
+  const [countResult, latestResult] = await Promise.all([
+    countQuery,
+    latestQuery.order("created_at", { ascending: false }).limit(1).maybeSingle(),
+  ]);
+  const error = countResult.error || latestResult.error;
+  if (error) return c.json({ error: error.message }, 400);
+  c.header("Cache-Control", "private, no-store");
+  return c.json({ unread: countResult.count || 0, latest: latestResult.data || null });
+});
+
+app.get("/api/notifications", async (c) => {
+  const accountId = c.req.query("accountId") || undefined;
+  const propertyId = c.req.query("propertyId") || undefined;
+  if (accountId && propertyId) return c.json({ error: "single_notification_scope_required" }, 400);
+  if (!(await validateDelegatedNotificationScope(c, accountId, propertyId)))
+    return c.json({ error: "delegation_scope_violation" }, 403);
+  const limit = Math.min(100, Math.max(1, Math.floor(Number(c.req.query("limit") || 100))));
+  const offset = Math.min(10_000, Math.max(0, Math.floor(Number(c.req.query("offset") || 0))));
+  const state = c.req.query("state") || "active";
+  if (!["active", "archived"].includes(state)) return c.json({ error: "invalid_notification_state" }, 400);
+  const allowedCategories = new Set(["monitoring", "monitor_incidents", "recoveries", "audits", "audit_issues", "analytics", "tracking_problems", "account"]);
+  const categories = (c.req.query("categories") || "").split(",").filter((category) => allowedCategories.has(category));
+  let query = c.get("db")
+    .from("notifications")
+    .select("*", { count: "exact" })
+    .eq("user_id", c.get("userId"));
+  if (propertyId) query = query.eq("property_id", propertyId);
+  else if (accountId) query = query.eq("account_id", accountId);
+  query = state === "archived" ? query.not("read_at", "is", null) : query.is("read_at", null);
+  if (categories.length) query = query.in("category", categories);
+  const { data, error, count } = await query
+    .order("created_at", { ascending: false })
+    .range(offset, offset + limit - 1);
+  if (error) return c.json({ error: error.message }, 400);
+  c.header("Cache-Control", "private, no-store");
+  return c.json({ items: data || [], total: count || 0, offset, limit });
+});
+
 app.patch("/api/notifications/:id/read", async (c) => {
-  const { data, error } = await c
-    .get("db")
+  let query = c.get("db")
     .from("notifications")
     .update({ read_at: new Date().toISOString() })
     .eq("id", c.req.param("id"))
-    .select()
-    .single();
+    .eq("user_id", c.get("userId"));
+  const delegation = c.get("delegation");
+  if (delegation) query = query.eq("account_id", delegation.account_id);
+  const { data, error } = await query.select().single();
   return error ? c.json({ error: error.message }, 400) : c.json(data);
 });
 
 app.post("/api/notifications/read-all", async (c) => {
-  const body: { propertyId?: string | null } = await c.req
-    .json<{ propertyId?: string | null }>()
+  const body: { propertyId?: string | null; accountId?: string | null; categories?: string[] | null } = await c.req
+    .json<{ propertyId?: string | null; accountId?: string | null; categories?: string[] | null }>()
     .catch(() => ({}));
+  if (body.propertyId && body.accountId)
+    return c.json({ error: "single_notification_scope_required" }, 400);
+  if (!(await validateDelegatedNotificationScope(c, body.accountId || undefined, body.propertyId || undefined)))
+    return c.json({ error: "delegation_scope_violation" }, 403);
   let query = c.get("db")
     .from("notifications")
     .update({ read_at: new Date().toISOString() })
     .eq("user_id", c.get("userId"))
     .is("read_at", null);
   if (body.propertyId) query = query.eq("property_id", body.propertyId);
+  else if (body.accountId) query = query.eq("account_id", body.accountId);
+  const allowedCategories = new Set(["monitoring", "monitor_incidents", "recoveries", "audits", "audit_issues", "analytics", "tracking_problems", "account"]);
+  const categories = Array.isArray(body.categories) ? body.categories.filter((category) => allowedCategories.has(category)) : [];
+  if (categories.length) query = query.in("category", categories);
   const { data, error } = await query.select("id");
   return error ? c.json({ error: error.message }, 400) : c.json({ updated: data?.length || 0 });
 });
@@ -10662,16 +10789,13 @@ async function createPropertyNotification(
   if (!members?.length) return;
   const { data: profiles } = await db
     .from("profiles")
-    .select("id,notification_preferences,alerts_snoozed_until")
+    .select("id,notification_preferences")
     .in("id", members.map((member) => member.user_id));
-  const now = Date.now();
   const allowedUsers = new Set(
     (profiles || [])
       .filter(
         (profile) =>
-          profile.notification_preferences?.[notification.category] !== false &&
-          (!profile.alerts_snoozed_until ||
-            new Date(profile.alerts_snoozed_until).valueOf() <= now),
+          profile.notification_preferences?.[notification.category] !== false,
       )
       .map((profile) => profile.id),
   );
