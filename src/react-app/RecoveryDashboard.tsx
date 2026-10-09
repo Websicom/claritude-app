@@ -11054,12 +11054,17 @@ function AuditChecksPanel({ pageName, run, results, onOpenCategory }: { pageName
 }
 
 export function auditHeadlineCategoryComparison(
-  earlier: Pick<AuditRun, "category_scores">,
-  later: Pick<AuditRun, "category_scores">,
+  earlier: Pick<AuditRun, "category_scores" | "coverage">,
+  later: Pick<AuditRun, "category_scores" | "coverage">,
 ) {
+  const savedNumber = (value: unknown) => {
+    if (value == null || value === "") return null;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  };
   const savedScore = (run: Pick<AuditRun, "category_scores">, category: string) => {
     const value = run.category_scores?.[category];
-    return typeof value === "number" && Number.isFinite(value) ? value : null;
+    return savedNumber(value);
   };
   const rows = auditCategories.map((category) => {
     const earlierScore = savedScore(earlier, category);
@@ -11071,11 +11076,18 @@ export function auditHeadlineCategoryComparison(
       change: earlierScore == null || laterScore == null ? null : laterScore - earlierScore,
     };
   });
+  const earlierCoverage = savedNumber(earlier.coverage);
+  const laterCoverage = savedNumber(later.coverage);
   return {
     rows,
     improved: rows.filter((row) => row.change != null && row.change > 0).length,
     declined: rows.filter((row) => row.change != null && row.change < 0).length,
     unchanged: rows.filter((row) => row.change === 0).length,
+    coverage: {
+      earlier: earlierCoverage,
+      later: laterCoverage,
+      change: earlierCoverage == null || laterCoverage == null ? null : laterCoverage - earlierCoverage,
+    },
   };
 }
 
@@ -11105,6 +11117,7 @@ function AuditComparePanel({
   const performance = categoryComparison.rows.find((row) => row.category === "Performance")!;
   const scoreChange = earlier.score == null || later.score == null ? null : later.score - earlier.score;
   const changeText = (value: number | null) => value == null ? "—" : `${value >= 0 ? "+" : ""}${value}`;
+  const coverageText = (value: number | null) => value == null ? "—" : `${value}%`;
   const missingScores = categoryComparison.rows.filter((row) => row.earlier == null || row.later == null).length;
   return (
     <>
@@ -11117,11 +11130,12 @@ function AuditComparePanel({
         <div><small>Overall</small><b>{earlier.score ?? "—"} → {later.score ?? "—"}</b><span className={scoreChange != null && scoreChange < 0 ? "negative" : undefined}>{changeText(scoreChange)}</span></div>
         <div><small>Performance</small><b>{performance.earlier ?? "—"} → {performance.later ?? "—"}</b><span className={performance.change != null && performance.change < 0 ? "negative" : undefined}>{changeText(performance.change)}</span></div>
         <div><small>Categories improved</small><b>{categoryComparison.improved}</b></div>
-        <div><small>Categories declined</small><b>{categoryComparison.declined}</b></div>
+        <div><small>Coverage</small><b>{coverageText(categoryComparison.coverage.earlier)} → {coverageText(categoryComparison.coverage.later)}</b><span className={categoryComparison.coverage.change != null && categoryComparison.coverage.change < 0 ? "negative" : undefined}>{categoryComparison.coverage.change == null ? "—" : `${changeText(categoryComparison.coverage.change)}%`}</span></div>
       </div>
       <section className="panel audit-comparison-table">
         <h2>{pageName} category comparison</h2>
         <DataTable
+          key={`${earlier.id}:${later.id}`}
           headers={["Category", "Earlier", "Later", "Change"]}
           rows={categoryComparison.rows.map((row) => [row.category, row.earlier ?? "—", row.later ?? "—", changeText(row.change)])}
         />

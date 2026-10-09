@@ -8462,10 +8462,10 @@ async function sendAlert(
 ) {
   const { data: property } = await db
     .from("properties")
-    .select("id,name,url,workspaces(account_id)")
+    .select("id,name,url,account_id")
     .eq("id", incident.property_id)
     .single();
-  const accountId = (property?.workspaces as any)?.account_id;
+  const accountId = property?.account_id;
   const { data: account } = accountId
     ? await db.from("accounts").select("billing_environment,is_test_account,test_notification_recipients").eq("id", accountId).maybeSingle()
     : { data: null };
@@ -8484,74 +8484,108 @@ async function sendAlert(
     severity: kind === "down" ? "critical" : "info",
     dedupeKey: `${incident.id}:${kind}:in_app`,
   });
-  if (!env.RESEND_API_KEY || !env.RESEND_FROM) return;
   const { data: configuredRecipients } = await db
     .from("alert_recipients")
     .select("email")
     .eq("property_id", incident.property_id)
     .eq("enabled", true);
-  const recipients = isTest
-    ? (Array.isArray(account?.test_notification_recipients) ? account.test_notification_recipients : []).map((email: string) => ({ email }))
-    : configuredRecipients;
+  const recipients = uptimeAlertRecipientEmails(
+    configuredRecipients || [],
+    isTest,
+    Array.isArray(account?.test_notification_recipients) ? account.test_notification_recipients : [],
+  );
   const templateKey = kind === "down" ? "uptime_down" : "uptime_recovered";
   const template = await publishedEmailTemplate(db, templateKey);
   const templateVariables = { propertyName: property?.name || "Property", propertyUrl: property?.url || "", incidentOpenedAt: incident.opened_at, incidentResolvedAt: incident.resolved_at || "", appUrl: `${env.APP_ORIGIN}/uptime?property=${property?.id || incident.property_id}` };
-  for (const r of recipients || []) {
-    const key = `${incident.id}:${kind}:${isTest ? "test" : "live"}:${r.email}`;
-    const decision = await emailAutomationDecision(db, templateKey, r.email, templateKey);
+  for (const recipient of recipients) {
+    const key = `${incident.id}:${kind}:${isTest ? "test" : "live"}:${recipient}`;
+    const decision = await emailAutomationDecision(db, templateKey, recipient, templateKey);
     const { data: claimed } = await db.rpc("claim_notification", {
       p_key: key,
       p_kind: `uptime_${kind}`,
-      p_recipient: r.email,
+      p_recipient: recipient,
       p_payload: { ...incident, automationDecision: decision.reason || "allowed" },
     });
     if (!claimed) continue;
+    const deliveryContext = {
+      is_test: isTest,
+      account_id: accountId || null,
+      property_id: incident.property_id,
+      template_id: template?.id || null,
+      automation_key: templateKey,
+      updated_at: new Date().toISOString(),
+    };
     if (!decision.allowed) {
-      await db.from("notification_deliveries").update({ status: "skipped", provider: "none", provider_status: decision.reason, is_test: isTest, account_id: accountId, property_id: incident.property_id, template_id: template?.id || null, automation_key: templateKey, updated_at: new Date().toISOString() }).eq("dedupe_key", key);
+      await db.from("notification_deliveries").update({ status: "skipped", provider: "none", provider_status: decision.reason, ...deliveryContext }).eq("dedupe_key", key);
       continue;
     }
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.RESEND_API_KEY}`,
-        "content-type": "application/json",
-        "Idempotency-Key": key,
-      },
-      body: JSON.stringify({
-        from: env.RESEND_FROM,
-        to: [r.email],
-        subject: `${isTest ? "[TEST] " : ""}${template
-          ? renderEmailTemplate(template.subject, templateVariables).rendered
-          : kind === "down"
-            ? `Claritude downtime alert · ${property?.name || "Property"}`
-            : `Claritude recovery notice · ${property?.name || "Property"}`}`,
-        html: template
-          ? renderEmailTemplate(template.html_body, templateVariables).rendered
-          : renderUptimeAlertEmail({
-          property: property || { id: incident.property_id, name: "Property", url: "" },
-          incident,
-          kind,
-          appOrigin: env.APP_ORIGIN,
-          test: isTest,
-        }),
-      }),
-    });
-    await db
-      .from("notification_deliveries")
-      .update({
-        status: response.ok ? "sent" : "failed",
-        provider: "Resend",
-        provider_status: response.ok ? "accepted" : "rejected",
-        provider_id: response.headers.get("x-message-id"),
-        is_test: isTest,
-        account_id: accountId,
-        property_id: incident.property_id,
-        template_id: template?.id || null,
-        automation_key: templateKey,
-        error: response.ok ? null : await response.text(),
-      })
-      .eq("dedupe_key", key);
+    if (!env.RESEND_API_KEY || !env.RESEND_FROM) {
+      await db.from("notification_deliveries").update({ status: "failed", provider: "none", provider_status: "email_delivery_not_configured", error: "email_delivery_not_configured", ...deliveryContext }).eq("dedupe_key", key);
+      continue;
+    }
+    let sent = false;
+    let providerId: string | null = null;
+    let providerStatus = "request_failed";
+    let providerError: string | null = "email_provider_request_failed";
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const response = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${env.RESEND_API_KEY}`,
+            "content-type": "application/json",
+            "Idempotency-Key": key,
+          },
+          body: JSON.stringify({
+            from: env.RESEND_FROM,
+            to: [recipient],
+            subject: `${isTest ? "[TEST] " : ""}${template
+              ? renderEmailTemplate(template.subject, templateVariables).rendered
+              : kind === "down"
+                ? `Claritude downtime alert · ${property?.name || "Property"}`
+                : `Claritude recovery notice · ${property?.name || "Property"}`}`,
+            html: template
+              ? renderEmailTemplate(template.html_body, templateVariables).rendered
+              : renderUptimeAlertEmail({
+              property: property || { id: incident.property_id, name: "Property", url: "" },
+              incident,
+              kind,
+              appOrigin: env.APP_ORIGIN,
+              test: isTest,
+            }),
+          }),
+        });
+        const providerBody: any = await response.json().catch(() => ({}));
+        providerId = String(providerBody?.id || response.headers.get("x-message-id") || "") || null;
+        sent = response.ok;
+        providerStatus = response.ok ? "accepted" : "rejected";
+        providerError = response.ok ? null : String(providerBody?.message || `HTTP ${response.status}`).slice(0, 1000);
+        if (response.ok || (response.status !== 429 && response.status < 500)) break;
+      } catch (error) {
+        providerStatus = "request_failed";
+        providerError = errorMessage(error).slice(0, 1000);
+      }
+    }
+    await db.from("notification_deliveries").update({
+      status: sent ? "sent" : "failed",
+      provider: "Resend",
+      provider_status: providerStatus,
+      provider_id: providerId,
+      error: providerError,
+      ...deliveryContext,
+    }).eq("dedupe_key", key);
   }
+}
+
+export function uptimeAlertRecipientEmails(
+  configuredRecipients: Array<{ email?: string | null }>,
+  isTest: boolean,
+  testRecipients: string[],
+) {
+  const source = isTest ? testRecipients : configuredRecipients.map((recipient) => recipient.email || "");
+  return [...new Set(source
+    .map((email) => String(email || "").trim().toLowerCase())
+    .filter((email) => /^\S+@\S+\.\S+$/.test(email)))];
 }
 
 export function renderUptimeAlertEmail({

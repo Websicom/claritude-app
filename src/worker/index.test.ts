@@ -47,6 +47,7 @@ import {
   closeBrowserWithDeadline,
   workspaceDeletionError,
   renderUptimeAlertEmail,
+  uptimeAlertRecipientEmails,
   resolveEffectiveEntitlements,
   validateComplimentaryGrantInput,
   packageLimitConflicts,
@@ -93,6 +94,22 @@ describe("worker evidence pipelines", () => {
     expect(uptimeMinimumInterval("pro_early_access")).toBe(1);
     expect(allowedUptimeIntervals("free")).toEqual([15, 30, 60]);
     expect(allowedUptimeIntervals("scale")).toEqual([2, 5, 10, 15, 30, 60]);
+  });
+
+  it("routes live uptime alerts to every enabled property recipient", () => {
+    expect(uptimeAlertRecipientEmails(
+      [{ email: " Owner@Example.com " }, { email: "ops@example.com" }, { email: "owner@example.com" }],
+      false,
+      ["safe-test@example.com"],
+    )).toEqual(["owner@example.com", "ops@example.com"]);
+  });
+
+  it("keeps test-account uptime alerts on the configured safe test route", () => {
+    expect(uptimeAlertRecipientEmails(
+      [{ email: "customer@example.com" }],
+      true,
+      [" QA@Example.com ", "qa@example.com"],
+    )).toEqual(["qa@example.com"]);
   });
 
   it("collects every configured custom event on the same clicked element", () => {
@@ -351,6 +368,17 @@ describe("worker evidence pipelines", () => {
     expect(html).toContain("HTTP 500");
     expect(html).toContain("/uptime?property=property-1");
     expect(html).toContain("did not create an incident");
+  });
+
+  it("renders the recovery notification with the incident recovery time", () => {
+    const html = renderUptimeAlertEmail({
+      property: { id: "property-1", name: "Recovered property", url: "https://example.com" },
+      incident: { opened_at: "2026-10-03T10:00:00Z", resolved_at: "2026-10-03T10:05:00Z", cause: "HTTP 500" },
+      kind: "recovered",
+      appOrigin: "https://app.claritude.io",
+    });
+    expect(html).toContain("Website recovered");
+    expect(html).toContain("2026-10-03T10:05:00Z");
   });
 
   it("emits a tracker script that browsers can parse", () => {

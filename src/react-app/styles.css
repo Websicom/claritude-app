@@ -4748,12 +4748,6 @@ input[type="checkbox"]:checked:after {
   .ai-audit-panel .panel-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
   .ai-audit-date { grid-column: 1 / -1; grid-row: 2; }
 }
-@media (max-width: 480px) {
-  .ai-kpi-panel .metrics.metrics-5 { grid-template-columns: minmax(0, 1fr); }
-  .ai-kpi-panel .metric { border-right: 0; border-bottom: 1px solid var(--line); padding: 12px 14px; }
-  .ai-kpi-panel .metric:last-child { border-bottom: 0; }
-}
-
 /* Complete dark theme. Keep this final so legacy light component rules cannot
    override the semantic dark surfaces above. */
 :root[data-theme="dark"] body,

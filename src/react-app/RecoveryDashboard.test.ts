@@ -434,6 +434,17 @@ describe("top selector searches", () => {
     expect(comparison.unchanged).toBe(2);
   });
 
+  it("updates saved headline comparisons when numeric JSON values and coverage change", () => {
+    const comparison = auditHeadlineCategoryComparison(
+      { category_scores: { SEO: "64", Accessibility: "70" }, coverage: 82 } as any,
+      { category_scores: { SEO: "76", Accessibility: "68" }, coverage: 94 } as any,
+    );
+    expect(comparison.rows.find((row) => row.category === "SEO")).toEqual({ category: "SEO", earlier: 64, later: 76, change: 12 });
+    expect(comparison.improved).toBe(1);
+    expect(comparison.declined).toBe(1);
+    expect(comparison.coverage).toEqual({ earlier: 82, later: 94, change: 12 });
+  });
+
   it("does not reconstruct missing comparison scores from detailed findings", () => {
     const comparison = auditHeadlineCategoryComparison(
       { category_scores: { SEO: 70 } },
