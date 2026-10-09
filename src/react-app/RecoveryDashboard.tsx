@@ -75,6 +75,14 @@ import { estimateIncidentDowntime } from "../shared/uptime";
 import { ALERT_BANNER_SNOOZE_KEY, notificationCentreHref, notificationMatchesScope } from "../shared/notifications";
 import { USER_FACING_AUDIT_GROUPS } from "../shared/audit-user-facing-registry.generated";
 import { AI_PLATFORMS, aiPlatformPromptUrl, type AiPlatform } from "../shared/ai-platforms";
+import {
+  AVATAR_MAX_BYTES,
+  AVATAR_MAX_DIMENSION,
+  AVATAR_WEBP_QUALITY,
+  squareImageCrop,
+} from "../shared/avatar";
+
+export { squareImageCrop } from "../shared/avatar";
 
 const AdminTableContext = createContext(false);
 const SUPABASE_DATABASE_LIMIT_BYTES = 500 * 1024 * 1024;
@@ -196,32 +204,27 @@ export function billingUpgradeHref(accountId?: string) {
   return `/account?${params.toString()}`;
 }
 
-export function squareImageCrop(width: number, height: number) {
-  const size = Math.min(width, height);
-  return {
-    x: Math.max(0, (width - size) / 2),
-    y: Math.max(0, (height - size) / 2),
-    size,
-  };
-}
-
 export async function prepareAvatarImage(file: File) {
   const image = await createImageBitmap(file);
   try {
     const crop = squareImageCrop(image.width, image.height);
+    const targetSize = Math.min(AVATAR_MAX_DIMENSION, Math.max(1, Math.floor(crop.size)));
     const canvas = document.createElement("canvas");
-    canvas.width = 256;
-    canvas.height = 256;
+    canvas.width = targetSize;
+    canvas.height = targetSize;
     const context = canvas.getContext("2d");
     if (!context) throw new Error("This browser cannot resize images");
-    context.drawImage(image, crop.x, crop.y, crop.size, crop.size, 0, 0, 256, 256);
-    return await new Promise<Blob>((resolve, reject) => {
+    context.drawImage(image, crop.x, crop.y, crop.size, crop.size, 0, 0, targetSize, targetSize);
+    const blob = await new Promise<Blob>((resolve, reject) => {
       canvas.toBlob(
         (blob) => blob ? resolve(blob) : reject(new Error("The selected image could not be compressed")),
         "image/webp",
-        0.82,
+        AVATAR_WEBP_QUALITY,
       );
     });
+    if (blob.type !== "image/webp") throw new Error("This browser could not convert the image to WebP");
+    if (blob.size > AVATAR_MAX_BYTES) throw new Error("The compressed profile image is still too large");
+    return blob;
   } finally {
     image.close();
   }
@@ -6967,6 +6970,7 @@ function AccountView({
                   <Trash2 /> Remove
                 </button>
               )}
+              <small>Stored as a compressed WebP, up to 150 × 150 px.</small>
             </span>
           </div>
           <label className="field">

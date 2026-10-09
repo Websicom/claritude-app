@@ -52,6 +52,7 @@ import {
   type RenderedViewportEvidence,
   type TypedAuditResult,
 } from "../shared/audit-evaluators";
+import { AVATAR_MAX_BYTES, AVATAR_MAX_DIMENSION, webpDimensions } from "../shared/avatar";
 
 type Env = {
   SUPABASE_URL: string;
@@ -2084,22 +2085,30 @@ app.patch("/api/profile", async (c) => {
 
 app.put("/api/profile/avatar", async (c) => {
   const contentType = (c.req.header("content-type") || "").split(";")[0].toLowerCase();
-  const allowed = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
-  if (!allowed.has(contentType)) return c.json({ error: "unsupported_avatar_type" }, 415);
+  if (contentType !== "image/webp") return c.json({ error: "unsupported_avatar_type" }, 415);
   const contentLength = Number(c.req.header("content-length") || 0);
-  if (contentLength > 2 * 1024 * 1024) return c.json({ error: "avatar_too_large" }, 413);
+  if (contentLength > AVATAR_MAX_BYTES) return c.json({ error: "avatar_too_large" }, 413);
   const bytes = new Uint8Array(await c.req.arrayBuffer());
-  if (!bytes.byteLength || bytes.byteLength > 2 * 1024 * 1024)
+  if (!bytes.byteLength || bytes.byteLength > AVATAR_MAX_BYTES)
     return c.json({ error: "avatar_too_large" }, 413);
   if (!validAvatarBytes(contentType, bytes)) return c.json({ error: "invalid_avatar_image" }, 400);
+  const dimensions = webpDimensions(bytes);
+  if (
+    !dimensions ||
+    dimensions.width < 1 ||
+    dimensions.height < 1 ||
+    dimensions.width > AVATAR_MAX_DIMENSION ||
+    dimensions.height > AVATAR_MAX_DIMENSION
+  )
+    return c.json({ error: "avatar_dimensions_invalid" }, 400);
   const path = `${c.get("userId")}/avatar`;
   const service = admin(c.env);
   const { error: bucketError } = await service.storage.getBucket("avatars");
   if (bucketError) {
     const { error: createError } = await service.storage.createBucket("avatars", {
       public: true,
-      fileSizeLimit: 2 * 1024 * 1024,
-      allowedMimeTypes: ["image/png", "image/jpeg", "image/webp", "image/gif"],
+      fileSizeLimit: AVATAR_MAX_BYTES,
+      allowedMimeTypes: ["image/webp"],
     });
     if (createError && !/already exists|duplicate/i.test(createError.message))
       return c.json({ error: createError.message }, 400);
@@ -2107,7 +2116,7 @@ app.put("/api/profile/avatar", async (c) => {
   const storage = service.storage.from("avatars");
   const { error: uploadError } = await storage.upload(path, bytes, {
     contentType,
-    cacheControl: "3600",
+    cacheControl: "31536000",
     upsert: true,
   });
   if (uploadError) return c.json({ error: uploadError.message }, 400);

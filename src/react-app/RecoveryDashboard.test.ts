@@ -131,7 +131,7 @@ describe("top selector searches", () => {
     expect(squareImageCrop(600, 900)).toEqual({ x: 0, y: 150, size: 600 });
   });
 
-  it("resizes and compresses avatar uploads to a 256px WebP square", async () => {
+  it("resizes and compresses avatar uploads to a 150px WebP square", async () => {
     const drawImage = vi.fn();
     const close = vi.fn();
     const canvas = {
@@ -147,12 +147,30 @@ describe("top selector searches", () => {
 
     const result = await prepareAvatarImage({} as File);
 
-    expect(canvas.width).toBe(256);
-    expect(canvas.height).toBe(256);
-    expect(drawImage).toHaveBeenCalledWith(expect.anything(), 200, 0, 800, 800, 0, 0, 256, 256);
-    expect(canvas.toBlob).toHaveBeenCalledWith(expect.any(Function), "image/webp", 0.82);
+    expect(canvas.width).toBe(150);
+    expect(canvas.height).toBe(150);
+    expect(drawImage).toHaveBeenCalledWith(expect.anything(), 200, 0, 800, 800, 0, 0, 150, 150);
+    expect(canvas.toBlob).toHaveBeenCalledWith(expect.any(Function), "image/webp", 0.8);
     expect(result.type).toBe("image/webp");
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("does not upscale a source image smaller than the avatar limit", async () => {
+    const drawImage = vi.fn();
+    const canvas = {
+      width: 0,
+      height: 0,
+      getContext: vi.fn(() => ({ drawImage })),
+      toBlob: vi.fn((callback: BlobCallback, type?: string) => callback(new Blob(["avatar"], { type }))),
+    };
+    vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 96, height: 80, close: vi.fn() })));
+    vi.stubGlobal("document", { createElement: vi.fn(() => canvas) });
+
+    await prepareAvatarImage({} as File);
+
+    expect(canvas.width).toBe(80);
+    expect(canvas.height).toBe(80);
+    expect(drawImage).toHaveBeenCalledWith(expect.anything(), 8, 0, 80, 80, 0, 0, 80, 80);
   });
 
   it("maps traffic toggles to measured series and uses completed onboarding evidence", () => {

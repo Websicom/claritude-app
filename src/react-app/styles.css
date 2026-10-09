@@ -1315,8 +1315,13 @@ tbody tr:hover {
 .audit-six-stats .audit-six-stat:first-child { padding-left: 24px; }
 .profile-avatar-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
   margin-left: auto;
+}
+.profile-avatar-actions small {
+  color: var(--muted);
+  max-width: 220px;
 }
 .avatar-upload-button {
   cursor: pointer;

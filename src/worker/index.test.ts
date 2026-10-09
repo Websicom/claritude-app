@@ -68,6 +68,7 @@ import {
 } from "./index";
 import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
+import { webpDimensions } from "../shared/avatar";
 
 describe("worker evidence pipelines", () => {
   it("preserves actionable property provisioning errors from the atomic RPC", () => {
@@ -1152,6 +1153,20 @@ describe("worker evidence pipelines", () => {
     expect(validAvatarBytes("image/gif", new TextEncoder().encode("GIF89a"))).toBe(true);
     expect(validAvatarBytes("image/webp", new TextEncoder().encode("RIFF0000WEBP"))).toBe(true);
     expect(validAvatarBytes("image/png", new TextEncoder().encode("<script>"))).toBe(false);
+  });
+
+  it("reads WebP dimensions so oversized uploads cannot bypass browser processing", () => {
+    const vp8x = new Uint8Array(30);
+    vp8x.set(new TextEncoder().encode("RIFF"), 0);
+    vp8x.set(new TextEncoder().encode("WEBP"), 8);
+    vp8x.set(new TextEncoder().encode("VP8X"), 12);
+    vp8x[24] = 149;
+    vp8x[27] = 149;
+    expect(webpDimensions(vp8x)).toEqual({ width: 150, height: 150 });
+
+    vp8x[24] = 150;
+    expect(webpDimensions(vp8x)).toEqual({ width: 151, height: 150 });
+    expect(webpDimensions(new TextEncoder().encode("not a WebP image"))).toBeNull();
   });
 
   it("only creates audit notifications for failure or a score below 50", () => {
