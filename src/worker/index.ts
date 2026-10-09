@@ -233,11 +233,14 @@ async function effectiveEntitlements(env: Env, accountId: string) {
     package_key: fallbackKey,
     version: 0,
     allowances: {
-      customEventsPerProperty: customEventPlan(fallbackKey) === "Pro" ? null : customEventPlan(fallbackKey) === "Scale" ? 20 : customEventPlan(fallbackKey) === "Essentials" ? 5 : 2,
+      customEventsPerProperty: customEventPlan(fallbackKey) === "Pro" ? 25 : customEventPlan(fallbackKey) === "Scale" ? 10 : customEventPlan(fallbackKey) === "Essentials" ? 5 : 2,
+      editingSeats: customEventPlan(fallbackKey) === "Pro" ? 3 : customEventPlan(fallbackKey) === "Scale" ? 2 : 1,
+      auditPagesPerProperty: customEventPlan(fallbackKey) === "Pro" ? 25 : customEventPlan(fallbackKey) === "Scale" ? 15 : customEventPlan(fallbackKey) === "Essentials" ? 5 : 2,
+      auditCreditsPerWeek: customEventPlan(fallbackKey) === "Pro" ? 250 : customEventPlan(fallbackKey) === "Scale" ? 100 : customEventPlan(fallbackKey) === "Essentials" ? 25 : 10,
+      workspacesPerAccount: customEventPlan(fallbackKey) === "Free" ? 1 : customEventPlan(fallbackKey) === "Essentials" ? 3 : null,
       uptimeIntervalMinutes: uptimeMinimumInterval(fallbackKey),
-      ...(customEventPlan(fallbackKey) === "Free" ? { workspacesPerAccount: 1 } : {}),
     },
-    features: {}, retention: {}, hard_ceilings: { propertiesPerAccount: LIMITS.propertiesPerAccount }, unresolved_values: ["packageVersion"],
+    features: {}, retention: {}, hard_ceilings: { propertiesPerAccount: customEventPlan(fallbackKey) === "Pro" ? 200 : customEventPlan(fallbackKey) === "Scale" ? 50 : customEventPlan(fallbackKey) === "Essentials" ? 5 : 2 }, unresolved_values: ["packageVersion"],
   };
   return {
     ...resolveEffectiveEntitlements({ packageKey: configuration.package_key, version: configuration.version, allowances: configuration.allowances, features: configuration.features, retention: configuration.retention, hardCeilings: configuration.hard_ceilings }, overrides.data || []),
@@ -857,6 +860,10 @@ async function accountBillingUsage(env: Env, accountId: string, subscriptions: a
   const now = new Date();
   const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
   const resetsAt = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString();
+  const weekStartDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  weekStartDate.setUTCDate(weekStartDate.getUTCDate() - ((weekStartDate.getUTCDay() + 6) % 7));
+  const weekStart = weekStartDate.toISOString();
+  const auditResetsAt = new Date(weekStartDate.getTime() + 7 * 86400_000).toISOString();
   const packageKey = String(effective.packageKey || "free").toLowerCase().startsWith("pro") ? "pro" : String(effective.packageKey || "free").toLowerCase();
   const [properties, workspaces, accountMembers, monthlyAnalytics, analyticsRule] = await Promise.all([
     db.from("properties").select("id").eq("account_id", accountId),
@@ -871,7 +878,7 @@ async function accountBillingUsage(env: Env, accountId: string, subscriptions: a
   const emptyCount = Promise.resolve({ count: 0, error: null } as any);
   const [eventDefinitions, audits, analyticsEvents, propertyViewers] = await Promise.all([
     propertyIds.length ? db.from("event_definitions").select("id", { count: "exact", head: true }).in("property_id", propertyIds) : emptyCount,
-    propertyIds.length ? db.from("audit_runs").select("id", { count: "exact", head: true }).in("property_id", propertyIds).gte("created_at", monthStart) : emptyCount,
+    propertyIds.length ? db.from("audit_runs").select("id", { count: "exact", head: true }).in("property_id", propertyIds).gte("created_at", weekStart) : emptyCount,
     propertyIds.length ? db.from("analytics_events").select("id", { count: "exact", head: true }).in("property_id", propertyIds).gte("occurred_at", monthStart) : emptyCount,
     propertyIds.length ? db.from("property_memberships").select("user_id").in("property_id", propertyIds) : Promise.resolve({ data: [], error: null } as any),
   ]);
@@ -894,14 +901,14 @@ async function accountBillingUsage(env: Env, accountId: string, subscriptions: a
       : customEventsPerProperty * propertyIds.length;
   const pageviewLimit = Number(analyticsRule.data?.monthly_pageview_limit || entitlementLimit(effective, "trackedPageviewsPerMonth", "accountPageviewsPerMonth"));
   const analyticsLimit = entitlementLimit(effective, "accountAnalyticsCount", "accountAnalyticsPerMonth", "analyticsEventsPerMonth");
-  const auditLimit = entitlementLimit(effective, "auditsPerMonth", "auditCreditsPerMonth");
+  const auditLimit = entitlementLimit(effective, "auditCreditsPerWeek");
   const viewerLimit = entitlementLimit(effective, "propertyViewers", "viewerUsers");
   return {
     measuredAt: now.toISOString(),
     properties: { used: propertyIds.length, limit: entitlementLimit(effective, "propertiesPerAccount") },
     workspaces: { used: workspaces.count || 0, limit: entitlementLimit(effective, "workspacesPerAccount") },
     customEvents: { used: eventDefinitions.count || 0, limit: customEventLimit },
-    audits: { used: audits.count || 0, limit: auditLimit, resetsAt },
+    audits: { used: audits.count || 0, limit: auditLimit, resetsAt: auditResetsAt },
     pageviews: { used: Number(monthlyAnalytics.data?.accepted_pageviews || 0), limit: Number.isFinite(pageviewLimit) && pageviewLimit > 0 ? pageviewLimit : undefined, resetsAt },
     analyticsEvents: { used: analyticsEvents.count || 0, limit: analyticsLimit, resetsAt },
     includedUsers: { used: includedUsers == null ? editingUserIds.size : Math.min(editingUserIds.size, includedUsers), limit: includedUsers },
@@ -2759,7 +2766,7 @@ app.get("/api/superadmin/allocations", async (c) => {
     const accountPropertyIds = new Set(accountProperties.map((item: any) => item.id));
     const pageviewUsage = (analyticsUsage.data || []).find((item: any) => item.account_id === account.id);
     const monthlyAnalytics = (analyticsTotals.data || []).filter((item: any) => accountPropertyIds.has(item.property_id));
-    const chartWorkspaceLimit = effective.values.workspacesPerAccount ?? effective.hardCeilings.workspacesPerAccount ?? (effective.packageKey === "pro" || effective.packageKey === "pro_early_access" ? 200 : effective.packageKey === "scale" ? 50 : null);
+    const chartWorkspaceLimit = effective.values.workspacesPerAccount ?? effective.hardCeilings.workspacesPerAccount ?? (effective.packageKey === "free" ? 1 : effective.packageKey === "essentials" ? 3 : null);
     return {
       accountId: account.id,
       accountName: account.name,
@@ -3747,6 +3754,36 @@ app.patch("/api/superadmin/users/:id/confirm-email", async (c) => {
   return c.json({ user: { id: updated.data.user.id, email: updated.data.user.email, confirmedAt: updated.data.user.email_confirmed_at }, membershipCreated: false });
 });
 
+async function resendProviderUsage(env: Env, today: string) {
+  if (!env.RESEND_API_KEY) return null;
+  const dayStart = Date.parse(`${today}T00:00:00.000Z`);
+  const monthStart = Date.parse(`${today.slice(0, 7)}-01T00:00:00.000Z`);
+  let daily = 0;
+  let monthly = 0;
+  let after = "";
+  for (let page = 0; page < 100; page += 1) {
+    const query = new URLSearchParams({ limit: "100" });
+    if (after) query.set("after", after);
+    const response = await fetch(`https://api.resend.com/emails?${query.toString()}`, {
+      headers: { Authorization: `Bearer ${env.RESEND_API_KEY}` },
+    });
+    if (!response.ok) return null;
+    const body: any = await response.json().catch(() => null);
+    const emails = Array.isArray(body?.data) ? body.data : [];
+    for (const email of emails) {
+      const createdAt = Date.parse(String(email?.created_at || ""));
+      if (!Number.isFinite(createdAt) || createdAt < monthStart) continue;
+      monthly += 1;
+      if (createdAt >= dayStart) daily += 1;
+    }
+    const oldest = emails.length ? Date.parse(String(emails[emails.length - 1]?.created_at || "")) : Number.NaN;
+    if (!body?.has_more || !emails.length || (Number.isFinite(oldest) && oldest < monthStart)) break;
+    after = String(emails[emails.length - 1]?.id || "");
+    if (!after) break;
+  }
+  return { daily, monthly };
+}
+
 app.get("/api/superadmin/platform", async (c) => {
   const authorization = await requireStaff(c, "overview.read");
   if (authorization.response) return authorization.response;
@@ -3852,13 +3889,19 @@ app.get("/api/superadmin/platform", async (c) => {
     sandboxAcceptance: Boolean(billingConfiguration.data?.sandbox_acceptance_completed_at),
   };
   const monthStartIso = `${today.slice(0, 7)}-01T00:00:00.000Z`;
-  const [resendDailyUsage, resendMonthlyUsage] = await Promise.all([
+  const [resendDailyUsage, resendMonthlyUsage, providerResendUsage] = await Promise.all([
     service.from("notification_deliveries").select("id", { count: "exact", head: true }).eq("provider", "Resend").in("status", ["sent", "delivered"]).gte("created_at", `${today}T00:00:00.000Z`),
     service.from("notification_deliveries").select("id", { count: "exact", head: true }).eq("provider", "Resend").in("status", ["sent", "delivered"]).gte("created_at", monthStartIso),
+    resendProviderUsage(c.env, today),
   ]);
+  const resendUsage = {
+    daily: providerResendUsage?.daily ?? (resendDailyUsage.error ? null : resendDailyUsage.count || 0),
+    monthly: providerResendUsage?.monthly ?? (resendMonthlyUsage.error ? null : resendMonthlyUsage.count || 0),
+    source: providerResendUsage ? "Resend sent-email API" : "Claritude delivery ledger (provider history unavailable)",
+  };
   return c.json({
     environment: { name: c.env.APP_ORIGIN.includes("app.claritude.io") ? "Production" : "Preview", commitSha: c.env.DEPLOY_COMMIT_SHA || null, refreshedAt: new Date().toISOString() },
-    providers: { stripe: { configured: stripeProvider.configured, mode: providerMode, keyType: stripeKeyEnvironment(billingEnvironment === "test" ? c.env.STRIPE_TEST_SECRET_KEY || c.env.STRIPE_SECRET_KEY : c.env.STRIPE_LIVE_SECRET_KEY || c.env.STRIPE_SECRET_KEY), webhookConfigured: Boolean(stripeProvider.webhookSecret), portalConfigured: Boolean(billingConfiguration.data?.portal_configuration_id || stripeProvider.portalConfigurationId), tax: billingConfiguration.data?.tax_enabled ? "enabled" : "disabled" }, resend: { configured: Boolean(c.env.RESEND_API_KEY), from: c.env.RESEND_FROM || null, usage: { daily: resendDailyUsage.error ? null : resendDailyUsage.count || 0, monthly: resendMonthlyUsage.error ? null : resendMonthlyUsage.count || 0, dailyLimit: 100, monthlyLimit: 3000, source: "Claritude delivery ledger; plan limits supplied by administrator" } }, cloudflareTelemetry: "unavailable", supabaseBackups: "unverified" },
+    providers: { stripe: { configured: stripeProvider.configured, mode: providerMode, keyType: stripeKeyEnvironment(billingEnvironment === "test" ? c.env.STRIPE_TEST_SECRET_KEY || c.env.STRIPE_SECRET_KEY : c.env.STRIPE_LIVE_SECRET_KEY || c.env.STRIPE_SECRET_KEY), webhookConfigured: Boolean(stripeProvider.webhookSecret), portalConfigured: Boolean(billingConfiguration.data?.portal_configuration_id || stripeProvider.portalConfigurationId), tax: billingConfiguration.data?.tax_enabled ? "enabled" : "disabled" }, resend: { configured: Boolean(c.env.RESEND_API_KEY), from: c.env.RESEND_FROM || null, usage: { daily: resendUsage.daily, monthly: resendUsage.monthly, dailyLimit: 100, monthlyLimit: 3000, source: resendUsage.source } }, cloudflareTelemetry: "unavailable", supabaseBackups: "unverified" },
     settings: settings.data || [], settingHistory: settingHistory.data || [], controls: controls.data || [], featureStates, alerts: alerts.data || [], alertRules: alertRules.data || [], alertHistory: alertHistory.data || [], alertCoverage: { enabledRuleCount: (alertRules.data || []).filter((item) => item.enabled).length, lastEvaluationAt: (alertRules.data || []).map((item) => item.last_evaluated_at).filter(Boolean).sort().at(-1) || null, evaluatorHealth: !(alertRules.data || []).length ? "no_rules" : (alertRules.data || []).some((item) => item.evaluation_state === "failing") ? "failing" : (alertRules.data || []).every((item) => item.evaluation_state === "not_started") ? "not_started" : (alertRules.data || []).some((item) => item.evaluation_state === "telemetry_unavailable") ? "telemetry_unavailable" : "healthy" }, incidents: incidents.data || [], packages: packages.data || [], grants: grants.data || [], overrides: overrides.data || [], inactivity: inactivity.data || [],
     audits: { technicalChecks: auditDefinitions.data || [], groups: auditGroups.data || [], groupChecks: auditGroupChecks.data || [], groupHistory: auditGroupHistory.data || [], packageAvailability: auditPackageAvailability.data || [], today: auditStatus, runs: runs, source: "application_measured", period: "UTC day" },
     infrastructure: { database: databaseMetrics.data || null, databaseError: databaseMetrics.error?.message || null, events: operationalEvents.data || [], leases: leases.data || [], period: "UTC day" },
@@ -4775,6 +4818,107 @@ app.post("/api/superadmin/email/campaigns/:id/duplicate", async (c) => {
   return error ? c.json({ error: error.message }, 400) : c.json({ campaign: data }, 201);
 });
 
+app.post("/api/superadmin/email/campaigns/:id/send-test", async (c) => {
+  const authorization = await requireStaff(c, "communications.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ reason?: string; operationKey?: string }>().catch(() => ({} as any));
+  const reason = String(body.reason || "").trim();
+  const operationKey = String(body.operationKey || "").trim();
+  if (reason.length < 3 || reason.length > 500 || !/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(operationKey))
+    return c.json({ error: "valid_reason_and_operation_key_required" }, 400);
+  if (!c.env.RESEND_API_KEY || !c.env.RESEND_FROM) return c.json({ error: "email_delivery_not_configured" }, 503);
+  const service = admin(c.env);
+  const { data: campaign } = await service.from("email_campaigns").select("*").eq("id", c.req.param("id")).maybeSingle();
+  if (!campaign) return c.json({ error: "campaign_not_found" }, 404);
+  const segment = campaign.segment && typeof campaign.segment === "object" ? campaign.segment as Record<string, any> : {};
+  if (segment.billingEnvironment !== "test") return c.json({ error: "test_campaign_environment_required" }, 409);
+  if (!String(campaign.subject || "").trim() || !String(campaign.html_body || "").trim()) return c.json({ error: "campaign_content_required" }, 409);
+
+  const accountsResult = await service.from("accounts").select("id,name,entitlement,billing_environment,is_test_account,test_notification_recipients").eq("billing_environment", "test").eq("is_test_account", true).limit(5000);
+  if (accountsResult.error) return c.json({ error: accountsResult.error.message }, 400);
+  const accounts = (accountsResult.data || []).filter((account: any) => !segment.accountId || account.id === segment.accountId);
+  const accountIds = accounts.map((account: any) => account.id);
+  if (!accountIds.length) return c.json({ error: "no_matching_test_accounts" }, 409);
+  const [membersResult, profilesResult, usersResult] = await Promise.all([
+    service.from("account_memberships").select("user_id,account_id,role").in("account_id", accountIds).eq("role", "owner").limit(5000),
+    service.from("profiles").select("id,full_name").limit(5000),
+    service.auth.admin.listUsers({ page: 1, perPage: 1000 }),
+  ]);
+  if (membersResult.error || profilesResult.error || usersResult.error) return c.json({ error: "campaign_recipients_unavailable" }, 503);
+  const accountById = new Map(accounts.map((account: any) => [account.id, account]));
+  const profileById = new Map((profilesResult.data || []).map((profile: any) => [profile.id, profile]));
+  const userById = new Map((usersResult.data.users || []).map((user: any) => [user.id, user]));
+  const candidates = (membersResult.data || []).flatMap((membership: any) => {
+    const account: any = accountById.get(membership.account_id);
+    const user: any = userById.get(membership.user_id);
+    const email = String(user?.email || "").trim().toLowerCase();
+    const designated = (Array.isArray(account?.test_notification_recipients) ? account.test_notification_recipients : []).map((value: string) => String(value).trim().toLowerCase());
+    if (!email || !designated.includes(email)) return [];
+    return [{ account, user, email, profile: profileById.get(membership.user_id) as any }];
+  });
+  const unique = [...new Map(candidates.map((candidate: any) => [`${candidate.account.id}:${candidate.email}`, candidate])).values()] as any[];
+  if (!unique.length) return c.json({ error: "no_designated_test_account_owners", detail: "Each test account owner must be listed in that account's test notification recipients." }, 409);
+
+  let sent = 0;
+  let failed = 0;
+  let skipped = 0;
+  let duplicatePrevented = 0;
+  for (const candidate of unique) {
+    const decision = await emailAutomationDecision(service, "campaign", candidate.email, "campaign");
+    const dedupeKey = `campaign:${campaign.id}:${operationKey}:${candidate.account.id}:${candidate.email}`;
+    const { data: claimed, error: claimError } = await service.rpc("claim_notification", {
+      p_key: dedupeKey,
+      p_kind: "campaign",
+      p_recipient: candidate.email,
+      p_payload: { campaignId: campaign.id, accountId: candidate.account.id, operationKey, test: true, automationDecision: decision.reason || "allowed" },
+    });
+    if (claimError) { failed += 1; continue; }
+    if (!claimed) { duplicatePrevented += 1; continue; }
+    if (!decision.allowed) {
+      skipped += 1;
+      await service.from("notification_deliveries").update({ status: "skipped", provider: "none", provider_status: decision.reason, is_test: true, account_id: candidate.account.id, campaign_id: campaign.id, updated_at: new Date().toISOString() }).eq("dedupe_key", dedupeKey);
+      continue;
+    }
+    const variables = {
+      recipientName: candidate.profile?.full_name || candidate.user?.user_metadata?.full_name || candidate.email,
+      email: candidate.email,
+      accountName: candidate.account.name,
+      packageName: String(candidate.account.entitlement || "free").replaceAll("_", " "),
+    };
+    const renderedSubject = renderEmailTemplate(String(campaign.subject), variables);
+    const renderedHtml = renderEmailTemplate(String(campaign.html_body), variables);
+    if (renderedSubject.missing.length || renderedHtml.missing.length) {
+      failed += 1;
+      await service.from("notification_deliveries").update({ status: "failed", provider: "none", provider_status: "missing_template_variables", is_test: true, account_id: candidate.account.id, campaign_id: campaign.id, error: [...renderedSubject.missing, ...renderedHtml.missing].join(", "), updated_at: new Date().toISOString() }).eq("dedupe_key", dedupeKey);
+      continue;
+    }
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${c.env.RESEND_API_KEY}`, "content-type": "application/json", "Idempotency-Key": dedupeKey },
+      body: JSON.stringify({ from: c.env.RESEND_FROM, to: [candidate.email], subject: `[Claritude TEST] ${renderedSubject.rendered.replace(/^\[Claritude TEST\]\s*/i, "")}`, html: `<p style="font-weight:700;color:#b45309">Claritude test campaign — no live customer action required.</p>${renderedHtml.rendered}` }),
+    });
+    const providerBody: any = await response.json().catch(() => ({}));
+    await service.from("notification_deliveries").update({
+      status: response.ok ? "sent" : "failed",
+      provider: "Resend",
+      provider_status: response.ok ? "accepted" : "rejected",
+      provider_id: providerBody?.id || response.headers.get("x-message-id"),
+      is_test: true,
+      account_id: candidate.account.id,
+      campaign_id: campaign.id,
+      error: response.ok ? null : String(providerBody?.message || `HTTP ${response.status}`).slice(0, 1000),
+      updated_at: new Date().toISOString(),
+    }).eq("dedupe_key", dedupeKey);
+    if (response.ok) sent += 1;
+    else failed += 1;
+  }
+  const result = { operationKey, eligibleOwners: unique.length, sent, skipped, failed, duplicatePrevented, completedAt: new Date().toISOString(), billingEnvironment: "test" };
+  const campaignUpdate = await service.from("email_campaigns").update({ result }).eq("id", campaign.id);
+  if (campaignUpdate.error) return c.json({ error: campaignUpdate.error.message, result }, 500);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "email.test_campaign_submitted", failed ? "failed" : "success", { targetType: "email_campaign", targetId: campaign.id, reason, metadata: result });
+  return c.json({ submitted: true, result });
+});
+
 app.post("/api/superadmin/email/campaigns/:id/simulate", async (c) => {
   const authorization = await requireStaff(c, "communications.write");
   if (authorization.response) return authorization.response;
@@ -5243,10 +5387,18 @@ app.post("/api/properties/:id/audit-pages", async (c) => {
   const db = c.get("db");
   const { data: property } = await db
     .from("properties")
-    .select("id,url,canonical_host")
+    .select("id,url,canonical_host,account_id")
     .eq("id", c.req.param("id"))
     .single();
   if (!property) return c.json({ error: "property_not_found" }, 404);
+  const [effective, savedPages] = await Promise.all([
+    effectiveEntitlements(c.env, property.account_id),
+    db.from("property_audit_pages").select("id", { count: "exact", head: true }).eq("property_id", property.id),
+  ]);
+  if (savedPages.error) return c.json({ error: savedPages.error.message }, 400);
+  const auditPageLimit = entitlementLimit(effective, "auditPagesPerProperty");
+  if (typeof auditPageLimit === "number" && Number(savedPages.count || 0) >= auditPageLimit)
+    return c.json({ error: "audit_page_plan_limit_reached", limit: auditPageLimit }, 409);
   const supplied = String(body.path || "").trim();
   let parsed: URL;
   try {
