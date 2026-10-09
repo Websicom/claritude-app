@@ -14,24 +14,29 @@ import {
   ClipboardCheck,
   Copy,
   ExternalLink,
+  FileSearch,
   FileChartColumn,
   Filter,
+  Gauge,
   Globe2,
   HelpCircle,
   Home,
   Info,
   LayoutGrid,
   Landmark,
+  Image as ImageIcon,
   LogOut,
   Menu,
   MoreHorizontal,
   Monitor,
+  Network,
   OctagonAlert,
   Pause,
   Plus,
   RefreshCw,
   Search,
   Settings,
+  ShieldCheck,
   Sparkles,
   ShieldAlert,
   Smartphone,
@@ -71,9 +76,11 @@ import {
 } from "react-router-dom";
 import { apiRequest as api } from "./api";
 import { supabase } from "./supabase";
+import "./audit-technical.css";
 import { estimateIncidentDowntime } from "../shared/uptime";
 import { ALERT_BANNER_SNOOZE_KEY, notificationCentreHref, notificationMatchesScope } from "../shared/notifications";
 import { USER_FACING_AUDIT_GROUPS } from "../shared/audit-user-facing-registry.generated";
+import type { AuditTechnicalProfile, AuditTechnicalUnavailable } from "../shared/audit-technical";
 import { AI_PLATFORMS, aiPlatformPromptUrl, type AiPlatform } from "../shared/ai-platforms";
 import {
   AVATAR_MAX_BYTES,
@@ -3538,7 +3545,7 @@ function AuditView({
   const [runs, setRuns] = useState<AuditRun[]>([]),
     [propertyRuns, setPropertyRuns] = useState<AuditRun[]>([]),
     [tab, setTab] = useState(
-      ["Overview", "Checks", "Findings", "History", "Compare"].includes(requestedTab || "")
+      ["Overview", "Findings", "Technical", "Checks", "History", "Compare"].includes(requestedTab || "")
         ? requestedTab!
         : "Overview",
     ),
@@ -3551,6 +3558,9 @@ function AuditView({
     [pageToDelete, setPageToDelete] = useState<AuditPage | null>(null),
     [performanceMode, setPerformanceMode] = useState<"Lab audit" | "Real-user data">("Lab audit"),
     [realUserPerformance, setRealUserPerformance] = useState<any>(null),
+    [technicalProfile, setTechnicalProfile] = useState<AuditTechnicalProfile | AuditTechnicalUnavailable | null>(null),
+    [technicalLoading, setTechnicalLoading] = useState(false),
+    [technicalError, setTechnicalError] = useState(""),
     [implementationCoverage, setImplementationCoverage] = useState<number | null>(null),
     [auditPages, setAuditPages] = useState<AuditPage[]>([]),
     [selectedPage, setSelectedPage] = useState<AuditPage | null>(null),
@@ -3738,11 +3748,35 @@ function AuditView({
   }, [selectedPage?.id, latestRunId, requestedAuditGroup, requestedAuditCategory]);
   useEffect(() => {
     setCompletionRun(null);
+    setTechnicalProfile(null);
+    setTechnicalError("");
     if (completionTimer.current != null) {
       window.clearTimeout(completionTimer.current);
       completionTimer.current = null;
     }
   }, [selectedPage?.id]);
+  useEffect(() => {
+    if (tab !== "Technical" || !property || !selectedPage) return;
+    if (fixture) {
+      setTechnicalProfile(fixtureAuditTechnicalProfile(property, selectedPage));
+      setTechnicalLoading(false);
+      setTechnicalError("");
+      return;
+    }
+    if (!session) return;
+    let cancelled = false;
+    setTechnicalLoading(true);
+    setTechnicalError("");
+    api<AuditTechnicalProfile | AuditTechnicalUnavailable>(session, `/api/properties/${property.id}/audit-technical?pageId=${encodeURIComponent(selectedPage.id)}`)
+      .then((profile) => { if (!cancelled) setTechnicalProfile(profile); })
+      .catch((error) => {
+        if (cancelled) return;
+        setTechnicalProfile(null);
+        setTechnicalError(error.message || "Technical information could not be loaded.");
+      })
+      .finally(() => { if (!cancelled) setTechnicalLoading(false); });
+    return () => { cancelled = true; };
+  }, [tab, fixture, session, property?.id, selectedPage?.id, latestRunId]);
   useEffect(() => {
     const comparable = runs.filter((run) => ["completed", "partial"].includes(run.status));
     if (comparable.length < 2) {
@@ -3932,7 +3966,7 @@ function AuditView({
           <Plus />
         </button>
         <Tabs
-          labels={["Overview", "Checks", "Findings", "History", "Compare"]}
+          labels={["Overview", "Findings", "Technical", "Checks", "History", "Compare"]}
           value={tab}
           onChange={(nextTab) => { setTab(nextTab); setAuditFilters({}); updateAuditLocation({ auditTab: nextTab }); }}
         />
@@ -4036,6 +4070,13 @@ function AuditView({
           setOpenCategories={setOpenCategories}
           requestedOpenResult={requestedAuditGroup}
         />
+      ) : tab === "Technical" ? (
+        <AuditTechnicalPanel
+          pageName={selectedPage?.name || "Selected page"}
+          profile={technicalProfile}
+          loading={technicalLoading}
+          error={technicalError}
+        />
       ) : tab === "Checks" ? (
         <AuditChecksPanel
           pageName={selectedPage?.name || "Selected page"}
@@ -4082,6 +4123,119 @@ function AuditView({
       )}
     </Page>
   );
+}
+
+function AuditTechnicalPanel({
+  pageName,
+  profile,
+  loading,
+  error,
+}: {
+  pageName: string;
+  profile: AuditTechnicalProfile | AuditTechnicalUnavailable | null;
+  loading: boolean;
+  error: string;
+}) {
+  const icons = {
+    delivery: <Gauge />,
+    content: <FileSearch />,
+    assets: <ImageIcon />,
+    infrastructure: <Network />,
+    security: <ShieldCheck />,
+  };
+  return (
+    <div className="audit-tab-content audit-technical-profile">
+      <div className="audit-technical-intro">
+        <div>
+          <span className="eyebrow">Latest retained detailed audit</span>
+          <h2>{pageName} technical profile</h2>
+          <p>Measured facts and configuration already captured by the audit. This view does not run additional checks.</p>
+        </div>
+        {profile?.available && <small>Audited {fmtDate(profile.completedAt)}</small>}
+      </div>
+      {loading ? (
+        <div className="audit-results-loading" role="status"><RefreshCw className="audit-spin" /> Loading technical information</div>
+      ) : error ? (
+        <Empty title="Technical information unavailable" detail={error} />
+      ) : !profile?.available ? (
+        <Empty title="Run your first audit" detail="Run your first audit to see technical information about this page and website." />
+      ) : (
+        <div className="audit-technical-grid">
+          {profile.sections.map((section) => (
+            <section className="audit-technical-section" key={section.id}>
+              <header>
+                <span className="audit-technical-section-icon">{icons[section.id]}</span>
+                <h3>{section.title}</h3>
+              </header>
+              {section.items.length ? (
+                <dl>
+                  {section.items.map((item) => (
+                    <div className="audit-technical-row" key={item.key}>
+                      <dt>{item.label}</dt>
+                      <dd className={item.tone === "positive" ? "positive" : ""}>
+                        <strong>{item.value}</strong>
+                        {item.detail && <small>{item.detail}</small>}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              ) : (
+                <p className="audit-technical-empty">No reliable retained evidence is available for this section.</p>
+              )}
+            </section>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function fixtureAuditTechnicalProfile(property: Property, page: AuditPage): AuditTechnicalProfile {
+  const pageUrl = new URL(page.path, property.url).href;
+  return {
+    available: true,
+    runId: `${page.id}-latest`,
+    pageUrl,
+    completedAt: "2026-09-29T14:20:03.000Z",
+    sections: [
+      { id: "delivery", title: "Delivery", items: [
+        { key: "http-status", label: "HTTP status", value: "200", tone: "positive" },
+        { key: "final-url", label: "Final URL", value: pageUrl },
+        { key: "response-time", label: "Document response time", value: "184 ms desktop · 231 ms mobile" },
+        { key: "transfer-size", label: "Transferred page size", value: "1.8 MB desktop · 1.6 MB mobile" },
+        { key: "requests", label: "Resource requests", value: "92 desktop · 86 mobile" },
+        { key: "cdn", label: "CDN / reverse proxy", value: "Cloudflare indicator" },
+      ] },
+      { id: "content", title: "Content & Discovery", items: [
+        { key: "canonical", label: "Canonical URL", value: pageUrl },
+        { key: "indexable", label: "Selected page indexable", value: "Yes", tone: "positive" },
+        { key: "robots-reachable", label: "Robots.txt reachable", value: "Yes", tone: "positive" },
+        { key: "sitemap-urls", label: "URLs discovered from sitemap", value: "148" },
+        { key: "broken-links", label: "Broken checked links", value: "0 of 42 checked", tone: "positive" },
+        { key: "links", label: "Links", value: "38 internal · 11 external" },
+      ] },
+      { id: "assets", title: "Assets", items: [
+        { key: "images", label: "Images", value: "45" },
+        { key: "formats", label: "Image formats", value: "WEBP 37 · JPEG 6 · PNG 2" },
+        { key: "modern", label: "Modern image formats", value: "37 of 45 · 82%" },
+        { key: "lazy", label: "Missing lazy loading", value: "5", detail: "Below-fold observations across desktop and mobile." },
+      ] },
+      { id: "infrastructure", title: "Infrastructure", items: [
+        { key: "nameservers", label: "Nameservers", value: "ada.ns.cloudflare.com · bob.ns.cloudflare.com" },
+        { key: "ipv4", label: "IPv4 addresses", value: "104.21.10.10 · 172.67.20.20" },
+        { key: "dnssec", label: "DNSSEC resolver status", value: "Validated", tone: "positive" },
+        { key: "spf", label: "SPF", value: "Present", tone: "positive" },
+        { key: "dmarc", label: "DMARC", value: "Present", tone: "positive" },
+      ] },
+      { id: "security", title: "Security", items: [
+        { key: "https", label: "HTTPS enabled", value: "Yes", tone: "positive" },
+        { key: "tls", label: "HTTPS / TLS connection", value: "Succeeded", tone: "positive" },
+        { key: "hsts", label: "HSTS", value: "Present", tone: "positive" },
+        { key: "csp", label: "Content Security Policy", value: "Present", tone: "positive" },
+        { key: "mixed", label: "Mixed content", value: "Clear", tone: "positive" },
+      ] },
+    ],
+  };
 }
 
 function ReportsView({

@@ -25,6 +25,10 @@ import {
   type AuditRegistrySnapshot,
 } from "../shared/audit-runtime";
 import {
+  AUDIT_TECHNICAL_CHECK_IDS,
+  buildAuditTechnicalSections,
+} from "../shared/audit-technical";
+import {
   classifyDestination,
   headerMultimap,
   parseFontFaces,
@@ -5504,6 +5508,51 @@ app.delete("/api/properties/:id/audit-pages/:pageId", async (c) => {
     path: page.path,
   });
   return c.body(null, 204);
+});
+
+app.get("/api/properties/:id/audit-technical", async (c) => {
+  const db = c.get("db");
+  const propertyId = c.req.param("id");
+  const pageId = c.req.query("pageId");
+  if (!pageId) return c.json({ error: "audit_page_required" }, 400);
+  const { data: page, error: pageError } = await db
+    .from("property_audit_pages")
+    .select("id")
+    .eq("id", pageId)
+    .eq("property_id", propertyId)
+    .maybeSingle();
+  if (pageError) return c.json({ error: pageError.message }, 400);
+  if (!page) return c.json({ error: "audit_page_not_found" }, 404);
+  const { data: candidateRuns, error: runError } = await db
+    .from("audit_runs")
+    .select("id,page_url,created_at,completed_at")
+    .eq("property_id", propertyId)
+    .eq("audit_page_id", pageId)
+    .in("status", ["completed", "partial"])
+    .order("completed_at", { ascending: false })
+    .limit(20);
+  if (runError) return c.json({ error: runError.message }, 400);
+  if (!candidateRuns?.length) return c.json({ available: false });
+  const candidateRunIds = candidateRuns.map((run) => run.id);
+  const resultQueries = await Promise.all(
+    chunkAuditResults(AUDIT_TECHNICAL_CHECK_IDS, 18).map((checkIds) => db
+      .from("audit_results")
+      .select("audit_run_id,check_id,outcome,evidence")
+      .in("audit_run_id", candidateRunIds)
+      .in("check_id", checkIds)),
+  );
+  const resultError = resultQueries.find((query) => query.error)?.error;
+  if (resultError) return c.json({ error: resultError.message }, 400);
+  const results = resultQueries.flatMap((query) => query.data || []);
+  const run = candidateRuns.find((candidate) => results.some((result) => result.audit_run_id === candidate.id));
+  if (!run) return c.json({ available: false });
+  return c.json({
+    available: true,
+    runId: run.id,
+    pageUrl: run.page_url,
+    completedAt: run.completed_at || run.created_at,
+    sections: buildAuditTechnicalSections(results.filter((result) => result.audit_run_id === run.id)),
+  });
 });
 
 app.get("/api/properties/:id/audits", async (c) => {
