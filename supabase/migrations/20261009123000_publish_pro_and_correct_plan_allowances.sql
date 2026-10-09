@@ -50,9 +50,10 @@ set
     ),
     'workspacesPerAccount'
   ),
-  state = case when package_key = 'pro' then 'published' else state end,
-  effective_at = case when package_key = 'pro' then coalesce(effective_at, now()) else effective_at end
-where package_key in ('free', 'essentials', 'scale', 'pro', 'pro_early_access');
+  state = case when package_key = 'pro' and version = 1 then 'published' else state end,
+  effective_at = case when package_key = 'pro' and version = 1 then coalesce(effective_at, now()) else effective_at end
+where package_key in ('free', 'essentials', 'scale', 'pro', 'pro_early_access')
+  and (state = 'published' or (package_key = 'pro' and version = 1));
 
 comment on column public.email_campaigns.result is
   'Latest controlled execution summary. Recipient-level provider outcomes remain in notification_deliveries.';
