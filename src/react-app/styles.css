@@ -4316,11 +4316,14 @@ input[type="checkbox"]:checked:after {
 .admin-actions-column { width: 50px; text-align: right; }
 .admin-row-menu { position: relative; display: inline-flex; }
 .admin-row-menu-popover { position: absolute; z-index: 30; right: 0; top: calc(100% + 4px); width: max-content; min-width: 190px; padding: 5px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel); box-shadow: 0 12px 35px rgb(0 0 0 / 14%); display: grid; }
+.admin-row-menu-popover-portal { position: fixed; z-index: 10000; top: auto; max-width: min(320px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto; }
 .admin-row-menu-popover a, .admin-row-menu-popover button { border: 0; background: transparent; color: var(--text); font: inherit; text-align: left; text-decoration: none; padding: 9px 10px; border-radius: 6px; cursor: pointer; }
 .admin-row-menu-popover a:hover, .admin-row-menu-popover button:hover { background: var(--soft); }
 .admin-row-menu-popover .danger { color: var(--danger); }
 .admin-row-menu-popover button:disabled { opacity: .45; cursor: not-allowed; }
 .catalogue-toolbar { align-items: center; margin: 0 0 12px; }
+.table-account-name { display: inline-flex; align-items: center; gap: 8px; }
+.table-account-name .status-pill { padding: 2px 7px; font-size: 11px; }
 .table-primary-action { border: 0; padding: 0; background: transparent; color: var(--text); font: inherit; font-weight: 700; text-align: left; cursor: pointer; text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px; }
 .table-primary-action:hover, .table-primary-action:focus-visible { text-decoration-color: currentColor; }
 .table-empty-state { padding: 28px; text-align: center; color: var(--muted); }
@@ -4626,7 +4629,7 @@ input[type="checkbox"]:checked:after {
 .overview-view-toggle { display: inline-flex; padding: 3px; border: 1px solid var(--line); border-radius: 9px; background: var(--soft); }
 .overview-view-toggle button { min-height: 30px; padding: 0 12px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-weight: 650; }
 .overview-view-toggle button.active { background: var(--panel); color: var(--ink); box-shadow: 0 1px 2px rgb(15 23 42 / 8%); }
-.overview-chart { display: block; width: 100%; min-width: 360px; height: auto; max-height: 300px; overflow: visible; }
+.overview-chart { display: block; width: 100%; max-width: none; min-width: 360px; height: auto; overflow: visible; }
 .overview-chart text { fill: var(--muted); font-size: 11px; }
 .chart-hover { pointer-events: none; }
 .chart-hover > line { stroke: var(--ink); stroke-width: 1; stroke-dasharray: 4 4; opacity: .55; }
