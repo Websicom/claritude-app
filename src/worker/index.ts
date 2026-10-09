@@ -114,8 +114,8 @@ export function customEventAllowance(entitlement: unknown, used: number) {
   const limits: Record<CustomEventPlan, number | null> = {
     Free: 2,
     Essentials: 5,
-    Scale: 20,
-    Pro: null,
+    Scale: 10,
+    Pro: 25,
   };
   const limit = limits[plan];
   const safeUsed = Math.max(0, Math.floor(Number(used) || 0));
@@ -127,6 +127,26 @@ export function customEventAllowance(entitlement: unknown, used: number) {
     unlimited: limit == null,
     canCreate: limit == null || safeUsed < limit,
   };
+}
+
+export function finiteAllocationCapacity(perUnit: unknown, units: unknown) {
+  if (perUnit == null || units == null) return null;
+  const safePerUnit = Number(perUnit);
+  const safeUnits = Number(units);
+  if (!Number.isFinite(safePerUnit) || !Number.isFinite(safeUnits) || safePerUnit < 0 || safeUnits < 0) return null;
+  return safePerUnit * safeUnits;
+}
+
+export function allocationWorkspaceLimit(packageKey: unknown, configuredLimit: unknown, propertyLimit: unknown) {
+  if (configuredLimit != null && Number.isFinite(Number(configuredLimit))) return Number(configuredLimit);
+  const plan = customEventPlan(packageKey);
+  return (plan === "Scale" || plan === "Pro") && propertyLimit != null && Number.isFinite(Number(propertyLimit))
+    ? Number(propertyLimit)
+    : null;
+}
+
+export function fourWeekAuditCreditLimit(weeklyLimit: unknown) {
+  return weeklyLimit == null || !Number.isFinite(Number(weeklyLimit)) ? null : Number(weeklyLimit) * 4;
 }
 
 export function uptimeMinimumInterval(entitlement: unknown) {
@@ -237,6 +257,7 @@ async function effectiveEntitlements(env: Env, accountId: string) {
       editingSeats: customEventPlan(fallbackKey) === "Pro" ? 3 : customEventPlan(fallbackKey) === "Scale" ? 2 : 1,
       auditPagesPerProperty: customEventPlan(fallbackKey) === "Pro" ? 25 : customEventPlan(fallbackKey) === "Scale" ? 15 : customEventPlan(fallbackKey) === "Essentials" ? 5 : 2,
       auditCreditsPerWeek: customEventPlan(fallbackKey) === "Pro" ? 250 : customEventPlan(fallbackKey) === "Scale" ? 100 : customEventPlan(fallbackKey) === "Essentials" ? 25 : 10,
+      alertContactsPerProperty: customEventPlan(fallbackKey) === "Pro" ? 10 : customEventPlan(fallbackKey) === "Scale" ? 5 : customEventPlan(fallbackKey) === "Essentials" ? 2 : 1,
       workspacesPerAccount: customEventPlan(fallbackKey) === "Free" ? 1 : customEventPlan(fallbackKey) === "Essentials" ? 3 : null,
       uptimeIntervalMinutes: uptimeMinimumInterval(fallbackKey),
     },
@@ -2733,24 +2754,30 @@ app.get("/api/superadmin/allocations", async (c) => {
   const accountIds = accounts.map((account) => account.id);
   if (!accountIds.length) return c.json({ billingEnvironment, accounts: [], measuredAt: now, source: "effective_package_configuration_and_usage_ledgers" });
   const monthStart = `${now.slice(0, 7)}-01`;
-  const [assignments, grants, overrides, properties, workspaces, memberships, usage, storage, analyticsUsage] = await Promise.all([
+  const today = now.slice(0, 10);
+  const weekStartDate = new Date(`${today}T00:00:00.000Z`);
+  weekStartDate.setUTCDate(weekStartDate.getUTCDate() - ((weekStartDate.getUTCDay() + 6) % 7) - 21);
+  const fourWeekStart = weekStartDate.toISOString();
+  const [assignments, grants, overrides, properties, workspaces, memberships, usage, storage, analyticsUsage, safetySettings] = await Promise.all([
     db.from("account_package_assignments").select("account_id,price_grandfathered,allowances_grandfathered,complimentary,billing_state,starts_at,ends_at,package_versions(package_key,version,display_name,allowances,features,retention,hard_ceilings)").in("account_id", accountIds).is("ends_at", null),
     db.from("account_package_grants").select("id,account_id,arrangement,status,starts_at,expires_at,package_versions(package_key,version,display_name,allowances,features,retention,hard_ceilings)").in("account_id", accountIds).eq("status", "active").lte("starts_at", now).or(`expires_at.is.null,expires_at.gt.${now}`),
     db.from("account_entitlement_overrides").select("account_id,key,value,starts_at,expires_at,grant_id").in("account_id", accountIds).is("revoked_at", null).lte("starts_at", now).or(`expires_at.is.null,expires_at.gt.${now}`),
     db.from("properties").select("id,account_id").in("account_id", accountIds),
     db.from("workspaces").select("id,account_id").in("account_id", accountIds),
     db.from("account_memberships").select("account_id,user_id,role").in("account_id", accountIds),
-    db.from("account_usage_periods").select("account_id,metric,period_start,period_end,consumed,reserved,restored,updated_at").in("account_id", accountIds).lte("period_start", now).gt("period_end", now),
+    db.from("account_usage_periods").select("account_id,metric,period_start,period_end,consumed,reserved,restored,updated_at").in("account_id", accountIds).gte("period_start", fourWeekStart).lte("period_start", now),
     db.from("analytics_storage_snapshots").select("account_id,total_bytes,detailed_bytes,rollup_bytes,measured_at,source").eq("snapshot_date", now.slice(0, 10)).eq("scope_type", "account").in("account_id", accountIds),
     db.from("account_analytics_monthly_usage").select("account_id,accepted_pageviews,rejected_pageviews,period_start,updated_at").eq("period_start", monthStart).in("account_id", accountIds),
+    db.from("platform_settings").select("value").eq("key", "safety_limits").maybeSingle(),
   ]);
   const propertyIds = (properties.data || []).map((item: any) => item.id);
-  const [analyticsTotals, eventDefinitions, alertRecipients] = propertyIds.length ? await Promise.all([
-    db.from("analytics_compact_totals").select("property_id,pageviews,events,sessions,period_start").eq("grain", "day").gte("period_start", monthStart).in("property_id", propertyIds),
+  const [analyticsTotals, eventDefinitions, alertRecipients, auditPages] = propertyIds.length ? await Promise.all([
+    db.from("analytics_compact_totals").select("property_id,pageviews,events,sessions,period_start").eq("grain", "day").eq("period_start", today).in("property_id", propertyIds),
     db.from("event_definitions").select("property_id,id,enabled").in("property_id", propertyIds),
     db.from("alert_recipients").select("property_id,id,enabled").in("property_id", propertyIds),
-  ]) : [{ data: [], error: null }, { data: [], error: null }, { data: [], error: null }];
-  const dataError = [assignments, grants, overrides, properties, workspaces, memberships, usage, storage, analyticsUsage, analyticsTotals, eventDefinitions, alertRecipients].find((result) => result.error)?.error;
+    db.from("property_audit_pages").select("property_id,id").in("property_id", propertyIds),
+  ]) : [{ data: [], error: null }, { data: [], error: null }, { data: [], error: null }, { data: [], error: null }];
+  const dataError = [assignments, grants, overrides, properties, workspaces, memberships, usage, storage, analyticsUsage, safetySettings, analyticsTotals, eventDefinitions, alertRecipients, auditPages].find((result) => result.error)?.error;
   if (dataError) {
     console.error("superadmin_allocations_failed", dataError);
     return c.json({ error: "superadmin_allocations_unavailable" }, 503);
@@ -2765,8 +2792,14 @@ app.get("/api/superadmin/allocations", async (c) => {
     const accountProperties = (properties.data || []).filter((item: any) => item.account_id === account.id);
     const accountPropertyIds = new Set(accountProperties.map((item: any) => item.id));
     const pageviewUsage = (analyticsUsage.data || []).find((item: any) => item.account_id === account.id);
-    const monthlyAnalytics = (analyticsTotals.data || []).filter((item: any) => accountPropertyIds.has(item.property_id));
-    const chartWorkspaceLimit = effective.values.workspacesPerAccount ?? effective.hardCeilings.workspacesPerAccount ?? (effective.packageKey === "free" ? 1 : effective.packageKey === "essentials" ? 3 : null);
+    const dailyAnalytics = (analyticsTotals.data || []).filter((item: any) => accountPropertyIds.has(item.property_id));
+    const propertyLimit = effective.values.propertiesPerAccount ?? effective.hardCeilings.propertiesPerAccount ?? null;
+    const chartWorkspaceLimit = allocationWorkspaceLimit(effective.packageKey, effective.values.workspacesPerAccount ?? effective.hardCeilings.workspacesPerAccount, propertyLimit);
+    const customEventsPerProperty = effective.values.customEventsPerProperty ?? null;
+    const auditPagesPerProperty = effective.values.auditPagesPerProperty ?? null;
+    const alertContactsPerProperty = effective.values.alertContactsPerProperty ?? effective.values.alertContacts ?? effective.values.emailAlertLimit ?? null;
+    const weeklyAuditCredits = effective.values.auditCreditsPerWeek ?? null;
+    const analyticsEventsPerPropertyPerDay = Number((safetySettings.data?.value as any)?.analyticsEventsPerPropertyPerDay ?? LIMITS.analyticsEventsPerPropertyPerDay);
     return {
       accountId: account.id,
       accountName: account.name,
@@ -2778,26 +2811,27 @@ app.get("/api/superadmin/allocations", async (c) => {
       grandfathered: Boolean(assignment?.allowances_grandfathered || assignment?.price_grandfathered),
       overrideCount: (overrides.data || []).filter((item: any) => item.account_id === account.id).length,
       allocations: {
-        properties: effective.values.propertiesPerAccount ?? effective.hardCeilings.propertiesPerAccount ?? null,
+        properties: propertyLimit,
         workspaces: chartWorkspaceLimit,
         editingSeats: effective.values.editingSeats ?? null,
-        auditCreditsPerWeek: effective.values.auditCreditsPerWeek ?? null,
+        auditCreditsPerFourWeeks: fourWeekAuditCreditLimit(weeklyAuditCredits),
         trackedPageviewsPerMonth: effective.values.trackedPageviewsPerMonth ?? effective.hardCeilings.trackedPageviewsPerMonth ?? null,
-        analyticsEventsPerMonth: effective.values.analyticsEventsPerMonth ?? null,
-        customEventsPerProperty: effective.values.customEventsPerProperty ?? null,
-        auditPagesPerProperty: effective.values.auditPagesPerProperty ?? null,
-        alertContacts: effective.values.alertContacts ?? effective.values.emailAlertLimit ?? null,
+        analyticsEventsPerDay: finiteAllocationCapacity(analyticsEventsPerPropertyPerDay, propertyLimit),
+        customEvents: finiteAllocationCapacity(customEventsPerProperty, propertyLimit),
+        auditPages: finiteAllocationCapacity(auditPagesPerProperty, propertyLimit),
+        alertContacts: finiteAllocationCapacity(alertContactsPerProperty, propertyLimit),
+        perProperty: { analyticsEventsPerDay: analyticsEventsPerPropertyPerDay, customEvents: customEventsPerProperty, auditPages: auditPagesPerProperty, alertContacts: alertContactsPerProperty },
       },
       utilisation: {
         properties: accountProperties.length,
         workspaces: (workspaces.data || []).filter((item: any) => item.account_id === account.id).length,
         editingSeats: new Set((memberships.data || []).filter((item: any) => item.account_id === account.id).map((item: any) => item.user_id)).size,
-        auditCreditsPerWeek: usagePeriod.filter((item: any) => item.metric === "page_audit_credit").reduce((sum: number, item: any) => sum + Number(item.consumed || 0) + Number(item.reserved || 0) - Number(item.restored || 0), 0),
+        auditCreditsPerFourWeeks: usagePeriod.filter((item: any) => item.metric === "page_audit_credit").reduce((sum: number, item: any) => sum + Number(item.consumed || 0) + Number(item.reserved || 0) - Number(item.restored || 0), 0),
         trackedPageviewsPerMonth: Number(pageviewUsage?.accepted_pageviews || 0),
-        analyticsEventsPerMonth: monthlyAnalytics.reduce((sum: number, item: any) => sum + Number(item.events || 0), 0),
-        customEventsPerProperty: Math.max(0, ...[...accountPropertyIds].map((propertyId) => (eventDefinitions.data || []).filter((item: any) => item.property_id === propertyId && item.enabled).length)),
-        auditPagesPerProperty: usagePeriod.some((item: any) => item.metric === "page_audit_credit" && Number(item.consumed || 0) > 0) ? 1 : 0,
-        alertContacts: Math.max(0, ...[...accountPropertyIds].map((propertyId) => (alertRecipients.data || []).filter((item: any) => item.property_id === propertyId && item.enabled).length)),
+        analyticsEventsPerDay: dailyAnalytics.reduce((sum: number, item: any) => sum + Number(item.events || 0), 0),
+        customEvents: (eventDefinitions.data || []).filter((item: any) => accountPropertyIds.has(item.property_id) && item.enabled).length,
+        auditPages: (auditPages.data || []).filter((item: any) => accountPropertyIds.has(item.property_id)).length,
+        alertContacts: (alertRecipients.data || []).filter((item: any) => accountPropertyIds.has(item.property_id) && item.enabled).length,
         databaseBytes: storageSnapshot?.total_bytes == null ? null : Number(storageSnapshot.total_bytes),
       },
       databaseStorage: storageSnapshot,

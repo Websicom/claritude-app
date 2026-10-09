@@ -14,6 +14,9 @@ import {
   compactAuditResult,
   customEventAllowance,
   customEventPlan,
+  finiteAllocationCapacity,
+  allocationWorkspaceLimit,
+  fourWeekAuditCreditLimit,
   allowedUptimeIntervals,
   uptimeMinimumInterval,
   cleanPath,
@@ -372,19 +375,29 @@ describe("worker evidence pipelines", () => {
   it.each([
     ["free", 2],
     ["essentials", 5],
-    ["scale", 20],
-    ["pro", null],
-    ["pro_early_access", null],
+    ["scale", 10],
+    ["pro", 25],
+    ["pro_early_access", 25],
   ])("maps the %s entitlement to its configured custom event limit", (entitlement, limit) => {
     expect(customEventAllowance(entitlement, 0).limit).toBe(limit);
   });
 
-  it("blocks event definition creation at finite plan allowances and leaves Pro unlimited", () => {
+  it("blocks event definition creation at every finite plan allowance", () => {
     expect(customEventAllowance("free", 2)).toMatchObject({ plan: "Free", canCreate: false, remaining: 0 });
     expect(customEventAllowance("essentials", 5)).toMatchObject({ plan: "Essentials", canCreate: false, remaining: 0 });
-    expect(customEventAllowance("scale", 20)).toMatchObject({ plan: "Scale", canCreate: false, remaining: 0 });
-    expect(customEventAllowance("pro", 10_000)).toMatchObject({ plan: "Pro", canCreate: true, unlimited: true, limit: null });
+    expect(customEventAllowance("scale", 10)).toMatchObject({ plan: "Scale", canCreate: false, remaining: 0 });
+    expect(customEventAllowance("pro", 25)).toMatchObject({ plan: "Pro", canCreate: false, unlimited: false, remaining: 0 });
     expect(customEventPlan("unknown-future-plan")).toBe("Free");
+  });
+
+  it("calculates platform allocation capacity from package and per-property limits", () => {
+    expect(finiteAllocationCapacity(25, 200)).toBe(5_000);
+    expect(finiteAllocationCapacity(10, 200)).toBe(2_000);
+    expect(finiteAllocationCapacity(null, 200)).toBeNull();
+    expect(allocationWorkspaceLimit("scale", null, 50)).toBe(50);
+    expect(allocationWorkspaceLimit("pro", null, 200)).toBe(200);
+    expect(allocationWorkspaceLimit("essentials", 3, 5)).toBe(3);
+    expect(fourWeekAuditCreditLimit(250)).toBe(1_000);
   });
 
   it("counts configured definitions independently from built-in analytics signals", () => {
