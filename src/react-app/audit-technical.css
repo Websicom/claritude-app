@@ -19,6 +19,23 @@
   margin-bottom: 5px;
 }
 
+.audit-technical-table-head {
+  display: grid;
+  grid-template-columns: minmax(105px, 0.8fr) minmax(0, 1.2fr);
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.audit-technical-table-head span:last-child {
+  text-align: right;
+}
+
 .audit-technical-section dl,
 .audit-technical-row dt,
 .audit-technical-row dd {
@@ -120,6 +137,10 @@
 }
 
 @media (max-width: 430px) {
+  .audit-technical-table-head {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
   .audit-technical-row {
     grid-template-columns: minmax(0, 1fr);
     gap: 3px;

@@ -235,11 +235,8 @@ export function buildAuditTechnicalSections(results: AuditTechnicalResult[]): Au
   const sitemapPage = evidence(IDS.sitemapPage);
   const sitemapUrls = asNumber(sitemapPage?.urlsChecked);
   if (sitemapUrls != null) add("content", "sitemap-urls", "URLs discovered from sitemap", formatNumber(sitemapUrls));
-  const sitemapPageResult = usable(IDS.sitemapPage);
-  if (sitemapPageResult) add("content", "sitemap-page", "Audited page present in sitemap", sitemapPageResult.outcome === "passed" ? "Yes" : "No", undefined, resultTone(IDS.sitemapPage));
   add("content", "language", "HTML language", compactText(evidence(IDS.language)?.language));
   const types = evidence(IDS.structuredTypes)?.types;
-  if (Array.isArray(types) && types.length) add("content", "structured-data", "Structured data types", [...new Set(types.map((value) => compactText(value)).filter(Boolean))].join(", "));
   const internalCount = asNumber(evidence(IDS.internalLinks)?.count);
   if (internalCount != null) add("content", "internal-links", "Internal links", formatNumber(internalCount));
   const externalCount = asNumber(evidence(IDS.externalLinks)?.count);
@@ -256,8 +253,9 @@ export function buildAuditTechnicalSections(results: AuditTechnicalResult[]): Au
       for (const occurrence of occurrences) occurrence?.url ? brokenUrls.add(String(occurrence.url)) : unlocatedFailures += 1;
     }
     const broken = brokenUrls.size + unlocatedFailures;
-    add("content", "broken-links", "Broken checked links", `${formatNumber(broken)} of ${formatNumber(checkedLinks)} checked`, undefined, broken === 0 ? "positive" : "issue");
+    add("content", "broken-links", "Broken links checks", `${formatNumber(broken)} of ${formatNumber(checkedLinks)} checked`, undefined, broken === 0 ? "positive" : "issue");
   }
+  if (Array.isArray(types) && types.length) add("content", "structured-data", "Structured data types", [...new Set(types.map((value) => compactText(value)).filter(Boolean))].join(", "));
 
   const formats = evidence(IDS.imageFormats)?.formats;
   if (Array.isArray(formats)) {

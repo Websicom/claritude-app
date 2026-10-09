@@ -2995,6 +2995,7 @@ input[type="checkbox"]:checked:after {
 .audit-compare-summary small { color: var(--muted); }
 .audit-compare-summary b { font-size: 22px; }
 .audit-compare-summary span { color: var(--green); }
+.audit-compare-summary span.negative { color: var(--danger); }
 .audit-comparison-table .table-wrap { margin-bottom: 10px; }
 .instruction-code {
   display: block;

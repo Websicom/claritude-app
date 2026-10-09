@@ -3,6 +3,7 @@ import {
   auditDisplayProgress,
   analyticsComparisonModel,
   auditHistoryStatus,
+  auditHeadlineCategoryComparison,
   auditProgressCeiling,
   auditProgressMessagePool,
   auditRunCategoryScores,
@@ -413,6 +414,32 @@ describe("top selector searches", () => {
     expect(scores.SEO).toBe(54);
     expect(scores.Security).toBe(80);
     expect(scores.Performance).toBe(68);
+  });
+
+  it("compares only the headline category figures persisted with each audit", () => {
+    const comparison = auditHeadlineCategoryComparison(
+      { category_scores: { SEO: 70, Accessibility: 80, Performance: 65, Security: 90, Technical: 75, "AI & Crawler Readiness": 60 } },
+      { category_scores: { SEO: 75, Accessibility: 80, Performance: 60, Security: 92, Technical: 75, "AI & Crawler Readiness": 70 } },
+    );
+    expect(comparison.rows).toEqual([
+      { category: "SEO", earlier: 70, later: 75, change: 5 },
+      { category: "Accessibility", earlier: 80, later: 80, change: 0 },
+      { category: "Performance", earlier: 65, later: 60, change: -5 },
+      { category: "Security", earlier: 90, later: 92, change: 2 },
+      { category: "Technical", earlier: 75, later: 75, change: 0 },
+      { category: "AI & Crawler Readiness", earlier: 60, later: 70, change: 10 },
+    ]);
+    expect(comparison.improved).toBe(3);
+    expect(comparison.declined).toBe(1);
+    expect(comparison.unchanged).toBe(2);
+  });
+
+  it("does not reconstruct missing comparison scores from detailed findings", () => {
+    const comparison = auditHeadlineCategoryComparison(
+      { category_scores: { SEO: 70 } },
+      { category_scores: { SEO: 75 } },
+    );
+    expect(comparison.rows.find((row) => row.category === "Performance")).toEqual({ category: "Performance", earlier: null, later: null, change: null });
   });
 
   it("presents terminal partial runs as successful without changing their stored status", () => {

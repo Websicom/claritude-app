@@ -4185,17 +4185,20 @@ function AuditTechnicalPanel({
             <section className="panel audit-technical-section" key={section.id}>
               <div className="panel-head"><h2>{section.title}</h2></div>
               {section.items.length ? (
-                <dl>
-                  {section.items.map((item) => {
-                    const help = [helpByKey[item.key], item.detail].filter(Boolean).join(" ");
-                    return (
-                      <div className="audit-technical-row" key={item.key}>
-                        <dt><strong>{item.label}</strong>{help && <InfoHelp label={item.label} help={help} icon={<span className="audit-technical-help-mark" aria-hidden="true">?</span>} />}</dt>
-                        <dd className={item.tone === "issue" ? "audit-technical-issue" : undefined}><span>{item.value}</span></dd>
-                      </div>
-                    );
-                  })}
-                </dl>
+                <>
+                  <div className="audit-technical-table-head"><span>Check</span><span>Result</span></div>
+                  <dl>
+                    {section.items.map((item) => {
+                      const help = [helpByKey[item.key], item.detail].filter(Boolean).join(" ");
+                      return (
+                        <div className="audit-technical-row" key={item.key}>
+                          <dt><strong>{item.label}</strong>{help && <InfoHelp label={item.label} help={help} icon={<span className="audit-technical-help-mark" aria-hidden="true">?</span>} />}</dt>
+                          <dd className={item.tone === "issue" ? "audit-technical-issue" : undefined}><span>{item.value}</span></dd>
+                        </div>
+                      );
+                    })}
+                  </dl>
+                </>
               ) : (
                 <p className="audit-technical-empty">No reliable retained evidence is available for this section.</p>
               )}
@@ -4229,8 +4232,9 @@ function fixtureAuditTechnicalProfile(property: Property, page: AuditPage): Audi
         { key: "indexable", label: "Selected page indexable", value: "Yes", tone: "positive" },
         { key: "robots-reachable", label: "Robots.txt reachable", value: "Yes", tone: "positive" },
         { key: "sitemap-urls", label: "URLs discovered from sitemap", value: "148" },
-        { key: "broken-links", label: "Broken checked links", value: "0 of 42 checked", tone: "positive" },
+        { key: "broken-links", label: "Broken links checks", value: "0 of 42 checked", tone: "positive" },
         { key: "links", label: "Links", value: "38 internal · 11 external" },
+        { key: "structured-data", label: "Structured data types", value: "Organization, WebSite, WebPage" },
       ] },
       { id: "assets", title: "Assets", items: [
         { key: "image-count", label: "Images", value: "45" },
@@ -11047,10 +11051,30 @@ function AuditChecksPanel({ pageName, run, results, onOpenCategory }: { pageName
   );
 }
 
-function auditFindingIdentity(result: any) {
-  const evidence = result.evidence && typeof result.evidence === "object" ? result.evidence : {};
-  const resource = evidence.resource || evidence.url || evidence.path || evidence.src || evidence.selector || evidence.element || "page";
-  return `${result.group_id || result.check_id || result.id}:${String(resource).slice(0, 500)}`;
+export function auditHeadlineCategoryComparison(
+  earlier: Pick<AuditRun, "category_scores">,
+  later: Pick<AuditRun, "category_scores">,
+) {
+  const savedScore = (run: Pick<AuditRun, "category_scores">, category: string) => {
+    const value = run.category_scores?.[category];
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  };
+  const rows = auditCategories.map((category) => {
+    const earlierScore = savedScore(earlier, category);
+    const laterScore = savedScore(later, category);
+    return {
+      category,
+      earlier: earlierScore,
+      later: laterScore,
+      change: earlierScore == null || laterScore == null ? null : laterScore - earlierScore,
+    };
+  });
+  return {
+    rows,
+    improved: rows.filter((row) => row.change != null && row.change > 0).length,
+    declined: rows.filter((row) => row.change != null && row.change < 0).length,
+    unchanged: rows.filter((row) => row.change === 0).length,
+  };
 }
 
 function AuditComparePanel({
@@ -11075,48 +11099,32 @@ function AuditComparePanel({
   const later = eligible.find((run) => run.id === laterRunId);
   if (!earlier || !later || earlier.id === later.id)
     return <Panel><Empty title="Select two different scans" detail="Earlier and later scans must belong to this page and cannot be the same run." /></Panel>;
-  const earlierResults = earlier.user_facing_results || earlier.audit_results || [];
-  const laterResults = later.user_facing_results || later.audit_results || [];
-  const identity = (result: any) => result.group_id || result.check_id;
-  const previousByCheck = new Map(earlierResults.map((result: any) => [identity(result), result]));
-  const currentByCheck = new Map(laterResults.map((result: any) => [identity(result), result]));
-  const previousFindings = earlierResults.filter((result: any) => ["failed", "advisory"].includes(result.outcome));
-  const currentFindings = laterResults.filter((result: any) => ["failed", "advisory"].includes(result.outcome));
-  const previousFindingIds = new Set(previousFindings.map(auditFindingIdentity));
-  const currentFindingIds = new Set(currentFindings.map(auditFindingIdentity));
-  const resolved = previousFindings.filter((result: any) => {
-    const current: any = currentByCheck.get(identity(result));
-    return current && current.outcome !== "unable_to_test" && !["failed", "advisory"].includes(current.outcome) && !currentFindingIds.has(auditFindingIdentity(result));
-  }).length;
-  const added = currentFindings.filter((result: any) => {
-    const previous: any = previousByCheck.get(identity(result));
-    return previous && previous.outcome !== "unable_to_test" && !["failed", "advisory"].includes(previous.outcome) && !previousFindingIds.has(auditFindingIdentity(result));
-  }).length;
-  const unchanged = currentFindings.filter((result: any) => previousFindingIds.has(auditFindingIdentity(result))).length;
-  const earlierPerformance = earlier.category_scores?.Performance ?? auditCategoryScore(earlierResults, auditCategoryPrefixes.Performance);
-  const laterPerformance = later.category_scores?.Performance ?? auditCategoryScore(laterResults, auditCategoryPrefixes.Performance);
-  const latestLabel = later.id === eligible[0].id ? "Latest scan" : "Later scan";
-  const registryChanged = JSON.stringify((earlier as any).registry_snapshot?.map((check: any) => check.id) || []) !== JSON.stringify((later as any).registry_snapshot?.map((check: any) => check.id) || []);
-  const scoreChange = (later.score ?? 0) - (earlier.score ?? 0);
-  const performanceChange = laterPerformance != null && earlierPerformance != null ? laterPerformance - earlierPerformance : null;
+  const categoryComparison = auditHeadlineCategoryComparison(earlier, later);
+  const performance = categoryComparison.rows.find((row) => row.category === "Performance")!;
+  const scoreChange = earlier.score == null || later.score == null ? null : later.score - earlier.score;
+  const changeText = (value: number | null) => value == null ? "—" : `${value >= 0 ? "+" : ""}${value}`;
+  const missingScores = categoryComparison.rows.filter((row) => row.earlier == null || row.later == null).length;
   return (
     <>
       <section className="panel audit-compare-selectors">
-        <label>Earlier scan<select value={earlier.id} onChange={(event) => onEarlierChange(event.target.value)}>{eligible.filter((run) => run.id !== later.id).map((run) => <option value={run.id} key={run.id}>{fmtDate(run.completed_at || run.created_at)} · {run.status}</option>)}</select></label>
+        <label><span className="sr-only">Select earlier scan</span><select aria-label="Select earlier scan" value={earlier.id} onChange={(event) => onEarlierChange(event.target.value)}>{eligible.filter((run) => run.id !== later.id).map((run) => <option value={run.id} key={run.id}>{fmtDate(run.completed_at || run.created_at)}</option>)}</select></label>
         <span>compared with</span>
-        <label>{latestLabel}<select value={later.id} onChange={(event) => onLaterChange(event.target.value)}>{eligible.filter((run) => run.id !== earlier.id).map((run) => <option value={run.id} key={run.id}>{fmtDate(run.completed_at || run.created_at)} · {run.status}</option>)}</select></label>
+        <label><span className="sr-only">Select later scan</span><select aria-label="Select later scan" value={later.id} onChange={(event) => onLaterChange(event.target.value)}>{eligible.filter((run) => run.id !== earlier.id).map((run) => <option value={run.id} key={run.id}>{fmtDate(run.completed_at || run.created_at)}</option>)}</select></label>
       </section>
       <div className="audit-compare-summary">
-        <div><small>Overall</small><b>{earlier.score ?? "—"} → {later.score ?? "—"}</b><span>{scoreChange >= 0 ? "+" : ""}{scoreChange}</span></div>
-        <div><small>Performance</small><b>{earlierPerformance ?? "—"} → {laterPerformance ?? "—"}</b><span>{performanceChange == null ? "—" : `${performanceChange >= 0 ? "+" : ""}${performanceChange}`}</span></div>
-        <div><small>Resolved</small><b>{resolved}</b></div>
-        <div><small>New</small><b>{added}</b></div>
+        <div><small>Overall</small><b>{earlier.score ?? "—"} → {later.score ?? "—"}</b><span className={scoreChange != null && scoreChange < 0 ? "negative" : undefined}>{changeText(scoreChange)}</span></div>
+        <div><small>Performance</small><b>{performance.earlier ?? "—"} → {performance.later ?? "—"}</b><span className={performance.change != null && performance.change < 0 ? "negative" : undefined}>{changeText(performance.change)}</span></div>
+        <div><small>Categories improved</small><b>{categoryComparison.improved}</b></div>
+        <div><small>Categories declined</small><b>{categoryComparison.declined}</b></div>
       </div>
       <section className="panel audit-comparison-table">
-        <h2>{pageName} finding comparison</h2>
-        <DataTable headers={["Status", "Count"]} rows={[["Resolved", resolved], ["New", added], ["Unchanged", unchanged], ["Current findings", currentFindings.length]]} />
-        <p className="subtle">Previous findings: {previousFindings.length}. Current findings: {currentFindings.length}. Resolved items are not included in the current total.</p>
-        {(registryChanged || earlier.coverage !== later.coverage) && <p className="analytics-data-warning">Registry or coverage differs between these scans. Missing and unable-to-test checks are not classified as resolved or new.</p>}
+        <h2>{pageName} category comparison</h2>
+        <DataTable
+          headers={["Category", "Earlier", "Later", "Change"]}
+          rows={categoryComparison.rows.map((row) => [row.category, row.earlier ?? "—", row.later ?? "—", changeText(row.change)])}
+        />
+        <p className="subtle">This comparison uses the headline category figures stored when each audit completed.</p>
+        {missingScores > 0 && <p className="analytics-data-warning">{missingScores} {missingScores === 1 ? "category is" : "categories are"} unavailable because one or both selected audits do not contain a saved headline figure.</p>}
       </section>
     </>
   );

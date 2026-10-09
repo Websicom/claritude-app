@@ -36,6 +36,7 @@ describe("audit technical profile", () => {
       row("seo.crawling.and.indexing.noindex.directive.detected", "passed", { directives: null }),
       row("seo.crawling.and.indexing.selected.page.allowed.by.googlebot.robots.rules", "passed", { agent: "Googlebot", allowed: true }),
       row("seo.crawling.and.indexing.selected.page.found.in.checked.sitemap.files", "passed", { urlsChecked: 42, matches: [{ loc: "https://example.com/" }] }),
+      row("seo.structured.data.schema.org.types.identified", "passed", { types: ["WebSite", "Organization"] }),
       row("seo.links.and.navigation.checked.and.unchecked.link.totals.recorded", "passed", { checked: 20, discovered: 20 }),
       row("seo.links.and.navigation.checked.links.returning.http.404.detected", "failed", { totalDiscovered: 1, occurrences: [{ url: "https://example.com/missing" }] }),
       row("accessibility.images.and.media.image.formats.recorded", "passed", { formats: [{ format: "webp" }, { format: "avif" }, { format: "svg" }, { format: "jpg" }] }),
@@ -57,8 +58,11 @@ describe("audit technical profile", () => {
     ]));
     expect(sections.find((section) => section.id === "content")?.items).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: "indexable", value: "Yes" }),
-      expect.objectContaining({ key: "broken-links", value: "1 of 20 checked", tone: "issue" }),
+      expect.objectContaining({ key: "broken-links", label: "Broken links checks", value: "1 of 20 checked", tone: "issue" }),
     ]));
+    const contentKeys = sections.find((section) => section.id === "content")?.items.map((item) => item.key);
+    expect(contentKeys).not.toContain("sitemap-page");
+    expect(contentKeys?.at(-1)).toBe("structured-data");
     expect(sections.find((section) => section.id === "assets")?.items).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: "image-formats", value: "WebP 1 · Avif 1 · Svg 1 · Jpg 1" }),
       expect.objectContaining({ key: "modern-images", value: "3 of 4 · 75%" }),
