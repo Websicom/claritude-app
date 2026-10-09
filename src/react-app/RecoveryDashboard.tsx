@@ -4185,20 +4185,22 @@ function AuditTechnicalPanel({
             <section className="panel audit-technical-section" key={section.id}>
               <div className="panel-head"><h2>{section.title}</h2></div>
               {section.items.length ? (
-                <>
-                  <div className="audit-technical-table-head"><span>Check</span><span>Result</span></div>
-                  <dl>
+                <div className="table-wrap">
+                  <table className="audit-technical-table">
+                    <thead><tr><th>Check</th><th>Result</th></tr></thead>
+                    <tbody>
                     {section.items.map((item) => {
                       const help = [helpByKey[item.key], item.detail].filter(Boolean).join(" ");
                       return (
-                        <div className="audit-technical-row" key={item.key}>
-                          <dt><strong>{item.label}</strong>{help && <InfoHelp label={item.label} help={help} icon={<span className="audit-technical-help-mark" aria-hidden="true">?</span>} />}</dt>
-                          <dd className={item.tone === "issue" ? "audit-technical-issue" : undefined}><span>{item.value}</span></dd>
-                        </div>
+                        <tr className="audit-technical-row" key={item.key}>
+                          <td><strong>{item.label}</strong>{help && <InfoHelp label={item.label} help={help} icon={<span className="audit-technical-help-mark" aria-hidden="true">?</span>} />}</td>
+                          <td className={item.tone === "issue" ? "audit-technical-issue" : undefined}><span>{item.value}</span></td>
+                        </tr>
                       );
                     })}
-                  </dl>
-                </>
+                    </tbody>
+                  </table>
+                </div>
               ) : (
                 <p className="audit-technical-empty">No reliable retained evidence is available for this section.</p>
               )}
