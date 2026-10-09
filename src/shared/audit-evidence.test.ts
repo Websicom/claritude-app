@@ -151,6 +151,22 @@ describe("audit v2 evidence architecture", () => {
     expect(images[0].locator).not.toBe(images[1].locator);
   });
 
+  it("records the real declared image format for lazy-loaded and transformed images", () => {
+    const evidence = bundle(`<html><body>
+      <img src="data:image/svg+xml,%3Csvg%3E" data-src="/uploads/photo.JPG?width=1200">
+      <img src="/image-proxy?id=2&format=webp">
+      <img srcset="/uploads/illustration.svg 1x, /uploads/illustration@2x.svg 2x">
+      <img src="data:image/png;base64,AAAA">
+    </body></html>`);
+
+    expect(evaluateAuditCheck("accessibility.images.and.media.image.formats.recorded", evidence).evidence.formats).toEqual([
+      { url: "/uploads/photo.JPG?width=1200", format: "jpg" },
+      { url: "/image-proxy?id=2&format=webp", format: "webp" },
+      { url: "/uploads/illustration.svg", format: "svg" },
+      { url: "data:image/png;base64,AAAA", format: "png" },
+    ]);
+  });
+
   it("recovers malformed HTML without inventing a collection failure", () => {
     const parsed = parseSourceDom("<html><body><main><h1>Broken<p>still content", "https://example.com/");
     expect(parsed.collection).toEqual({ status: "complete" });

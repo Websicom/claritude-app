@@ -2345,7 +2345,7 @@ export function propertySwitchDestination(pathname: string, search: string, prop
   const nextPath = propertyRoutes.has(pathname) ? pathname : "/overview";
   const params = new URLSearchParams(propertyRoutes.has(pathname) ? search : "");
   params.set("property", propertyId);
-  ["auditPage", "auditEarlier", "auditLater", "auditGroup", "event", "page"].forEach((key) => params.delete(key));
+  ["auditPage", "auditEarlier", "auditLater", "auditGroup", "eventDetail", "pagePath", "sourceDetail", "countryList", "event", "page"].forEach((key) => params.delete(key));
   return `${nextPath}?${params.toString()}`;
 }
 
@@ -3540,7 +3540,7 @@ function AuditView({
   const [runs, setRuns] = useState<AuditRun[]>([]),
     [propertyRuns, setPropertyRuns] = useState<AuditRun[]>([]),
     [tab, setTab] = useState(
-      ["Overview", "Findings", "Technical", "Checks", "History", "Compare"].includes(requestedTab || "")
+      ["Overview", "Findings", "Checks", "Technical", "History", "Compare"].includes(requestedTab || "")
         ? requestedTab!
         : "Overview",
     ),
@@ -3961,7 +3961,7 @@ function AuditView({
           <Plus />
         </button>
         <Tabs
-          labels={["Overview", "Findings", "Technical", "Checks", "History", "Compare"]}
+          labels={["Overview", "Findings", "Checks", "Technical", "History", "Compare"]}
           value={tab}
           onChange={(nextTab) => { setTab(nextTab); setAuditFilters({}); updateAuditLocation({ auditTab: nextTab }); }}
         />
@@ -4190,8 +4190,8 @@ function AuditTechnicalPanel({
                     const help = [helpByKey[item.key], item.detail].filter(Boolean).join(" ");
                     return (
                       <div className="audit-technical-row" key={item.key}>
-                        <dt><span>{item.label}</span>{help && <InfoHelp label={item.label} help={help} icon={<span className="audit-technical-help-mark" aria-hidden="true">?</span>} />}</dt>
-                        <dd><strong>{item.value}</strong></dd>
+                        <dt><strong>{item.label}</strong>{help && <InfoHelp label={item.label} help={help} icon={<span className="audit-technical-help-mark" aria-hidden="true">?</span>} />}</dt>
+                        <dd className={item.tone === "issue" ? "audit-technical-issue" : undefined}><span>{item.value}</span></dd>
                       </div>
                     );
                   })}
@@ -4234,9 +4234,9 @@ function fixtureAuditTechnicalProfile(property: Property, page: AuditPage): Audi
       ] },
       { id: "assets", title: "Assets", items: [
         { key: "image-count", label: "Images", value: "45" },
-        { key: "image-formats", label: "Image formats", value: "WebP 37 · Jpeg 6 · Png 2" },
+        { key: "image-formats", label: "Image formats", value: "WebP 37 · Jpg 6 · Png 2" },
         { key: "modern-images", label: "Modern image formats", value: "37 of 45 · 82%" },
-        { key: "lazy-images", label: "Missing lazy loading", value: "5", detail: "Below-fold observations across desktop and mobile." },
+        { key: "lazy-images", label: "Missing lazy loading", value: "5", detail: "Below-fold observations across desktop and mobile.", tone: "issue" },
       ] },
       { id: "infrastructure", title: "Infrastructure", items: [
         { key: "nameservers", label: "Nameservers", value: "ada.ns.cloudflare.com · bob.ns.cloudflare.com" },
@@ -8881,7 +8881,7 @@ function Empty({ title, detail }: { title: string; detail: string }) {
   const loading = /^Loading\b/i.test(title);
   return (
     <div className="empty-state">
-      <Globe2 className={loading ? "loading-globe" : undefined} aria-hidden="true" />
+      {loading ? <RefreshCw className="loading-spinner" aria-hidden="true" /> : <Globe2 aria-hidden="true" />}
       <b>{title}</b>
       <small>{detail}</small>
     </div>
@@ -9612,15 +9612,15 @@ function AnalyticsPagination({ page, pageSize, total, pages, onPage, onPageSize,
   onPageSize: (size: number) => void;
   label?: string;
 }) {
-  const first = total ? (page - 1) * pageSize + 1 : 0;
-  const last = Math.min(total, page * pageSize);
   return (
     <div className="pagination-row analytics-pagination" aria-label={`${label} table pagination`}>
-      <span>{fmt(first)}–{fmt(last)} of {fmt(total)} {label}</span>
-      <label>Rows<select value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))}>{[20, 100, 200].map((size) => <option value={size} key={size}>{size}</option>)}</select></label>
-      <button className="btn" disabled={page <= 1} onClick={() => onPage(page - 1)}>Previous</button>
-      <span>Page {page} of {pages}</span>
-      <button className="btn" disabled={page >= pages} onClick={() => onPage(page + 1)}>Next</button>
+      <span className="analytics-pagination-summary">{fmt(total)} {total === 1 ? "result" : "results"}</span>
+      <div className="analytics-pagination-controls">
+        <label>Rows<select value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))}>{[20, 100, 200].map((size) => <option value={size} key={size}>{size}</option>)}</select></label>
+        <button className="btn" disabled={page <= 1} onClick={() => onPage(page - 1)}>Previous</button>
+        <span>Page {page} of {pages}</span>
+        <button className="btn" disabled={page >= pages} onClick={() => onPage(page + 1)}>Next</button>
+      </div>
     </div>
   );
 }
@@ -9633,14 +9633,14 @@ function ResultsPagination({ page, total, label, onPage }: {
 }) {
   const pageSize = 20;
   const pages = Math.max(1, Math.ceil(total / pageSize));
-  const first = total ? (page - 1) * pageSize + 1 : 0;
-  const last = Math.min(total, page * pageSize);
   return (
     <div className="pagination-row analytics-pagination" aria-label={`${label} pagination`}>
-      <span>{fmt(first)}–{fmt(last)} of {fmt(total)} {label}</span>
-      <button className="btn" disabled={page <= 1} onClick={() => onPage(page - 1)}>Previous</button>
-      <span>Page {page} of {pages}</span>
-      <button className="btn" disabled={page >= pages} onClick={() => onPage(page + 1)}>Next</button>
+      <span className="analytics-pagination-summary">{fmt(total)} {total === 1 ? "result" : "results"}</span>
+      <div className="analytics-pagination-controls">
+        <button className="btn" disabled={page <= 1} onClick={() => onPage(page - 1)}>Previous</button>
+        <span>Page {page} of {pages}</span>
+        <button className="btn" disabled={page >= pages} onClick={() => onPage(page + 1)}>Next</button>
+      </div>
     </div>
   );
 }
@@ -9787,7 +9787,7 @@ function DimensionMark({ kind, value }: { kind: string; value: string }) {
     return <span className="dimension-mark source" aria-hidden="true"><img src={sourceIcon} alt="" /></span>;
   }
   return (
-    <Suspense fallback={<span className="dimension-mark neutral"><Globe2 /></span>}>
+    <Suspense fallback={<span className="dimension-mark neutral"><RefreshCw className="loading-spinner" /></span>}>
       <LazyDimensionMark kind={kind} value={value} />
     </Suspense>
   );

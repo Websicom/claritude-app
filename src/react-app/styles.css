@@ -2764,7 +2764,7 @@ input[type="checkbox"]:checked:after {
 .audit-spin {
   animation: audit-spin .8s linear infinite;
 }
-.loading-globe {
+.loading-spinner {
   animation: audit-spin 1.2s linear infinite;
   transform-origin: center;
 }
@@ -2772,7 +2772,7 @@ input[type="checkbox"]:checked:after {
 @keyframes audit-progress-stripes { to { background-position: 22.627px 0; } }
 @media (prefers-reduced-motion: reduce) {
   .audit-spin,
-  .loading-globe,
+  .loading-spinner,
   .audit-progress-track { animation: none; }
   .audit-progress-track > span { transition: none; }
 }
@@ -3223,8 +3223,18 @@ input[type="checkbox"]:checked:after {
   font-weight: 700;
 }
 .analytics-pagination {
-  justify-content: flex-end;
+  justify-content: space-between;
+  gap: 16px;
   padding: 14px 8px 4px;
+}
+.analytics-pagination-summary {
+  margin-right: auto;
+}
+.analytics-pagination-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
 }
 .analytics-pagination label {
   display: inline-flex;
@@ -3805,11 +3815,12 @@ input[type="checkbox"]:checked:after {
     align-items: center;
     flex-wrap: wrap;
   }
-  .analytics-pagination > span:first-child {
+  .analytics-pagination-summary {
     flex-basis: 100%;
   }
-  .analytics-pagination label {
-    margin-right: auto;
+  .analytics-pagination-controls {
+    flex-wrap: wrap;
+    justify-content: flex-start;
   }
   .tracking-signal-grid {
     grid-template-columns: 1fr 1fr;

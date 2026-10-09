@@ -31,6 +31,11 @@
   gap: 12px;
   align-items: start;
   padding: 9px 0;
+  transition: background-color 120ms ease;
+}
+
+.audit-technical-row:hover {
+  background: var(--soft);
 }
 
 .audit-technical-row + .audit-technical-row {
@@ -47,21 +52,27 @@
   line-height: 1.4;
 }
 
+.audit-technical-row dt > strong {
+  color: var(--ink);
+  font-weight: 650;
+}
+
 .audit-technical-row dd {
   min-width: 0;
   text-align: right;
 }
 
-.audit-technical-row dd strong {
+.audit-technical-row dd span {
   display: block;
   overflow-wrap: anywhere;
-}
-
-.audit-technical-row dd strong {
   color: var(--ink);
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 400;
   line-height: 1.4;
+}
+
+.audit-technical-row dd.audit-technical-issue span {
+  color: var(--danger);
 }
 
 .audit-technical-row .metric-help > button {

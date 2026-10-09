@@ -17,6 +17,15 @@ describe("audit technical profile", () => {
     expect(formatAuditTechnicalBytes(undefined)).toBeNull();
   });
 
+  it("uses the current display case for common image formats", () => {
+    const sections = buildAuditTechnicalSections([
+      row("accessibility.images.and.media.image.formats.recorded", "passed", { formats: [{ format: "jpeg" }, { format: "svg" }, { format: "webp" }] }),
+    ]);
+    expect(sections.find((section) => section.id === "assets")?.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "image-formats", value: "Jpg 1 · Svg 1 · WebP 1" }),
+    ]));
+  });
+
   it("derives all five sections from retained check evidence", () => {
     const sections = buildAuditTechnicalSections([
       row("seo.crawling.http_status", "passed", { status: 200, finalUrl: "https://example.com/" }),
@@ -44,16 +53,16 @@ describe("audit technical profile", () => {
     expect(sections.find((section) => section.id === "delivery")?.items).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: "http-status", value: "200" }),
       expect.objectContaining({ key: "transfer-size", value: "1.8 MB desktop · 2.0 MB mobile" }),
-      expect.objectContaining({ key: "compression", value: "8 of 10 checked resources" }),
+      expect.objectContaining({ key: "compression", value: "8 of 10 checked resources", tone: "issue" }),
     ]));
     expect(sections.find((section) => section.id === "content")?.items).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: "indexable", value: "Yes" }),
-      expect.objectContaining({ key: "broken-links", value: "1 of 20 checked" }),
+      expect.objectContaining({ key: "broken-links", value: "1 of 20 checked", tone: "issue" }),
     ]));
     expect(sections.find((section) => section.id === "assets")?.items).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: "image-formats", value: "WebP 1 · Avif 1 · Svg 1 · Jpg 1" }),
       expect.objectContaining({ key: "modern-images", value: "3 of 4 · 75%" }),
-      expect.objectContaining({ key: "lazy-images", value: "1" }),
+      expect.objectContaining({ key: "lazy-images", value: "1", tone: "issue" }),
     ]));
     expect(sections.find((section) => section.id === "infrastructure")?.items).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: "nameservers", value: "ada.ns.cloudflare.com" }),
@@ -73,7 +82,7 @@ describe("audit technical profile", () => {
 
     expect(sections.find((section) => section.id === "delivery")?.items).toEqual([]);
     expect(sections.find((section) => section.id === "security")?.items).toEqual([
-      expect.objectContaining({ key: "csp", value: "Not present" }),
+      expect.objectContaining({ key: "csp", value: "Not present", tone: "issue" }),
     ]);
     expect(JSON.stringify(sections)).not.toContain("timeout");
     expect(new Set(AUDIT_TECHNICAL_CHECK_IDS).size).toBe(AUDIT_TECHNICAL_CHECK_IDS.length);

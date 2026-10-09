@@ -4,7 +4,7 @@ export type AuditTechnicalResult = {
   evidence?: Record<string, any> | null;
 };
 
-export type AuditTechnicalTone = "neutral" | "positive";
+export type AuditTechnicalTone = "neutral" | "positive" | "issue";
 
 export type AuditTechnicalItem = {
   key: string;
@@ -128,7 +128,7 @@ const formatImageFormat = (value: unknown) => {
     bmp: "Bmp",
     gif: "Gif",
     ico: "Ico",
-    jpeg: "Jpeg",
+    jpeg: "Jpg",
     jpg: "Jpg",
     png: "Png",
     svg: "Svg",
@@ -153,6 +153,10 @@ export function buildAuditTechnicalSections(results: AuditTechnicalResult[]): Au
     return row && row.outcome !== "unable_to_test" ? row : null;
   };
   const evidence = (id: string) => usable(id)?.evidence || null;
+  const resultTone = (id: string): AuditTechnicalTone => {
+    const outcome = usable(id)?.outcome;
+    return outcome === "failed" || outcome === "advisory" ? "issue" : outcome === "passed" ? "positive" : "neutral";
+  };
   const sections: AuditTechnicalSection[] = [
     { id: "delivery", title: "Delivery", items: [] },
     { id: "content", title: "Content & Discovery", items: [] },
@@ -183,10 +187,10 @@ export function buildAuditTechnicalSections(results: AuditTechnicalResult[]): Au
   const recordValues = (id: string) => [...new Set(records(id).map((record: any) => compactText(record?.value)).filter(Boolean))];
 
   const http = evidence(IDS.httpStatus);
-  add("delivery", "http-status", "HTTP status", asNumber(http?.status) == null ? null : String(http!.status), undefined, usable(IDS.httpStatus)?.outcome === "passed" ? "positive" : "neutral");
+  add("delivery", "http-status", "HTTP status", asNumber(http?.status) == null ? null : String(http!.status), undefined, resultTone(IDS.httpStatus));
   add("delivery", "final-url", "Final URL", compactText(http?.finalUrl, 260));
   const redirectTrace = evidence(IDS.redirects)?.redirects;
-  if (Array.isArray(redirectTrace)) add("delivery", "redirects", "Redirect count", formatNumber(redirectTrace.length), undefined, redirectTrace.length === 0 ? "positive" : "neutral");
+  if (Array.isArray(redirectTrace)) add("delivery", "redirects", "Redirect count", formatNumber(redirectTrace.length), undefined, redirectTrace.length === 0 ? "positive" : "issue");
   add("delivery", "response-time", "Document response time", metric(IDS.responseTime, (value) => `${Math.round(value)} ms`));
   add("delivery", "transfer-size", "Transferred page size", byteMetric(IDS.transferSize));
   add("delivery", "requests", "Resource requests", countMetric(IDS.requests));
@@ -196,14 +200,14 @@ export function buildAuditTechnicalSections(results: AuditTechnicalResult[]): Au
   const compressionMisses = asNumber(compression?.totalDiscovered) ?? (Array.isArray(compression?.occurrences) ? compression.occurrences.length : null);
   if (compressionChecked != null && compressionMisses != null) {
     const compressed = Math.max(0, compressionChecked - compressionMisses);
-    add("delivery", "compression", "Text compression", `${formatNumber(compressed)} of ${formatNumber(compressionChecked)} checked resources`, compressionMisses ? `${formatNumber(compressionMisses)} resource${compressionMisses === 1 ? "" : "s"} lacked a recognised compression encoding.` : "All checked text resources used a recognised compression encoding.", compressionMisses === 0 ? "positive" : "neutral");
+    add("delivery", "compression", "Text compression", `${formatNumber(compressed)} of ${formatNumber(compressionChecked)} checked resources`, compressionMisses ? `${formatNumber(compressionMisses)} resource${compressionMisses === 1 ? "" : "s"} lacked a recognised compression encoding.` : "All checked text resources used a recognised compression encoding.", compressionMisses === 0 ? "positive" : "issue");
   }
   const cache = evidence(IDS.staticCache);
   const cacheChecked = asNumber(cache?.checked);
   const cacheMisses = asNumber(cache?.totalDiscovered) ?? (Array.isArray(cache?.occurrences) ? cache.occurrences.length : null);
   if (cacheChecked != null && cacheMisses != null) {
     const configured = Math.max(0, cacheChecked - cacheMisses);
-    add("delivery", "static-cache", "Static resource caching", `${formatNumber(configured)} of ${formatNumber(cacheChecked)} checked resources`, cacheMisses ? `${formatNumber(cacheMisses)} resource${cacheMisses === 1 ? "" : "s"} had no max-age, s-maxage, immutable or Expires evidence.` : "Caching directives were detected for every checked static resource.", cacheMisses === 0 ? "positive" : "neutral");
+    add("delivery", "static-cache", "Static resource caching", `${formatNumber(configured)} of ${formatNumber(cacheChecked)} checked resources`, cacheMisses ? `${formatNumber(cacheMisses)} resource${cacheMisses === 1 ? "" : "s"} had no max-age, s-maxage, immutable or Expires evidence.` : "Caching directives were detected for every checked static resource.", cacheMisses === 0 ? "positive" : "issue");
   }
   const cacheHeaders = evidence(IDS.cacheIndicators)?.headers;
   if (cacheHeaders && typeof cacheHeaders === "object") {
@@ -221,18 +225,18 @@ export function buildAuditTechnicalSections(results: AuditTechnicalResult[]): Au
   const canonical = evidence(IDS.canonical)?.canonical;
   if (Array.isArray(canonical) && canonical.length) add("content", "canonical", "Canonical URL", compactText(canonical[0], 260));
   const noindex = usable(IDS.noindex);
-  if (noindex) add("content", "indexable", "Selected page indexable", noindex.outcome === "passed" ? "Yes" : "No", undefined, noindex.outcome === "passed" ? "positive" : "neutral");
+  if (noindex) add("content", "indexable", "Selected page indexable", noindex.outcome === "passed" ? "Yes" : "No", undefined, resultTone(IDS.noindex));
   const robots = usable(IDS.robotsReachable);
-  if (robots) add("content", "robots-reachable", "Robots.txt reachable", robots.outcome === "passed" ? "Yes" : "No", undefined, robots.outcome === "passed" ? "positive" : "neutral");
+  if (robots) add("content", "robots-reachable", "Robots.txt reachable", robots.outcome === "passed" ? "Yes" : "No", undefined, resultTone(IDS.robotsReachable));
   const robotsAllowed = usable(IDS.robotsAllowed);
-  if (robotsAllowed) add("content", "robots-allowed", "Selected page allowed by robots", robotsAllowed.outcome === "passed" ? "Yes" : "No", "Googlebot rules for the selected audited page.", robotsAllowed.outcome === "passed" ? "positive" : "neutral");
+  if (robotsAllowed) add("content", "robots-allowed", "Selected page allowed by robots", robotsAllowed.outcome === "passed" ? "Yes" : "No", "Googlebot rules for the selected audited page.", resultTone(IDS.robotsAllowed));
   const sitemap = usable(IDS.sitemapReachable);
-  if (sitemap) add("content", "sitemap-reachable", "Sitemap available", sitemap.outcome === "passed" ? "Yes" : "No", undefined, sitemap.outcome === "passed" ? "positive" : "neutral");
+  if (sitemap) add("content", "sitemap-reachable", "Sitemap available", sitemap.outcome === "passed" ? "Yes" : "No", undefined, resultTone(IDS.sitemapReachable));
   const sitemapPage = evidence(IDS.sitemapPage);
   const sitemapUrls = asNumber(sitemapPage?.urlsChecked);
   if (sitemapUrls != null) add("content", "sitemap-urls", "URLs discovered from sitemap", formatNumber(sitemapUrls));
   const sitemapPageResult = usable(IDS.sitemapPage);
-  if (sitemapPageResult) add("content", "sitemap-page", "Audited page present in sitemap", sitemapPageResult.outcome === "passed" ? "Yes" : "No", undefined, sitemapPageResult.outcome === "passed" ? "positive" : "neutral");
+  if (sitemapPageResult) add("content", "sitemap-page", "Audited page present in sitemap", sitemapPageResult.outcome === "passed" ? "Yes" : "No", undefined, resultTone(IDS.sitemapPage));
   add("content", "language", "HTML language", compactText(evidence(IDS.language)?.language));
   const types = evidence(IDS.structuredTypes)?.types;
   if (Array.isArray(types) && types.length) add("content", "structured-data", "Structured data types", [...new Set(types.map((value) => compactText(value)).filter(Boolean))].join(", "));
@@ -252,7 +256,7 @@ export function buildAuditTechnicalSections(results: AuditTechnicalResult[]): Au
       for (const occurrence of occurrences) occurrence?.url ? brokenUrls.add(String(occurrence.url)) : unlocatedFailures += 1;
     }
     const broken = brokenUrls.size + unlocatedFailures;
-    add("content", "broken-links", "Broken checked links", `${formatNumber(broken)} of ${formatNumber(checkedLinks)} checked`, undefined, broken === 0 ? "positive" : "neutral");
+    add("content", "broken-links", "Broken checked links", `${formatNumber(broken)} of ${formatNumber(checkedLinks)} checked`, undefined, broken === 0 ? "positive" : "issue");
   }
 
   const formats = evidence(IDS.imageFormats)?.formats;
@@ -272,14 +276,14 @@ export function buildAuditTechnicalSections(results: AuditTechnicalResult[]): Au
   }
   const lazy = evidence(IDS.lazyImages);
   const missingLazy = asNumber(lazy?.totalDiscovered) ?? (Array.isArray(lazy?.occurrences) ? lazy.occurrences.length : null);
-  if (missingLazy != null) add("assets", "lazy-images", "Missing lazy loading", formatNumber(missingLazy), "Below-fold image observations across desktop and mobile. Eligible-image totals are not retained by the current check.", missingLazy === 0 ? "positive" : "neutral");
+  if (missingLazy != null) add("assets", "lazy-images", "Missing lazy loading", formatNumber(missingLazy), "Below-fold image observations across desktop and mobile. Eligible-image totals are not retained by the current check.", missingLazy === 0 ? "positive" : "issue");
   add("assets", "image-bytes", "Image transfer size", byteMetric(IDS.imageBytes));
   add("assets", "script-bytes", "JavaScript transfer size", byteMetric(IDS.scriptBytes));
   add("assets", "css-bytes", "CSS transfer size", byteMetric(IDS.cssBytes));
   add("assets", "font-bytes", "Font transfer size", byteMetric(IDS.fontBytes));
-  add("assets", "render-blocking", "Render-blocking resources", countMetric(IDS.renderBlocking));
+  add("assets", "render-blocking", "Render-blocking resources", countMetric(IDS.renderBlocking), undefined, resultTone(IDS.renderBlocking));
   add("assets", "preloads", "Resource preloads", countMetric(IDS.preloads));
-  add("assets", "unused-preloads", "Unused preloads", countMetric(IDS.unusedPreloads));
+  add("assets", "unused-preloads", "Unused preloads", countMetric(IDS.unusedPreloads), undefined, resultTone(IDS.unusedPreloads));
 
   const nameservers = recordValues(IDS.nameservers).map((value) => value.replace(/\.$/, ""));
   if (nameservers.length) add("infrastructure", "nameservers", "Nameservers", nameservers.join(" · "));
@@ -293,7 +297,7 @@ export function buildAuditTechnicalSections(results: AuditTechnicalResult[]): Au
   if (Array.isArray(dnssecQueries)) {
     const reported = dnssecQueries.filter((query) => typeof query?.authenticatedData === "boolean");
     const authenticated = reported.filter((query) => query.authenticatedData).length;
-    if (reported.length) add("infrastructure", "dnssec", "DNSSEC resolver status", authenticated === reported.length ? "Validated" : authenticated === 0 ? "Not validated by resolver" : `${authenticated} of ${reported.length} responses validated`, "Based on the resolver authenticated-data flag.", authenticated === reported.length ? "positive" : "neutral");
+    if (reported.length) add("infrastructure", "dnssec", "DNSSEC resolver status", authenticated === reported.length ? "Validated" : authenticated === 0 ? "Not validated by resolver" : `${authenticated} of ${reported.length} responses validated`, "Based on the resolver authenticated-data flag.", authenticated === reported.length ? "positive" : "issue");
   }
   const ttlRows = records(IDS.dnsTtls).map((record: any) => asNumber(record?.ttl)).filter((value): value is number => value != null);
   if (ttlRows.length) {
@@ -301,20 +305,20 @@ export function buildAuditTechnicalSections(results: AuditTechnicalResult[]): Au
     add("infrastructure", "dns-ttl", "DNS TTL range", minimum === maximum ? `${formatNumber(minimum)} seconds` : `${formatNumber(minimum)}–${formatNumber(maximum)} seconds`);
   }
   const apexWww = evidence(IDS.apexWww);
-  if (apexWww && typeof apexWww.converged === "boolean") add("infrastructure", "apex-www", "Apex / www redirects", apexWww.converged ? "Same final destination" : "Different final destinations", undefined, apexWww.converged ? "positive" : "neutral");
+  if (apexWww && typeof apexWww.converged === "boolean") add("infrastructure", "apex-www", "Apex / www redirects", apexWww.converged ? "Same final destination" : "Different final destinations", undefined, apexWww.converged ? "positive" : "issue");
   const mail = recordValues(IDS.mail).map((value) => value.replace(/\.$/, ""));
   if (mail.length) add("infrastructure", "mail", "Mail exchange records", mail.join(" · "));
   for (const [id, key, label] of [[IDS.spf, "spf", "SPF"], [IDS.dmarc, "dmarc", "DMARC"], [IDS.caa, "caa", "CAA"]] as const) {
     const row = usable(id);
     if (!row) continue;
     const present = recordValues(id).length > 0;
-    add("infrastructure", key, label, present ? "Present" : "Not present", undefined, present ? "positive" : "neutral");
+    add("infrastructure", key, label, present ? "Present" : "Not present", undefined, present ? "positive" : "issue");
   }
 
   const https = usable(IDS.https);
-  if (https) add("security", "https", "HTTPS enabled", https.outcome === "passed" ? "Yes" : "No", undefined, https.outcome === "passed" ? "positive" : "neutral");
+  if (https) add("security", "https", "HTTPS enabled", https.outcome === "passed" ? "Yes" : "No", undefined, resultTone(IDS.https));
   const tls = usable(IDS.tls);
-  if (tls) add("security", "tls", "HTTPS / TLS connection", tls.outcome === "passed" ? "Succeeded" : "Failed", undefined, tls.outcome === "passed" ? "positive" : "neutral");
+  if (tls) add("security", "tls", "HTTPS / TLS connection", tls.outcome === "passed" ? "Succeeded" : "Failed", undefined, resultTone(IDS.tls));
   for (const [id, key, label] of [
     [IDS.hsts, "hsts", "HSTS"],
     [IDS.csp, "csp", "Content Security Policy"],
@@ -326,12 +330,12 @@ export function buildAuditTechnicalSections(results: AuditTechnicalResult[]): Au
     const row = usable(id);
     if (!row) continue;
     const present = row.outcome === "passed";
-    add("security", key, label, present ? "Present" : "Not present", undefined, present ? "positive" : "neutral");
+    add("security", key, label, present ? "Present" : "Not present", undefined, present ? "positive" : "issue");
   }
   const mixed = usable(IDS.mixedContent);
   if (mixed) {
     const occurrences = asNumber(mixed.evidence?.totalDiscovered) ?? (Array.isArray(mixed.evidence?.occurrences) ? mixed.evidence!.occurrences.length : 0);
-    add("security", "mixed-content", "Mixed content", mixed.outcome === "passed" ? "Clear" : `${formatNumber(occurrences || 1)} observation${occurrences === 1 ? "" : "s"} detected`, undefined, mixed.outcome === "passed" ? "positive" : "neutral");
+    add("security", "mixed-content", "Mixed content", mixed.outcome === "passed" ? "Clear" : `${formatNumber(occurrences || 1)} observation${occurrences === 1 ? "" : "s"} detected`, undefined, mixed.outcome === "passed" ? "positive" : "issue");
   }
   const cookieRows = [usable(IDS.cookieSecure), usable(IDS.cookieHttpOnly), usable(IDS.cookieSameSite)];
   const observedCookies = cookieRows.map((row) => asNumber(row?.evidence?.cookies)).find((value) => value != null && value > 0);
@@ -340,7 +344,8 @@ export function buildAuditTechnicalSections(results: AuditTechnicalResult[]): Au
       const missing = asNumber(row?.evidence?.missing) || 0;
       return `${name} ${formatNumber(Math.max(0, observedCookies - missing))}/${formatNumber(observedCookies)}`;
     };
-    add("security", "cookies", "Observed cookie attributes", [attribute(cookieRows[0], "Secure"), attribute(cookieRows[1], "HttpOnly"), attribute(cookieRows[2], "SameSite")].join(" · "));
+    const cookieIssue = cookieRows.some((row) => row?.outcome === "failed" || row?.outcome === "advisory");
+    add("security", "cookies", "Observed cookie attributes", [attribute(cookieRows[0], "Secure"), attribute(cookieRows[1], "HttpOnly"), attribute(cookieRows[2], "SameSite")].join(" · "), undefined, cookieIssue ? "issue" : "positive");
   }
 
   return sections;

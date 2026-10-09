@@ -76,6 +76,29 @@ type AuditEvaluator = (check: AuditCheck, evidence: AuditEvidenceBundle) => Omit
 
 const sourceElements = (evidence: AuditEvidenceBundle, tagName: string) => evidence.source.elements.filter((element) => element.tagName === tagName);
 const attr = (element: SourceDomEvidence["elements"][number], name: string) => element.attributes.find((item) => item.name.toLowerCase() === name.toLowerCase())?.value ?? null;
+const firstSrcsetCandidate = (value: string | null) => value?.split(",")[0]?.trim().split(/\s+/)[0] || null;
+const declaredImageUrl = (image: SourceDomEvidence["elements"][number]) => {
+  for (const name of ["data-src", "data-lazy-src", "data-original", "src"]) {
+    const value = attr(image, name)?.trim();
+    if (value) return value;
+  }
+  return firstSrcsetCandidate(attr(image, "data-srcset")) || firstSrcsetCandidate(attr(image, "srcset")) || "";
+};
+const imageFormatFromUrl = (value: string) => {
+  const dataMime = value.match(/^data:image\/([^;,]+)/i)?.[1]?.toLowerCase();
+  if (dataMime) return dataMime === "svg+xml" ? "svg" : dataMime === "jpeg" ? "jpg" : dataMime;
+  try {
+    const parsed = new URL(value, "https://audit.invalid/");
+    const queryFormat = ["format", "fm", "ext"].map((name) => parsed.searchParams.get(name)?.toLowerCase()).find(Boolean);
+    if (queryFormat) return queryFormat === "jpeg" ? "jpg" : queryFormat;
+    const path = decodeURIComponent(parsed.pathname).replace(/\/+$/, "");
+    const extension = path.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
+    return extension === "jpeg" ? "jpg" : extension || "unknown";
+  } catch {
+    const extension = value.split(/[?#]/)[0].match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
+    return extension === "jpeg" ? "jpg" : extension || "unknown";
+  }
+};
 const occurrence = (element: SourceDomEvidence["elements"][number], values?: Record<string, unknown>): AuditOccurrence => {
   const maxHtmlBytes = 1_000;
   if (element.html.length <= maxHtmlBytes)
@@ -557,7 +580,10 @@ function sourceExtendedEvaluator(check: AuditCheck, evidence: AuditEvidenceBundl
     }
     case "accessibility.images.and.media.image.formats.recorded": {
       if (!images.length) return result("not_applicable", { images: 0 });
-      const formats = images.map((image) => ({ url: attr(image, "src"), format: (attr(image, "src") || "").split(/[?#]/)[0].match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() || "unknown" }));
+      const formats = images.map((image) => {
+        const url = declaredImageUrl(image);
+        return { url, format: imageFormatFromUrl(url) };
+      });
       return result("passed", { formats });
     }
     case "accessibility.images.and.media.videos.contain.caption.track.declarations": {
