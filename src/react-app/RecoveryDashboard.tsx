@@ -5947,8 +5947,8 @@ function EmailControlDesk({ activeTab, platform, session, fixture, refresh }: an
   const [campaignAccountFilter, setCampaignAccountFilter] = useState("");
   const [campaignSubject, setCampaignSubject] = useState("");
   const [campaignHtml, setCampaignHtml] = useState("");
-  const [campaignRoleFilter, setCampaignRoleFilter] = useState("");
-  const [campaignEnvironmentFilter, setCampaignEnvironmentFilter] = useState("");
+  const [campaignRoleFilter, setCampaignRoleFilter] = useState("owner");
+  const [campaignEnvironmentFilter, setCampaignEnvironmentFilter] = useState(() => String(platform?.billing?.environment || "test"));
   const [deliveryKind, setDeliveryKind] = useState("all");
   const [deliveryClass, setDeliveryClass] = useState("all");
   const [dateFrom, setDateFrom] = useState(() => new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10));
