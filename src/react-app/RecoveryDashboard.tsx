@@ -167,6 +167,7 @@ const PLAN_LIMIT_ERROR_MESSAGES: Record<string, string> = {
   property_limit_reached: "This account has reached its property limit.",
   workspace_limit_reached: "This account has reached its workspace limit.",
   custom_event_plan_limit_reached: "This property has reached its custom event allowance.",
+  audit_page_plan_limit_reached: "This property has reached its saved audit-page allowance.",
   weekly_audit_credit_limit_reached: "This account has used its weekly audit allowance.",
   uptime_interval_not_available_for_plan: "That monitoring interval is not available on the current plan.",
 };
@@ -177,6 +178,7 @@ export function isPlanLimitError(message: unknown) {
     value.includes("reached its property limit") ||
     value.includes("reached its workspace limit") ||
     value.includes("reached its custom event allowance") ||
+    value.includes("reached its saved audit-page allowance") ||
     value.includes("plan allowance has been reached") ||
     value.includes("used its weekly audit allowance") ||
     value.includes("monitoring interval is not available on the current plan");
@@ -5511,7 +5513,7 @@ function SuperAdminView({ session, fixture = false, staff }: { session: Session 
   if (view === "overview") content = <SuperAdminOverviewDesk activeTab={activeTab} session={session} fixture={fixture} billingEnvironment={billingEnvironment} payload={payload!} platform={platform} />;
   else if (view === "accounts") {
     const visibleAccounts = accounts.filter((account) => activeTab !== "Needs attention" || account.offlineCount > 0);
-    content = accountId && accountDetail ? <SuperAdminAccountDetail detail={accountDetail} packages={platform?.packages || []} session={session} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("packages.write"))} canFinancials={Boolean(staff?.permissions.includes("financials.write"))} canManageCustomers={Boolean(staff?.permissions.includes("customers.write"))} canCommunicate={Boolean(staff?.permissions.includes("communications.write"))} canExport={Boolean(staff?.permissions.includes("exports.write"))} refresh={async () => { if (!session || fixture) return; setAccountDetail(await api<any>(session, `/api/superadmin/accounts/${accountId}`)); await load(); }} /> : <Panel title={activeTab} actions={<div className="button-row">{billingEnvironment === "test" && <button className="btn" disabled={!staff?.permissions.includes("customers.write") || !staff?.permissions.includes("financials.write")} onClick={() => void createTestAccount()}><Plus />Create test account</button>}<button className="btn" onClick={() => void queueExport("accounts", "csv")}>Export CSV</button></div>}><DataTable headers={["Account", "Environment", "Package", "Arrangement", "Users", "Workspaces", "Properties", "Database footprint", "Health", "Created"]} rows={visibleAccounts.map((account) => { const storage = accountStorage.get(account.id) as any; return [<Link to={`/superadmin?view=accounts&account=${account.id}&billingEnvironment=${billingEnvironment}`}><b>{account.name}</b></Link>, account.is_test_account ? <StatusPill tone="neutral">Test</StatusPill> : "Live", account.effectivePackageName || cap(account.entitlement.replaceAll("_", " ")), account.billingArrangement === "complimentary" ? "Complimentary" : "Standard", account.userCount, account.workspaceCount, account.propertyCount, <StorageFootprint snapshot={storage} />, account.offlineCount ? <StatusPill tone="danger">{account.offlineCount} offline</StatusPill> : <StatusPill tone="success">Healthy</StatusPill>, fmtDate(account.created_at)]; })} rowActions={visibleAccounts.map((account) => [{ label: "Open account", to: `/superadmin?view=accounts&account=${account.id}&billingEnvironment=${billingEnvironment}` }, { label: "View as customer", to: `/superadmin?view=administration&tab=Customer+sessions&account=${account.id}&billingEnvironment=${billingEnvironment}` }, { label: "Pause activity", disabled: !staff?.permissions.includes("customers.write") || fixture, onClick: () => void pauseAccountActivity(account) }, { label: "Prepare master deletion", disabled: staff?.role !== "owner" || fixture, danger: true, onClick: () => void prepareAccountDeletion(account) }])} /><p className="subtle">Healthy means no enabled monitor is currently reporting offline. Live identifies the billing data environment; it is not a service-health guarantee.</p></Panel>;
+    content = accountId && accountDetail ? <SuperAdminAccountDetail detail={accountDetail} packages={platform?.packages || []} session={session} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("packages.write"))} canFinancials={Boolean(staff?.permissions.includes("financials.write"))} canManageCustomers={Boolean(staff?.permissions.includes("customers.write"))} canCommunicate={Boolean(staff?.permissions.includes("communications.write"))} canExport={Boolean(staff?.permissions.includes("exports.write"))} refresh={async () => { if (!session || fixture) return; setAccountDetail(await api<any>(session, `/api/superadmin/accounts/${accountId}`)); await load(); }} /> : <Panel title={activeTab} actions={<div className="button-row">{billingEnvironment === "test" && <button className="btn" disabled={!staff?.permissions.includes("customers.write") || !staff?.permissions.includes("financials.write")} onClick={() => void createTestAccount()}><Plus />Create test account</button>}<button className="btn" onClick={() => void queueExport("accounts", "csv")}>Export CSV</button></div>}><DataTable headers={["Account", "Package", "Arrangement", "Users", "Workspaces", "Properties", "Database footprint", "Uptime", "Created"]} rows={visibleAccounts.map((account) => { const storage = accountStorage.get(account.id) as any; return [<span className="table-account-name"><Link to={`/superadmin?view=accounts&account=${account.id}&billingEnvironment=${billingEnvironment}`}><b>{account.name}</b></Link>{account.is_test_account && <StatusPill tone="neutral">Test</StatusPill>}</span>, account.effectivePackageName || cap(account.entitlement.replaceAll("_", " ")), account.billingArrangement === "complimentary" ? "Complimentary" : "Standard", account.userCount, account.workspaceCount, account.propertyCount, <StorageFootprint snapshot={storage} />, account.offlineCount ? <StatusPill tone="danger">{account.offlineCount} offline</StatusPill> : <StatusPill tone="success">Online</StatusPill>, fmtDate(account.created_at)]; })} rowActions={visibleAccounts.map((account) => [{ label: "Open account", to: `/superadmin?view=accounts&account=${account.id}&billingEnvironment=${billingEnvironment}` }, { label: "View as customer", to: `/superadmin?view=administration&tab=Customer+sessions&account=${account.id}&billingEnvironment=${billingEnvironment}` }, { label: "Pause activity", disabled: !staff?.permissions.includes("customers.write") || fixture, onClick: () => void pauseAccountActivity(account) }, { label: "Prepare master deletion", disabled: staff?.role !== "owner" || fixture, danger: true, onClick: () => void prepareAccountDeletion(account) }])} /><p className="subtle">Uptime reflects enabled monitors: Online means none is currently reporting offline. Test accounts are marked beside the account name.</p></Panel>;
   }
   else if (view === "users") content = userId && userDetail ? <SuperAdminUserProfile detail={userDetail} session={session} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("customers.write"))} refresh={async () => { if (session) setUserDetail(await api<any>(session, `/api/superadmin/users/${userId}`)); await load(); }} /> : <SuperAdminUsersDesk activeTab={activeTab} users={users} session={session} fixture={fixture} canManageCustomers={Boolean(staff?.permissions.includes("customers.write"))} isOwner={staff?.role === "owner"} refresh={load} onExport={() => queueExport("users", "csv")} />;
   else if (view === "resources") {
@@ -5983,6 +5985,7 @@ function EmailControlDesk({ activeTab, platform, session, fixture, refresh }: an
       billingEnvironment: item?.segment?.billingEnvironment || "",
       recipient: "",
       scheduledAt: new Date(Date.now() + 3600000).toISOString().slice(0, 16),
+      operationKey: crypto.randomUUID(),
     });
   };
   const applyEmailAction = async () => {
@@ -5994,7 +5997,7 @@ function EmailControlDesk({ activeTab, platform, session, fixture, refresh }: an
       if (mode === "toggle-automation") await mutate(`/api/superadmin/email/automations/${item.key}`, { method: "PATCH", body: JSON.stringify({ enabled: !item.enabled, reason: actionForm.reason }) });
       if (mode === "simulate-automation") await mutate(`/api/superadmin/email/automations/${item.key}/simulate`, { method: "POST", body: JSON.stringify({ recipient: actionForm.recipient, eventId: crypto.randomUUID() }) });
       if (mode === "edit-campaign") await mutate(`/api/superadmin/email/campaigns/${item.id}`, { method: "PATCH", body: JSON.stringify({ action: "edit", name: actionForm.name, subject: actionForm.subject, htmlBody: actionForm.htmlBody, templateId: item.template_id, segment: { ...(actionForm.accountId ? { accountId: actionForm.accountId } : {}), ...(actionForm.role ? { role: actionForm.role } : {}), ...(actionForm.billingEnvironment ? { billingEnvironment: actionForm.billingEnvironment } : {}) }, reason: actionForm.reason }) });
-      if (mode === "simulate-campaign") await mutate(`/api/superadmin/email/campaigns/${item.id}/simulate`, { method: "POST", body: JSON.stringify({ recipient: actionForm.recipient, eventId: crypto.randomUUID() }) });
+      if (mode === "send-test-campaign") await mutate(`/api/superadmin/email/campaigns/${item.id}/send-test`, { method: "POST", body: JSON.stringify({ reason: actionForm.reason, operationKey: actionForm.operationKey }) });
       if (mode === "schedule-campaign") await mutate(`/api/superadmin/email/campaigns/${item.id}`, { method: "PATCH", body: JSON.stringify({ action: "schedule", scheduledAt: new Date(actionForm.scheduledAt).toISOString(), reason: actionForm.reason }) });
       if (mode === "cancel-campaign") await mutate(`/api/superadmin/email/campaigns/${item.id}`, { method: "PATCH", body: JSON.stringify({ action: "cancel", reason: actionForm.reason }) });
       if (mode === "lift-suppression") await mutate(`/api/superadmin/email/suppressions/${item.id}`, { method: "DELETE", body: JSON.stringify({ reason: actionForm.reason }) });
@@ -6082,7 +6085,7 @@ function EmailControlDesk({ activeTab, platform, session, fixture, refresh }: an
       <p className="subtle">Creation is draft-only. Scheduling records the intended send time; customer delivery remains blocked while outbound campaigns are disabled. Recipient eligibility, preferences and suppressions are rechecked immediately before any future execution.</p>
     </Panel>
     <Panel title="Campaigns">
-      <DataTable headers={["Campaign", "Subject", "Dynamic fields", "Recipients preview", "State", "Scheduled", "Results"]} rows={campaigns.map((item: any) => [<button className="table-primary-action" disabled={item.state !== "draft"} onClick={() => openEmailAction("edit-campaign", item)}>{item.name}</button>, item.subject || "—", item.variables?.map((field: string) => `{{${field}}}`).join(", ") || "None", item.recipient_preview_count ?? "Not calculated", cap(item.state), item.scheduled_at ? fmtDate(item.scheduled_at) : "—", JSON.stringify(item.result || {})])} rowActions={campaigns.map((item: any) => [{ label: "Edit campaign", disabled: item.state !== "draft", onClick: () => openEmailAction("edit-campaign", item) }, { label: "Duplicate", onClick: () => void mutate(`/api/superadmin/email/campaigns/${item.id}/duplicate`, { method: "POST" }) }, { label: "Run safe simulation", onClick: () => openEmailAction("simulate-campaign", item) }, ...(item.state === "draft" ? [{ label: "Schedule", onClick: () => openEmailAction("schedule-campaign", item) }] : []), ...(!["completed", "cancelled"].includes(item.state) ? [{ label: "Cancel", danger: true, onClick: () => openEmailAction("cancel-campaign", item) }] : [])])} />
+      <DataTable headers={["Campaign", "Subject", "Dynamic fields", "Recipients preview", "State", "Scheduled", "Results"]} rows={campaigns.map((item: any) => [<button className="table-primary-action" disabled={item.state !== "draft"} onClick={() => openEmailAction("edit-campaign", item)}>{item.name}</button>, item.subject || "—", item.variables?.map((field: string) => `{{${field}}}`).join(", ") || "None", item.recipient_preview_count ?? "Not calculated", cap(item.state), item.scheduled_at ? fmtDate(item.scheduled_at) : "—", JSON.stringify(item.result || {})])} rowActions={campaigns.map((item: any) => [{ label: "Edit campaign", disabled: item.state !== "draft", onClick: () => openEmailAction("edit-campaign", item) }, { label: "Duplicate", onClick: () => void mutate(`/api/superadmin/email/campaigns/${item.id}/duplicate`, { method: "POST" }) }, ...(item.segment?.billingEnvironment === "test" ? [{ label: "Send test campaign to eligible owners", onClick: () => openEmailAction("send-test-campaign", item) }] : []), ...(item.state === "draft" ? [{ label: "Schedule", onClick: () => openEmailAction("schedule-campaign", item) }] : []), ...(!["completed", "cancelled"].includes(item.state) ? [{ label: "Cancel", danger: true, onClick: () => openEmailAction("cancel-campaign", item) }] : [])])} />
       {message && <p role="status">{message}</p>}
     </Panel>
   </>);
@@ -6119,7 +6122,7 @@ function EmailActionDialog({ action, form, setForm, close, save }: any) {
     "toggle-automation": [action.item.enabled ? "Pause automation" : "Resume automation", action.item.enabled ? "Pause" : "Resume"],
     "simulate-automation": ["Run controlled automation simulation", "Send test"],
     "edit-campaign": ["Edit campaign draft", "Save draft"],
-    "simulate-campaign": ["Run controlled campaign simulation", "Send test"],
+    "send-test-campaign": ["Send test campaign to eligible owners", "Send test campaign"],
     "schedule-campaign": ["Schedule campaign", "Schedule"],
     "cancel-campaign": ["Cancel campaign", "Cancel campaign"],
     "lift-suppression": ["Lift email suppression", "Lift suppression"],
@@ -6129,6 +6132,7 @@ function EmailActionDialog({ action, form, setForm, close, save }: any) {
     {editAutomation && <><label className="field">Delay in minutes<input type="number" min="0" value={form.delay} onChange={(event) => update("delay", event.target.value)} /></label><label className="field">Eligibility rules (JSON)<textarea rows={7} value={form.eligibility} onChange={(event) => update("eligibility", event.target.value)} /></label>{!jsonValid && <p className="form-error">Eligibility must be valid JSON.</p>}</>}
     {editCampaign && <div className="settings-grid"><label className="field">Campaign name<input value={form.name} onChange={(event) => update("name", event.target.value)} /></label><label className="field">Subject<input value={form.subject} onChange={(event) => update("subject", event.target.value)} /></label><label className="field">Limit to account ID (optional)<input value={form.accountId} onChange={(event) => update("accountId", event.target.value)} /></label><label className="field">Account role<select value={form.role} onChange={(event) => update("role", event.target.value)}><option value="">All roles</option><option value="owner">Account owners</option><option value="member">Members</option><option value="viewer">Viewers</option></select></label><label className="field">Billing environment<select value={form.billingEnvironment} onChange={(event) => update("billingEnvironment", event.target.value)}><option value="">All environments</option><option value="test">Test accounts</option><option value="live">Live accounts</option></select></label><label className="field settings-span-2">HTML content<textarea rows={8} value={form.htmlBody} onChange={(event) => update("htmlBody", event.target.value)} /></label><p className="subtle settings-span-2"><b>Dynamic fields:</b> {"{{recipientName}} · {{email}} · {{accountName}} · {{packageName}}"}</p></div>}
     {simulation && <><label className="field">Controlled test recipient<input type="email" value={form.recipient} onChange={(event) => update("recipient", event.target.value)} placeholder="approved-test-recipient@example.com" /></label><p className="subtle">The server rechecks the configured safe-recipient policy. This action does not enable customer sending.</p></>}
+    {mode === "send-test-campaign" && <p className="subtle">Only explicitly marked test accounts are eligible. Each owner must also be listed in that account’s designated test recipients. Live accounts are always excluded.</p>}
     {scheduling && <label className="field">Send at<input type="datetime-local" value={form.scheduledAt} onChange={(event) => update("scheduledAt", event.target.value)} /></label>}
     {requiresReason && <label className="field">Administrative reason<input autoFocus value={form.reason} onChange={(event) => update("reason", event.target.value)} placeholder="Required for the immutable activity record" /></label>}
   </SimpleDialog>;
@@ -8078,6 +8082,7 @@ function DataTable({
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [openMenu, setOpenMenu] = useState<number | null>(null);
+  const [menuPosition, setMenuPosition] = useState<{ top: number; right: number } | null>(null);
   const indexedRows = rows.map((row, index) => ({ row, index }));
   const categoricalColumns = headers.map((header, column) => {
     const options = [...new Set(rows.map((row) => String(sortableValue(row[column])).trim()).filter(Boolean))].sort((left, right) => left.localeCompare(right, "en-GB", { numeric: true }));
@@ -8096,9 +8101,12 @@ function DataTable({
   useEffect(() => setPage(1), [filter, JSON.stringify(columnFilters), pageSize, rows.length]);
   useEffect(() => {
     if (openMenu == null) return;
-    const close = (event: PointerEvent) => { if (!(event.target as Element).closest(".admin-row-menu")) setOpenMenu(null); };
+    const close = (event: PointerEvent) => { if (!(event.target as Element).closest(".admin-row-menu, .admin-row-menu-popover")) { setOpenMenu(null); setMenuPosition(null); } };
+    const closeForViewportChange = () => { setOpenMenu(null); setMenuPosition(null); };
     document.addEventListener("pointerdown", close);
-    return () => document.removeEventListener("pointerdown", close);
+    window.addEventListener("resize", closeForViewportChange);
+    window.addEventListener("scroll", closeForViewportChange, true);
+    return () => { document.removeEventListener("pointerdown", close); window.removeEventListener("resize", closeForViewportChange); window.removeEventListener("scroll", closeForViewportChange, true); };
   }, [openMenu]);
   return (
     <div className="admin-table-shell">
@@ -8125,11 +8133,11 @@ function DataTable({
                 <td className={isPendingDataText(x) ? "pending-data-text" : ""} key={j}>{x}</td>
               ))}
               {rowActions && <td className="admin-actions-column"><div className="admin-row-menu">
-                <button className="iconbtn" aria-label="Open row actions" aria-expanded={openMenu === originalIndex} onClick={() => setOpenMenu((current) => current === originalIndex ? null : originalIndex)}><MoreHorizontal /></button>
-                {openMenu === originalIndex && <div className="admin-row-menu-popover" role="menu">{(rowActions[originalIndex] || []).map((action) => action.to
-                  ? <Link key={action.label} role="menuitem" className={action.danger ? "danger" : ""} to={action.to} onClick={() => setOpenMenu(null)}>{action.label}</Link>
-                  : <button key={action.label} role="menuitem" className={action.danger ? "danger" : ""} disabled={action.disabled} onClick={() => { setOpenMenu(null); action.onClick?.(); }}>{action.label}</button>
-                )}</div>}
+                <button className="iconbtn" aria-label="Open row actions" aria-expanded={openMenu === originalIndex} onClick={(event) => { if (openMenu === originalIndex) { setOpenMenu(null); setMenuPosition(null); return; } const bounds = event.currentTarget.getBoundingClientRect(); setMenuPosition({ top: Math.min(window.innerHeight - 12, bounds.bottom + 6), right: Math.max(12, window.innerWidth - bounds.right) }); setOpenMenu(originalIndex); }}><MoreHorizontal /></button>
+                {openMenu === originalIndex && menuPosition && typeof document !== "undefined" && createPortal(<div className="admin-row-menu-popover admin-row-menu-popover-portal" role="menu" style={{ top: menuPosition.top, right: menuPosition.right }}>{(rowActions[originalIndex] || []).map((action) => action.to
+                  ? <Link key={action.label} role="menuitem" className={action.danger ? "danger" : ""} to={action.to} onClick={() => { setOpenMenu(null); setMenuPosition(null); }}>{action.label}</Link>
+                  : <button key={action.label} role="menuitem" className={action.danger ? "danger" : ""} disabled={action.disabled} onClick={() => { setOpenMenu(null); setMenuPosition(null); action.onClick?.(); }}>{action.label}</button>
+                )}</div>, document.body)}
               </div></td>}
             </tr>
           ))}
