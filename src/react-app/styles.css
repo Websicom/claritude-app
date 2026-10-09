@@ -1319,10 +1319,6 @@ tbody tr:hover {
   gap: 8px;
   margin-left: auto;
 }
-.profile-avatar-actions small {
-  color: var(--muted);
-  max-width: 220px;
-}
 .avatar-upload-button {
   cursor: pointer;
 }
@@ -2768,10 +2764,15 @@ input[type="checkbox"]:checked:after {
 .audit-spin {
   animation: audit-spin .8s linear infinite;
 }
+.loading-globe {
+  animation: audit-spin 1.2s linear infinite;
+  transform-origin: center;
+}
 @keyframes audit-spin { to { transform: rotate(360deg); } }
 @keyframes audit-progress-stripes { to { background-position: 22.627px 0; } }
 @media (prefers-reduced-motion: reduce) {
   .audit-spin,
+  .loading-globe,
   .audit-progress-track { animation: none; }
   .audit-progress-track > span { transition: none; }
 }

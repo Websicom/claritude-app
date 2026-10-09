@@ -5929,6 +5929,11 @@ function SafetyLimitsEditor({ platform, session, fixture, canWrite, refresh }: a
   return <Panel title="Global system safety ceilings"><p className="subtle">Shared production-wide controls. These are distinct from package allocations and provider billing allowances. Changes take effect for new work after save; in-flight work retains the values it started with.</p><div className="settings-list">{Object.entries(values).map(([key, value]) => { const definition = definitions[key] || { name: cap(key.replace(/([A-Z])/g, " $1")), unit: "units", explanation: "Existing configured safety setting.", scope: "Global platform", enforcement: "Execution-path evidence unavailable." }; return <div className="settings-row" key={key}><div><b>{definition.name}</b><p>{definition.explanation}</p><small>{definition.scope} · {definition.enforcement}</small></div><label className="field">Current value<input type="number" min="0" step="1" value={String(value ?? "")} onChange={(event) => setValues((current) => ({ ...current, [key]: Number(event.target.value) }))} /><small>{definition.unit}</small></label></div>; })}</div><label className="field">Administrative reason<input value={reason} onChange={(event) => setReason(event.target.value)} /></label><button className="primary" disabled={!canWrite || fixture || reason.trim().length < 3} onClick={() => void save()}>Validate and save ceilings</button>{message && <p role="status">{message}</p>}</Panel>;
 }
 
+function storageSortValue(snapshot?: any) {
+  const bytes = snapshot?.total_bytes == null ? null : Number(snapshot.total_bytes);
+  return bytes == null || !Number.isFinite(bytes) ? -1 : bytes;
+}
+
 function StorageFootprint({ snapshot }: { snapshot?: any }) {
   const bytes = snapshot?.total_bytes == null ? null : Number(snapshot.total_bytes);
   if (bytes == null || !Number.isFinite(bytes)) return <span data-sort-value={-1} title="No storage snapshot is available yet">Not measured</span>;
@@ -6970,7 +6975,6 @@ function AccountView({
                   <Trash2 /> Remove
                 </button>
               )}
-              <small>Stored as a compressed WebP, up to 150 × 150 px.</small>
             </span>
           </div>
           <label className="field">
@@ -8097,7 +8101,11 @@ function DataTable({
     const matchesColumns = Object.entries(columnFilters).every(([column, expected]) => !expected || String(sortableValue(row[Number(column)])).trim() === expected);
     return matchesSearch && matchesColumns;
   });
-  const sorted = useSortableRows(filtered, (entry, column) => sortableValue(entry.row[column]));
+  const sorted = useSortableRows(
+    filtered,
+    (entry, column) => tableSortValue(entry.row[column], headers[column]),
+    (column) => initialTableSortDirection(headers[column]),
+  );
   const totalPages = Math.max(1, Math.ceil(sorted.rows.length / pageSize));
   const safePage = Math.min(page, totalPages);
   const showControls = Boolean(adminTable && controls);
@@ -8215,6 +8223,18 @@ function isPendingDataText(value: ReactNode) {
 }
 
 type TableSort = { column: number; direction: "asc" | "desc" } | null;
+export function dataSizeBytes(value: unknown) {
+  if (typeof value !== "string") return null;
+  const match = value.trim().replaceAll(",", "").match(/^([0-9]+(?:\.[0-9]+)?)\s*(B|KB|MB|GB|TB)$/i);
+  if (!match) return null;
+  const multiplier = 1024 ** ["B", "KB", "MB", "GB", "TB"].indexOf(match[2].toUpperCase());
+  return Number(match[1]) * multiplier;
+}
+
+export function initialTableSortDirection(header: string): "asc" | "desc" {
+  return /(?:size|footprint|storage|detailed data|rollups|estimated total)/i.test(header) ? "desc" : "asc";
+}
+
 function sortableValue(value: ReactNode): string | number {
   if (typeof value === "number") return value;
   if (typeof value === "string") {
@@ -8223,18 +8243,31 @@ function sortableValue(value: ReactNode): string | number {
   }
   if (Array.isArray(value)) return value.map(sortableValue).join(" ");
   if (value && typeof value === "object" && "props" in value) {
-    const explicitSortValue = (value as any).props?.["data-sort-value"];
+    if ((value as any).type === StorageFootprint) return storageSortValue((value as any).props?.snapshot);
+    const explicitSortValue = (value as any).props?.["data-sort-value"] ?? (value as any).props?.sortValue;
     if (explicitSortValue != null) return typeof explicitSortValue === "number" ? explicitSortValue : String(explicitSortValue);
     return sortableValue((value as any).props?.children);
   }
   return String(value ?? "").toLocaleLowerCase();
 }
-function compareTableValues(left: string | number, right: string | number) {
+export function tableSortValue(value: ReactNode, header: string) {
+  const sortable = sortableValue(value);
+  if (typeof sortable === "number" || initialTableSortDirection(header) === "asc") return sortable;
+  const bytes = dataSizeBytes(sortable);
+  if (bytes != null) return bytes;
+  return /^(?:not measured|unavailable|—|-)$/.test(String(sortable).trim()) ? -1 : sortable;
+}
+
+export function compareTableValues(left: string | number, right: string | number) {
   return typeof left === "number" && typeof right === "number"
     ? left - right
     : String(left).localeCompare(String(right), "en-GB", { numeric: true, sensitivity: "base" });
 }
-function useSortableRows<T>(rows: T[], value: (row: T, column: number) => string | number) {
+function useSortableRows<T>(
+  rows: T[],
+  value: (row: T, column: number) => string | number,
+  initialDirection: (column: number) => "asc" | "desc" = () => "asc",
+) {
   const [sort, setSort] = useState<TableSort>(null);
   const sortedRows = !sort ? rows : rows.map((row, index) => ({ row, index })).sort((left, right) => {
       const result = compareTableValues(value(left.row, sort.column), value(right.row, sort.column));
@@ -8242,7 +8275,7 @@ function useSortableRows<T>(rows: T[], value: (row: T, column: number) => string
     }).map(({ row }) => row);
   const onSort = (column: number) => setSort((current) => current?.column === column
     ? { column, direction: current.direction === "asc" ? "desc" : "asc" }
-    : { column, direction: "asc" });
+    : { column, direction: initialDirection(column) });
   return { rows: sortedRows, sort, onSort };
 }
 function SortableHeader({ label, column, sort, onSort, help }: { label: string; column: number; sort: TableSort; onSort: (column: number) => void; help?: ReactNode }) {
@@ -8673,9 +8706,10 @@ function formatUptimeTimestamp(value: string, timeZone: string) {
   }).format(new Date(value));
 }
 function Empty({ title, detail }: { title: string; detail: string }) {
+  const loading = /^Loading\b/i.test(title);
   return (
     <div className="empty-state">
-      <Globe2 />
+      <Globe2 className={loading ? "loading-globe" : undefined} aria-hidden="true" />
       <b>{title}</b>
       <small>{detail}</small>
     </div>

@@ -12,6 +12,8 @@ import {
   configuredEventAttributeNames,
   configuredEventType,
   customEventUsageText,
+  compareTableValues,
+  dataSizeBytes,
   durationLabel,
   eventLabel,
   auditDisplayOutcome,
@@ -22,6 +24,7 @@ import {
   filterUserFacingAuditResults,
   filterWorkspaceMemberships,
   isPrimaryAuditPage,
+  initialTableSortDirection,
   isFixFirstAuditResult,
   isPlanLimitError,
   nextConfiguredEventAttribute,
@@ -37,6 +40,7 @@ import {
   propertySwitchDestination,
   shouldShowAuditQuickFilters,
   suggestedAiPhrase,
+  tableSortValue,
   propertyFaviconSources,
   squareImageCrop,
   sortWorkspaceProperties,
@@ -171,6 +175,19 @@ describe("top selector searches", () => {
     expect(canvas.width).toBe(80);
     expect(canvas.height).toBe(80);
     expect(drawImage).toHaveBeenCalledWith(expect.anything(), 8, 0, 80, 80, 0, 0, 80, 80);
+  });
+
+  it("sorts formatted data sizes by bytes and puts unmeasured values last when descending", () => {
+    const values = ["8.9 KB", "7.8 MB", "Not measured", "1.3 MB", "10 GB", "880 B", "60 KB"];
+    const descending = [...values].sort((left, right) => compareTableValues(
+      tableSortValue(right, "Database footprint"),
+      tableSortValue(left, "Database footprint"),
+    ));
+
+    expect(descending).toEqual(["10 GB", "7.8 MB", "1.3 MB", "60 KB", "8.9 KB", "880 B", "Not measured"]);
+    expect(dataSizeBytes("1.5 GB")).toBe(1.5 * 1024 ** 3);
+    expect(initialTableSortDirection("Database footprint")).toBe("desc");
+    expect(initialTableSortDirection("Account")).toBe("asc");
   });
 
   it("maps traffic toggles to measured series and uses completed onboarding evidence", () => {
