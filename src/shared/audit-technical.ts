@@ -121,6 +121,23 @@ const compactText = (value: unknown, maximum = 160) => {
 
 const formatNumber = (value: number) => new Intl.NumberFormat("en-GB").format(value);
 
+const formatImageFormat = (value: unknown) => {
+  const normalized = compactText(value || "unknown", 24).toLowerCase();
+  const labels: Record<string, string> = {
+    avif: "Avif",
+    bmp: "Bmp",
+    gif: "Gif",
+    ico: "Ico",
+    jpeg: "Jpeg",
+    jpg: "Jpg",
+    png: "Png",
+    svg: "Svg",
+    tiff: "Tiff",
+    webp: "WebP",
+  };
+  return labels[normalized] || `${normalized.charAt(0).toUpperCase()}${normalized.slice(1)}`;
+};
+
 export function formatAuditTechnicalBytes(value: unknown) {
   const bytes = asNumber(value);
   if (bytes == null || bytes < 0) return null;
@@ -244,12 +261,12 @@ export function buildAuditTechnicalSections(results: AuditTechnicalResult[]): Au
     if (formats.length) {
       const counts = new Map<string, number>();
       for (const image of formats) {
-        const format = compactText(image?.format || "unknown", 24).toUpperCase();
+        const format = compactText(image?.format || "unknown", 24).toLowerCase();
         counts.set(format, (counts.get(format) || 0) + 1);
       }
       const ranked = [...counts].sort((left, right) => right[1] - left[1]);
-      add("assets", "image-formats", "Image formats", ranked.slice(0, 6).map(([format, count]) => `${format} ${formatNumber(count)}`).join(" · "));
-      const modern = ranked.filter(([format]) => ["WEBP", "AVIF"].includes(format)).reduce((total, [, count]) => total + count, 0);
+      add("assets", "image-formats", "Image formats", ranked.slice(0, 6).map(([format, count]) => `${formatImageFormat(format)} ${formatNumber(count)}`).join(" · "));
+      const modern = ranked.filter(([format]) => ["webp", "avif", "svg"].includes(format)).reduce((total, [, count]) => total + count, 0);
       add("assets", "modern-images", "Modern image formats", `${formatNumber(modern)} of ${formatNumber(formats.length)} · ${Math.round(modern / formats.length * 100)}%`, undefined, modern === formats.length ? "positive" : "neutral");
     }
   }

@@ -14,29 +14,24 @@ import {
   ClipboardCheck,
   Copy,
   ExternalLink,
-  FileSearch,
   FileChartColumn,
   Filter,
-  Gauge,
   Globe2,
   HelpCircle,
   Home,
   Info,
   LayoutGrid,
   Landmark,
-  Image as ImageIcon,
   LogOut,
   Menu,
   MoreHorizontal,
   Monitor,
-  Network,
   OctagonAlert,
   Pause,
   Plus,
   RefreshCw,
   Search,
   Settings,
-  ShieldCheck,
   Sparkles,
   ShieldAlert,
   Smartphone,
@@ -4072,7 +4067,6 @@ function AuditView({
         />
       ) : tab === "Technical" ? (
         <AuditTechnicalPanel
-          pageName={selectedPage?.name || "Selected page"}
           profile={technicalProfile}
           loading={technicalLoading}
           error={technicalError}
@@ -4126,33 +4120,59 @@ function AuditView({
 }
 
 function AuditTechnicalPanel({
-  pageName,
   profile,
   loading,
   error,
 }: {
-  pageName: string;
   profile: AuditTechnicalProfile | AuditTechnicalUnavailable | null;
   loading: boolean;
   error: string;
 }) {
-  const icons = {
-    delivery: <Gauge />,
-    content: <FileSearch />,
-    assets: <ImageIcon />,
-    infrastructure: <Network />,
-    security: <ShieldCheck />,
+  const helpByKey: Record<string, string> = {
+    "http-status": "The HTTP response status returned for the audited page.",
+    "final-url": "The address reached after the audit followed any redirects.",
+    redirects: "The number of redirects followed before reaching the final URL.",
+    "response-time": "Time taken to receive the initial document response in the retained desktop and mobile measurements.",
+    "transfer-size": "The total amount of page data transferred during the retained desktop and mobile measurements.",
+    requests: "The number of page resources requested during the retained measurement.",
+    "third-party": "Requests sent to hosts outside the audited website's own origin.",
+    compression: "How many checked text resources used a recognised compression encoding such as Brotli or gzip.",
+    "static-cache": "How many checked static resources supplied reusable browser or shared-cache directives.",
+    "cache-indicators": "Response headers that indicate whether an intermediary cache served or bypassed the response.",
+    "cache-control": "The Cache-Control directives returned with the audited page response.",
+    cdn: "Header evidence suggesting that a content delivery network or reverse proxy handled the response. This is an indicator, not a complete infrastructure inventory.",
+    "modern-images": "The proportion of discovered images using SVG, WebP or AVIF formats.",
+    "lazy-images": "Images observed below the fold without lazy-loading evidence. The current audit does not retain a reliable total of all eligible images.",
+    "image-bytes": "Bytes transferred for image resources in the retained desktop and mobile measurements.",
+    "script-bytes": "Bytes transferred for JavaScript resources in the retained desktop and mobile measurements.",
+    "css-bytes": "Bytes transferred for CSS resources in the retained desktop and mobile measurements.",
+    "font-bytes": "Bytes transferred for font resources in the retained desktop and mobile measurements.",
+    "render-blocking": "Resources observed delaying the browser's initial rendering work.",
+    preloads: "Resources declared for early loading with preload hints.",
+    "unused-preloads": "Preloaded resources that were not used during the retained test.",
+    ipv4: "IPv4 addresses returned by DNS for the audited domain.",
+    ipv6: "IPv6 addresses returned by DNS for the audited domain.",
+    cname: "Canonical-name records that alias the audited hostname to another hostname.",
+    dnssec: "Whether the DNS resolver reported authenticated DNSSEC data for the retained queries.",
+    "dns-ttl": "The shortest and longest DNS time-to-live values observed, in seconds.",
+    "apex-www": "Whether the apex and www versions of the site resolved through HTTP redirects to the same final destination.",
+    mail: "Mail-exchange records that identify the domain's receiving mail servers.",
+    spf: "Whether a Sender Policy Framework record was detected for the domain.",
+    dmarc: "Whether a DMARC email-authentication policy was detected for the domain.",
+    caa: "Whether DNS restricts which certificate authorities may issue certificates for the domain.",
+    https: "Whether the selected audited page uses HTTPS.",
+    tls: "Whether the retained audit successfully established the page's HTTPS/TLS connection.",
+    hsts: "Whether the response declares HTTP Strict Transport Security.",
+    csp: "Whether the response declares a Content Security Policy.",
+    framing: "Whether the response declares protection against unwanted frame embedding and clickjacking.",
+    "content-type-options": "Whether the response prevents browsers from MIME-sniffing content types.",
+    "referrer-policy": "Whether the response declares how much referrer information browsers may send.",
+    "permissions-policy": "Whether the response declares which browser features the page may use.",
+    "mixed-content": "Whether an HTTPS page was observed requesting active resources over insecure HTTP.",
+    cookies: "How many observed cookies included Secure, HttpOnly and SameSite attributes.",
   };
   return (
     <div className="audit-tab-content audit-technical-profile">
-      <div className="audit-technical-intro">
-        <div>
-          <span className="eyebrow">Latest retained detailed audit</span>
-          <h2>{pageName} technical profile</h2>
-          <p>Measured facts and configuration already captured by the audit. This view does not run additional checks.</p>
-        </div>
-        {profile?.available && <small>Audited {fmtDate(profile.completedAt)}</small>}
-      </div>
       {loading ? (
         <div className="audit-results-loading" role="status"><RefreshCw className="audit-spin" /> Loading technical information</div>
       ) : error ? (
@@ -4162,22 +4182,19 @@ function AuditTechnicalPanel({
       ) : (
         <div className="audit-technical-grid">
           {profile.sections.map((section) => (
-            <section className="audit-technical-section" key={section.id}>
-              <header>
-                <span className="audit-technical-section-icon">{icons[section.id]}</span>
-                <h3>{section.title}</h3>
-              </header>
+            <section className="panel audit-technical-section" key={section.id}>
+              <div className="panel-head"><h2>{section.title}</h2></div>
               {section.items.length ? (
                 <dl>
-                  {section.items.map((item) => (
-                    <div className="audit-technical-row" key={item.key}>
-                      <dt>{item.label}</dt>
-                      <dd className={item.tone === "positive" ? "positive" : ""}>
-                        <strong>{item.value}</strong>
-                        {item.detail && <small>{item.detail}</small>}
-                      </dd>
-                    </div>
-                  ))}
+                  {section.items.map((item) => {
+                    const help = [helpByKey[item.key], item.detail].filter(Boolean).join(" ");
+                    return (
+                      <div className="audit-technical-row" key={item.key}>
+                        <dt><span>{item.label}</span>{help && <InfoHelp label={item.label} help={help} icon={<span className="audit-technical-help-mark" aria-hidden="true">?</span>} />}</dt>
+                        <dd><strong>{item.value}</strong></dd>
+                      </div>
+                    );
+                  })}
                 </dl>
               ) : (
                 <p className="audit-technical-empty">No reliable retained evidence is available for this section.</p>
@@ -4186,6 +4203,7 @@ function AuditTechnicalPanel({
           ))}
         </div>
       )}
+      {profile?.available && !loading && !error && <div className="audit-run-meta audit-technical-run-meta"><p>Audited {fmtDate(profile.completedAt)}</p></div>}
     </div>
   );
 }
@@ -4215,10 +4233,10 @@ function fixtureAuditTechnicalProfile(property: Property, page: AuditPage): Audi
         { key: "links", label: "Links", value: "38 internal · 11 external" },
       ] },
       { id: "assets", title: "Assets", items: [
-        { key: "images", label: "Images", value: "45" },
-        { key: "formats", label: "Image formats", value: "WEBP 37 · JPEG 6 · PNG 2" },
-        { key: "modern", label: "Modern image formats", value: "37 of 45 · 82%" },
-        { key: "lazy", label: "Missing lazy loading", value: "5", detail: "Below-fold observations across desktop and mobile." },
+        { key: "image-count", label: "Images", value: "45" },
+        { key: "image-formats", label: "Image formats", value: "WebP 37 · Jpeg 6 · Png 2" },
+        { key: "modern-images", label: "Modern image formats", value: "37 of 45 · 82%" },
+        { key: "lazy-images", label: "Missing lazy loading", value: "5", detail: "Below-fold observations across desktop and mobile." },
       ] },
       { id: "infrastructure", title: "Infrastructure", items: [
         { key: "nameservers", label: "Nameservers", value: "ada.ns.cloudflare.com · bob.ns.cloudflare.com" },
@@ -4232,7 +4250,7 @@ function fixtureAuditTechnicalProfile(property: Property, page: AuditPage): Audi
         { key: "tls", label: "HTTPS / TLS connection", value: "Succeeded", tone: "positive" },
         { key: "hsts", label: "HSTS", value: "Present", tone: "positive" },
         { key: "csp", label: "Content Security Policy", value: "Present", tone: "positive" },
-        { key: "mixed", label: "Mixed content", value: "Clear", tone: "positive" },
+        { key: "mixed-content", label: "Mixed content", value: "Clear", tone: "positive" },
       ] },
     ],
   };
@@ -11404,7 +11422,7 @@ function MetricHelp({ term }: { term: string }) {
   return <InfoHelp label={term} help={<><b>{label}.</b> {description}</>} />;
 }
 
-function InfoHelp({ label, help }: { label: string; help: ReactNode }) {
+function InfoHelp({ label, help, icon }: { label: string; help: ReactNode; icon?: ReactNode }) {
   const helpId = useId();
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState({ left: 0, top: 0, above: false });
@@ -11447,7 +11465,7 @@ function InfoHelp({ label, help }: { label: string; help: ReactNode }) {
   };
   return (
     <span className={`metric-help ${open ? "open" : ""}`}>
-      <button ref={buttonRef} type="button" aria-label={`What does ${label} mean?`} title={`What does ${label} mean?`} aria-expanded={open} aria-describedby={open ? helpId : undefined} onClick={toggle}><Info /></button>
+      <button ref={buttonRef} type="button" aria-label={`What does ${label} mean?`} title={`What does ${label} mean?`} aria-expanded={open} aria-describedby={open ? helpId : undefined} onClick={toggle}>{icon ?? <Info />}</button>
       {open && typeof document !== "undefined" && createPortal(
         <span id={helpId} className={`metric-help-popover ${position.above ? "above" : ""}`} role="note" style={{ left: position.left, top: position.top }}>{help}</span>,
         document.body,

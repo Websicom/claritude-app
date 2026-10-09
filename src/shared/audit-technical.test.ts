@@ -29,7 +29,7 @@ describe("audit technical profile", () => {
       row("seo.crawling.and.indexing.selected.page.found.in.checked.sitemap.files", "passed", { urlsChecked: 42, matches: [{ loc: "https://example.com/" }] }),
       row("seo.links.and.navigation.checked.and.unchecked.link.totals.recorded", "passed", { checked: 20, discovered: 20 }),
       row("seo.links.and.navigation.checked.links.returning.http.404.detected", "failed", { totalDiscovered: 1, occurrences: [{ url: "https://example.com/missing" }] }),
-      row("accessibility.images.and.media.image.formats.recorded", "passed", { formats: [{ format: "webp" }, { format: "avif" }, { format: "jpg" }] }),
+      row("accessibility.images.and.media.image.formats.recorded", "passed", { formats: [{ format: "webp" }, { format: "avif" }, { format: "svg" }, { format: "jpg" }] }),
       row("accessibility.images.and.media.below.the.fold.image.loading.attributes.inspected", "advisory", { totalDiscovered: 1, occurrences: [{ url: "hero.jpg" }] }),
       row("performance.performance.image.transfer.size.measured", "passed", { desktop: { value: 2048 }, mobile: { value: 4096 } }),
       row("infrastructure.dns.and.domain.configuration.domain.nameservers.recorded", "passed", { records: [{ value: "ada.ns.cloudflare.com.", ttl: 3600 }] }),
@@ -51,7 +51,8 @@ describe("audit technical profile", () => {
       expect.objectContaining({ key: "broken-links", value: "1 of 20 checked" }),
     ]));
     expect(sections.find((section) => section.id === "assets")?.items).toEqual(expect.arrayContaining([
-      expect.objectContaining({ key: "modern-images", value: "2 of 3 · 67%" }),
+      expect.objectContaining({ key: "image-formats", value: "WebP 1 · Avif 1 · Svg 1 · Jpg 1" }),
+      expect.objectContaining({ key: "modern-images", value: "3 of 4 · 75%" }),
       expect.objectContaining({ key: "lazy-images", value: "1" }),
     ]));
     expect(sections.find((section) => section.id === "infrastructure")?.items).toEqual(expect.arrayContaining([
