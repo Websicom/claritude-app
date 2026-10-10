@@ -822,6 +822,42 @@ app.post("/collect", async (c) => {
 
 export type BillingEnvironment = "test" | "live";
 
+export const APPROVED_GBP_CATALOGUE = {
+  essentials: { month: 1_500, year: 10_800 },
+  scale: { month: 4_900, year: 46_800 },
+  pro: { month: 12_900, year: 118_800 },
+} as const;
+
+type PaidPackageKey = keyof typeof APPROVED_GBP_CATALOGUE;
+type BillingInterval = keyof (typeof APPROVED_GBP_CATALOGUE)[PaidPackageKey];
+
+export function approvedCatalogueAmount(packageKey: unknown, currency: unknown, interval: unknown, component: unknown) {
+  if (String(currency).toLowerCase() !== "gbp" || component !== "base") return null;
+  if (!Object.prototype.hasOwnProperty.call(APPROVED_GBP_CATALOGUE, String(packageKey))) return null;
+  if (interval !== "month" && interval !== "year") return null;
+  return APPROVED_GBP_CATALOGUE[packageKey as PaidPackageKey][interval as BillingInterval];
+}
+
+export function approvedCatalogueStatus(rows: any[], billingEnvironment: BillingEnvironment) {
+  const required = (Object.keys(APPROVED_GBP_CATALOGUE) as PaidPackageKey[]).flatMap((packageKey) =>
+    (["month", "year"] as BillingInterval[]).map((interval) => `${packageKey}:gbp:${interval}:base`),
+  );
+  const issues: Array<{ key: string; reason: string }> = [];
+  const present = new Set<string>();
+  for (const row of rows) {
+    const packageKey = String(row.package_versions?.package_key || "");
+    const key = `${packageKey}:${row.currency}:${row.interval}:${row.component}`;
+    if (!required.includes(key)) continue;
+    present.add(key);
+    const expectedAmount = approvedCatalogueAmount(packageKey, row.currency, row.interval, row.component);
+    if (Number(row.unit_amount_minor) !== expectedAmount) issues.push({ key, reason: `amount_must_be_${expectedAmount}` });
+    if (row.tax_behavior !== "exclusive") issues.push({ key, reason: "tax_behavior_must_be_exclusive" });
+    if (!String(row.metadata?.productTaxCode || "").trim()) issues.push({ key, reason: "product_tax_code_required" });
+    if (row.provider_livemode !== (billingEnvironment === "live")) issues.push({ key, reason: "provider_environment_mismatch" });
+  }
+  return { required, missing: required.filter((key) => !present.has(key)), issues };
+}
+
 export function stripeKeyEnvironment(value: unknown): BillingEnvironment | null {
   const key = String(value || "").trim();
   if (/^(?:sk|rk)_test_/.test(key)) return "test";
@@ -891,28 +927,29 @@ async function accountBillingUsage(env: Env, accountId: string, subscriptions: a
   const weekStart = weekStartDate.toISOString();
   const auditResetsAt = new Date(weekStartDate.getTime() + 7 * 86400_000).toISOString();
   const packageKey = String(effective.packageKey || "free").toLowerCase().startsWith("pro") ? "pro" : String(effective.packageKey || "free").toLowerCase();
-  const [properties, workspaces, accountMembers, monthlyAnalytics, analyticsRule] = await Promise.all([
+  const [properties, workspaces, monthlyAnalytics, analyticsRule] = await Promise.all([
     db.from("properties").select("id").eq("account_id", accountId),
-    db.from("workspaces").select("id", { count: "exact", head: true }).eq("account_id", accountId),
-    db.from("account_memberships").select("user_id,role").eq("account_id", accountId),
+    db.from("workspaces").select("id", { count: "exact" }).eq("account_id", accountId),
     db.from("account_analytics_monthly_usage").select("accepted_pageviews,rejected_pageviews").eq("account_id", accountId).eq("period_start", monthStart.slice(0, 10)).maybeSingle(),
     db.from("analytics_plan_rules").select("monthly_pageview_limit").eq("package_key", packageKey).maybeSingle(),
   ]);
-  const baseError = properties.error || workspaces.error || accountMembers.error || monthlyAnalytics.error || analyticsRule.error;
+  const baseError = properties.error || workspaces.error || monthlyAnalytics.error || analyticsRule.error;
   if (baseError) throw new Error("account_usage_unavailable");
   const propertyIds = (properties.data || []).map((property) => property.id);
+  const workspaceIds = (workspaces.data || []).map((workspace) => workspace.id);
   const emptyCount = Promise.resolve({ count: 0, error: null } as any);
-  const [eventDefinitions, audits, analyticsEvents, propertyViewers] = await Promise.all([
+  const [eventDefinitions, audits, analyticsEvents, propertyViewers, workspaceMembers] = await Promise.all([
     propertyIds.length ? db.from("event_definitions").select("id", { count: "exact", head: true }).in("property_id", propertyIds) : emptyCount,
     propertyIds.length ? db.from("audit_runs").select("id", { count: "exact", head: true }).in("property_id", propertyIds).gte("created_at", weekStart) : emptyCount,
     propertyIds.length ? db.from("analytics_events").select("id", { count: "exact", head: true }).in("property_id", propertyIds).gte("occurred_at", monthStart) : emptyCount,
     propertyIds.length ? db.from("property_memberships").select("user_id").in("property_id", propertyIds) : Promise.resolve({ data: [], error: null } as any),
+    workspaceIds.length ? db.from("workspace_memberships").select("user_id,role").in("workspace_id", workspaceIds) : Promise.resolve({ data: [], error: null } as any),
   ]);
-  const scopedError = eventDefinitions.error || audits.error || analyticsEvents.error || propertyViewers.error;
+  const scopedError = eventDefinitions.error || audits.error || analyticsEvents.error || propertyViewers.error || workspaceMembers.error;
   if (scopedError) throw new Error("account_usage_unavailable");
-  const editingUserIds = new Set((accountMembers.data || []).filter((member) => member.role !== "viewer").map((member) => member.user_id));
+  const editingUserIds = new Set((workspaceMembers.data || []).filter((member: any) => member.role !== "viewer").map((member: any) => member.user_id));
   const viewerUserIds = new Set([
-    ...(accountMembers.data || []).filter((member) => member.role === "viewer").map((member) => member.user_id),
+    ...(workspaceMembers.data || []).filter((member: any) => member.role === "viewer").map((member: any) => member.user_id),
     ...(propertyViewers.data || []).map((member: any) => member.user_id),
   ]);
   const includedUsers = entitlementLimit(effective, "editingSeats", "includedUsers");
@@ -1036,6 +1073,8 @@ export function financeMetrics(input: {
       mrrMinor: recurringMinor,
       arrMinor: recurringMinor * 12,
       invoicedMinor: invoices.reduce((sum, row) => sum + Number(row.total_minor || 0), 0),
+      revenueExcludingTaxMinor: invoices.reduce((sum, row) => sum + Math.max(0, Number(row.total_minor || 0) - Number(row.tax_minor || 0)), 0),
+      taxCollectedMinor: invoices.reduce((sum, row) => sum + Number(row.tax_minor || 0), 0),
       cashCollectedMinor: payments.filter((row) => ["succeeded", "paid"].includes(row.status)).reduce((sum, row) => sum + Number(row.amount_received_minor || 0), 0),
       refundsMinor: refunds.filter((row) => row.status === "succeeded").reduce((sum, row) => sum + Number(row.amount_minor || 0), 0),
       pendingRefundsMinor: refunds.filter((row) => ["pending", "requires_action"].includes(row.status)).reduce((sum, row) => sum + Number(row.amount_minor || 0), 0),
@@ -1469,9 +1508,9 @@ async function provisionSandboxAcceptanceFixtures(env: Env, runId: string, reque
   const provider = stripeContext(env, "test");
   if (!provider.client || !provider.webhookSecret) throw new Error("stripe_test_credentials_and_webhook_required");
   const stripe = provider.client;
-  const configured = request?.packages || {};
+  const productTaxCode = String(request?.productTaxCode || "").trim();
+  if (!/^txcd_[A-Za-z0-9_]+$/.test(productTaxCode)) throw new Error("verified_saas_product_tax_code_required");
   const packageKeys = ["essentials", "scale", "pro"] as const;
-  const currencies = ["gbp", "eur", "usd"] as const;
   const intervals = ["month", "year"] as const;
   const versions = await db.from("package_versions").select("id,package_key,display_name,state,allowances").in("package_key", packageKeys);
   if (versions.error) throw versions.error;
@@ -1485,27 +1524,29 @@ async function provisionSandboxAcceptanceFixtures(env: Env, runId: string, reque
     let product = products.data.find((candidate) => candidate.metadata?.claritudeSandboxFixture === "true" && candidate.metadata?.claritudePackageKey === packageKey);
     if (!product) product = await stripe.products.create({
       name: `Claritude ${version.display_name} — Sandbox fixture`,
-      description: "Isolated Claritude acceptance fixture. No real payments; not approved live pricing.",
-      metadata: { claritudeSandboxFixture: "true", claritudePackageKey: packageKey, billingEnvironment: "test", fixtureRunId: runId },
+      description: "Isolated Claritude acceptance fixture using the approved GBP catalogue. No real payments.",
+      tax_code: productTaxCode,
+      metadata: { claritudeSandboxFixture: "true", claritudeApprovedCatalogue: "true", claritudePackageKey: packageKey, billingEnvironment: "test", fixtureRunId: runId },
     }, { idempotencyKey: `sandbox-fixture-product:${packageKey}` });
+    else if (product.tax_code !== productTaxCode) product = await stripe.products.update(product.id, { tax_code: productTaxCode });
     if (product.livemode) throw new Error("sandbox_fixture_product_environment_mismatch");
     const existingPrices = await stripe.prices.list({ product: product.id, active: true, limit: 100 });
-    for (const currency of currencies) for (const interval of intervals) {
-      const amountMinor = Number(configured?.[packageKey]?.[interval === "month" ? "monthMinor" : "yearMinor"]);
-      if (!Number.isSafeInteger(amountMinor) || amountMinor < 1) throw new Error(`sandbox_fixture_amount_invalid:${packageKey}:${interval}`);
-      let price = existingPrices.data.find((candidate) => candidate.currency === currency && candidate.recurring?.interval === interval && candidate.unit_amount === amountMinor && candidate.metadata?.claritudeSandboxFixture === "true");
+    for (const interval of intervals) {
+      const currency = "gbp" as const;
+      const amountMinor = APPROVED_GBP_CATALOGUE[packageKey][interval];
+      let price = existingPrices.data.find((candidate) => candidate.currency === currency && candidate.recurring?.interval === interval && candidate.unit_amount === amountMinor && candidate.tax_behavior === "exclusive" && candidate.metadata?.claritudeApprovedCatalogue === "true");
       if (!price) price = await stripe.prices.create({
         product: product.id, currency, unit_amount: amountMinor,
-        recurring: { interval }, tax_behavior: "unspecified",
-        nickname: `${version.display_name} ${currency.toUpperCase()} ${interval} — sandbox fixture`,
-        metadata: { claritudeSandboxFixture: "true", claritudePackageKey: packageKey, billingEnvironment: "test", additionalSeatsEnabled: "false", fixtureRunId: runId },
-      }, { idempotencyKey: `sandbox-fixture-price:${packageKey}:${currency}:${interval}:${amountMinor}` });
+        recurring: { interval }, tax_behavior: "exclusive",
+        nickname: `${version.display_name} GBP ${interval} — approved sandbox acceptance`,
+        metadata: { claritudeSandboxFixture: "true", claritudeApprovedCatalogue: "true", claritudePackageKey: packageKey, billingEnvironment: "test", additionalSeatsEnabled: "false", fixtureRunId: runId },
+      }, { idempotencyKey: `approved-sandbox-price:${packageKey}:${currency}:${interval}:${amountMinor}` });
       if (price.livemode) throw new Error("sandbox_fixture_price_environment_mismatch");
       const row = {
         package_version_id: version.id, provider_product_id: product.id, provider_price_id: price.id,
-        currency, interval, component: "base", unit_amount_minor: amountMinor, tax_behavior: "unspecified",
+        currency, interval, component: "base", unit_amount_minor: amountMinor, tax_behavior: "exclusive",
         active: true, provider_livemode: false, billing_environment: "test",
-        metadata: { sandboxFixture: true, fixtureLabel: "Sandbox fixture — no real payments", additionalSeatsEnabled: false, fixtureRunId: runId },
+        metadata: { sandboxFixture: true, approvedCatalogue: true, fixtureLabel: "Approved GBP sandbox acceptance — no real payments", productTaxCode, additionalSeatsEnabled: false, fixtureRunId: runId },
         verified_at: new Date().toISOString(),
       };
       const saved = await db.from("billing_catalogue_prices").upsert(row, { onConflict: "billing_environment,package_version_id,currency,interval,component" }).select("id").single();
@@ -1556,7 +1597,7 @@ async function provisionSandboxAcceptanceFixtures(env: Env, runId: string, reque
     }
     accounts.push({ key: spec.key, id: accountId, name: spec.name, complimentary: Boolean(spec.complimentary) });
   }
-  const configuration = await db.from("billing_environment_configurations").update({ checkout_enabled: true, tax_enabled: false, tax_reviewed_at: null, tax_reviewed_by: null, portal_configuration_id: provider.portalConfigurationId, webhook_configured: true, updated_at: new Date().toISOString() }).eq("environment", "test").select().single();
+  const configuration = await db.from("billing_environment_configurations").update({ checkout_enabled: false, tax_enabled: false, tax_reviewed_at: null, tax_reviewed_by: null, portal_configuration_id: provider.portalConfigurationId, webhook_configured: true, updated_at: new Date().toISOString() }).eq("environment", "test").select().single();
   if (configuration.error) throw configuration.error;
   const websiGrant = await db.from("account_package_grants").select("id,status,expires_at,accounts!inner(name)").eq("status", "active").eq("accounts.name", "Websi").maybeSingle();
   if (!websiGrant.data) throw new Error("websi_complimentary_grant_not_preserved");
@@ -2237,7 +2278,13 @@ app.post("/api/workspaces/:id/members", async (c) => {
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
     return c.json({ error: "valid_email_required" }, 400);
   const service = admin(c.env);
-  const invited = await findOrInviteUser(service, email, c.env.APP_ORIGIN);
+  const intendedRole = body.role === "viewer" ? "viewer" : "member";
+  const existingUser = await authUserByEmail(service, email);
+  if (intendedRole === "member") {
+    const admission = await editingSeatAdmission(c.env, service, workspaceId, existingUser?.id || null);
+    if (!admission.allowed) return c.json({ error: "editing_seat_allowance_reached", used: admission.used, limit: admission.limit }, 409);
+  }
+  const invited = await findOrInviteUser(service, email, c.env.APP_ORIGIN, existingUser);
   const { data: existingMembership } = await service
     .from("workspace_memberships")
     .select("role")
@@ -2252,7 +2299,7 @@ app.post("/api/workspaces/:id/members", async (c) => {
       {
         workspace_id: workspaceId,
         user_id: invited.id,
-        role: body.role === "viewer" ? "viewer" : "member",
+        role: intendedRole,
       },
       { onConflict: "workspace_id,user_id" },
     )
@@ -2284,6 +2331,10 @@ app.patch("/api/workspaces/:id/members/:userId", async (c) => {
   if (!existing) return c.json({ error: "workspace_member_not_found" }, 404);
   if (existing.role === "owner")
     return c.json({ error: "workspace_owner_role_is_protected" }, 409);
+  if (role === "member" && existing.role !== "member") {
+    const admission = await editingSeatAdmission(c.env, service, workspaceId, c.req.param("userId"));
+    if (!admission.allowed) return c.json({ error: "editing_seat_allowance_reached", used: admission.used, limit: admission.limit }, 409);
+  }
   const { data, error } = await service
     .from("workspace_memberships")
     .update({ role })
@@ -3106,7 +3157,7 @@ function adminPageParams(c: any) {
   return { page, pageSize, from: (page - 1) * pageSize, to: page * pageSize - 1 };
 }
 
-async function subscriptionChangeSelection(env: Env, accountId: string, selection: { packageVersionId: string; currency: string; interval: string; editingSeats: number }) {
+async function subscriptionChangeSelection(env: Env, accountId: string, selection: { packageVersionId: string; currency: string; interval: string }) {
   const db = admin(env);
   const account = await db.from("accounts").select("billing_environment").eq("id", accountId).maybeSingle();
   const billingEnvironment = account.data?.billing_environment as BillingEnvironment | undefined;
@@ -3115,40 +3166,37 @@ async function subscriptionChangeSelection(env: Env, accountId: string, selectio
   if (!stripe) throw new Error("stripe_credentials_required");
   const [subscription, packageVersion, prices] = await Promise.all([
     db.from("billing_subscriptions").select("provider_subscription_id,provider_customer_id,current_period_end,billing_subscription_items(*)").eq("account_id", accountId).eq("billing_environment", billingEnvironment).in("status", ["active", "trialing", "past_due", "unpaid"]).maybeSingle(),
-    db.from("package_versions").select("id,allowances").eq("id", selection.packageVersionId).maybeSingle(),
+    db.from("package_versions").select("id,package_key,allowances").eq("id", selection.packageVersionId).maybeSingle(),
     db.from("billing_catalogue_prices").select("*").eq("billing_environment", billingEnvironment).eq("package_version_id", selection.packageVersionId).eq("currency", selection.currency).eq("interval", selection.interval).eq("active", true),
   ]);
   if (!subscription.data) throw new Error("active_subscription_not_found");
   const includedEditingSeats = Number((packageVersion.data?.allowances as any)?.editingSeats);
   if (!Number.isSafeInteger(includedEditingSeats) || includedEditingSeats < 1) throw new Error("package_editing_seat_allowance_unresolved");
-  const additionalSeats = Math.max(0, selection.editingSeats - includedEditingSeats);
   const basePrice = (prices.data || []).find((price) => price.component === "base");
-  const seatPrice = (prices.data || []).find((price) => price.component === "additional_editing_seat");
-  if (!basePrice || (additionalSeats > 0 && !seatPrice)) throw new Error("verified_catalogue_price_missing");
+  const expectedAmount = approvedCatalogueAmount((packageVersion.data as any)?.package_key, selection.currency, selection.interval, "base");
+  if (!basePrice || expectedAmount == null || Number(basePrice.unit_amount_minor) !== expectedAmount || basePrice.tax_behavior !== "exclusive" || !basePrice.metadata?.productTaxCode) throw new Error("verified_approved_gbp_catalogue_price_missing");
   const currentItems = (subscription.data.billing_subscription_items || []) as any[];
   const items: Array<{ id?: string; price?: string; quantity?: number; deleted?: boolean }> = [];
-  let baseUpdated = false, seatUpdated = false;
+  let baseUpdated = false;
   for (const item of currentItems) {
     if (item.component === "base") {
       if (!baseUpdated) { items.push({ id: item.provider_subscription_item_id, price: basePrice.provider_price_id, quantity: 1 }); baseUpdated = true; }
       else items.push({ id: item.provider_subscription_item_id, deleted: true });
     } else if (item.component === "additional_editing_seat") {
-      if (additionalSeats > 0 && !seatUpdated) { items.push({ id: item.provider_subscription_item_id, price: seatPrice.provider_price_id, quantity: additionalSeats }); seatUpdated = true; }
-      else items.push({ id: item.provider_subscription_item_id, deleted: true });
+      items.push({ id: item.provider_subscription_item_id, deleted: true });
     }
   }
   if (!baseUpdated) items.push({ price: basePrice.provider_price_id, quantity: 1 });
-  if (additionalSeats > 0 && !seatUpdated) items.push({ price: seatPrice.provider_price_id, quantity: additionalSeats });
-  return { db, stripe, billingEnvironment, subscription: subscription.data, items, includedEditingSeats, additionalSeats };
+  return { db, stripe, billingEnvironment, subscription: subscription.data, items, includedEditingSeats, additionalSeats: 0 };
 }
 
 app.post("/api/billing/:accountId/change-preview", async (c) => {
   const accountId = c.req.param("accountId");
   const access = await billingAccess(c.env, c.get("userId"), accountId);
   if (!access.canManage) return c.json({ error: "billing_manage_access_required" }, 403);
-  const body = await c.req.json<{ packageVersionId?: string; currency?: string; interval?: string; editingSeats?: number }>().catch(() => ({} as any));
-  const selection = { packageVersionId: String(body.packageVersionId || ""), currency: String(body.currency || "").toLowerCase(), interval: String(body.interval || ""), editingSeats: Math.floor(Number(body.editingSeats || 0)) };
-  if (!selection.packageVersionId || !/^[a-z]{3}$/.test(selection.currency) || !["month", "year"].includes(selection.interval) || selection.editingSeats < 1) return c.json({ error: "invalid_subscription_change" }, 400);
+  const body = await c.req.json<{ packageVersionId?: string; currency?: string; interval?: string }>().catch(() => ({} as any));
+  const selection = { packageVersionId: String(body.packageVersionId || ""), currency: String(body.currency || "gbp").toLowerCase(), interval: String(body.interval || "") };
+  if (!selection.packageVersionId || selection.currency !== "gbp" || !["month", "year"].includes(selection.interval)) return c.json({ error: "invalid_subscription_change" }, 400);
   try {
     const prepared = await subscriptionChangeSelection(c.env, accountId, selection);
     const prorationDate = Math.floor(Date.now() / 1000);
@@ -3161,10 +3209,10 @@ app.post("/api/billing/:accountId/change", async (c) => {
   const accountId = c.req.param("accountId");
   const access = await billingAccess(c.env, c.get("userId"), accountId);
   if (!access.canManage) return c.json({ error: "billing_manage_access_required" }, 403);
-  const body = await c.req.json<{ packageVersionId?: string; currency?: string; interval?: string; editingSeats?: number; prorationDate?: number; effective?: "now" | "period_end"; operationKey?: string }>().catch(() => ({} as any));
+  const body = await c.req.json<{ packageVersionId?: string; currency?: string; interval?: string; prorationDate?: number; effective?: "now" | "period_end"; operationKey?: string }>().catch(() => ({} as any));
   const operationKey = String(body.operationKey || "");
-  const selection = { packageVersionId: String(body.packageVersionId || ""), currency: String(body.currency || "").toLowerCase(), interval: String(body.interval || ""), editingSeats: Math.floor(Number(body.editingSeats || 0)) };
-  if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(operationKey) || !["now", "period_end"].includes(body.effective || "") || !selection.packageVersionId || !/^[a-z]{3}$/.test(selection.currency) || !["month", "year"].includes(selection.interval) || selection.editingSeats < 1) return c.json({ error: "valid_change_and_stable_operation_key_required" }, 400);
+  const selection = { packageVersionId: String(body.packageVersionId || ""), currency: String(body.currency || "gbp").toLowerCase(), interval: String(body.interval || "") };
+  if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(operationKey) || !["now", "period_end"].includes(body.effective || "") || !selection.packageVersionId || selection.currency !== "gbp" || !["month", "year"].includes(selection.interval)) return c.json({ error: "valid_change_and_stable_operation_key_required" }, 400);
   try {
     const prepared = await subscriptionChangeSelection(c.env, accountId, selection);
     const existing = await prepared.db.from("billing_financial_operations").select("state,response").eq("billing_environment", prepared.billingEnvironment).eq("operation_type", "subscription_change").eq("operation_key", operationKey).maybeSingle();
@@ -3208,7 +3256,8 @@ app.get("/api/billing/:accountId", async (c) => {
     db.from("account_package_grants").select("id,status,starts_at,expires_at,reason,overrides,package_versions(package_key,display_name)").eq("account_id", accountId).eq("status", "active").lte("starts_at", new Date().toISOString()).or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`).maybeSingle(),
   ]);
   const config = configuration.data;
-  const checkoutReady = Boolean(provider.configured && config?.checkout_enabled && catalogue.data?.some((price) => price.billing_environment === billingEnvironment));
+  const catalogueStatus = approvedCatalogueStatus(catalogue.data || [], billingEnvironment);
+  const checkoutReady = Boolean(provider.configured && config?.checkout_enabled && config?.tax_enabled && config?.tax_reviewed_at && catalogueStatus.missing.length === 0 && catalogueStatus.issues.length === 0);
   const effective = await effectiveEntitlements(c.env, accountId);
   let usage = null;
   let usageError = null;
@@ -3221,12 +3270,11 @@ app.post("/api/billing/:accountId/checkout", async (c) => {
   const accountId = c.req.param("accountId");
   const access = await billingAccess(c.env, c.get("userId"), accountId);
   if (!access.canManage) return c.json({ error: "billing_manage_access_required" }, 403);
-  const body = await c.req.json<{ packageVersionId?: string; currency?: string; interval?: string; editingSeats?: number; requestKey?: string }>().catch(() => ({} as { packageVersionId?: string; currency?: string; interval?: string; editingSeats?: number; requestKey?: string }));
-  const currency = String(body.currency || "").toLowerCase();
+  const body = await c.req.json<{ packageVersionId?: string; currency?: string; interval?: string; requestKey?: string }>().catch(() => ({} as { packageVersionId?: string; currency?: string; interval?: string; requestKey?: string }));
+  const currency = String(body.currency || "gbp").toLowerCase();
   const interval = String(body.interval || "");
-  const editingSeats = Math.floor(Number(body.editingSeats));
   const operationKey = String(body.requestKey || "");
-  if (!body.packageVersionId || !/^[a-z]{3}$/.test(currency) || !["month", "year"].includes(interval) || editingSeats < 1 || editingSeats > 10000 || !/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(operationKey)) return c.json({ error: "invalid_checkout_selection_or_operation_key" }, 400);
+  if (!body.packageVersionId || currency !== "gbp" || !["month", "year"].includes(interval) || !/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(operationKey)) return c.json({ error: "invalid_checkout_selection_or_operation_key" }, 400);
   const db = admin(c.env);
   const account = await db.from("accounts").select("id,name,billing_environment,is_test_account").eq("id", accountId).maybeSingle();
   if (!account.data) return c.json({ error: "account_not_found" }, 404);
@@ -3239,25 +3287,24 @@ app.post("/api/billing/:accountId/checkout", async (c) => {
     db.from("account_package_grants").select("id").eq("account_id", accountId).eq("status", "active").lte("starts_at", new Date().toISOString()).or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`).maybeSingle(),
     db.from("billing_subscriptions").select("provider_subscription_id,status").eq("account_id", accountId).eq("billing_environment", billingEnvironment).in("status", ["active", "trialing", "past_due", "unpaid", "incomplete"]).maybeSingle(),
     db.from("billing_catalogue_prices").select("*").eq("billing_environment", billingEnvironment).eq("package_version_id", body.packageVersionId).eq("currency", currency).eq("interval", interval).eq("active", true),
-    db.from("package_versions").select("id,allowances,unresolved_values").eq("id", body.packageVersionId).maybeSingle(),
+    db.from("package_versions").select("id,package_key,allowances,unresolved_values").eq("id", body.packageVersionId).maybeSingle(),
   ]);
   if (grant.data) return c.json({ error: "complimentary_account_checkout_blocked", detail: "Revoke the complimentary grant through the audited SuperAdmin workflow before creating paid billing." }, 409);
   if (existingSubscription.data) return c.json({ error: "existing_subscription_requires_portal", subscriptionId: existingSubscription.data.provider_subscription_id }, 409);
   const config = configuration.data;
   if (!config?.checkout_enabled) return c.json({ error: "checkout_not_approved_for_environment", environment: billingEnvironment }, 409);
-  if (config.tax_enabled && !config.tax_reviewed_at) return c.json({ error: "tax_configuration_not_verified" }, 409);
+  if (!config.tax_enabled || !config.tax_reviewed_at) return c.json({ error: "tax_configuration_not_verified" }, 409);
   const includedEditingSeats = Number((packageVersion.data?.allowances as any)?.editingSeats);
   if (!Number.isSafeInteger(includedEditingSeats) || includedEditingSeats < 1) return c.json({ error: "package_editing_seat_allowance_unresolved", packageVersionId: body.packageVersionId }, 409);
-  const additionalSeats = Math.max(0, editingSeats - includedEditingSeats);
   const base = (prices.data || []).find((price) => price.component === "base" && price.provider_livemode === (billingEnvironment === "live"));
-  const seat = (prices.data || []).find((price) => price.component === "additional_editing_seat" && price.provider_livemode === (billingEnvironment === "live"));
-  if (!base || (additionalSeats > 0 && !seat)) return c.json({ error: "verified_catalogue_price_missing", detail: "Approved product and price mappings are required for this currency, interval and billable seat selection.", includedEditingSeats, additionalSeats }, 409);
+  const expectedAmount = approvedCatalogueAmount(packageVersion.data?.package_key, currency, interval, "base");
+  if (!base || expectedAmount == null || Number(base.unit_amount_minor) !== expectedAmount || base.tax_behavior !== "exclusive" || !base.metadata?.productTaxCode) return c.json({ error: "verified_approved_gbp_catalogue_price_missing", detail: "The approved GBP base price, exclusive tax behaviour, and SaaS product tax code are required.", includedEditingSeats }, 409);
   const idempotencyKey = `checkout:${billingEnvironment}:${operationKey}`;
   const priorOperation = await db.from("billing_financial_operations").select("provider_reference,state,response").eq("billing_environment", billingEnvironment).eq("operation_type", "checkout").eq("operation_key", operationKey).maybeSingle();
   if (priorOperation.data?.provider_reference) return c.json({ sessionId: priorOperation.data.provider_reference, ...(priorOperation.data.response || {}), reused: true });
   const prior = await db.from("billing_checkout_attempts").select("provider_session_id,state").eq("billing_environment", billingEnvironment).eq("idempotency_key", idempotencyKey).maybeSingle();
   if (prior.data?.provider_session_id) return c.json({ sessionId: prior.data.provider_session_id, reused: true });
-  const operation = await db.from("billing_financial_operations").insert({ billing_environment: billingEnvironment, operation_key: operationKey, operation_type: "checkout", account_id: accountId, requested_by: c.get("userId"), request: { packageVersionId: body.packageVersionId, currency, interval, editingSeats, includedEditingSeats, additionalSeats } }).select("id").maybeSingle();
+  const operation = await db.from("billing_financial_operations").insert({ billing_environment: billingEnvironment, operation_key: operationKey, operation_type: "checkout", account_id: accountId, requested_by: c.get("userId"), request: { packageVersionId: body.packageVersionId, currency, interval, includedEditingSeats } }).select("id").maybeSingle();
   if (operation.error?.code === "23505") return c.json({ error: "financial_operation_in_progress", operationKey }, 409);
   if (operation.error || !operation.data) return c.json({ error: "financial_operation_persistence_failed" }, 503);
   let customer = await db.from("billing_customers").select("provider_customer_id").eq("account_id", accountId).eq("billing_environment", billingEnvironment).maybeSingle();
@@ -3267,25 +3314,28 @@ app.post("/api/billing/:accountId/checkout", async (c) => {
     customerId = created.id;
     await db.from("billing_customers").upsert({ account_id: accountId, billing_environment: billingEnvironment, provider_customer_id: customerId, provider: "stripe", currency, sync_state: "pending", metadata: { livemode: billingEnvironment === "live" } }, { onConflict: "account_id,billing_environment" });
   }
-  const attempt = await db.from("billing_checkout_attempts").insert({ account_id: accountId, billing_environment: billingEnvironment, requested_by: c.get("userId"), package_version_id: body.packageVersionId, currency, interval, editing_seats: editingSeats, idempotency_key: idempotencyKey }).select("id").single();
+  const attempt = await db.from("billing_checkout_attempts").insert({ account_id: accountId, billing_environment: billingEnvironment, requested_by: c.get("userId"), package_version_id: body.packageVersionId, currency, interval, editing_seats: includedEditingSeats, idempotency_key: idempotencyKey }).select("id").single();
   if (attempt.error) return c.json({ error: "checkout_attempt_persistence_failed" }, 503);
   try {
     const activePromotions = await db.from("promotion_rules").select("id").eq("billing_environment", billingEnvironment).eq("enabled", true).limit(1);
     const session = await stripe.checkout.sessions.create({
       mode: "subscription", customer: customerId,
       integration_identifier: `claritude_${operationKey.replaceAll("-", "")}`,
-      line_items: [{ price: base.provider_price_id, quantity: 1 }, ...(additionalSeats > 0 && seat ? [{ price: seat.provider_price_id, quantity: additionalSeats }] : [])],
+      line_items: [{ price: base.provider_price_id, quantity: 1 }],
       allow_promotion_codes: Boolean(activePromotions.data?.length),
-      automatic_tax: { enabled: config.tax_enabled === true },
-      billing_address_collection: config.tax_enabled ? "required" : "auto",
+      automatic_tax: { enabled: true },
+      billing_address_collection: "required",
+      customer_update: { address: "auto", name: "auto" },
+      tax_id_collection: { enabled: true },
+      name_collection: { business: { enabled: true, optional: true } },
       success_url: `${c.env.APP_ORIGIN.replace(/\/$/, "")}/account?accountTab=Billing%20%26%20plan&checkout=success&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${c.env.APP_ORIGIN.replace(/\/$/, "")}/account?accountTab=Billing%20%26%20plan&checkout=cancelled`,
-      metadata: { claritudeAccountId: accountId, billingEnvironment, packageVersionId: body.packageVersionId, checkoutAttemptId: attempt.data.id, includedEditingSeats: String(includedEditingSeats), additionalSeats: String(additionalSeats) },
+      metadata: { claritudeAccountId: accountId, billingEnvironment, packageVersionId: body.packageVersionId, checkoutAttemptId: attempt.data.id, includedEditingSeats: String(includedEditingSeats), additionalSeats: "0" },
       subscription_data: { metadata: { claritudeAccountId: accountId, billingEnvironment, packageVersionId: body.packageVersionId, includedEditingSeats: String(includedEditingSeats) } },
     }, { idempotencyKey });
     await db.from("billing_checkout_attempts").update({ provider_session_id: session.id, state: "created", updated_at: new Date().toISOString() }).eq("id", attempt.data.id);
     await db.from("billing_financial_operations").update({ provider_reference: session.id, state: "completed", response: { sessionId: session.id, url: session.url }, updated_at: new Date().toISOString() }).eq("id", operation.data.id);
-    return c.json({ sessionId: session.id, url: session.url, includedEditingSeats, additionalSeats });
+    return c.json({ sessionId: session.id, url: session.url, includedEditingSeats, additionalSeats: 0 });
   } catch (error) {
     await db.from("billing_checkout_attempts").update({ state: "failed", error: errorMessage(error).slice(0, 1000), updated_at: new Date().toISOString() }).eq("id", attempt.data.id);
     await db.from("billing_financial_operations").update({ state: "failed", error: errorMessage(error).slice(0, 1000), updated_at: new Date().toISOString() }).eq("id", operation.data.id);
@@ -3918,21 +3968,15 @@ app.get("/api/superadmin/platform", async (c) => {
     included_editing_seats: subscription.included_editing_seats ?? subscription.package_versions?.allowances?.editingSeats ?? null,
   }));
   const providerMode = stripeProvider.client ? billingEnvironment : "unconfigured";
-  const paidPackages = ["essentials", "scale", "pro"];
-  const baseCatalogueKeys = paidPackages.flatMap((packageKey) => ["gbp", "eur", "usd"].flatMap((currency) => ["month", "year"].map((interval) => `${packageKey}:${currency}:${interval}:base`)));
-  const unresolvedSeatPackages = (packages.data || []).filter((item: any) => paidPackages.includes(item.package_key) && item.state === "published" && !Number.isSafeInteger(Number(item.allowances?.editingSeats))).map((item: any) => item.package_key);
-  const packagesRequiringSeatPrices = (packages.data || []).filter((item: any) => paidPackages.includes(item.package_key) && item.state === "published" && Number.isSafeInteger(Number(item.allowances?.editingSeats)) && item.features?.billableAdditionalEditingSeats === true).map((item: any) => item.package_key);
-  const seatCatalogueKeys = packagesRequiringSeatPrices.flatMap((packageKey: string) => ["gbp", "eur", "usd"].flatMap((currency) => ["month", "year"].map((interval) => `${packageKey}:${currency}:${interval}:additional_editing_seat`)));
-  const requiredCatalogueKeys = [...baseCatalogueKeys, ...seatCatalogueKeys];
-  const catalogueKeys = new Set((billingCatalogue.data || []).filter((price) => price.active && price.billing_environment === billingEnvironment).map((price: any) => `${price.package_versions?.package_key}:${price.currency}:${price.interval}:${price.component}`));
-  const catalogueReady = requiredCatalogueKeys.every((key) => catalogueKeys.has(key));
+  const catalogueStatus = approvedCatalogueStatus((billingCatalogue.data || []).filter((price) => price.active && price.billing_environment === billingEnvironment), billingEnvironment);
+  const catalogueReady = catalogueStatus.missing.length === 0 && catalogueStatus.issues.length === 0;
   const portalReady = Boolean(billingConfiguration.data?.portal_configuration_id || stripeProvider.portalConfigurationId);
   const liveReadiness = {
     credentials: Boolean(stripeProvider.client),
     webhook: Boolean(stripeProvider.webhookSecret),
     catalogue: catalogueReady,
     portal: portalReady,
-    tax: Boolean(billingConfiguration.data?.tax_reviewed_at),
+    tax: Boolean(billingConfiguration.data?.tax_enabled && billingConfiguration.data?.tax_reviewed_at),
     sandboxAcceptance: Boolean(billingConfiguration.data?.sandbox_acceptance_completed_at),
   };
   const monthStartIso = `${today.slice(0, 7)}-01T00:00:00.000Z`;
@@ -3954,7 +3998,7 @@ app.get("/api/superadmin/platform", async (c) => {
     infrastructure: { database: databaseMetrics.data || null, databaseError: databaseMetrics.error?.message || null, events: operationalEvents.data || [], leases: leases.data || [], period: "UTC day" },
     analyticsManagement: { rules: analyticsRules.data || [], storage: analyticsStorage.data || [], usage: analyticsUsage.data || [], warnings: analyticsWarnings.data || [], storageRefresh: storageRefresh.data || null, storageError: storageRefresh.error?.message || analyticsStorage.error?.message || null },
     exports: exports.data || [], deletionRequests: deletionRequests.data || [], email: { templates: templates.data || [], automations: automations.data || [], campaigns: campaigns.data || [], deliveries: deliveries.data || [], suppressions: suppressions.data || [] },
-    billing: { environment: billingEnvironment, configured: stripeProvider.configured, providerMode, configuration: billingConfiguration.data || null, catalogueReady, liveReadiness, catalogueRequirements: { requiredCount: requiredCatalogueKeys.length, basePriceCount: 18, maximumWithSeatPrices: 36, missing: requiredCatalogueKeys.filter((key) => !catalogueKeys.has(key)), unresolvedSeatPackages, packagesRequiringSeatPrices, explanation: "Eighteen base prices cover 3 paid packages × 3 currencies × 2 billing intervals. The total becomes 36 only if every package separately sells additional seats; a package needs a seat price only when its approved allowance and commercial policy permit paid seat overage." }, catalogue: billingCatalogue.data || [], customers: billingCustomers.data || [], subscriptions: subscriptionRows, invoices: billingInvoices.data || [], payments: billingPayments.data || [], refunds: billingRefunds.data || [], disputes: billingDisputes.data || [], payouts: billingPayouts.data || [], reconciliation: billingReconciliation.data || [], daily: billingDaily.data || [], events: billingEvents.data || [], promotions: promotions.data || [], calculations: finance, currencyPolicy: "Every finance query is scoped to one billing environment and each series to one currency. No implicit FX conversion is applied. MRR includes every recurring item, annual values divided by 12, and applicable recurring discounts. Daily activity is distinct from available and pending balances; only succeeded refunds reduce completed refund totals." },
+    billing: { environment: billingEnvironment, configured: stripeProvider.configured, providerMode, configuration: billingConfiguration.data || null, catalogueReady, liveReadiness, catalogueRequirements: { requiredCount: catalogueStatus.required.length, basePriceCount: 6, maximumWithSeatPrices: 6, missing: catalogueStatus.missing, issues: catalogueStatus.issues, unresolvedSeatPackages: [], packagesRequiringSeatPrices: [], explanation: "Six approved GBP base prices cover 3 paid packages × 2 billing intervals. Additional editing seats are not sold; included seat allowances are enforced in-app." }, catalogue: billingCatalogue.data || [], customers: billingCustomers.data || [], subscriptions: subscriptionRows, invoices: billingInvoices.data || [], payments: billingPayments.data || [], refunds: billingRefunds.data || [], disputes: billingDisputes.data || [], payouts: billingPayouts.data || [], reconciliation: billingReconciliation.data || [], daily: billingDaily.data || [], events: billingEvents.data || [], promotions: promotions.data || [], calculations: finance, currencyPolicy: "New catalogue, checkout, subscription changes, and fixed promotions are GBP-only. Historical currencies remain visible without conversion. MRR and revenue exclude tax; tax is reported separately from invoice totals." },
   });
 });
 
@@ -3997,9 +4041,9 @@ app.post("/api/superadmin/billing/events/:id/reprocess", async (c) => {
 app.post("/api/superadmin/billing/catalogue", async (c) => {
   const authorization = await requireStaff(c, "financials.write");
   if (authorization.response) return authorization.response;
-  const body = await c.req.json<{ billingEnvironment?: BillingEnvironment; packageVersionId?: string; priceId?: string; component?: "base" | "additional_editing_seat"; reason?: string }>().catch(() => ({} as any));
+  const body = await c.req.json<{ billingEnvironment?: BillingEnvironment; packageVersionId?: string; priceId?: string; component?: "base"; reason?: string }>().catch(() => ({} as any));
   const reason = String(body.reason || "").trim();
-  if (!["test", "live"].includes(body.billingEnvironment || "") || !body.packageVersionId || !body.priceId || !["base", "additional_editing_seat"].includes(body.component || "") || reason.length < 3) return c.json({ error: "environment_package_price_component_and_reason_required" }, 400);
+  if (!["test", "live"].includes(body.billingEnvironment || "") || !body.packageVersionId || !body.priceId || body.component !== "base" || reason.length < 3) return c.json({ error: "environment_package_base_price_and_reason_required" }, 400);
   const stripe = stripeClient(c.env, body.billingEnvironment!);
   if (!stripe) return c.json({ error: "stripe_credentials_required" }, 409);
   const db = admin(c.env);
@@ -4009,6 +4053,9 @@ app.post("/api/superadmin/billing/catalogue", async (c) => {
   const product: any = price.product;
   if (!price.active || !price.recurring || price.unit_amount == null || typeof product === "string" || !product.active) return c.json({ error: "active_recurring_price_and_product_required" }, 409);
   if (!["month", "year"].includes(price.recurring.interval)) return c.json({ error: "unsupported_billing_interval" }, 409);
+  const expectedAmount = approvedCatalogueAmount(packageVersion.data.package_key, price.currency, price.recurring.interval, body.component);
+  if (expectedAmount == null || price.unit_amount !== expectedAmount) return c.json({ error: "approved_gbp_price_required", currency: price.currency, expectedAmountMinor: expectedAmount }, 409);
+  if (price.tax_behavior !== "exclusive" || !product.tax_code) return c.json({ error: "exclusive_tax_and_product_tax_code_required" }, 409);
   const livemode = body.billingEnvironment === "live";
   if (price.livemode !== livemode) return c.json({ error: "stripe_environment_mismatch" }, 409);
   const row = { billing_environment: body.billingEnvironment, package_version_id: body.packageVersionId, provider_product_id: product.id, provider_price_id: price.id, currency: price.currency, interval: price.recurring.interval, component: body.component, unit_amount_minor: price.unit_amount, tax_behavior: price.tax_behavior || "unspecified", active: true, provider_livemode: price.livemode, verified_at: new Date().toISOString(), verified_by: authorization.staff!.userId, updated_at: new Date().toISOString(), metadata: { productName: product.name, productTaxCode: product.tax_code || null, recurringUsageType: price.recurring.usage_type || null } };
@@ -4043,7 +4090,7 @@ app.post("/api/superadmin/billing/promotions", async (c) => {
   const expiresAt = body.expiresAt ? new Date(body.expiresAt) : null;
   if (!billingEnvironment || !["test", "live"].includes(billingEnvironment) || !/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(operationKey) || !/^[A-Z0-9-]{3,40}$/.test(code) || internalName.length < 3 || internalName.length > 120 || description.length > 500 || reason.length < 3 || reason.length > 500) return c.json({ error: "valid_environment_operation_code_name_and_reason_required" }, 400);
   if (!body.discountType || !["percentage", "fixed"].includes(body.discountType) || !body.durationType || !["once", "billing_periods", "forever"].includes(body.durationType)) return c.json({ error: "valid_discount_and_duration_required" }, 400);
-  if (body.discountType === "percentage" ? !(percentage > 0 && percentage <= 100) : !(fixedAmountMinor > 0 && /^[a-z]{3}$/.test(String(body.currency || "").toLowerCase()))) return c.json({ error: "valid_discount_value_required" }, 400);
+  if (body.discountType === "percentage" ? !(percentage > 0 && percentage <= 100) : !(fixedAmountMinor > 0 && String(body.currency || "").toLowerCase() === "gbp")) return c.json({ error: "valid_gbp_discount_value_required" }, 400);
   if (body.durationType === "billing_periods" && (durationCount < 1 || durationCount > 36)) return c.json({ error: "valid_billing_period_duration_required" }, 400);
   if (redemptionLimit != null && (redemptionLimit < 1 || redemptionLimit > 1_000_000)) return c.json({ error: "valid_redemption_limit_required" }, 400);
   if (expiresAt && (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= Date.now() || expiresAt.getTime() > Date.now() + 5 * 365 * 86400_000)) return c.json({ error: "redemption_expiry_must_be_future_within_five_years" }, 400);
@@ -4111,23 +4158,37 @@ app.patch("/api/superadmin/billing/configuration", async (c) => {
   const previous = await db.from("billing_environment_configurations").select("*").eq("environment", billingEnvironment).single();
   const provider = stripeContext(c.env, billingEnvironment);
   if (!provider.client || !provider.webhookSecret) return c.json({ error: "stripe_credentials_and_webhook_required", environment: billingEnvironment }, 409);
-  const mappings = await db.from("billing_catalogue_prices").select("currency,interval,component,provider_livemode,tax_behavior,metadata,package_versions(package_key)").eq("billing_environment", billingEnvironment).eq("active", true);
-  const required = ["essentials", "scale", "pro"].flatMap((packageKey) => ["gbp", "eur", "usd"].flatMap((currency) => ["month", "year"].map((interval) => `${packageKey}:${currency}:${interval}:base`)));
-  const present = new Set((mappings.data || []).map((item: any) => `${item.package_versions?.package_key}:${item.currency}:${item.interval}:${item.component}`));
-  const missing = required.filter((key) => !present.has(key));
-  if (body.checkoutEnabled === true && missing.length) return c.json({ error: "catalogue_incomplete", missing }, 409);
+  const mappings = await db.from("billing_catalogue_prices").select("currency,interval,component,unit_amount_minor,provider_livemode,tax_behavior,metadata,package_versions(package_key)").eq("billing_environment", billingEnvironment).eq("active", true);
+  const catalogueStatus = approvedCatalogueStatus(mappings.data || [], billingEnvironment);
+  if (body.checkoutEnabled === true && (catalogueStatus.missing.length || catalogueStatus.issues.length)) return c.json({ error: "catalogue_incomplete", ...catalogueStatus }, 409);
   let taxReviewedAt = previous.data.tax_reviewed_at;
   if (body.taxEnabled === true) {
     const stripe = provider.client;
-    const registrations = await (stripe.tax.registrations as any).list({ status: "active", limit: 100 });
-    const unsafePrices = (mappings.data || []).filter((item: any) => item.tax_behavior === "unspecified" || !item.metadata?.productTaxCode);
-    if (!registrations.data?.length || unsafePrices.length) return c.json({ error: "tax_configuration_unverified", activeRegistrations: registrations.data?.length || 0, unsafePriceCount: unsafePrices.length }, 409);
+    const [registrations, settings] = await Promise.all([
+      (stripe.tax.registrations as any).list({ status: "active", limit: 100 }),
+      stripe.tax.settings.retrieve(),
+    ]);
+    const activeRegistrations = registrations.data || [];
+    const ukRegistration = activeRegistrations.some((registration: any) => String(registration.country || "").toUpperCase() === "GB");
+    const taxBlockers = [
+      settings.status !== "active" && "stripe_tax_not_active",
+      !settings.head_office?.address?.country && "head_office_address_missing",
+      !ukRegistration && "active_uk_vat_registration_missing",
+      catalogueStatus.issues.length > 0 && "catalogue_tax_metadata_invalid",
+    ].filter(Boolean);
+    if (taxBlockers.length) return c.json({ error: "tax_configuration_unverified", blockers: taxBlockers, activeRegistrationCountries: activeRegistrations.map((registration: any) => registration.country), catalogueIssues: catalogueStatus.issues }, 409);
     taxReviewedAt = new Date().toISOString();
+  }
+  const portalConfigurationId = body.portalConfigurationId?.trim() || previous.data.portal_configuration_id || provider.portalConfigurationId;
+  if (body.checkoutEnabled === true && portalConfigurationId) {
+    const portal = await provider.client.billingPortal.configurations.retrieve(portalConfigurationId);
+    if (portal.features.subscription_update.enabled && portal.features.subscription_update.default_allowed_updates.includes("quantity")) return c.json({ error: "portal_seat_quantity_changes_must_be_disabled", portalConfigurationId }, 409);
   }
   if (billingEnvironment === "live" && body.checkoutEnabled === true) {
     const liveBlockers = [
       !previous.data.sandbox_acceptance_completed_at && "sandbox_acceptance",
-      !(body.portalConfigurationId?.trim() || previous.data.portal_configuration_id || provider.portalConfigurationId) && "customer_portal",
+      !portalConfigurationId && "customer_portal",
+      !(body.taxEnabled ?? previous.data.tax_enabled) && "stripe_tax_disabled",
       !taxReviewedAt && "tax_configuration",
     ].filter(Boolean);
     if (liveBlockers.length) return c.json({ error: "live_checkout_readiness_incomplete", blockers: liveBlockers }, 409);
@@ -10969,19 +11030,36 @@ async function authUsersById(service: SupabaseClient, userIds: string[]) {
     }));
 }
 
+async function authUserByEmail(service: SupabaseClient, email: string) {
+  const { data, error } = await service.auth.admin.listUsers({ page: 1, perPage: 1000 });
+  if (error) throw error;
+  return data.users.find((user) => user.email?.toLowerCase() === email.toLowerCase()) || null;
+}
+
+async function editingSeatAdmission(env: Env, service: SupabaseClient, workspaceId: string, candidateUserId: string | null) {
+  const workspace = await service.from("workspaces").select("account_id").eq("id", workspaceId).maybeSingle();
+  if (workspace.error || !workspace.data) throw workspace.error || new Error("workspace_not_found");
+  const effective = await effectiveEntitlements(env, workspace.data.account_id);
+  const limit = entitlementLimit(effective, "editingSeats", "includedUsers");
+  if (limit == null) return { allowed: true, used: 0, limit };
+  const workspaces = await service.from("workspaces").select("id").eq("account_id", workspace.data.account_id);
+  if (workspaces.error) throw workspaces.error;
+  const workspaceIds = (workspaces.data || []).map((item) => item.id);
+  const memberships = workspaceIds.length
+    ? await service.from("workspace_memberships").select("user_id,role").in("workspace_id", workspaceIds).in("role", ["owner", "member"])
+    : { data: [], error: null } as any;
+  if (memberships.error) throw memberships.error;
+  const editingUsers = new Set((memberships.data || []).map((item: any) => item.user_id));
+  return { allowed: Boolean(candidateUserId && editingUsers.has(candidateUserId)) || editingUsers.size < limit, used: editingUsers.size, limit };
+}
+
 async function findOrInviteUser(
   service: SupabaseClient,
   email: string,
   appOrigin: string,
+  knownUser?: any | null,
 ) {
-  const { data: listed, error: listError } = await service.auth.admin.listUsers({
-    page: 1,
-    perPage: 1000,
-  });
-  if (listError) throw listError;
-  const existing = listed.users.find(
-    (user) => user.email?.toLowerCase() === email.toLowerCase(),
-  );
+  const existing = knownUser === undefined ? await authUserByEmail(service, email) : knownUser;
   if (existing) return { id: existing.id, invitationSent: false };
   const { data, error } = await service.auth.admin.inviteUserByEmail(email, {
     redirectTo: `${appOrigin.replace(/\/$/, "")}/auth/confirmed`,

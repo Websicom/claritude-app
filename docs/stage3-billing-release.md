@@ -1,5 +1,54 @@
 # Stage 3 billing release record
 
+> **10 October 2026 decision update:** the approved policy below supersedes every older statement in this file about 18/36 prices, EUR/USD sales, unresolved seat pricing, or purchasable additional seats. Live checkout remains disabled.
+
+## Approved production catalogue
+
+All customer-facing prices are GBP and exclude VAT. Annual plans are charged upfront.
+
+| Plan | Monthly | Annual | Annual display equivalent | Expected UK total at 20% VAT |
+| --- | ---: | ---: | ---: | ---: |
+| Free | £0 | £0 | £0/month | £0 |
+| Essentials | £15/month | £108/year | £9/month, billed annually | £18/month or £129.60/year |
+| Scale | £49/month | £468/year | £39/month, billed annually | £58.80/month or £561.60/year |
+| Pro | £129/month | £1,188/year | £99/month, billed annually | £154.80/month or £1,425.60/year |
+
+Only six paid base Price mappings are required: Essentials, Scale and Pro × monthly and annual. EUR, USD and additional-seat mappings are retired from new sales but preserved for historical evidence.
+
+## Current implementation
+
+- Checkout, subscription changes and fixed promotions are GBP-only. A mapped Price must match the approved amount, use exclusive tax behaviour and have a Product tax code.
+- Checkout collects billing address, optional business name and tax ID, and always uses Stripe Tax. It is blocked until the tax configuration is verified.
+- Invoice views show subtotal, discount, tax and total. MRR and revenue exclude tax; tax is reported separately without FX conversion.
+- Included editing seats are Free 1, Essentials 1, Scale 2 and Pro 3. Editing invitations enforce the effective allowance; viewers remain separate. No new additional-seat Price or purchase path exists.
+- Customer prices show annual monthly equivalents, upfront annual amount and “excluding VAT”. Currency and paid-seat selectors are removed.
+- Automatic-tax approval checks Stripe Tax status, head-office country, an active GB registration and safe tax metadata on all six prices.
+- Checkout approval rejects a Customer Portal configuration that permits quantity changes. Viewing the Live environment never activates payments.
+
+## Tax acceptance results
+
+| Scenario | Expected result | Provider evidence |
+| --- | --- | --- |
+| UK Essentials monthly / annual | £18 / £129.60 total | Pending |
+| UK Scale monthly / annual | £58.80 / £561.60 total | Pending |
+| UK Pro monthly / annual | £154.80 / £1,425.60 total | Pending |
+| Valid overseas business tax ID | Stripe decides reverse charge from validation and registrations | Pending |
+| Overseas individual or invalid tax ID | Stripe decides tax from location and registrations; no exemption is assumed | Pending |
+| Promotion and refund | Discounted taxable amount and refund tax adjustment reconcile separately | Pending |
+
+## Deployment and exact blockers
+
+- The application and migration changes are prepared locally; neither the migration nor Worker/frontend changes have been deployed yet.
+- The deployed Worker exposes test Stripe key/webhook secret names only; no `STRIPE_LIVE_SECRET_KEY` or `STRIPE_LIVE_WEBHOOK_SECRET` is deployed. The linked database dry-run reports `20261010004912_stage3_approved_gbp_billing.sql` as pending.
+- Retrieve Websi Limited’s verified legal name, VAT number and registered/head-office address from authorised configuration. None is invented here.
+- Confirm the correct Stripe SaaS Product tax code and create/map the six exclusive-tax GBP sandbox Prices.
+- Confirm GB and any required international Stripe Tax registrations, then execute the complete sandbox matrix: both intervals, UK VAT totals, overseas business/consumer, promotions, webhooks/account mapping, allowances, cancellation, upgrade/downgrade, refund/tax adjustment and tax-separated reporting.
+- Confirm the Customer Portal cannot change quantities, provision separate live credentials/webhook/portal, create the six live mappings, deploy with checkout disabled, smoke test, and only then use **Enable live checkout**.
+
+---
+
+## Earlier implementation record (superseded where it conflicts with the decision update)
+
 This record deliberately separates application completeness from Stripe-provider acceptance. Live checkout remains disabled.
 
 ## Implemented and verified
