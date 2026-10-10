@@ -7776,6 +7776,16 @@ function AccountView({
   );
 }
 
+export function billingCheckoutErrorMessage(error: unknown) {
+  const code = String(error instanceof Error ? error.message : error || "");
+  if (["financial_operation_in_progress", "checkout_initialisation_in_progress"].includes(code)) return "Checkout is still being prepared. Please wait a moment and try again.";
+  if (code === "checkout_session_expired") return "Your previous checkout expired. Please choose the package again.";
+  if (code === "checkout_operation_selection_changed") return "Your package selection changed while checkout was being prepared. Please try again.";
+  if (code === "checkout_attempt_persistence_failed" || code === "financial_operation_persistence_failed") return "We could not save the checkout safely. No payment was taken. Please try again.";
+  if (code === "stripe_checkout_failed") return "Stripe could not open checkout. No payment was taken. Please try again.";
+  return code.replaceAll("_", " ");
+}
+
 function Billing({ fixture, notify, data, session }: { fixture: boolean; notify: Notify; data: Bootstrap; session: Session | null }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -7792,7 +7802,7 @@ function Billing({ fixture, notify, data, session }: { fixture: boolean; notify:
   const currency = "gbp";
   const [billingData, setBillingData] = useState<any>(null);
   const [billingBusy, setBillingBusy] = useState(false);
-  const [checkoutOperationKey, setCheckoutOperationKey] = useState(() => crypto.randomUUID());
+  const checkoutStartingRef = useRef(false);
   const [subscriptionOperationKey, setSubscriptionOperationKey] = useState(() => crypto.randomUUID());
   const [changePreview, setChangePreview] = useState<any>(null);
   const [pendingChange, setPendingChange] = useState<any>(null);
@@ -7844,10 +7854,30 @@ function Billing({ fixture, notify, data, session }: { fixture: boolean; notify:
     finally { setBillingBusy(false); }
   }
   async function checkout(packageVersionId: string) {
-    if (!session || !accountId) return;
+    if (!session || !accountId || checkoutStartingRef.current) return;
+    checkoutStartingRef.current = true;
     setBillingBusy(true);
-    try { const result = await api<any>(session, `/api/billing/${accountId}/checkout`, { method: "POST", body: JSON.stringify({ packageVersionId, currency, interval: annual ? "year" : "month", requestKey: checkoutOperationKey }) }); setCheckoutOperationKey(crypto.randomUUID()); if (result.url) window.location.assign(result.url); else notify("Checkout session created"); }
-    catch (error: any) { notify(error.message); setBillingBusy(false); }
+    try {
+      const result = await api<any>(session, `/api/billing/${accountId}/checkout`, {
+        method: "POST",
+        body: JSON.stringify({ packageVersionId, currency, interval: annual ? "year" : "month", requestKey: crypto.randomUUID() }),
+      });
+      if (result.url) {
+        window.location.assign(result.url);
+        return;
+      }
+      if (result.completed) {
+        await loadBilling();
+        notify("Checkout is already complete. Your billing status has been refreshed.");
+      } else {
+        notify("Checkout session created");
+      }
+    } catch (error: any) {
+      notify(billingCheckoutErrorMessage(error));
+    } finally {
+      checkoutStartingRef.current = false;
+      setBillingBusy(false);
+    }
   }
   async function previewChange(packageVersionId: string) {
     if (!session || !accountId) return;
