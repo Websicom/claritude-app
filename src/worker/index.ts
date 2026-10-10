@@ -3626,7 +3626,7 @@ app.post("/api/billing/:accountId/checkout", async (c) => {
     if (session.status === "complete") return c.json({ sessionId: session.id, completed: true, reused: true });
     return c.json({ error: "checkout_session_expired" }, 409);
   };
-  const retrieveSession = async (sessionId: string | null | undefined) => {
+  const retrieveSession = async (sessionId: string | null | undefined): Promise<Stripe.Checkout.Session | null> => {
     if (!sessionId) return null;
     try { return await stripe.checkout.sessions.retrieve(sessionId); }
     catch { return null; }
