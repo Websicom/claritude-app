@@ -173,12 +173,24 @@ export function uptimeIntervalsForPlan(entitlement: unknown) {
   return [1, 2, 5, 10, 15, 30, 60].filter((interval) => interval >= minimum);
 }
 
+export function propertyViewerLimitForPlan(entitlement: unknown) {
+  const plan = planName(entitlement);
+  return plan === "Pro" ? 5 : plan === "Scale" ? 3 : plan === "Essentials" ? 2 : 1;
+}
+
+export function alertRecipientLimitForPlan(entitlement: unknown) {
+  const plan = planName(entitlement);
+  return plan === "Pro" ? 10 : plan === "Scale" ? 5 : plan === "Essentials" ? 2 : 1;
+}
+
 const PLAN_LIMIT_ERROR_MESSAGES: Record<string, string> = {
   property_limit_reached: "This account has reached its property limit.",
   workspace_limit_reached: "This account has reached its workspace limit.",
   custom_event_plan_limit_reached: "This property has reached its custom event allowance.",
   audit_page_plan_limit_reached: "This property has reached its saved audit-page allowance.",
   weekly_audit_credit_limit_reached: "This account has used its weekly audit allowance.",
+  property_viewer_limit_reached: "This property has reached its viewer allowance.",
+  alert_recipient_limit_reached: "This property has reached its uptime recipient allowance.",
   uptime_interval_not_available_for_plan: "That monitoring interval is not available on the current plan.",
 };
 
@@ -191,6 +203,8 @@ export function isPlanLimitError(message: unknown) {
     value.includes("reached its saved audit-page allowance") ||
     value.includes("plan allowance has been reached") ||
     value.includes("used its weekly audit allowance") ||
+    value.includes("reached its viewer allowance") ||
+    value.includes("reached its uptime recipient allowance") ||
     value.includes("monitoring interval is not available on the current plan");
 }
 
@@ -579,6 +593,12 @@ export function ClaritudeApplication({
     ? configuredWorkspaceLimit
     : activePlan === "Free" ? 1 : null;
   const canCreateWorkspace = canManageAccount && (workspaceLimit == null || workspaceMemberships.length < workspaceLimit);
+  const configuredPropertyLimit = activeEntitlements?.values?.propertiesPerAccount ?? activeEntitlements?.hardCeilings?.propertiesPerAccount;
+  const propertyLimit = typeof configuredPropertyLimit === "number" && Number.isSafeInteger(configuredPropertyLimit)
+    ? configuredPropertyLimit
+    : activePlan === "Pro" ? 200 : activePlan === "Scale" ? 50 : activePlan === "Essentials" ? 5 : 2;
+  const accountPropertyCount = allProperties.filter((item) => !activeAccountId || item.account_id === activeAccountId).length;
+  const canCreateProperty = canManageAccount && accountPropertyCount < propertyLimit;
   const eligiblePropertyWorkspaces: WorkspaceOption[] = workspaceMemberships
     .filter((entry: any) => ["owner", "member"].includes(entry.role))
     .map((entry: any) => ({
@@ -796,7 +816,8 @@ export function ClaritudeApplication({
           select={selectProperty}
           add={eligiblePropertyWorkspaces.length ? () => {
             setPropertyMenu(false);
-            setAddOpen(true);
+            if (canCreateProperty) setAddOpen(true);
+            else navigate(billingUpgradeHref(activeAccountId));
           } : undefined}
         />
       )}
@@ -1064,6 +1085,7 @@ export function ClaritudeApplication({
                   session={session}
                   property={property}
                   fixture={fixture}
+                  canManage={canManageWorkspace}
                   notify={notify}
                 />
               }
@@ -1076,6 +1098,7 @@ export function ClaritudeApplication({
                   property={property}
                   incidents={data.incidents}
                   fixture={fixture}
+                  canManage={canManageWorkspace}
                   reload={reload}
                   notify={notify}
                 />
@@ -1099,6 +1122,7 @@ export function ClaritudeApplication({
                   session={session}
                   property={property}
                   fixture={fixture}
+                  canManage={canManageWorkspace}
                   notify={notify}
                 />
               }
@@ -1110,6 +1134,7 @@ export function ClaritudeApplication({
                   session={session}
                   property={property}
                   fixture={fixture}
+                  canManage={canManageWorkspace}
                   notify={notify}
                 />
               }
@@ -1160,6 +1185,13 @@ export function ClaritudeApplication({
                   fixture={fixture}
                   reload={reload}
                   notify={notify}
+                  activeAccountId={activeAccountId}
+                  onAddWorkspace={() => setWorkspaceOpen(true)}
+                  onAddProperty={() => setAddOpen(true)}
+                  canCreateWorkspace={canCreateWorkspace}
+                  canCreateProperty={canCreateProperty}
+                  workspaceLimit={workspaceLimit}
+                  propertyLimit={propertyLimit}
                 />
               }
             />
@@ -2032,11 +2064,13 @@ function PropertyOverview({
   session,
   property,
   fixture,
+  canManage,
   notify,
 }: {
   session: Session | null;
   property?: Property;
   fixture: boolean;
+  canManage: boolean;
   notify: Notify;
 }) {
   const overviewLocation = useLocation();
@@ -2165,6 +2199,10 @@ function PropertyOverview({
   const analyticsHref = `/analytics?property=${property.id}&${livePeriod}`;
   const analyticsTabHref = (analyticsTab: string) => `${analyticsHref}&analyticsTab=${analyticsTab}`;
   const uptimeHref = `/uptime?property=${property.id}&${livePeriod}`;
+  const setupComplete = Boolean(property.tracking_last_received_at && uptimeStatus?.last_checked_at);
+  const overviewTabs = canManage
+    ? ["Overview", "Activity", ...(setupComplete ? [] : ["Setup"])]
+    : ["Overview"];
   const overviewMetrics: ReactNode[][] = [
     [
       "Uptime",
@@ -2211,17 +2249,17 @@ function PropertyOverview({
       status={tab === "Overview" ? <Period /> : undefined}
       showOptions={tab === "Overview"}
       relocateMobileControls={tab === "Overview"}
-      actions={
+      actions={canManage ? (
         <button className="primary" onClick={() => void startAudit()} disabled={auditStarting}>
           <RefreshCw className={auditStarting ? "audit-spin" : ""} />
           {auditStarting ? "Queuing…" : "Run audit"}
         </button>
-      }
+      ) : undefined}
     >
       {(mobilePageControls) => (
         <>
           <Tabs
-            labels={["Overview", "Activity", "Setup"]}
+            labels={overviewTabs}
             value={tab}
             onChange={(nextTab) => {
               if (nextTab === "Setup") navigate(`/settings?property=${property.id}&settingsTab=Tracking`);
@@ -2354,6 +2392,7 @@ function UptimeView({
   property,
   incidents,
   fixture,
+  canManage,
   reload,
   notify,
 }: {
@@ -2361,6 +2400,7 @@ function UptimeView({
   property?: Property;
   incidents: any[];
   fixture: boolean;
+  canManage: boolean;
   reload: () => void;
   notify: Notify;
 }) {
@@ -2385,7 +2425,7 @@ function UptimeView({
     [chartMenuOpen, setChartMenuOpen] = useState(false),
     [showPreviousChecks, setShowPreviousChecks] = useState(false);
   const loadMaintenance = () => {
-    if (!session || !property?.uptime_monitors?.[0]) return Promise.resolve();
+    if (!canManage || !session || !property?.uptime_monitors?.[0]) return Promise.resolve();
     return api<any[]>(
       session,
       `/api/monitors/${property.uptime_monitors[0].id}/maintenance`,
@@ -2599,15 +2639,15 @@ function UptimeView({
           <Period defaultDays={1} />
         </>
       }
-      actions={
+      actions={canManage ? (
         <button className="primary" onClick={check} disabled={busy || !monitor}>
           <RefreshCw />
           {busy ? "Checking…" : "Check now"}
         </button>
-      }
+      ) : undefined}
     >
       <Tabs
-        labels={["Overview", "Incidents", "Maintenance"]}
+        labels={canManage ? ["Overview", "Incidents", "Maintenance"] : ["Overview", "Incidents"]}
         value={tab}
         onChange={setTab}
       />
@@ -3455,6 +3495,9 @@ function AnalyticsView({
         </>
       ) : tab === "Engagement" ? (
         <>
+          <Panel title="Visits by day and time">
+            <VisitTimeHeatmap cells={engagement.visitTimes || []} timeZone={analyticsTimeZone} />
+          </Panel>
           <Metrics values={[
             [<MetricTerm term="Bounce rate" />, engagement.bounceRate == null ? "Unavailable" : `${engagement.bounceRate.toFixed(1)}%`, <MetricComparison current={engagement.bounceRate} previous={previousEngagement.bounceRate} direction="lower" />],
             ["Engaged sessions", engagement.engagedSessions == null ? "Unavailable" : fmt(engagement.engagedSessions), <MetricComparison current={engagement.engagedSessions} previous={previousEngagement.engagedSessions} direction="higher" />],
@@ -3469,9 +3512,6 @@ function AnalyticsView({
               {engagingPages.length > 20 && <ResultsPagination page={engagementPage} total={engagingPages.length} label="pages" onPage={(page) => setEngagementPage(Math.min(engagingPageCount, page))} />}
             </Panel>
           </div>
-          <Panel title="Visits by day and time">
-            <VisitTimeHeatmap cells={engagement.visitTimes || []} timeZone={analyticsTimeZone} />
-          </Panel>
           <Panel title="Additional aggregate insights">
             <KeyValues rows={[
               ["Session engagement rate", engagement.sessionEngagementRate == null ? "Unavailable" : `${engagement.sessionEngagementRate.toFixed(1)}%`],
@@ -3522,11 +3562,13 @@ function AuditView({
   session,
   property,
   fixture,
+  canManage,
   notify,
 }: {
   session: Session | null;
   property?: Property;
   fixture: boolean;
+  canManage: boolean;
   notify: Notify;
 }) {
   const auditLocation = useLocation();
@@ -3913,12 +3955,12 @@ function AuditView({
   return (
     <Page
       title="Audit"
-      actions={
+      actions={canManage ? (
         <button className="primary" onClick={() => void run()} disabled={busy || Boolean(propertyActiveRun) || !selectedPage}>
           <RefreshCw className={busy || propertyActiveRun ? "audit-spin" : ""} />
           {propertyActiveRun?.status === "queued" ? "Queued" : propertyActiveRun?.status === "running" ? "Running" : busy ? "Queuing…" : "Run audit"}
         </button>
-      }
+      ) : undefined}
     >
       <div className="audit-nav-row">
         <button className="audit-page-picker" onClick={() => setPageMenu((value) => !value)}>
@@ -3942,7 +3984,7 @@ function AuditView({
                 >
                   <Globe2 /> <span>{page.name}</span> {selectedPage?.id === page.id && <Check />}
                 </button>
-                {!isPrimaryAuditPage(page) && (
+                {canManage && !isPrimaryAuditPage(page) && (
                   <button
                     className="audit-page-delete"
                     aria-label={`Delete ${page.name} and its audit data`}
@@ -3954,12 +3996,14 @@ function AuditView({
                 )}
               </div>
             ))}
-            <button onClick={() => { setPageMenu(false); setAddPage(true); }}><Plus /> Add page</button>
+            {canManage && <button onClick={() => { setPageMenu(false); setAddPage(true); }}><Plus /> Add page</button>}
           </div>
         )}
-        <button className="iconbtn" onClick={() => setAddPage(true)} aria-label="Add audit page">
-          <Plus />
-        </button>
+        {canManage && (
+          <button className="iconbtn" onClick={() => setAddPage(true)} aria-label="Add audit page">
+            <Plus />
+          </button>
+        )}
         <Tabs
           labels={["Overview", "Findings", "Checks", "Technical", "History", "Compare"]}
           value={tab}
@@ -4266,16 +4310,18 @@ function ReportsView({
   session,
   property,
   fixture,
+  canManage,
   notify,
 }: {
   session: Session | null;
   property?: Property;
   fixture: boolean;
+  canManage: boolean;
   notify: Notify;
 }) {
   const reportsLocation = useLocation();
   const livePeriod = periodQuery(reportsLocation.search);
-  const [tab, setTab] = useState("Quick reports"),
+  const [tab, setTab] = useState(canManage ? "Quick reports" : "Saved reports"),
     [preview, setPreview] = useState<any>(),
     [scheduleOpen, setScheduleOpen] = useState(false),
     [scheduleCadence, setScheduleCadence] = useState("monthly"),
@@ -4385,7 +4431,7 @@ function ReportsView({
     <Page
       title="Reports"
       status={<Period />}
-      actions={
+      actions={canManage ? (
         <button
           className="primary"
           disabled={!property}
@@ -4394,10 +4440,10 @@ function ReportsView({
           <Plus />
           Create report
         </button>
-      }
+      ) : undefined}
     >
       <Tabs
-        labels={["Quick reports", "Saved reports", "Schedules", "Branding"]}
+        labels={canManage ? ["Quick reports", "Saved reports", "Schedules", "Branding"] : ["Saved reports"]}
         value={tab}
         onChange={setTab}
       />
@@ -4649,7 +4695,7 @@ function PropertySettingsView({
   const settingsLocation = useLocation();
   const settingsNavigate = useNavigate();
   const requestedSettingsTab = new URLSearchParams(settingsLocation.search).get("settingsTab");
-  const settingsTabs = ["General", "Tracking", "Uptime", "Events", "Sharing", "Advanced"];
+  const settingsTabs = ["General", "Uptime", "Tracking", "Events", "Sharing", "Advanced"];
   const initialAiDetails = property?.settings?.ai_visibility || {};
   const [tab, setTab] = useState(settingsTabs.includes(requestedSettingsTab || "") ? requestedSettingsTab! : "General"),
     [name, setName] = useState(property?.name || ""),
@@ -4770,6 +4816,8 @@ function PropertySettingsView({
       setBusy(false);
     }
   }
+  const viewerLimit = propertyViewerLimitForPlan(plan);
+  const viewerLimitReached = viewers.length >= viewerLimit;
   const snippet = `<script defer src="${location.origin}/c.js" data-property="${property.tracking_id}"></script>`;
   return (
     <Page
@@ -4942,6 +4990,7 @@ function PropertySettingsView({
           <AlertPanel
             session={session}
             property={property}
+            plan={plan}
             fixture={false}
             notify={notify}
           />
@@ -4954,7 +5003,12 @@ function PropertySettingsView({
           notify={notify}
         />
       ) : tab === "Sharing" ? (
-        <Panel title="Property access" actions={<button className="btn" onClick={() => setViewerOpen(true)}><Plus /> Invite user</button>}>
+        <Panel
+          title="Property access"
+          actions={viewerLimitReached
+            ? <Link className="btn" to={billingUpgradeHref(property.account_id)}>Upgrade for more viewers</Link>
+            : <button className="btn" onClick={() => setViewerOpen(true)}><Plus /> Invite user</button>}
+        >
           <DataTable
             headers={[
               "User",
@@ -4983,7 +5037,25 @@ function PropertySettingsView({
                 "View only",
                 "View only",
                 "View only",
-                <span className="row-action-wrap viewer-row-menu"><button className="iconbtn" aria-label={`${viewer.name || viewer.email} actions`} onClick={() => setViewerMenu(viewerMenu === viewer.user_id ? null : viewer.user_id)}><MoreHorizontal /></button>{viewerMenu === viewer.user_id && <span className="action-menu row-action-menu"><button onClick={() => { setViewerMenu(null); setViewerToRemove(viewer); }}><Trash2 /> Remove access</button></span>}</span>,
+                <span className="row-action-wrap viewer-row-menu">
+                  <button className="iconbtn" aria-label={`${viewer.name || viewer.email} actions`} onClick={() => setViewerMenu(viewerMenu === viewer.user_id ? null : viewer.user_id)}><MoreHorizontal /></button>
+                  {viewerMenu === viewer.user_id && (
+                    <span className="action-menu row-action-menu">
+                      {!viewer.confirmedAt && (
+                        <button onClick={async () => {
+                          setViewerMenu(null);
+                          try {
+                            await api(session, `/api/properties/${property.id}/viewers/${viewer.user_id}/resend`, { method: "POST" });
+                            notify("Viewer invitation resent");
+                          } catch (error: any) {
+                            notify(error.message);
+                          }
+                        }}><RefreshCw /> Resend invite</button>
+                      )}
+                      <button onClick={() => { setViewerMenu(null); setViewerToRemove(viewer); }}><Trash2 /> Remove access</button>
+                    </span>
+                  )}
+                </span>,
               ]),
             ]}
           />
@@ -5059,6 +5131,7 @@ function PropertySettingsView({
           title="Invite property viewer"
           close={() => setViewerOpen(false)}
           action="Create invitation"
+          disabled={viewerLimitReached}
           onSave={async () => {
             if (!session || !viewerEmail) return;
             try {
@@ -5079,7 +5152,8 @@ function PropertySettingsView({
           }}
         >
           <label className="field">Email<input type="email" value={viewerEmail} onChange={(event) => setViewerEmail(event.target.value)} placeholder="client@example.com" /></label>
-          <p className="subtle">Viewers receive read-only access to Analytics, Audit and Uptime for this property.</p>
+          <p className="subtle">Viewers receive read-only access to Analytics, Audit and Uptime for this property. They cannot change settings, run audits, create or export reports, manage maintenance, or receive alerts unless separately added as an uptime recipient.</p>
+          {viewerLimitReached && <PlanLimitNotice message="property_viewer_limit_reached" accountId={property.account_id} onUpgrade={() => setViewerOpen(false)} />}
         </SimpleDialog>
       )}
       {viewerToRemove && (
@@ -6063,10 +6137,10 @@ function AllocationsDesk({ session, fixture, billingEnvironment }: { session: Se
   const accounts = data.accounts || [];
   const finite = (key: string) => accounts.filter((item: any) => item.allocations?.[key] != null && Number.isFinite(Number(item.allocations[key])));
   const totals = (key: string) => ({ allocated: finite(key).reduce((sum: number, item: any) => sum + Number(item.allocations[key]), 0), used: accounts.reduce((sum: number, item: any) => sum + Number(item.utilisation?.[key] || 0), 0), unlimited: accounts.filter((item: any) => item.allocations?.[key] == null).length });
-  const propertyTotals = totals("properties"), workspaceTotals = totals("workspaces"), seatTotals = totals("editingSeats"), creditTotals = totals("auditCreditsPerFourWeeks"), pageviewTotals = totals("trackedPageviewsPerMonth"), eventTotals = totals("analyticsEventsPerDay"), customEventTotals = totals("customEvents"), auditPageTotals = totals("auditPages"), alertContactTotals = totals("alertContacts");
-  const summaryRows = [["Properties", propertyTotals], ["Workspaces", workspaceTotals], ["Included editing users", seatTotals], ["Pageviews / month", pageviewTotals], ["Analytics events / UTC day", eventTotals], ["Custom event definitions", customEventTotals], ["Audit pages", auditPageTotals], ["Uptime alert contacts", alertContactTotals], ["Audit credits / 4 weeks", creditTotals]] as Array<[string, any]>;
+  const propertyTotals = totals("properties"), workspaceTotals = totals("workspaces"), seatTotals = totals("editingSeats"), creditTotals = totals("auditCreditsPerFourWeeks"), pageviewTotals = totals("trackedPageviewsPerMonth"), eventTotals = totals("analyticsEventsPerMonth"), viewerTotals = totals("propertyViewers"), customEventTotals = totals("customEvents"), auditPageTotals = totals("auditPages"), alertContactTotals = totals("alertContacts");
+  const summaryRows = [["Properties", propertyTotals], ["Workspaces", workspaceTotals], ["Included editing users", seatTotals], ["Pageviews / month", pageviewTotals], ["Analytics events / month", eventTotals], ["Property viewers", viewerTotals], ["Custom event definitions", customEventTotals], ["Audit pages", auditPageTotals], ["Uptime alert contacts", alertContactTotals], ["Audit credits / 4 weeks", creditTotals]] as Array<[string, any]>;
   const utilisation = (used: number, limit: unknown) => <AllocationMeter used={Number(used || 0)} limit={limit} />;
-  return <div className="superadmin-overview"><Panel title="Platform allocations & utilisation"><p className="subtle">Effective package versions, grandfathered assignments, complimentary grants and active overrides are resolved before usage is compared. Per-property allowances are multiplied by each account's maximum property allocation. Physical infrastructure capacity is not inferred from customer allocations.</p><DataTable headers={["Resource", "Finite allocation", "Used", "Utilisation", "Unlimited accounts"]} rows={summaryRows.map(([label, total]) => [label, fmt(total.allocated), fmt(total.used), <AllocationMeter used={total.used} limit={total.allocated || null} />, total.unlimited])} /></Panel><Panel title="Account utilisation"><DataTable headers={["Account", "Package", "Arrangement", "Database footprint", "Properties", "Workspaces", "Included seats", "Pageviews / month", "Analytics events / day", "Custom events", "Audit pages", "Alert contacts", "Audit credits / 4 weeks", "Overrides", "Version state"]} rows={accounts.map((item: any) => [<Link to={`/superadmin?view=accounts&account=${item.accountId}&billingEnvironment=${billingEnvironment}`}><b>{item.accountName}</b></Link>, `${item.packageName} v${item.packageVersion}`, item.billingArrangement === "complimentary" ? "Complimentary" : "Standard", <StorageFootprint snapshot={item.databaseStorage} />, utilisation(item.utilisation.properties, item.allocations.properties), utilisation(item.utilisation.workspaces, item.allocations.workspaces), utilisation(item.utilisation.editingSeats, item.allocations.editingSeats), utilisation(item.utilisation.trackedPageviewsPerMonth, item.allocations.trackedPageviewsPerMonth), utilisation(item.utilisation.analyticsEventsPerDay, item.allocations.analyticsEventsPerDay), utilisation(item.utilisation.customEvents, item.allocations.customEvents), utilisation(item.utilisation.auditPages, item.allocations.auditPages), utilisation(item.utilisation.alertContacts, item.allocations.alertContacts), utilisation(item.utilisation.auditCreditsPerFourWeeks, item.allocations.auditCreditsPerFourWeeks), item.overrideCount, item.grandfathered ? "Grandfathered" : "Current assignment"])} rowActions={accounts.map((item: any) => [{ label: "Open account", to: `/superadmin?view=accounts&account=${item.accountId}&billingEnvironment=${billingEnvironment}` }])} /><p className="subtle">Grey shows unused allocation and green shows measured usage. Scale and Pro retain “Unlimited workspaces” in package copy; this capacity view uses chart-only caps of 50 and 200. Pageviews use the current UTC month, analytics events use the current UTC day, and audit credits use the current four weekly allowance periods. Measured {fmtDate(data.measuredAt)}.</p></Panel></div>;
+  return <div className="superadmin-overview"><Panel title="Platform allocations & utilisation"><p className="subtle">Effective package versions, grandfathered assignments, complimentary grants and active overrides are resolved before usage is compared. Per-property allowances are multiplied by each account's maximum property allocation. Physical infrastructure capacity is not inferred from customer allocations.</p><DataTable headers={["Resource", "Finite allocation", "Used", "Utilisation", "Unlimited accounts"]} rows={summaryRows.map(([label, total]) => [label, fmt(total.allocated), fmt(total.used), <AllocationMeter used={total.used} limit={total.allocated || null} />, total.unlimited])} /></Panel><Panel title="Account utilisation"><DataTable headers={["Account", "Package", "Arrangement", "Database footprint", "Properties", "Workspaces", "Included seats", "Pageviews / month", "Analytics events / month", "Property viewers", "Custom events", "Audit pages", "Alert contacts", "Audit credits / 4 weeks", "Overrides", "Version state"]} rows={accounts.map((item: any) => [<Link to={`/superadmin?view=accounts&account=${item.accountId}&billingEnvironment=${billingEnvironment}`}><b>{item.accountName}</b></Link>, `${item.packageName} v${item.packageVersion}`, item.billingArrangement === "complimentary" ? "Complimentary" : "Standard", <StorageFootprint snapshot={item.databaseStorage} />, utilisation(item.utilisation.properties, item.allocations.properties), utilisation(item.utilisation.workspaces, item.allocations.workspaces), utilisation(item.utilisation.editingSeats, item.allocations.editingSeats), utilisation(item.utilisation.trackedPageviewsPerMonth, item.allocations.trackedPageviewsPerMonth), utilisation(item.utilisation.analyticsEventsPerMonth, item.allocations.analyticsEventsPerMonth), utilisation(item.utilisation.propertyViewers, item.allocations.propertyViewers), utilisation(item.utilisation.customEvents, item.allocations.customEvents), utilisation(item.utilisation.auditPages, item.allocations.auditPages), utilisation(item.utilisation.alertContacts, item.allocations.alertContacts), utilisation(item.utilisation.auditCreditsPerFourWeeks, item.allocations.auditCreditsPerFourWeeks), item.overrideCount, item.grandfathered ? "Grandfathered" : "Current assignment"])} rowActions={accounts.map((item: any) => [{ label: "Open account", to: `/superadmin?view=accounts&account=${item.accountId}&billingEnvironment=${billingEnvironment}` }])} /><p className="subtle">Grey shows unused allocation and green shows measured usage. Scale and Pro retain “Unlimited workspaces” in package copy; this capacity view uses chart-only caps of 50 and 200. Pageviews use the current UTC month, analytics events use the current UTC month, property-viewer allowances are calculated per property, and audit credits use the current four weekly allowance periods. Measured {fmtDate(data.measuredAt)}.</p></Panel></div>;
 }
 
 function AllocationMeter({ used, limit }: { used: number; limit: unknown }) {
@@ -6929,12 +7003,26 @@ function AccountView({
   fixture,
   reload,
   notify,
+  activeAccountId,
+  onAddWorkspace,
+  onAddProperty,
+  canCreateWorkspace,
+  canCreateProperty,
+  workspaceLimit,
+  propertyLimit,
 }: {
   session: Session | null;
   data: Bootstrap;
   fixture: boolean;
   reload: () => void;
   notify: Notify;
+  activeAccountId?: string;
+  onAddWorkspace: () => void;
+  onAddProperty: () => void;
+  canCreateWorkspace: boolean;
+  canCreateProperty: boolean;
+  workspaceLimit: number | null;
+  propertyLimit: number;
 }) {
   const accountLocation = useLocation();
   const rawRequestedAccountTab = new URLSearchParams(accountLocation.search).get("accountTab");
@@ -6955,6 +7043,8 @@ function AccountView({
     [inviteEmail, setInviteEmail] = useState(""),
     [inviteRole, setInviteRole] = useState<"member" | "viewer">("member"),
     [inviteWorkspaceId, setInviteWorkspaceId] = useState<string>(data.workspaces?.[0]?.workspaces?.id || ""),
+    [invitePropertyId, setInvitePropertyId] = useState<string>(data.properties?.[0]?.id || ""),
+    [resourceUsage, setResourceUsage] = useState<any>(null),
     [memberToEdit, setMemberToEdit] = useState<any | null>(null),
     [memberRole, setMemberRole] = useState<"member" | "viewer">("member"),
     [memberToRemove, setMemberToRemove] = useState<any | null>(null),
@@ -6984,6 +7074,18 @@ function AccountView({
         "Security & Privacy",
       ];
   const ownedAccounts = data.accounts.filter((membership: any) => membership.role === "owner" && membership.accounts?.id);
+  const propertyUsageById = new Map((resourceUsage?.properties || []).map((item: any) => [item.propertyId, item]));
+  useEffect(() => {
+    if (!session || !activeAccountId || role === "viewer") {
+      setResourceUsage(null);
+      return;
+    }
+    let active = true;
+    void api<any>(session, `/api/accounts/${activeAccountId}/usage`)
+      .then((result) => { if (active) setResourceUsage(result); })
+      .catch(() => { if (active) setResourceUsage(null); });
+    return () => { active = false; };
+  }, [session?.access_token, activeAccountId, role, data.properties.length, data.propertyMemberships?.length]);
   const deletionAccount = ownedAccounts.find((membership: any) => membership.accounts.id === deletionAccountId)?.accounts;
   useEffect(() => {
     if (!session || role === "viewer") return;
@@ -7183,7 +7285,12 @@ function AccountView({
           <Preferences session={session} profile={data.profile} reload={reload} notify={notify} />
         </Panel>
       ) : tab === "Workspace" ? (
-        <Panel title="Workspace">
+        <Panel
+          title="Workspace"
+          actions={canCreateWorkspace
+            ? <button className="btn" onClick={onAddWorkspace}><Plus /> Add workspace</button>
+            : <Link className="btn" to={billingUpgradeHref(activeAccountId)}>Upgrade for more workspaces</Link>}
+        >
           <DataTable
             headers={["Workspace", "Properties", "Access", ""]}
             rows={data.workspaces.map((entry: any) => {
@@ -7210,21 +7317,30 @@ function AccountView({
               ];
             })}
           />
-          <p className="subtle">A workspace must be empty before it can be deleted, and every account must retain at least one workspace.</p>
+          <p className="subtle">{data.workspaces.length} of {workspaceLimit == null ? "unlimited" : workspaceLimit} workspaces used. A workspace must be empty before it can be deleted, and every account must retain at least one workspace.</p>
         </Panel>
       ) : tab === "Properties" ? (
-        <Panel title="Properties across your workspaces">
+        <Panel
+          title="Properties across your workspaces"
+          actions={canCreateProperty
+            ? <button className="btn" onClick={onAddProperty}><Plus /> Add property</button>
+            : <Link className="btn" to={billingUpgradeHref(activeAccountId)}>Upgrade for more properties</Link>}
+        >
           <DataTable
-            headers={["Property", "Workspace", "Viewers", "Editing/admin users", "Tracking", "Uptime", ""]}
+            headers={["Property", "Workspace", "Property viewers", "Analytics events", "Editing/admin users", "Tracking", "Uptime", ""]}
             rows={data.properties.filter((property) => data.workspaces.some((entry: any) => entry.workspaces?.id === property.workspace_id && ["owner", "member"].includes(entry.role))).map((property) => {
               const workspace = data.workspaces.find((entry: any) => entry.workspaces?.id === property.workspace_id)?.workspaces;
               const viewerCount = (data.propertyMemberships || []).filter((membership: any) => membership.property_id === property.id).length;
+              const usage = propertyUsageById.get(property.id) as any;
+              const viewerLimit = usage?.viewerLimit ?? propertyViewerLimitForPlan(data.accountEntitlements?.[activeAccountId || ""]?.packageKey);
+              const analyticsEventLimit = usage?.analyticsEventLimit ?? data.accountEntitlements?.[activeAccountId || ""]?.values?.analyticsEventsPerMonth;
               const editorCount = (usersData?.workspaceMemberships || []).filter((membership: any) => membership.workspace_id === property.workspace_id && membership.role !== "viewer").length;
               const monitor = property.uptime_monitors?.[0];
               return [
                 <Link className="project-cell" to={`/overview?property=${property.id}`}><span className="favicon project-icon"><PropertyFavicon property={property} /></span><span><b>{property.name}</b><small>{property.canonical_host}</small></span></Link>,
                 workspace?.name || "Workspace",
-                viewerCount,
+                `${viewerCount} / ${viewerLimit}`,
+                analyticsEventLimit == null ? fmt(usage?.analyticsEvents || 0) : `${fmt(usage?.analyticsEvents || 0)} / ${fmt(analyticsEventLimit)}`,
                 editorCount,
                 <StatusPill tone={property.tracking_last_received_at ? "success" : "danger"}>{property.tracking_last_received_at ? "Receiving data" : "Not installed"}</StatusPill>,
                 <StatusPill tone={monitor?.enabled === false ? "neutral" : monitor?.last_status === "offline" ? "danger" : "success"}>{monitor?.enabled === false ? "Paused" : monitor ? "Monitoring" : "Not monitoring"}</StatusPill>,
@@ -7232,6 +7348,7 @@ function AccountView({
               ];
             })}
           />
+          <p className="subtle">{data.properties.filter((property) => data.workspaces.some((entry: any) => entry.workspaces?.id === property.workspace_id && ["owner", "member"].includes(entry.role))).length} of {propertyLimit} properties used. Analytics events are measured for the current UTC month; viewer limits apply per property.</p>
         </Panel>
       ) : tab === "Billing & plan" ? (
         <Billing fixture={fixture} notify={notify} data={data} session={session} />
@@ -7263,27 +7380,56 @@ function AccountView({
                 "Status",
                 "",
               ]}
-              rows={(usersData.workspaceMemberships || []).map((membership: any) => {
-                const user = usersData.users?.find((item: any) => item.id === membership.user_id);
-                const workspace = usersData.workspaces?.find((item: any) => item.id === membership.workspace_id);
-                const protectedOwner = membership.role === "owner";
-                const context = { membership, user, workspace };
-                return [
-                  user?.name || user?.email || membership.user_id,
-                  membership.role === "viewer" ? "Free viewer" : "Editing user",
-                  cap(membership.role),
-                  workspace?.name || "Workspace",
-                  user?.confirmedAt ? "Active" : "Invited",
-                  protectedOwner ? (
-                    <span className="subtle">Owner protected</span>
-                  ) : (
+              rows={[
+                ...(usersData.workspaceMemberships || []).map((membership: any) => {
+                  const user = usersData.users?.find((item: any) => item.id === membership.user_id);
+                  const workspace = usersData.workspaces?.find((item: any) => item.id === membership.workspace_id);
+                  const protectedOwner = membership.role === "owner";
+                  const context = { membership, user, workspace };
+                  return [
+                    user?.name || user?.email || membership.user_id,
+                    "Editing user",
+                    cap(membership.role),
+                    workspace?.name || "Workspace",
+                    user?.confirmedAt ? "Active" : "Invited",
+                    protectedOwner ? (
+                      <span className="subtle">Owner protected</span>
+                    ) : (
+                      <div className="row-actions">
+                        <button className="btn" onClick={() => { setMemberToEdit(context); setMemberRole("member"); }}>Edit</button>
+                        <button className="danger-solid" onClick={() => setMemberToRemove(context)}>Remove</button>
+                      </div>
+                    ),
+                  ];
+                }),
+                ...(usersData.propertyMemberships || []).map((membership: any) => {
+                  const user = usersData.users?.find((item: any) => item.id === membership.user_id);
+                  const sharedProperty = usersData.properties?.find((item: any) => item.id === membership.property_id);
+                  return [
+                    user?.name || user?.email || membership.user_id,
+                    "Property viewer",
+                    "View only",
+                    sharedProperty?.name || "Property",
+                    user?.confirmedAt ? "Active" : "Invited",
                     <div className="row-actions">
-                      <button className="btn" onClick={() => { setMemberToEdit(context); setMemberRole(membership.role === "viewer" ? "viewer" : "member"); }}>Edit</button>
-                      <button className="danger-solid" onClick={() => setMemberToRemove(context)}>Remove</button>
-                    </div>
-                  ),
-                ];
-              })}
+                      {!user?.confirmedAt && <button className="btn" onClick={async () => {
+                        try {
+                          await api(session, `/api/properties/${membership.property_id}/viewers/${membership.user_id}/resend`, { method: "POST" });
+                          notify("Viewer invitation resent");
+                        } catch (error: any) { notify(error.message); }
+                      }}>Resend invite</button>}
+                      <button className="danger-solid" onClick={async () => {
+                        try {
+                          await api(session, `/api/properties/${membership.property_id}/viewers/${membership.user_id}`, { method: "DELETE" });
+                          await refreshUsers();
+                          reload();
+                          notify("Property viewer access removed");
+                        } catch (error: any) { notify(error.message); }
+                      }}>Remove access</button>
+                    </div>,
+                  ];
+                }),
+              ]}
             />
           ) : (
             <Empty title="Loading workspace users…" detail="Checking workspace access." />
@@ -7406,16 +7552,21 @@ function AccountView({
       )}
       {inviteOpen && (
         <SimpleDialog
-          title="Invite workspace user"
+          title="Invite user"
           close={() => setInviteOpen(false)}
           action="Send invitation"
           onSave={async () => {
-            if (!session || !inviteWorkspaceId || !inviteEmail) return;
+            if (!session || !inviteEmail || (inviteRole === "member" ? !inviteWorkspaceId : !invitePropertyId)) return;
             try {
-              const invited = await api<any>(session, `/api/workspaces/${inviteWorkspaceId}/members`, {
-                method: "POST",
-                body: JSON.stringify({ email: inviteEmail, role: inviteRole }),
-              });
+              const invited = inviteRole === "viewer"
+                ? await api<any>(session, `/api/properties/${invitePropertyId}/viewers`, {
+                    method: "POST",
+                    body: JSON.stringify({ email: inviteEmail }),
+                  })
+                : await api<any>(session, `/api/workspaces/${inviteWorkspaceId}/members`, {
+                    method: "POST",
+                    body: JSON.stringify({ email: inviteEmail, role: "member" }),
+                  });
               setInviteOpen(false);
               setInviteEmail("");
               await refreshUsers();
@@ -7426,8 +7577,13 @@ function AccountView({
           }}
         >
           <label className="field">Email<input type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} /></label>
-          <label className="field">Workspace<select value={inviteWorkspaceId} onChange={(event) => setInviteWorkspaceId(event.target.value)}>{data.workspaces.map((entry: any) => <option key={entry.workspaces?.id} value={entry.workspaces?.id}>{entry.workspaces?.name || "Workspace"}</option>)}</select></label>
-          <label className="field">Role<select value={inviteRole} onChange={(event) => setInviteRole(event.target.value as "member" | "viewer")}><option value="member">Member</option><option value="viewer">Viewer</option></select></label>
+          <label className="field">Access type<select value={inviteRole} onChange={(event) => setInviteRole(event.target.value as "member" | "viewer")}><option value="member">Editing user</option><option value="viewer">Property viewer</option></select></label>
+          {inviteRole === "viewer" ? (
+            <label className="field">Property<select value={invitePropertyId} onChange={(event) => setInvitePropertyId(event.target.value)}>{data.properties.filter((property) => data.workspaces.some((entry: any) => entry.workspaces?.id === property.workspace_id && ["owner", "member"].includes(entry.role))).map((property) => <option key={property.id} value={property.id}>{property.name}</option>)}</select></label>
+          ) : (
+            <label className="field">Workspace<select value={inviteWorkspaceId} onChange={(event) => setInviteWorkspaceId(event.target.value)}>{data.workspaces.filter((entry: any) => ["owner", "member"].includes(entry.role)).map((entry: any) => <option key={entry.workspaces?.id} value={entry.workspaces?.id}>{entry.workspaces?.name || "Workspace"}</option>)}</select></label>
+          )}
+          <p className="subtle">{inviteRole === "viewer" ? "Viewers can read this property without consuming a workspace, property or editing-seat allowance." : "Editing users share this account’s existing package and allowances; they do not receive a separate Free plan."}</p>
         </SimpleDialog>
       )}
       {memberToEdit && (
@@ -7451,7 +7607,7 @@ function AccountView({
           }}
         >
           <p><b>{memberToEdit.user?.name || memberToEdit.user?.email || "Workspace user"}</b> · {memberToEdit.workspace?.name || "Workspace"}</p>
-          <label className="field">Role<select value={memberRole} onChange={(event) => setMemberRole(event.target.value as "member" | "viewer")}><option value="member">Member</option><option value="viewer">Viewer</option></select></label>
+          <label className="field">Role<select value={memberRole} onChange={() => setMemberRole("member")}><option value="member">Editing user</option></select></label><p className="subtle">Property viewer access is granted separately to a single property.</p>
           <p className="subtle">This changes workspace access only. The user controls their own name and email.</p>
         </SimpleDialog>
       )}
@@ -7625,9 +7781,9 @@ function Billing({ fixture, notify, data, session }: { fixture: boolean; notify:
             <UsageBar label="Property total" {...accountUsage?.properties} loading={!accountUsage} />
             <UsageBar label="Workspace total" {...accountUsage?.workspaces} loading={!accountUsage} />
             <UsageBar label="Custom events" {...accountUsage?.customEvents} loading={!accountUsage} />
-            <UsageBar label="Audits this month" {...accountUsage?.audits} loading={!accountUsage} />
+            <UsageBar label="Audits this week" {...accountUsage?.audits} loading={!accountUsage} />
             <UsageBar label="Account pageviews" {...accountUsage?.pageviews} loading={!accountUsage} />
-            <UsageBar label="Account analytics count" {...accountUsage?.analyticsEvents} loading={!accountUsage} />
+            <UsageBar label="Account analytics events" {...accountUsage?.analyticsEvents} loading={!accountUsage} />
             <UsageBar label="Editing users" {...accountUsage?.includedUsers} loading={!accountUsage} />
             <UsageBar label="Property viewers" {...accountUsage?.viewerUsers} loading={!accountUsage} />
           </div>
@@ -9008,11 +9164,13 @@ function IncidentTable({ incidents, compact = false, propertyUrl }: { incidents:
 function AlertPanel({
   session,
   property,
+  plan,
   fixture,
   notify,
 }: {
   session: Session | null;
   property: Property;
+  plan: "Free" | "Essentials" | "Scale" | "Pro";
   fixture: boolean;
   notify: Notify;
 }) {
@@ -9031,6 +9189,8 @@ function AlertPanel({
   useEffect(() => {
     void loadRecipients().catch(() => setRecipients([]));
   }, [session, property.id]);
+  const recipientLimit = alertRecipientLimitForPlan(plan);
+  const recipientLimitReached = recipients.filter((recipient) => recipient.enabled !== false).length >= recipientLimit;
   async function addRecipient() {
     const normalized = email.trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
@@ -9129,11 +9289,17 @@ function AlertPanel({
             onChange={(event) => setEmail(event.target.value)}
             placeholder="alerts@example.com"
           />
-          <button className="btn" onClick={addRecipient} disabled={!email || saving}>
+          <button className="btn" onClick={addRecipient} disabled={!email || saving || recipientLimitReached}>
             <Plus />
             {saving ? "Saving…" : "Add recipient"}
           </button>
         </div>
+        {recipientLimitReached && (
+          <PlanLimitNotice
+            message="alert_recipient_limit_reached"
+            accountId={property.account_id}
+          />
+        )}
       </Panel>
       <Panel title="Alert policy">
         <KeyValues
