@@ -64,6 +64,7 @@ type Env = {
   SUPABASE_SECRET_KEY: string;
   RESEND_API_KEY?: string;
   RESEND_FROM?: string;
+  RESEND_WEBHOOK_SECRET?: string;
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
   STRIPE_TEST_SECRET_KEY?: string;
@@ -263,6 +264,8 @@ async function effectiveEntitlements(env: Env, accountId: string) {
       auditPagesPerProperty: customEventPlan(fallbackKey) === "Pro" ? 25 : customEventPlan(fallbackKey) === "Scale" ? 15 : customEventPlan(fallbackKey) === "Essentials" ? 5 : 2,
       auditCreditsPerWeek: customEventPlan(fallbackKey) === "Pro" ? 250 : customEventPlan(fallbackKey) === "Scale" ? 100 : customEventPlan(fallbackKey) === "Essentials" ? 25 : 10,
       alertContactsPerProperty: customEventPlan(fallbackKey) === "Pro" ? 10 : customEventPlan(fallbackKey) === "Scale" ? 5 : customEventPlan(fallbackKey) === "Essentials" ? 2 : 1,
+      propertyViewersPerProperty: customEventPlan(fallbackKey) === "Pro" ? 5 : customEventPlan(fallbackKey) === "Scale" ? 3 : customEventPlan(fallbackKey) === "Essentials" ? 2 : 1,
+      analyticsEventsPerMonth: customEventPlan(fallbackKey) === "Pro" ? 25_000_000 : customEventPlan(fallbackKey) === "Scale" ? 5_000_000 : customEventPlan(fallbackKey) === "Essentials" ? 500_000 : 20_000,
       workspacesPerAccount: customEventPlan(fallbackKey) === "Free" ? 1 : customEventPlan(fallbackKey) === "Essentials" ? 3 : null,
       uptimeIntervalMinutes: uptimeMinimumInterval(fallbackKey),
     },
@@ -927,31 +930,41 @@ async function accountBillingUsage(env: Env, accountId: string, subscriptions: a
   const weekStart = weekStartDate.toISOString();
   const auditResetsAt = new Date(weekStartDate.getTime() + 7 * 86400_000).toISOString();
   const packageKey = String(effective.packageKey || "free").toLowerCase().startsWith("pro") ? "pro" : String(effective.packageKey || "free").toLowerCase();
-  const [properties, workspaces, monthlyAnalytics, analyticsRule] = await Promise.all([
-    db.from("properties").select("id").eq("account_id", accountId),
+  const [properties, workspaces, monthlyAnalytics, analyticsRule, auditUsage] = await Promise.all([
+    db.from("properties").select("id,name").eq("account_id", accountId),
     db.from("workspaces").select("id", { count: "exact" }).eq("account_id", accountId),
     db.from("account_analytics_monthly_usage").select("accepted_pageviews,rejected_pageviews").eq("account_id", accountId).eq("period_start", monthStart.slice(0, 10)).maybeSingle(),
     db.from("analytics_plan_rules").select("monthly_pageview_limit").eq("package_key", packageKey).maybeSingle(),
+    db.from("account_usage_periods").select("consumed,reserved,restored").eq("account_id", accountId).eq("metric", "page_audit_credit").gte("period_start", weekStart).lt("period_start", auditResetsAt),
   ]);
-  const baseError = properties.error || workspaces.error || monthlyAnalytics.error || analyticsRule.error;
+  const baseError = properties.error || workspaces.error || monthlyAnalytics.error || analyticsRule.error || auditUsage.error;
   if (baseError) throw new Error("account_usage_unavailable");
-  const propertyIds = (properties.data || []).map((property) => property.id);
+  const propertyRows = properties.data || [];
+  const propertyIds = propertyRows.map((property) => property.id);
   const workspaceIds = (workspaces.data || []).map((workspace) => workspace.id);
   const emptyCount = Promise.resolve({ count: 0, error: null } as any);
-  const [eventDefinitions, audits, analyticsEvents, propertyViewers, workspaceMembers] = await Promise.all([
+  const [eventDefinitions, analyticsEvents, propertyViewers, workspaceMembers, perPropertyUsage] = await Promise.all([
     propertyIds.length ? db.from("event_definitions").select("id", { count: "exact", head: true }).in("property_id", propertyIds) : emptyCount,
-    propertyIds.length ? db.from("audit_runs").select("id", { count: "exact", head: true }).in("property_id", propertyIds).gte("created_at", weekStart) : emptyCount,
     propertyIds.length ? db.from("analytics_events").select("id", { count: "exact", head: true }).in("property_id", propertyIds).gte("occurred_at", monthStart) : emptyCount,
-    propertyIds.length ? db.from("property_memberships").select("user_id").in("property_id", propertyIds) : Promise.resolve({ data: [], error: null } as any),
+    propertyIds.length ? db.from("property_memberships").select("property_id,user_id,role").in("property_id", propertyIds).eq("role", "viewer") : Promise.resolve({ data: [], error: null } as any),
     workspaceIds.length ? db.from("workspace_memberships").select("user_id,role").in("workspace_id", workspaceIds) : Promise.resolve({ data: [], error: null } as any),
+    Promise.all(propertyRows.map(async (property) => {
+      const [events, viewers] = await Promise.all([
+        db.from("analytics_events").select("id", { count: "exact", head: true }).eq("property_id", property.id).gte("occurred_at", monthStart),
+        db.from("property_memberships").select("user_id", { count: "exact", head: true }).eq("property_id", property.id).eq("role", "viewer"),
+      ]);
+      if (events.error || viewers.error) throw new Error("property_usage_unavailable");
+      return {
+        propertyId: property.id,
+        propertyName: property.name,
+        analyticsEvents: events.count || 0,
+        viewers: viewers.count || 0,
+      };
+    })),
   ]);
-  const scopedError = eventDefinitions.error || audits.error || analyticsEvents.error || propertyViewers.error || workspaceMembers.error;
+  const scopedError = eventDefinitions.error || analyticsEvents.error || propertyViewers.error || workspaceMembers.error;
   if (scopedError) throw new Error("account_usage_unavailable");
   const editingUserIds = new Set((workspaceMembers.data || []).filter((member: any) => member.role !== "viewer").map((member: any) => member.user_id));
-  const viewerUserIds = new Set([
-    ...(workspaceMembers.data || []).filter((member: any) => member.role === "viewer").map((member: any) => member.user_id),
-    ...(propertyViewers.data || []).map((member: any) => member.user_id),
-  ]);
   const includedUsers = entitlementLimit(effective, "editingSeats", "includedUsers");
   const activeSubscription = (subscriptions || []).find((subscription) => ["active", "trialing", "past_due", "unpaid", "incomplete"].includes(subscription.status));
   const purchasedUsers = Number(activeSubscription?.billable_additional_seats || 0);
@@ -963,22 +976,49 @@ async function accountBillingUsage(env: Env, accountId: string, subscriptions: a
       ? customEventsPerProperty
       : customEventsPerProperty * propertyIds.length;
   const pageviewLimit = Number(analyticsRule.data?.monthly_pageview_limit || entitlementLimit(effective, "trackedPageviewsPerMonth", "accountPageviewsPerMonth"));
-  const analyticsLimit = entitlementLimit(effective, "accountAnalyticsCount", "accountAnalyticsPerMonth", "analyticsEventsPerMonth");
+  const analyticsLimit = entitlementLimit(effective, "analyticsEventsPerMonth", "accountAnalyticsCount", "accountAnalyticsPerMonth");
   const auditLimit = entitlementLimit(effective, "auditCreditsPerWeek");
-  const viewerLimit = entitlementLimit(effective, "propertyViewers", "viewerUsers");
+  const viewerLimitPerProperty = entitlementLimit(effective, "propertyViewersPerProperty", "propertyViewers", "viewerUsers") ?? 1;
+  const auditUsed = (auditUsage.data || []).reduce((sum: number, row: any) =>
+    sum + Math.max(0, Number(row.consumed || 0) - Number(row.restored || 0)) + Number(row.reserved || 0), 0);
+  const viewerCount = (propertyViewers.data || []).length;
   return {
     measuredAt: now.toISOString(),
-    properties: { used: propertyIds.length, limit: entitlementLimit(effective, "propertiesPerAccount") },
+    properties: { used: propertyIds.length, limit: entitlementLimit(effective, "propertiesPerAccount") ?? effective.hardCeilings?.propertiesPerAccount },
     workspaces: { used: workspaces.count || 0, limit: entitlementLimit(effective, "workspacesPerAccount") },
     customEvents: { used: eventDefinitions.count || 0, limit: customEventLimit },
-    audits: { used: audits.count || 0, limit: auditLimit, resetsAt: auditResetsAt },
+    audits: { used: auditUsed, limit: auditLimit, resetsAt: auditResetsAt },
     pageviews: { used: Number(monthlyAnalytics.data?.accepted_pageviews || 0), limit: Number.isFinite(pageviewLimit) && pageviewLimit > 0 ? pageviewLimit : undefined, resetsAt },
     analyticsEvents: { used: analyticsEvents.count || 0, limit: analyticsLimit, resetsAt },
     includedUsers: { used: includedUsers == null ? editingUserIds.size : Math.min(editingUserIds.size, includedUsers), limit: includedUsers },
     paidUsers: { used: Math.max(0, editingUserIds.size - (typeof includedUsers === "number" ? includedUsers : editingUserIds.size)), limit: purchasedUsers },
-    viewerUsers: { used: viewerUserIds.size, limit: viewerLimit },
+    viewerUsers: { used: viewerCount, limit: viewerLimitPerProperty * propertyIds.length, perPropertyLimit: viewerLimitPerProperty },
+    propertyUsage: perPropertyUsage.map((row) => ({
+      ...row,
+      viewerLimit: viewerLimitPerProperty,
+      analyticsEventLimit: analyticsLimit,
+      resetsAt,
+    })),
   };
 }
+
+app.get("/api/accounts/:id/usage", async (c) => {
+  const accountId = c.req.param("id");
+  const membership = await c.get("db").from("account_memberships")
+    .select("role")
+    .eq("account_id", accountId)
+    .eq("user_id", c.get("userId"))
+    .in("role", ["owner", "member"])
+    .maybeSingle();
+  if (!membership.data) return c.json({ error: "account_manage_access_required" }, 403);
+  try {
+    const effective = await effectiveEntitlements(c.env, accountId);
+    const usage = await accountBillingUsage(c.env, accountId, [], effective);
+    return c.json({ measuredAt: usage.measuredAt, summary: usage, properties: usage.propertyUsage });
+  } catch {
+    return c.json({ error: "account_usage_unavailable" }, 503);
+  }
+});
 
 async function billingAccountForObject(env: Env, object: any, billingEnvironment = billingEnvironmentForLivemode(object?.livemode)) {
   const db = admin(env);
@@ -1675,6 +1715,110 @@ app.post("/webhooks/stripe/test", (c) => receiveStripeWebhook(c, "test"));
 app.post("/webhooks/stripe/live", (c) => receiveStripeWebhook(c, "live"));
 app.post("/webhooks/stripe", (c) => c.json({ error: "environment_specific_webhook_required", endpoints: ["/webhooks/stripe/test", "/webhooks/stripe/live"] }, 410));
 
+async function verifyResendWebhookSignature(payload: string, id: string, timestamp: string, signatureHeader: string, secret: string) {
+  const timestampSeconds = Number(timestamp);
+  if (!Number.isFinite(timestampSeconds) || Math.abs(Date.now() / 1000 - timestampSeconds) > 300) return false;
+  const encodedSecret = secret.startsWith("whsec_") ? secret.slice(6) : secret;
+  let secretBytes: Uint8Array;
+  try {
+    secretBytes = Uint8Array.from(atob(encodedSecret), (character) => character.charCodeAt(0));
+  } catch {
+    return false;
+  }
+  const key = await crypto.subtle.importKey("raw", secretBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const expectedBytes = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${id}.${timestamp}.${payload}`)));
+  const signatures = signatureHeader.split(/\s+/).map((value) => value.split(",")).filter(([version, value]) => version === "v1" && value);
+  return signatures.some(([, value]) => {
+    let actual: Uint8Array;
+    try { actual = Uint8Array.from(atob(value), (character) => character.charCodeAt(0)); }
+    catch { return false; }
+    if (actual.length !== expectedBytes.length) return false;
+    let difference = 0;
+    for (let index = 0; index < actual.length; index += 1) difference |= actual[index] ^ expectedBytes[index];
+    return difference === 0;
+  });
+}
+
+app.post("/webhooks/resend", async (c) => {
+  if (!c.env.RESEND_WEBHOOK_SECRET) return c.json({ error: "resend_webhook_not_configured" }, 503);
+  const id = c.req.header("svix-id") || "";
+  const timestamp = c.req.header("svix-timestamp") || "";
+  const signature = c.req.header("svix-signature") || "";
+  const payload = await c.req.text();
+  if (!id || !timestamp || !signature || !(await verifyResendWebhookSignature(payload, id, timestamp, signature, c.env.RESEND_WEBHOOK_SECRET)))
+    return c.json({ error: "invalid_resend_webhook_signature" }, 400);
+  let event: any;
+  try { event = JSON.parse(payload); }
+  catch { return c.json({ error: "invalid_resend_webhook_payload" }, 400); }
+  const type = String(event.type || "");
+  const emailId = String(event.data?.email_id || "");
+  const recipient = String(event.data?.to?.[0] || "").trim().toLowerCase();
+  const service = admin(c.env);
+  const stored = await service.from("email_provider_events").insert({
+    id,
+    provider: "resend",
+    event_type: type,
+    provider_email_id: emailId || null,
+    recipient: recipient || null,
+    provider_created_at: event.created_at || null,
+    payload: event,
+    processed_at: new Date().toISOString(),
+  });
+  if (stored.error?.code === "23505") return c.json({ received: true, duplicate: true });
+  if (stored.error) {
+    console.error("resend_webhook_event_store_failed", stored.error);
+    return c.json({ error: "resend_webhook_event_store_failed" }, 500);
+  }
+  const statusByType: Record<string, string> = {
+    "email.sent": "sent",
+    "email.delivered": "delivered",
+    "email.delivery_delayed": "delivery_delayed",
+    "email.bounced": "bounced",
+    "email.complained": "complained",
+    "email.failed": "failed",
+    "email.suppressed": "suppressed",
+  };
+  const status = statusByType[type];
+  if (status) {
+    let delivery: any = null;
+    if (emailId) {
+      const exact = await service.from("notification_deliveries").select("id").eq("provider_id", emailId).order("created_at", { ascending: false }).limit(1).maybeSingle();
+      delivery = exact.data;
+    }
+    if (!delivery && recipient) {
+      const recent = await service.from("notification_deliveries").select("id")
+        .eq("recipient", recipient)
+        .eq("provider", "Resend")
+        .gte("created_at", new Date(Date.now() - 24 * 60 * 60_000).toISOString())
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      delivery = recent.data;
+    }
+    if (delivery) {
+      await service.from("notification_deliveries").update({
+        status,
+        provider_status: type,
+        provider_id: emailId || undefined,
+        error: event.data?.bounce?.message || event.data?.suppressed?.message || event.data?.failed?.reason || null,
+        updated_at: new Date().toISOString(),
+      }).eq("id", delivery.id);
+    }
+    if (recipient && ["email.bounced", "email.complained", "email.suppressed"].includes(type)) {
+      const reason = String(event.data?.bounce?.message || event.data?.suppressed?.message || `Resend reported ${type}`).slice(0, 500);
+      await service.from("email_suppressions").upsert({
+        recipient,
+        category: "all",
+        reason,
+        source: "resend",
+        created_at: new Date().toISOString(),
+        lifted_at: null,
+      }, { onConflict: "recipient,category" });
+    }
+  }
+  return c.json({ received: true });
+});
+
 app.use("/api/*", async (c, next) => {
   const token = c.req.header("authorization")?.replace(/^Bearer\s+/i, "");
   if (!token) return c.json({ error: "authentication_required" }, 401);
@@ -1862,13 +2006,24 @@ export function normalizePropertyRelations(properties: any[]) {
 
 app.post("/api/onboarding", async (c) => {
   const body = await c.req.json<{
+    profileName: string;
     accountName: string;
     workspaceName: string;
     propertyName?: string;
     url?: string;
   }>();
-  if (!body.accountName?.trim() || !body.workspaceName?.trim())
-    return c.json({ error: "account_and_workspace_required" }, 400);
+  if (!body.profileName?.trim() || !body.accountName?.trim() || !body.workspaceName?.trim())
+    return c.json({ error: "profile_account_and_workspace_required" }, 400);
+  const fullName = body.profileName.trim().replace(/\s+/g, " ").slice(0, 100);
+  const profileUpdate = await c.get("db").from("profiles").update({
+    full_name: fullName,
+    updated_at: new Date().toISOString(),
+  }).eq("id", c.get("userId"));
+  if (profileUpdate.error) return c.json({ error: "profile_name_could_not_be_saved" }, 400);
+  const authUpdate = await admin(c.env).auth.admin.updateUserById(c.get("userId"), {
+    user_metadata: { full_name: fullName },
+  });
+  if (authUpdate.error) console.error("onboarding_auth_metadata_update_failed", authUpdate.error);
   const { data, error } = await c.get("db").rpc("complete_onboarding", {
     p_account_name: body.accountName.trim().slice(0, 100),
     p_workspace_name: body.workspaceName.trim().slice(0, 100),
@@ -2277,8 +2432,10 @@ app.post("/api/workspaces/:id/members", async (c) => {
   const email = body.email?.trim().toLowerCase();
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
     return c.json({ error: "valid_email_required" }, 400);
+  if (body.role === "viewer")
+    return c.json({ error: "property_viewer_requires_property_scope" }, 409);
   const service = admin(c.env);
-  const intendedRole = body.role === "viewer" ? "viewer" : "member";
+  const intendedRole = "member";
   const existingUser = await authUserByEmail(service, email);
   if (intendedRole === "member") {
     const admission = await editingSeatAdmission(c.env, service, workspaceId, existingUser?.id || null);
@@ -2306,6 +2463,8 @@ app.post("/api/workspaces/:id/members", async (c) => {
     .select()
     .single();
   if (error) return c.json({ error: error.message }, 400);
+  if (invited.invitationSent)
+    await recordIdentityInvitationDelivery(c.env, email, invited.id, "workspace_editor_invite", { workspaceId });
   await recordActivity(c.env, c.get("userId"), "workspace.member_invited", undefined, {
     workspaceId,
     invitedUserId: invited.id,
@@ -2321,6 +2480,7 @@ app.patch("/api/workspaces/:id/members/:userId", async (c) => {
   const body = await c.req.json<{ role?: "member" | "viewer" }>();
   const role = editableWorkspaceRole(body.role);
   if (!role) return c.json({ error: "valid_workspace_role_required" }, 400);
+  if (role === "viewer") return c.json({ error: "property_viewer_requires_property_scope" }, 409);
   const service = admin(c.env);
   const { data: existing } = await service
     .from("workspace_memberships")
@@ -2403,7 +2563,7 @@ app.post("/api/properties/:id/viewers", async (c) => {
   const propertyId = c.req.param("id");
   const { data: property } = await db
     .from("properties")
-    .select("id,workspace_id")
+    .select("id,workspace_id,account_id")
     .eq("id", propertyId)
     .single();
   if (!property) return c.json({ error: "property_not_found" }, 404);
@@ -2414,7 +2574,20 @@ app.post("/api/properties/:id/viewers", async (c) => {
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
     return c.json({ error: "valid_email_required" }, 400);
   const service = admin(c.env);
-  const invited = await findOrInviteUser(service, email, c.env.APP_ORIGIN);
+  const existingUser = await authUserByEmail(service, email);
+  const existingMembership = existingUser
+    ? await service.from("property_memberships").select("user_id").eq("property_id", propertyId).eq("user_id", existingUser.id).maybeSingle()
+    : { data: null, error: null } as any;
+  if (existingMembership.error) return c.json({ error: "property_viewer_lookup_failed" }, 503);
+  let entitlements;
+  try { entitlements = await effectiveEntitlements(c.env, property.account_id); }
+  catch { return c.json({ error: "effective_entitlements_unavailable" }, 503); }
+  const limit = entitlementLimit(entitlements, "propertyViewersPerProperty", "propertyViewers") ?? 1;
+  const current = await service.from("property_memberships").select("user_id", { count: "exact", head: true }).eq("property_id", propertyId).eq("role", "viewer");
+  if (current.error) return c.json({ error: "property_viewer_usage_unavailable" }, 503);
+  if (!existingMembership.data && (current.count || 0) >= limit)
+    return c.json({ error: "property_viewer_limit_reached", used: current.count || 0, limit }, 409);
+  const invited = await findOrInviteUser(service, email, c.env.APP_ORIGIN, existingUser);
   const { data, error } = await service
     .from("property_memberships")
     .upsert(
@@ -2429,10 +2602,41 @@ app.post("/api/properties/:id/viewers", async (c) => {
     .select()
     .single();
   if (error) return c.json({ error: error.message }, 400);
+  if (invited.invitationSent)
+    await recordIdentityInvitationDelivery(c.env, email, invited.id, "property_viewer_invite", { propertyId, accountId: property.account_id });
   await recordActivity(c.env, c.get("userId"), "property.viewer_invited", propertyId, {
     invitedUserId: invited.id,
   });
   return c.json({ ...data, email, invitationSent: invited.invitationSent }, 201);
+});
+
+app.post("/api/properties/:id/viewers/:userId/resend", async (c) => {
+  const db = c.get("db");
+  const propertyId = c.req.param("id");
+  const userId = c.req.param("userId");
+  const property = await db.from("properties").select("id,workspace_id,account_id").eq("id", propertyId).maybeSingle();
+  if (!property.data) return c.json({ error: "property_not_found" }, 404);
+  if (!(await canManageWorkspace(db, c.get("userId"), property.data.workspace_id)))
+    return c.json({ error: "property_manage_access_required" }, 403);
+  const service = admin(c.env);
+  const membership = await service.from("property_memberships").select("user_id").eq("property_id", propertyId).eq("user_id", userId).eq("role", "viewer").maybeSingle();
+  if (!membership.data) return c.json({ error: "property_viewer_not_found" }, 404);
+  const user = await service.auth.admin.getUserById(userId);
+  if (user.error || !user.data.user?.email) return c.json({ error: "viewer_identity_not_found" }, 404);
+  if (user.data.user.email_confirmed_at) return c.json({ error: "viewer_is_already_active" }, 409);
+  const email = user.data.user.email;
+  const resent = await service.auth.resend({
+    type: "signup",
+    email,
+    options: { emailRedirectTo: `${c.env.APP_ORIGIN.replace(/\/$/, "")}/auth/confirmed` },
+  });
+  if (resent.error) return c.json({ error: "viewer_invitation_resend_failed" }, 502);
+  await recordIdentityInvitationDelivery(c.env, email, userId, "property_viewer_invite_resend", {
+    propertyId,
+    accountId: property.data.account_id,
+  });
+  await recordActivity(c.env, c.get("userId"), "property.viewer_invitation_resent", propertyId, { targetUserId: userId });
+  return c.json({ resent: true });
 });
 
 app.delete("/api/properties/:id/viewers/:userId", async (c) => {
@@ -2525,6 +2729,10 @@ app.delete("/api/properties/:id", async (c) => {
 app.get("/api/properties/:id/export", async (c) => {
   const propertyId = c.req.param("id");
   const db = c.get("db");
+  const access = await db.from("properties").select("workspace_id").eq("id", propertyId).maybeSingle();
+  if (!access.data) return c.json({ error: "property_not_found" }, 404);
+  if (!(await canManageWorkspace(db, c.get("userId"), access.data.workspace_id)))
+    return c.json({ error: "property_manage_access_required" }, 403);
   const [property, monitors, incidents, analytics, definitions, audits, reports, schedules, viewers] = await Promise.all([
     db.from("properties").select("*").eq("id", propertyId).single(),
     db.from("uptime_monitors").select("*,uptime_checks(*)").eq("property_id", propertyId),
@@ -2822,13 +3030,14 @@ app.get("/api/superadmin/allocations", async (c) => {
   const weekStartDate = new Date(`${today}T00:00:00.000Z`);
   weekStartDate.setUTCDate(weekStartDate.getUTCDate() - ((weekStartDate.getUTCDay() + 6) % 7) - 21);
   const fourWeekStart = weekStartDate.toISOString();
-  const [assignments, grants, overrides, properties, workspaces, memberships, usage, storage, analyticsUsage, safetySettings] = await Promise.all([
+  const [assignments, grants, overrides, properties, workspaces, memberships, propertyMemberships, usage, storage, analyticsUsage, safetySettings] = await Promise.all([
     db.from("account_package_assignments").select("account_id,price_grandfathered,allowances_grandfathered,complimentary,billing_state,starts_at,ends_at,package_versions(package_key,version,display_name,allowances,features,retention,hard_ceilings)").in("account_id", accountIds).is("ends_at", null),
     db.from("account_package_grants").select("id,account_id,arrangement,status,starts_at,expires_at,package_versions(package_key,version,display_name,allowances,features,retention,hard_ceilings)").in("account_id", accountIds).eq("status", "active").lte("starts_at", now).or(`expires_at.is.null,expires_at.gt.${now}`),
     db.from("account_entitlement_overrides").select("account_id,key,value,starts_at,expires_at,grant_id").in("account_id", accountIds).is("revoked_at", null).lte("starts_at", now).or(`expires_at.is.null,expires_at.gt.${now}`),
     db.from("properties").select("id,account_id").in("account_id", accountIds),
     db.from("workspaces").select("id,account_id").in("account_id", accountIds),
     db.from("account_memberships").select("account_id,user_id,role").in("account_id", accountIds),
+    db.from("property_memberships").select("property_id,user_id,role"),
     db.from("account_usage_periods").select("account_id,metric,period_start,period_end,consumed,reserved,restored,updated_at").in("account_id", accountIds).gte("period_start", fourWeekStart).lte("period_start", now),
     db.from("analytics_storage_snapshots").select("account_id,total_bytes,detailed_bytes,rollup_bytes,measured_at,source").eq("snapshot_date", now.slice(0, 10)).eq("scope_type", "account").in("account_id", accountIds),
     db.from("account_analytics_monthly_usage").select("account_id,accepted_pageviews,rejected_pageviews,period_start,updated_at").eq("period_start", monthStart).in("account_id", accountIds),
@@ -2836,12 +3045,12 @@ app.get("/api/superadmin/allocations", async (c) => {
   ]);
   const propertyIds = (properties.data || []).map((item: any) => item.id);
   const [analyticsTotals, eventDefinitions, alertRecipients, auditPages] = propertyIds.length ? await Promise.all([
-    db.from("analytics_compact_totals").select("property_id,pageviews,events,sessions,period_start").eq("grain", "day").eq("period_start", today).in("property_id", propertyIds),
+    db.from("analytics_compact_totals").select("property_id,pageviews,events,sessions,period_start").eq("grain", "day").gte("period_start", monthStart).lte("period_start", today).in("property_id", propertyIds),
     db.from("event_definitions").select("property_id,id,enabled").in("property_id", propertyIds),
     db.from("alert_recipients").select("property_id,id,enabled").in("property_id", propertyIds),
     db.from("property_audit_pages").select("property_id,id").in("property_id", propertyIds),
   ]) : [{ data: [], error: null }, { data: [], error: null }, { data: [], error: null }, { data: [], error: null }];
-  const dataError = [assignments, grants, overrides, properties, workspaces, memberships, usage, storage, analyticsUsage, safetySettings, analyticsTotals, eventDefinitions, alertRecipients, auditPages].find((result) => result.error)?.error;
+  const dataError = [assignments, grants, overrides, properties, workspaces, memberships, propertyMemberships, usage, storage, analyticsUsage, safetySettings, analyticsTotals, eventDefinitions, alertRecipients, auditPages].find((result) => result.error)?.error;
   if (dataError) {
     console.error("superadmin_allocations_failed", dataError);
     return c.json({ error: "superadmin_allocations_unavailable" }, 503);
@@ -2863,7 +3072,8 @@ app.get("/api/superadmin/allocations", async (c) => {
     const auditPagesPerProperty = effective.values.auditPagesPerProperty ?? null;
     const alertContactsPerProperty = effective.values.alertContactsPerProperty ?? effective.values.alertContacts ?? effective.values.emailAlertLimit ?? null;
     const weeklyAuditCredits = effective.values.auditCreditsPerWeek ?? null;
-    const analyticsEventsPerPropertyPerDay = Number((safetySettings.data?.value as any)?.analyticsEventsPerPropertyPerDay ?? LIMITS.analyticsEventsPerPropertyPerDay);
+    const analyticsEventsPerMonth = effective.values.analyticsEventsPerMonth ?? null;
+    const propertyViewersPerProperty = effective.values.propertyViewersPerProperty ?? 1;
     return {
       accountId: account.id,
       accountName: account.name,
@@ -2880,11 +3090,12 @@ app.get("/api/superadmin/allocations", async (c) => {
         editingSeats: effective.values.editingSeats ?? null,
         auditCreditsPerFourWeeks: fourWeekAuditCreditLimit(weeklyAuditCredits),
         trackedPageviewsPerMonth: effective.values.trackedPageviewsPerMonth ?? effective.hardCeilings.trackedPageviewsPerMonth ?? null,
-        analyticsEventsPerDay: finiteAllocationCapacity(analyticsEventsPerPropertyPerDay, propertyLimit),
+        analyticsEventsPerMonth,
+        propertyViewers: finiteAllocationCapacity(propertyViewersPerProperty, propertyLimit),
         customEvents: finiteAllocationCapacity(customEventsPerProperty, propertyLimit),
         auditPages: finiteAllocationCapacity(auditPagesPerProperty, propertyLimit),
         alertContacts: finiteAllocationCapacity(alertContactsPerProperty, propertyLimit),
-        perProperty: { analyticsEventsPerDay: analyticsEventsPerPropertyPerDay, customEvents: customEventsPerProperty, auditPages: auditPagesPerProperty, alertContacts: alertContactsPerProperty },
+        perProperty: { propertyViewers: propertyViewersPerProperty, customEvents: customEventsPerProperty, auditPages: auditPagesPerProperty, alertContacts: alertContactsPerProperty },
       },
       utilisation: {
         properties: accountProperties.length,
@@ -2892,7 +3103,8 @@ app.get("/api/superadmin/allocations", async (c) => {
         editingSeats: new Set((memberships.data || []).filter((item: any) => item.account_id === account.id).map((item: any) => item.user_id)).size,
         auditCreditsPerFourWeeks: usagePeriod.filter((item: any) => item.metric === "page_audit_credit").reduce((sum: number, item: any) => sum + Number(item.consumed || 0) + Number(item.reserved || 0) - Number(item.restored || 0), 0),
         trackedPageviewsPerMonth: Number(pageviewUsage?.accepted_pageviews || 0),
-        analyticsEventsPerDay: dailyAnalytics.reduce((sum: number, item: any) => sum + Number(item.events || 0), 0),
+        analyticsEventsPerMonth: dailyAnalytics.reduce((sum: number, item: any) => sum + Number(item.events || 0), 0),
+        propertyViewers: (propertyMemberships.data || []).filter((item: any) => accountPropertyIds.has(item.property_id) && item.role === "viewer").length,
         customEvents: (eventDefinitions.data || []).filter((item: any) => accountPropertyIds.has(item.property_id) && item.enabled).length,
         auditPages: (auditPages.data || []).filter((item: any) => accountPropertyIds.has(item.property_id)).length,
         alertContacts: (alertRecipients.data || []).filter((item: any) => accountPropertyIds.has(item.property_id) && item.enabled).length,
@@ -3992,8 +4204,8 @@ app.get("/api/superadmin/platform", async (c) => {
   };
   const monthStartIso = `${today.slice(0, 7)}-01T00:00:00.000Z`;
   const [resendDailyUsage, resendMonthlyUsage, providerResendUsage] = await Promise.all([
-    service.from("notification_deliveries").select("id", { count: "exact", head: true }).eq("provider", "Resend").in("status", ["sent", "delivered"]).gte("created_at", `${today}T00:00:00.000Z`),
-    service.from("notification_deliveries").select("id", { count: "exact", head: true }).eq("provider", "Resend").in("status", ["sent", "delivered"]).gte("created_at", monthStartIso),
+    service.from("notification_deliveries").select("id", { count: "exact", head: true }).eq("provider", "Resend").in("status", ["sent", "delivered", "bounced", "suppressed", "complained", "delivery_delayed"]).gte("created_at", `${today}T00:00:00.000Z`),
+    service.from("notification_deliveries").select("id", { count: "exact", head: true }).eq("provider", "Resend").in("status", ["sent", "delivered", "bounced", "suppressed", "complained", "delivery_delayed"]).gte("created_at", monthStartIso),
     resendProviderUsage(c.env, today),
   ]);
   const resendUsage = {
@@ -5359,10 +5571,12 @@ app.post("/api/audits", async (c) => {
   const db = c.get("db");
   const { data: property } = await db
     .from("properties")
-    .select("id,url,account_id,access_state,workspaces(account_id,accounts(entitlement))")
+    .select("id,url,account_id,workspace_id,access_state,workspaces(account_id,accounts(entitlement))")
     .eq("id", b.propertyId)
     .single();
   if (!property) return c.json({ error: "property_not_found" }, 404);
+  if (!(await canManageWorkspace(db, c.get("userId"), property.workspace_id)))
+    return c.json({ error: "property_manage_access_required" }, 403);
   const processing = await processingAccess(c.env, "new_audits", property.account_id);
   if (!processing.allowed || property.access_state !== "active")
     return c.json({ error: processing.error || "property_processing_paused" }, 503);
@@ -6207,25 +6421,47 @@ app.post("/api/monitors/:id/maintenance", async (c) => {
 });
 
 app.get("/api/properties/:id/alert-recipients", async (c) => {
-  const { data, error } = await c
-    .get("db")
+  const propertyId = c.req.param("id");
+  const db = c.get("db");
+  const property = await db.from("properties").select("id,workspace_id").eq("id", propertyId).maybeSingle();
+  if (!property.data) return c.json({ error: "property_not_found" }, 404);
+  if (!(await canManageWorkspace(db, c.get("userId"), property.data.workspace_id)))
+    return c.json({ error: "property_manage_access_required" }, 403);
+  const { data, error } = await admin(c.env)
     .from("alert_recipients")
     .select("*")
-    .eq("property_id", c.req.param("id"))
+    .eq("property_id", propertyId)
     .order("created_at");
   return error ? c.json({ error: error.message }, 400) : c.json(data);
 });
 
 app.post("/api/properties/:id/alert-recipients", async (c) => {
+  const propertyId = c.req.param("id");
   const body = await c.req.json<{ email: string }>();
   const email = body.email?.trim().toLowerCase();
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
     return c.json({ error: "valid_email_required" }, 400);
-  const { data, error } = await c
-    .get("db")
+  const db = c.get("db");
+  const property = await db.from("properties").select("id,workspace_id,account_id").eq("id", propertyId).maybeSingle();
+  if (!property.data) return c.json({ error: "property_not_found" }, 404);
+  if (!(await canManageWorkspace(db, c.get("userId"), property.data.workspace_id)))
+    return c.json({ error: "property_manage_access_required" }, 403);
+  let entitlements;
+  try { entitlements = await effectiveEntitlements(c.env, property.data.account_id); }
+  catch { return c.json({ error: "effective_entitlements_unavailable" }, 503); }
+  const limit = entitlementLimit(entitlements, "alertContactsPerProperty", "alertContacts", "emailAlertLimit") ?? 1;
+  const service = admin(c.env);
+  const [existing, usage] = await Promise.all([
+    service.from("alert_recipients").select("id,enabled").eq("property_id", propertyId).eq("email", email).maybeSingle(),
+    service.from("alert_recipients").select("id", { count: "exact", head: true }).eq("property_id", propertyId).eq("enabled", true),
+  ]);
+  if (existing.error || usage.error) return c.json({ error: "alert_recipient_usage_unavailable" }, 503);
+  if ((!existing.data || existing.data.enabled === false) && (usage.count || 0) >= limit)
+    return c.json({ error: "alert_recipient_limit_reached", used: usage.count || 0, limit }, 409);
+  const { data, error } = await service
     .from("alert_recipients")
     .upsert(
-      { property_id: c.req.param("id"), email, enabled: true },
+      { property_id: propertyId, email, enabled: true },
       { onConflict: "property_id,email" },
     )
     .select()
@@ -6234,13 +6470,30 @@ app.post("/api/properties/:id/alert-recipients", async (c) => {
 });
 
 app.patch("/api/properties/:id/alert-recipients/:recipientId", async (c) => {
+  const propertyId = c.req.param("id");
   const body = await c.req.json<{ enabled?: boolean }>();
   if (typeof body.enabled !== "boolean")
     return c.json({ error: "enabled_boolean_required" }, 400);
-  const { data, error } = await c.get("db")
+  const db = c.get("db");
+  const property = await db.from("properties").select("id,workspace_id,account_id").eq("id", propertyId).maybeSingle();
+  if (!property.data) return c.json({ error: "property_not_found" }, 404);
+  if (!(await canManageWorkspace(db, c.get("userId"), property.data.workspace_id)))
+    return c.json({ error: "property_manage_access_required" }, 403);
+  const service = admin(c.env);
+  if (body.enabled) {
+    let entitlements;
+    try { entitlements = await effectiveEntitlements(c.env, property.data.account_id); }
+    catch { return c.json({ error: "effective_entitlements_unavailable" }, 503); }
+    const limit = entitlementLimit(entitlements, "alertContactsPerProperty", "alertContacts", "emailAlertLimit") ?? 1;
+    const usage = await service.from("alert_recipients").select("id", { count: "exact", head: true }).eq("property_id", propertyId).eq("enabled", true).neq("id", c.req.param("recipientId"));
+    if (usage.error) return c.json({ error: "alert_recipient_usage_unavailable" }, 503);
+    if ((usage.count || 0) >= limit)
+      return c.json({ error: "alert_recipient_limit_reached", used: usage.count || 0, limit }, 409);
+  }
+  const { data, error } = await service
     .from("alert_recipients")
     .update({ enabled: body.enabled })
-    .eq("property_id", c.req.param("id"))
+    .eq("property_id", propertyId)
     .eq("id", c.req.param("recipientId"))
     .select()
     .single();
@@ -6248,11 +6501,16 @@ app.patch("/api/properties/:id/alert-recipients/:recipientId", async (c) => {
 });
 
 app.delete("/api/properties/:id/alert-recipients/:recipientId", async (c) => {
-  const { error } = await c
-    .get("db")
+  const propertyId = c.req.param("id");
+  const db = c.get("db");
+  const property = await db.from("properties").select("id,workspace_id").eq("id", propertyId).maybeSingle();
+  if (!property.data) return c.json({ error: "property_not_found" }, 404);
+  if (!(await canManageWorkspace(db, c.get("userId"), property.data.workspace_id)))
+    return c.json({ error: "property_manage_access_required" }, 403);
+  const { error } = await admin(c.env)
     .from("alert_recipients")
     .delete()
-    .eq("property_id", c.req.param("id"))
+    .eq("property_id", propertyId)
     .eq("id", c.req.param("recipientId"));
   return error ? c.json({ error: error.message }, 400) : c.json({ deleted: true });
 });
@@ -11214,14 +11472,19 @@ async function isWorkspaceOwner(
 async function authUsersById(service: SupabaseClient, userIds: string[]) {
   if (!userIds.length) return [];
   const wanted = new Set(userIds);
-  const { data, error } = await service.auth.admin.listUsers({ page: 1, perPage: 1000 });
+  const [{ data, error }, profiles] = await Promise.all([
+    service.auth.admin.listUsers({ page: 1, perPage: 1000 }),
+    userIds.length ? service.from("profiles").select("id,full_name").in("id", userIds) : Promise.resolve({ data: [], error: null } as any),
+  ]);
   if (error) throw error;
+  if (profiles.error) throw profiles.error;
+  const profileNames = new Map((profiles.data || []).map((profile: any) => [profile.id, profile.full_name]));
   return data.users
     .filter((user) => wanted.has(user.id))
     .map((user) => ({
       id: user.id,
       email: user.email || "",
-      name: String(user.user_metadata?.full_name || "").slice(0, 100),
+      name: String(profileNames.get(user.id) || user.user_metadata?.full_name || "").slice(0, 100),
       confirmedAt: user.email_confirmed_at || null,
       lastSignInAt: user.last_sign_in_at || null,
     }));
@@ -11263,6 +11526,42 @@ async function findOrInviteUser(
   });
   if (error || !data.user) throw error || new Error("Invitation could not be created");
   return { id: data.user.id, invitationSent: true };
+}
+
+async function recordIdentityInvitationDelivery(
+  env: Env,
+  email: string,
+  userId: string,
+  kind: string,
+  context: { accountId?: string; propertyId?: string; workspaceId?: string } = {},
+) {
+  const db = admin(env);
+  let accountId = context.accountId;
+  if (!accountId && context.workspaceId) {
+    const workspace = await db.from("workspaces").select("account_id").eq("id", context.workspaceId).maybeSingle();
+    accountId = workspace.data?.account_id;
+  }
+  const dedupeKey = `identity:${kind}:${userId}:${crypto.randomUUID()}`;
+  const claimed = await db.rpc("claim_notification", {
+    p_key: dedupeKey,
+    p_kind: kind,
+    p_recipient: email,
+    p_payload: { user_id: userId, ...context },
+  });
+  if (claimed.error || !claimed.data) {
+    console.error("identity_invitation_delivery_claim_failed", claimed.error);
+    return;
+  }
+  const updated = await db.from("notification_deliveries").update({
+    status: "sent",
+    provider: "Resend",
+    provider_status: "submitted_via_supabase_auth",
+    account_id: accountId || null,
+    property_id: context.propertyId || null,
+    automation_key: kind,
+    updated_at: new Date().toISOString(),
+  }).eq("dedupe_key", dedupeKey);
+  if (updated.error) console.error("identity_invitation_delivery_update_failed", updated.error);
 }
 
 async function recordActivity(
