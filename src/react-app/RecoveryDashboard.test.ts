@@ -10,6 +10,8 @@ import {
   auditScoreBand,
   billingUpgradeHref,
   billingCheckoutErrorMessage,
+  checkoutReturnDetails,
+  clearCheckoutReturnSearch,
   buildAuditFixPrompt,
   configuredEventAttributeNames,
   configuredEventType,
@@ -69,6 +71,20 @@ describe("property switching", () => {
       .toBe("/analytics?property=new&analyticsTab=Pages");
     expect(propertySwitchDestination("/analytics", "?property=old&analyticsTab=Sources&sourceDetail=Google", "new"))
       .toBe("/analytics?property=new&analyticsTab=Sources");
+  });
+});
+
+describe("checkout return state", () => {
+  it("accepts a Stripe success return and removes only its one-time parameters", () => {
+    const search = "?accountTab=Billing%20%26%20plan&billingAccount=account-one&checkout=success&session_id=cs_test_123ABC";
+    expect(checkoutReturnDetails(search)).toEqual({ sessionId: "cs_test_123ABC" });
+    expect(clearCheckoutReturnSearch(search)).toBe("accountTab=Billing+%26+plan&billingAccount=account-one");
+  });
+
+  it("ignores cancelled, missing and malformed checkout returns", () => {
+    expect(checkoutReturnDetails("?checkout=cancelled&session_id=cs_test_123")).toBeNull();
+    expect(checkoutReturnDetails("?checkout=success")).toBeNull();
+    expect(checkoutReturnDetails("?checkout=success&session_id=not-stripe")).toBeNull();
   });
 });
 
