@@ -4808,6 +4808,39 @@ input[type="checkbox"]:checked:after {
   color: #674b00;
 }
 
+.checkout-return-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid #b9ead9;
+  border-radius: 10px;
+  background: #f3fbf8;
+  color: #146b50;
+}
+
+.checkout-return-banner.pending {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+  color: #475569;
+}
+
+.checkout-return-banner > svg {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+
+.checkout-return-banner > span {
+  display: grid;
+  gap: 2px;
+}
+
+.checkout-return-banner small {
+  color: inherit;
+}
+
 .finance-controls {
   display: flex;
   align-items: end;

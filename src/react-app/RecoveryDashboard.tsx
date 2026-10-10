@@ -7464,7 +7464,7 @@ function AccountView({
           <p className="subtle">{data.properties.filter((property) => data.workspaces.some((entry: any) => entry.workspaces?.id === property.workspace_id && ["owner", "member"].includes(entry.role))).length} of {propertyLimit} properties used. Analytics events are measured for the current UTC month; viewer limits apply per property.</p>
         </Panel>
       ) : tab === "Billing & plan" ? (
-        <Billing fixture={fixture} notify={notify} data={data} session={session} />
+        <Billing fixture={fixture} notify={notify} data={data} session={session} reload={reload} />
       ) : tab === "Users" ? (
         <Panel
           title="Workspace users"
@@ -7776,6 +7776,20 @@ function AccountView({
   );
 }
 
+export function checkoutReturnDetails(search: string) {
+  const params = new URLSearchParams(search);
+  const sessionId = String(params.get("session_id") || "");
+  if (params.get("checkout") !== "success" || !/^cs_(?:test_|live_)?[A-Za-z0-9]+$/.test(sessionId)) return null;
+  return { sessionId };
+}
+
+export function clearCheckoutReturnSearch(search: string) {
+  const params = new URLSearchParams(search);
+  params.delete("checkout");
+  params.delete("session_id");
+  return params.toString();
+}
+
 export function billingCheckoutErrorMessage(error: unknown) {
   const code = String(error instanceof Error ? error.message : error || "");
   if (["financial_operation_in_progress", "checkout_initialisation_in_progress"].includes(code)) return "Checkout is still being prepared. Please wait a moment and try again.";
@@ -7786,7 +7800,7 @@ export function billingCheckoutErrorMessage(error: unknown) {
   return code.replaceAll("_", " ");
 }
 
-function Billing({ fixture, notify, data, session }: { fixture: boolean; notify: Notify; data: Bootstrap; session: Session | null }) {
+function Billing({ fixture, notify, data, session, reload }: { fixture: boolean; notify: Notify; data: Bootstrap; session: Session | null; reload: () => void | Promise<void> }) {
   const location = useLocation();
   const navigate = useNavigate();
   const accountOptions = data.accounts
@@ -7802,6 +7816,7 @@ function Billing({ fixture, notify, data, session }: { fixture: boolean; notify:
   const currency = "gbp";
   const [billingData, setBillingData] = useState<any>(null);
   const [billingBusy, setBillingBusy] = useState(false);
+  const [checkoutReturnStatus, setCheckoutReturnStatus] = useState<"idle" | "confirming" | "success" | "delayed">("idle");
   const checkoutStartingRef = useRef(false);
   const [subscriptionOperationKey, setSubscriptionOperationKey] = useState(() => crypto.randomUUID());
   const [changePreview, setChangePreview] = useState<any>(null);
@@ -7817,7 +7832,7 @@ function Billing({ fixture, notify, data, session }: { fixture: boolean; notify:
   const selectedAccount = accountOptions.find((account: any) => account.id === accountId);
   const selectedWorkspaceIds = new Set(data.workspaces.filter((entry: any) => entry.workspaces?.account_id === accountId).map((entry: any) => entry.workspaces?.id));
   const selectedProperties = data.properties.filter((property) => selectedWorkspaceIds.has(property.workspace_id));
-  const effective = accountId ? data.accountEntitlements?.[accountId] : null;
+  const effective = billingData?.effectiveEntitlements || (accountId ? data.accountEntitlements?.[accountId] : null);
   const entitlement = String(effective?.packageKey || selectedAccount?.entitlement || (fixture ? "Scale" : "Free"));
   const plan = /essentials/i.test(entitlement) ? "Essentials" : /scale/i.test(entitlement) ? "Scale" : /pro/i.test(entitlement) ? "Pro" : "Free";
   const complimentary = effective?.arrangement === "complimentary" || (!effective && /early.?access/i.test(entitlement));
@@ -7827,6 +7842,36 @@ function Billing({ fixture, notify, data, session }: { fixture: boolean; notify:
     catch (error: any) { setBillingData({ error: error.message, catalogue: [], invoices: [], subscriptions: [] }); }
   }
   useEffect(() => { void loadBilling(); }, [session, accountId, fixture]);
+  useEffect(() => {
+    const checkoutReturn = checkoutReturnDetails(location.search);
+    if (!checkoutReturn || !session || !accountId || fixture) return;
+    let active = true;
+    setCheckoutReturnStatus("confirming");
+    void (async () => {
+      for (let attempt = 0; attempt < 10 && active; attempt += 1) {
+        try {
+          const confirmed = await api<any>(session, `/api/billing/${accountId}/checkout/confirm`, {
+            method: "POST",
+            body: JSON.stringify({ sessionId: checkoutReturn.sessionId }),
+          });
+          if (confirmed.complete) {
+            await loadBilling();
+            await reload();
+            if (!active) return;
+            setCheckoutReturnStatus("success");
+            const cleanedSearch = clearCheckoutReturnSearch(location.search);
+            navigate(`${location.pathname}${cleanedSearch ? `?${cleanedSearch}` : ""}`, { replace: true });
+            return;
+          }
+        } catch (error) {
+          if (attempt === 9) notify(billingCheckoutErrorMessage(error));
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 1_000));
+      }
+      if (active) setCheckoutReturnStatus("delayed");
+    })();
+    return () => { active = false; };
+  }, [session?.access_token, accountId, fixture, location.search]);
   const fixtureReset = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth() + 1, 1)).toISOString();
   const accountUsage = billingData?.usage || (fixture ? {
     properties: { used: selectedProperties.length, limit: 50 },
@@ -7908,6 +7953,9 @@ function Billing({ fixture, notify, data, session }: { fixture: boolean; notify:
       {accountOptions.length > 1 && <Panel title="Billing account"><label className="field">Account<select value={accountId} onChange={(event) => { const nextId = event.target.value; setSelectedAccountId(nextId); const params = new URLSearchParams(location.search); params.set("accountTab", "Billing & plan"); params.set("billingAccount", nextId); navigate(`${location.pathname}?${params.toString()}`, { replace: true }); }}>
         {accountOptions.map((account: any) => <option key={account.id} value={account.id}>{account.name}{account.is_test_account ? " · Test" : " · Live"}</option>)}
       </select></label><p className="subtle">Billing data, checkout and entitlements are isolated to the selected account’s server-validated environment.</p></Panel>}
+      {checkoutReturnStatus === "confirming" && <div className="checkout-return-banner pending" role="status"><RefreshCw className="audit-spin" /><span><b>Payment received</b><small>Confirming your subscription and refreshing your account…</small></span></div>}
+      {checkoutReturnStatus === "success" && <div className="checkout-return-banner success" role="status"><CheckCircle2 /><span><b>Payment successful</b><small>Your subscription and account allowances have been updated.</small></span></div>}
+      {checkoutReturnStatus === "delayed" && <div className="checkout-return-banner pending" role="status"><RefreshCw /><span><b>Payment is still processing</b><small>Your account will update when Stripe confirms the subscription.</small></span></div>}
       {billingData?.billingEnvironment === "test" && <div className="test-environment-banner" role="status"><b>Test environment: no real payments</b><span>Use Stripe test cards. Sandbox purchases never grant live-paid access.</span></div>}
       <div className="grid equal">
         <Panel title="Subscription">
