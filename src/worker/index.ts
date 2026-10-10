@@ -1725,7 +1725,9 @@ async function verifyResendWebhookSignature(payload: string, id: string, timesta
   } catch {
     return false;
   }
-  const key = await crypto.subtle.importKey("raw", secretBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const secretBuffer = new ArrayBuffer(secretBytes.length);
+  new Uint8Array(secretBuffer).set(secretBytes);
+  const key = await crypto.subtle.importKey("raw", secretBuffer, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const expectedBytes = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${id}.${timestamp}.${payload}`)));
   const signatures = signatureHeader.split(/\s+/).map((value) => value.split(",")).filter(([version, value]) => version === "v1" && value);
   return signatures.some(([, value]) => {
