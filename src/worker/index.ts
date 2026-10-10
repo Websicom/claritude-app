@@ -870,6 +870,7 @@ app.post("/tracker-health", async (c) => {
     return c.body(null, 204);
   }
 
+  const firstHeartbeat = !property.last_tracker_heartbeat_at;
   const now = new Date().toISOString();
   const staleBefore = new Date(Date.now() - TRACKER_HEARTBEAT_WRITE_INTERVAL_MS).toISOString();
   const { data: updated, error } = await db
@@ -884,7 +885,7 @@ app.post("/tracker-health", async (c) => {
     .select("id")
     .maybeSingle();
   if (error) return c.body(null, 503);
-  if (updated) {
+  if (updated && firstHeartbeat) {
     await db.from("notifications")
       .update({ read_at: now })
       .eq("property_id", property.id)
