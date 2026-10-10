@@ -209,6 +209,12 @@ a {
   padding: 2px 6px;
   color: #3f3f46;
 }
+.badge.paid-plan {
+  border-color: #d8c8f3;
+  background: #f2ebff;
+  color: #6b3fb2;
+  font-weight: 700;
+}
 .workspace-identity,
 .workspace-row-icon {
   width: 20px;
@@ -1503,9 +1509,86 @@ input[type="checkbox"]:checked:after {
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 14px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 .plan.current {
   border-color: #222;
+}
+.plan-features {
+  display: grid;
+  gap: 7px;
+  list-style: none;
+  margin: 16px 0;
+  padding: 0;
+  font-size: 12px;
+}
+.plan-features li {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+}
+.plan-features svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: #087f5b;
+  stroke-width: 2.5;
+}
+.plan-action {
+  width: 100%;
+  margin-top: auto;
+  justify-content: center;
+}
+.payment-method-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 5px 0 16px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--soft);
+}
+.payment-method-card > span:last-child {
+  display: grid;
+  gap: 2px;
+}
+.payment-method-card small {
+  color: var(--muted);
+  letter-spacing: .08em;
+}
+.card-brand-mark {
+  width: 48px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+  border: 1px solid #d4d4d8;
+  border-radius: 6px;
+  background: #fff;
+  color: #172b85;
+  font-size: 13px;
+  font-style: italic;
+  letter-spacing: -.04em;
+}
+.card-brand-mark.mastercard i {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #eb001b;
+}
+.card-brand-mark.mastercard i + i {
+  margin-left: -6px;
+  background: #f79e1b;
+  opacity: .9;
+}
+.proration-dialog {
+  width: min(820px, 100%);
 }
 .privacy-row {
   display: flex;
@@ -2237,6 +2320,9 @@ input[type="checkbox"]:checked:after {
 .notification-card > svg {
   width: 18px;
   color: var(--red);
+}
+.notification-card > svg.notification-success-icon {
+  color: #087f5b;
 }
 .notification-card > span {
   display: grid;
@@ -5140,7 +5226,7 @@ input[type="checkbox"]:checked:after {
   border-bottom-color: var(--ink);
 }
 
-:root[data-theme="dark"] .badge,
+:root[data-theme="dark"] .badge:not(.paid-plan),
 :root[data-theme="dark"] .seg,
 :root[data-theme="dark"] .dimension-mark,
 :root[data-theme="dark"] .field .readonly,
@@ -5418,4 +5504,14 @@ input[type="checkbox"]:checked:after {
 
 :root[data-theme="dark"] .mfa-qr {
   background: #fff;
+}
+
+:root[data-theme="dark"] .badge.paid-plan {
+  border-color: #6f4a9e;
+  background: #30213f;
+  color: #d9bdfb;
+}
+:root[data-theme="dark"] .payment-method-card {
+  background: var(--inset);
+  border-color: var(--line);
 }
