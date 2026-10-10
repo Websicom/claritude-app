@@ -131,6 +131,19 @@ jobs:
           node scripts/validate-migration-state.mjs migration-after.json --require-synced
           npx --no-install supabase db lint --linked --level warning --fail-on warning
 
+      - name: Reconcile approved Stage 3 billing provider mappings
+        if: steps.gate.outputs.deploy == 'true'
+        env:
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_PROJECT_ID: ${{ vars.SUPABASE_PROJECT_ID }}
+        run: |
+          : "${SUPABASE_DB_PASSWORD:?Missing production secret SUPABASE_DB_PASSWORD}"
+          : "${SUPABASE_PROJECT_ID:?Missing production variable SUPABASE_PROJECT_ID}"
+          export PGPASSWORD="$SUPABASE_DB_PASSWORD"
+          psql "host=db.${SUPABASE_PROJECT_ID}.supabase.co port=5432 dbname=postgres user=postgres sslmode=require" \
+            --set ON_ERROR_STOP=1 \
+            --file scripts/reconcile-stage3-billing.sql
+
       - name: Stamp deployment commit
         if: steps.gate.outputs.deploy == 'true'
         env:
