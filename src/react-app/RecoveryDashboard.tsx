@@ -4967,6 +4967,7 @@ function PropertySettingsView({
         <>
           <Panel title="Install analytics code">
             <p className="settings-intro">Add the script to the site-wide <code>&lt;head&gt;</code> template so it loads once on every measured page. Claritude automatically detects common browser history navigation in single-page applications; call <code>claritude.pageview()</code> only when a router does not update browser history.</p>
+            <p className="settings-intro"><b>Publish the change, clear any website, plugin or CDN cache, then open the public site in a new or private tab.</b> Installation verification confirms that the code is present; Tracking appears when Claritude receives the lightweight tracker heartbeat or analytics data.</p>
             <div className="tracking-setup-markers" aria-label="Tracking installation steps">
               <span><b>1</b> Add code</span>
               <span><b>2</b> Clear cache</span>
