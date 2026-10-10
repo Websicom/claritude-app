@@ -12,7 +12,10 @@ begin
   select count(distinct package_key)
   into package_count
   from public.package_versions
-  where package_key in ('essentials', 'scale', 'pro');
+  where package_key in ('essentials', 'scale', 'pro')
+    and state = 'published'
+    and effective_at is not null
+    and effective_at <= now();
 
   if package_count <> 3 then
     raise exception 'Expected Essentials, Scale and Pro package versions; found %', package_count;
@@ -42,6 +45,9 @@ with latest_packages as (
     package_key
   from public.package_versions
   where package_key in ('essentials', 'scale', 'pro')
+    and state = 'published'
+    and effective_at is not null
+    and effective_at <= now()
   order by package_key, version desc
 ),
 approved(environment, package_key, provider_product_id, provider_price_id, interval, unit_amount_minor, provider_livemode) as (
