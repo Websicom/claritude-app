@@ -49,6 +49,8 @@ import {
   supportedTimezones,
   trafficSeriesKey,
   trackingInstallationState,
+  uptimeFailureThresholdLabel,
+  recoveryAlertsEnabledForPlan,
   uptimePeriodQuery,
   uptimeIntervalsForPlan,
   responseChartLabel,
@@ -77,6 +79,13 @@ describe("plan presentation", () => {
     expect(uptimeIntervalsForPlan("Essentials")[0]).toBe(5);
     expect(uptimeIntervalsForPlan("Scale")[0]).toBe(2);
     expect(uptimeIntervalsForPlan("Pro")[0]).toBe(1);
+  });
+
+  it("derives the saved uptime alert policy accurately", () => {
+    expect(uptimeFailureThresholdLabel(1)).toBe("1 failed check");
+    expect(uptimeFailureThresholdLabel(2)).toBe("2 failed checks");
+    expect(recoveryAlertsEnabledForPlan("free")).toBe(false);
+    expect(recoveryAlertsEnabledForPlan("essentials")).toBe(true);
   });
 
   it("routes genuine plan-limit failures to Billing & plan", () => {
