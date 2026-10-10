@@ -258,7 +258,9 @@ type Property = {
   canonical_host: string;
   verification_status: string;
   tracking_id: string;
-  tracking_last_received_at?: string;
+  tracking_last_received_at?: string | null;
+  verified_at?: string | null;
+  last_tracker_heartbeat_at?: string | null;
   uptime_monitors?: Monitor[];
   audit_runs?: AuditRun[];
   settings?: Record<string, any>;
@@ -279,13 +281,22 @@ export function workspaceKeyEventCount(summary: any) {
   return Number(summary?.keyEvents ?? summary?.events ?? 0);
 }
 
+export type TrackingInstallationState = "not_active" | "script_found" | "tracking";
+
+export function trackingInstallationState(property: Pick<Property, "verification_status" | "verified_at" | "last_tracker_heartbeat_at" | "tracking_last_received_at">): TrackingInstallationState {
+  if (property.tracking_last_received_at || property.last_tracker_heartbeat_at) return "tracking";
+  if (property.verification_status === "verified" || property.verified_at) return "script_found";
+  return "not_active";
+}
+
 export function propertyOnboardingChecks(property: Property) {
   const monitor = property.uptime_monitors?.[0];
   const completedAudit = property.audit_runs?.find((run) => ["completed", "partial"].includes(run.status));
+  const trackerReceivedAt = property.tracking_last_received_at || property.last_tracker_heartbeat_at;
   return [
     { complete: property.verification_status === "verified", label: "Property verified", detail: property.verification_status === "verified" ? "Verified" : "Verification required" },
     { complete: Boolean(monitor?.enabled && monitor.last_checked_at), label: "First uptime check completed", detail: monitor?.last_checked_at ? `Checked ${relative(monitor.last_checked_at)}` : "Awaiting first check" },
-    { complete: Boolean(property.tracking_last_received_at), label: "Analytics receiving data", detail: property.tracking_last_received_at ? `Last event ${relative(property.tracking_last_received_at)}` : "Tracking script not detected" },
+    { complete: Boolean(trackerReceivedAt), label: "Tracker communicating", detail: trackerReceivedAt ? `Last received ${relative(trackerReceivedAt)}` : "Awaiting tracker communication" },
     { complete: Boolean(completedAudit), label: "First audit completed", detail: completedAudit ? `${cap(completedAudit.status)} · ${completedAudit.score ?? "—"} / 100` : "No completed audit yet" },
   ];
 }
@@ -1711,7 +1722,7 @@ function WorkspaceOverview({
                 measured[p.id]?.availability != null
                   ? formatPercentage(Number(measured[p.id].availability))
                   : "Pending",
-                <TrackingStatus receiving={Boolean(p.tracking_last_received_at)} />,
+                <TrackingStatus property={p} />,
                 measured[p.id] ? fmt(measured[p.id].pageviews || 0) : "Pending",
                 measured[p.id]
                   ? fmt(workspaceKeyEventCount(measured[p.id]))
@@ -4848,6 +4859,13 @@ function PropertySettingsView({
   const viewerLimit = propertyViewerLimitForPlan(plan);
   const viewerLimitReached = viewers.length >= viewerLimit;
   const snippet = `<script defer src="${location.origin}/c.js" data-property="${property.tracking_id}"></script>`;
+  const trackingEvidence: Property = {
+    ...property,
+    verification_status: trackingDiagnostics?.verificationStatus ?? property.verification_status,
+    verified_at: trackingDiagnostics?.scriptDetectedAt ?? property.verified_at,
+    last_tracker_heartbeat_at: trackingDiagnostics?.lastTrackerHeartbeatAt ?? property.last_tracker_heartbeat_at,
+    tracking_last_received_at: trackingDiagnostics?.lastAnalyticsReceivedAt ?? property.tracking_last_received_at,
+  };
   return (
     <Page
       title="Property settings"
@@ -4949,27 +4967,32 @@ function PropertySettingsView({
         <>
           <Panel title="Install analytics code">
             <p className="settings-intro">Add the script to the site-wide <code>&lt;head&gt;</code> template so it loads once on every measured page. Claritude automatically detects common browser history navigation in single-page applications; call <code>claritude.pageview()</code> only when a router does not update browser history.</p>
-            <p className="settings-intro"><b>Tracking begins after the first real visit.</b> Publish the change, clear any website, plugin or CDN cache, then open the public site in a new or private tab. Installation verification confirms that the code is present; Online appears after Claritude receives that visit.</p>
+            <p className="settings-intro"><b>Publish the change, clear any website, plugin or CDN cache, then open the public site in a new or private tab.</b> Installation verification confirms that the code is present; Tracking appears when Claritude receives the lightweight tracker heartbeat or analytics data.</p>
+            <div className="tracking-setup-markers" aria-label="Tracking installation steps">
+              <span><b>1</b> Add code</span>
+              <span><b>2</b> Clear cache</span>
+              <span><b>3</b> Visit page incognito</span>
+            </div>
             <pre className="install-code install-code-dark">{snippet}</pre>
             <CopyButton text={snippet} label="Copy snippet" successMessage="Tracking snippet copied" notify={notify} />
+            <p className="tracking-troubleshooting">
+              If tracking remains on “Script Found”, clear your website/CDN cache and check that optimisation plugins are not delaying the Claritude script until user interaction. Normal script defer is supported; delay-until-interaction may prevent tracking from starting until the page is interacted with.
+            </p>
           </Panel>
           <Panel title="Tracking status">
             <KeyValues
               rows={[
-                ["Status", <StatusPill tone={property.tracking_last_received_at ? "success" : "danger"}>{property.tracking_last_received_at ? "Online" : "Offline"}</StatusPill>],
+                ["Status", <TrackingStatus property={trackingEvidence} />],
                 ["Public property ID", property.tracking_id],
                 ["Allowed host", property.canonical_host],
-                [
-                  "Last event",
-                  property.tracking_last_received_at
-                    ? relative(property.tracking_last_received_at)
-                    : "Never",
-                ],
+                ["Script detected", trackingEvidence.verified_at ? relative(trackingEvidence.verified_at) : "Never"],
+                ["Last tracker heartbeat", trackingEvidence.last_tracker_heartbeat_at ? relative(trackingEvidence.last_tracker_heartbeat_at) : "Never"],
+                ["Last analytics event", trackingEvidence.tracking_last_received_at ? relative(trackingEvidence.tracking_last_received_at) : "Never"],
                 ["Cookies", "None"],
                 ["Persistent visitor IDs", "None"],
                 ["Tracker served", trackingDiagnostics?.currentTrackerVersion || "Checking…"],
-                ["Tracker last received", trackingDiagnostics?.receivedTrackerVersion || (property.tracking_last_received_at ? "Legacy tracker" : "Not received")],
-                ["Update status", trackingDiagnostics?.updateRequired ? "Update required" : trackingDiagnostics?.receivedTrackerVersion ? "Current" : "Awaiting a versioned event"],
+                ["Tracker last received", trackingDiagnostics?.receivedTrackerVersion || (trackingEvidence.tracking_last_received_at ? "Legacy tracker" : trackingEvidence.last_tracker_heartbeat_at ? "Heartbeat confirmed" : "Not received")],
+                ["Update status", trackingDiagnostics?.updateRequired ? "Update required" : trackingDiagnostics?.receivedTrackerVersion ? "Current" : trackingEvidence.last_tracker_heartbeat_at ? "Runtime confirmed" : "Awaiting tracker communication"],
               ]}
             />
             <div className="settings-actions">
@@ -4983,8 +5006,8 @@ function PropertySettingsView({
                     const result = await api<any>(session, `/api/properties/${property.id}/verify`, { method: "POST" });
                     notify(result.verified
                       ? result.trackingActive
-                        ? "Tracking code found and live data has been received"
-                        : "Tracking code found. Visit the published site once to bring tracking online"
+                        ? "Tracking code found and tracker communication has been confirmed"
+                        : "Tracking code found. The status will move to Tracking when the tracker runs and reaches Claritude"
                       : "Tracking identifier was not found on the public page. Clear caches after publishing and try again");
                     reload();
                   } catch (error: any) {
@@ -8679,11 +8702,13 @@ function Status({ value }: { value: string }) {
   );
 }
 
-function TrackingStatus({ receiving }: { receiving: boolean }) {
+function TrackingStatus({ property }: { property: Pick<Property, "verification_status" | "verified_at" | "last_tracker_heartbeat_at" | "tracking_last_received_at"> }) {
+  const state = trackingInstallationState(property);
+  const label = state === "not_active" ? "Not active" : state === "script_found" ? "Script Found" : "Tracking";
   return (
-    <span className="status-label">
-      <i className={`status-dot ${receiving ? "online" : "down"}`} />
-      {receiving ? "Receiving data" : "Not installed"}
+    <span className={`status-pill ${state === "not_active" ? "danger" : "success"} tracking-installation-status ${state.replace("_", "-")}`}>
+      <i />
+      {label}
     </span>
   );
 }
