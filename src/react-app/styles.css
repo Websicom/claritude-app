@@ -1308,6 +1308,50 @@ tbody tr:hover {
   line-height: 1.65;
 }
 .settings-intro { max-width: 850px; color: var(--muted); }
+.settings-tabs-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.settings-tabs-row .tabs {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0;
+}
+.settings-tabs-identity {
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--soft);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
+}
+.settings-tabs-identity img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.property-settings-identity {
+  display: inline-grid;
+  place-items: center;
+  border-radius: 12px;
+  font-size: 18px;
+}
+.account-settings-identity {
+  border-radius: 50%;
+  font-size: 18px;
+}
+.settings-panel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  align-items: stretch;
+}
+.settings-panel-grid > .panel {
+  height: 100%;
+}
 .tracking-setup-markers {
   display: flex;
   flex-wrap: wrap;
@@ -3492,7 +3536,8 @@ input[type="checkbox"]:checked:after {
 .usage-item small { color: var(--muted); }
 .usage-track { height: 7px; border-radius: 999px; background: var(--bar-fill); overflow: hidden; }
 .usage-track i { display: block; height: 100%; background: var(--green); border-radius: inherit; }
-.profile-notification-preferences { margin-top: 20px; }
+.profile-notification-preferences { margin: 0; }
+.profile-notification-preferences .panel-subtitle { margin-top: 0; }
 .security-privacy-sections { display: grid; gap: 14px; }
 .security-privacy-sections .panel { margin: 0; }
 .account-deletion-panel { border-color: #fecaca; }
@@ -3844,7 +3889,28 @@ input[type="checkbox"]:checked:after {
     width: min(325px, calc(100vw - 16px));
   }
 }
+@media (max-width: 900px) {
+  .settings-panel-grid { grid-template-columns: 1fr; }
+}
 @media (max-width: 760px) {
+  .settings-tabs-row {
+    flex-direction: column;
+    align-items: center;
+  }
+  .settings-tabs-identity { order: -1; }
+  .settings-tabs-row .tabs {
+    width: 100%;
+    align-self: stretch;
+  }
+  .profile-identity {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .profile-avatar-actions {
+    width: 100%;
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
   .snippet-grid { grid-template-columns: 1fr; }
   .workspace-properties-layout .pagination-row { flex-wrap: wrap; align-items: center; }
   .workspace-properties-layout .pagination-controls { margin-left: 0; }
