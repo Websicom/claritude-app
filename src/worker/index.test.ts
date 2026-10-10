@@ -32,6 +32,8 @@ import {
   normalizeAnalyticsPath,
   normalizePropertyRelations,
   meaningfulAccountActivity,
+  shouldRecordTrackerHeartbeat,
+  TRACKER_HEARTBEAT_WRITE_INTERVAL_MS,
   TRACKER_SOURCE,
   sanitizeEventMatchSettings,
   trackerEventNames,
@@ -418,6 +420,11 @@ describe("worker evidence pipelines", () => {
     expect(() => new Function(TRACKER_SOURCE)).not.toThrow();
     expect(TRACKER_SOURCE).toContain("/Chrome\\//.test");
     expect(TRACKER_SOURCE).toContain("_claritude_acquisition");
+    expect(TRACKER_SOURCE).toContain("_claritude_health_");
+    expect(TRACKER_SOURCE).toContain("/tracker-health");
+    expect(TRACKER_SOURCE).toContain("text/plain;charset=UTF-8");
+    expect(TRACKER_SOURCE).toContain("credentials:'omit'");
+    expect(TRACKER_SOURCE).toContain("referrerPolicy:'no-referrer'");
     expect(TRACKER_SOURCE).toContain("view_state");
     expect(TRACKER_SOURCE).toContain("active-lastCheckpointActive>=30");
     expect(TRACKER_SOURCE).toContain("batch=q.splice(0,20)");
@@ -432,6 +439,13 @@ describe("worker evidence pipelines", () => {
     expect(TRACKER_SOURCE).not.toContain("unhandledrejection");
     expect(TRACKER_SOURCE).not.toContain("document.cookie");
     expect(TRACKER_SOURCE).not.toContain("localStorage");
+  });
+
+  it("limits persisted tracker heartbeat writes to one per property per 24 hours", () => {
+    const now = Date.parse("2026-10-10T12:00:00Z");
+    expect(shouldRecordTrackerHeartbeat(null, now)).toBe(true);
+    expect(shouldRecordTrackerHeartbeat(new Date(now - TRACKER_HEARTBEAT_WRITE_INTERVAL_MS - 1).toISOString(), now)).toBe(true);
+    expect(shouldRecordTrackerHeartbeat(new Date(now - TRACKER_HEARTBEAT_WRITE_INTERVAL_MS + 1).toISOString(), now)).toBe(false);
   });
 
   it.each([
