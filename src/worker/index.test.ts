@@ -46,7 +46,12 @@ import {
   withAuditDeadline,
   closeBrowserWithDeadline,
   workspaceDeletionError,
+  formatUptimeEmailTimestamp,
   renderUptimeAlertEmail,
+  uptimeIncidentCause,
+  uptimeIncidentDuration,
+  uptimeIntervalLabel,
+  uptimeMonitoringPromotion,
   uptimeAlertRecipientEmails,
   resolveEffectiveEntitlements,
   validateComplimentaryGrantInput,
@@ -60,6 +65,7 @@ import {
   deriveFeatureState,
   deriveEmailAutomationDecision,
   renderEmailTemplate,
+  renderPlainTextTemplate,
   validatePlatformSetting,
   normalizeAccountTags,
   applyAdminExportFilters,
@@ -110,6 +116,27 @@ describe("worker evidence pipelines", () => {
       true,
       [" QA@Example.com ", "qa@example.com"],
     )).toEqual(["qa@example.com"]);
+  });
+
+  it("formats the incident details used by uptime emails", () => {
+    expect(uptimeIncidentCause("HTTP 503")).toBe("HTTP 503 · Service unavailable");
+    expect(uptimeIncidentCause("request timed out")).toBe("request timed out");
+    expect(uptimeIncidentDuration("2026-10-09T23:31:25Z", "2026-10-09T23:41:33Z")).toBe("10 minutes 8 seconds");
+    expect(uptimeIncidentDuration("2026-10-09T23:31:25Z", null)).toBe("Ongoing");
+    expect(uptimeIntervalLabel(1)).toBe("Every minute");
+    expect(uptimeIntervalLabel(5)).toBe("Every 5 minutes");
+    expect(formatUptimeEmailTimestamp("2026-10-09T23:31:25Z", "Europe/London")).toContain("10 Oct 2026");
+  });
+
+  it("uses accurate plan-aware monitoring messages", () => {
+    expect(uptimeMonitoringPromotion({ plan: "Free", intervalMinutes: 15, appUrl: "https://app.example/uptime", billingUrl: "https://app.example/account" })).toMatchObject({ title: "Know sooner.", cta: "Compare plans", url: "https://app.example/account" });
+    expect(uptimeMonitoringPromotion({ plan: "Scale", intervalMinutes: 5, appUrl: "https://app.example/uptime", billingUrl: "https://app.example/account" })).toMatchObject({ title: "Your plan can check sooner.", cta: "Update monitoring", url: "https://app.example/uptime" });
+    expect(uptimeMonitoringPromotion({ plan: "Pro", intervalMinutes: 1, appUrl: "https://app.example/uptime", billingUrl: "https://app.example/account" })).toMatchObject({ title: "Monitoring at full speed.", cta: "Manage monitoring" });
+  });
+
+  it("keeps plain-text email subjects readable while HTML template values stay escaped", () => {
+    expect(renderPlainTextTemplate("🔴 {{propertyName}} is down", { propertyName: "Smith & Co" }).rendered).toBe("🔴 Smith & Co is down");
+    expect(renderEmailTemplate("<b>{{propertyName}}</b>", { propertyName: "Smith & Co" }).rendered).toBe("<b>Smith &amp; Co</b>");
   });
 
   it("collects every configured custom event on the same clicked element", () => {
@@ -367,7 +394,11 @@ describe("worker evidence pipelines", () => {
     expect(html).toContain("https://example.com");
     expect(html).toContain("HTTP 500");
     expect(html).toContain("/uptime?property=property-1");
-    expect(html).toContain("did not create an incident");
+    expect(html).toContain("sample incident data only");
+    expect(html).toContain("#e11d2e");
+    expect(html).toContain("View incident in Claritude");
+    expect(html).toContain("Open website");
+    expect(html).toContain("Compare plans");
   });
 
   it("renders the recovery notification with the incident recovery time", () => {
@@ -377,8 +408,10 @@ describe("worker evidence pipelines", () => {
       kind: "recovered",
       appOrigin: "https://app.claritude.io",
     });
-    expect(html).toContain("Website recovered");
-    expect(html).toContain("2026-10-03T10:05:00Z");
+    expect(html).toContain("Recovered property is back online");
+    expect(html).toContain("#00c989");
+    expect(html).toContain("Duration");
+    expect(html).toContain("5 minutes");
   });
 
   it("emits a tracker script that browsers can parse", () => {

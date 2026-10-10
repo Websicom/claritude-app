@@ -3390,6 +3390,17 @@ export function renderEmailTemplate(source: string, variables: Record<string, un
   };
 }
 
+export function renderPlainTextTemplate(source: string, variables: Record<string, unknown>) {
+  const missing = [...source.matchAll(/{{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*}}/g)]
+    .map((match) => match[1])
+    .filter((key, index, all) => !Object.prototype.hasOwnProperty.call(variables, key) && all.indexOf(key) === index);
+  if (missing.length) return { rendered: source, missing };
+  return {
+    rendered: source.replace(/{{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*}}/g, (_match, key) => String(variables[key] ?? "")),
+    missing: [],
+  };
+}
+
 async function publishedEmailTemplate(db: SupabaseClient, templateKey: string) {
   const { data, error } = await db.from("email_templates").select("id,subject,html_body,text_body,variables,version").eq("template_key", templateKey).eq("state", "active").order("version", { ascending: false }).limit(1).maybeSingle();
   return error ? null : data;
@@ -8460,14 +8471,13 @@ async function sendAlert(
   incident: any,
   kind: "down" | "recovered",
 ) {
-  const { data: property } = await db
-    .from("properties")
-    .select("id,name,url,account_id")
-    .eq("id", incident.property_id)
-    .single();
+  const [{ data: property }, { data: monitor }] = await Promise.all([
+    db.from("properties").select("id,name,url,account_id,settings").eq("id", incident.property_id).single(),
+    db.from("uptime_monitors").select("interval_minutes,failure_threshold").eq("id", incident.monitor_id).maybeSingle(),
+  ]);
   const accountId = property?.account_id;
   const { data: account } = accountId
-    ? await db.from("accounts").select("billing_environment,is_test_account,test_notification_recipients").eq("id", accountId).maybeSingle()
+    ? await db.from("accounts").select("billing_environment,is_test_account,test_notification_recipients,entitlement").eq("id", accountId).maybeSingle()
     : { data: null };
   const isTest = account?.billing_environment === "test" || account?.is_test_account === true;
   const notificationAccess = await processingAccess(env, "uptime_notifications", accountId);
@@ -8496,7 +8506,30 @@ async function sendAlert(
   );
   const templateKey = kind === "down" ? "uptime_down" : "uptime_recovered";
   const template = await publishedEmailTemplate(db, templateKey);
-  const templateVariables = { propertyName: property?.name || "Property", propertyUrl: property?.url || "", incidentOpenedAt: incident.opened_at, incidentResolvedAt: incident.resolved_at || "", appUrl: `${env.APP_ORIGIN}/uptime?property=${property?.id || incident.property_id}` };
+  const appUrl = `${env.APP_ORIGIN.replace(/\/$/, "")}/uptime?property=${encodeURIComponent(property?.id || incident.property_id)}`;
+  const billingUrl = accountId
+    ? `${env.APP_ORIGIN.replace(/\/$/, "")}/account?accountTab=${encodeURIComponent("Billing & plan")}&billingAccount=${encodeURIComponent(accountId)}`
+    : `${env.APP_ORIGIN.replace(/\/$/, "")}/account`;
+  const plan = customEventPlan(account?.entitlement);
+  const monitorIntervalMinutes = Math.max(1, Number(monitor?.interval_minutes) || 5);
+  const promotion = uptimeMonitoringPromotion({ plan, intervalMinutes: monitorIntervalMinutes, appUrl, billingUrl });
+  const timeZone = String(property?.settings?.timezone || "Europe/London");
+  const templateVariables = {
+    propertyName: property?.name || "Property",
+    propertyUrl: property?.url || "",
+    incidentCause: uptimeIncidentCause(incident.cause),
+    incidentOpenedAt: formatUptimeEmailTimestamp(incident.opened_at, timeZone),
+    incidentResolvedAt: formatUptimeEmailTimestamp(incident.resolved_at, timeZone),
+    incidentDuration: uptimeIncidentDuration(incident.opened_at, incident.resolved_at),
+    monitorInterval: uptimeIntervalLabel(monitorIntervalMinutes),
+    failureThreshold: `${Math.max(1, Number(monitor?.failure_threshold) || 1)} consecutive failed ${Math.max(1, Number(monitor?.failure_threshold) || 1) === 1 ? "check" : "checks"}`,
+    appUrl,
+    claritudeUrl: "https://claritude.io",
+    monitoringNoteTitle: promotion.title,
+    monitoringNoteBody: promotion.body,
+    monitoringNoteUrl: promotion.url,
+    monitoringNoteCta: promotion.cta,
+  };
   for (const recipient of recipients) {
     const key = `${incident.id}:${kind}:${isTest ? "test" : "live"}:${recipient}`;
     const decision = await emailAutomationDecision(db, templateKey, recipient, templateKey);
@@ -8540,10 +8573,10 @@ async function sendAlert(
             from: env.RESEND_FROM,
             to: [recipient],
             subject: `${isTest ? "[TEST] " : ""}${template
-              ? renderEmailTemplate(template.subject, templateVariables).rendered
+              ? renderPlainTextTemplate(template.subject, templateVariables).rendered
               : kind === "down"
-                ? `Claritude downtime alert · ${property?.name || "Property"}`
-                : `Claritude recovery notice · ${property?.name || "Property"}`}`,
+                ? `🔴 ${property?.name || "Property"} is down`
+                : `🟢 ${property?.name || "Property"} is back online`}`,
             html: template
               ? renderEmailTemplate(template.html_body, templateVariables).rendered
               : renderUptimeAlertEmail({
@@ -8552,7 +8585,13 @@ async function sendAlert(
               kind,
               appOrigin: env.APP_ORIGIN,
               test: isTest,
+              monitorIntervalMinutes,
+              failureThreshold: Math.max(1, Number(monitor?.failure_threshold) || 1),
+              plan,
+              billingUrl,
+              timeZone,
             }),
+            ...(template?.text_body ? { text: renderPlainTextTemplate(template.text_body, templateVariables).rendered } : {}),
           }),
         });
         const providerBody: any = await response.json().catch(() => ({}));
@@ -8588,38 +8627,162 @@ export function uptimeAlertRecipientEmails(
     .filter((email) => /^\S+@\S+\.\S+$/.test(email)))];
 }
 
+export function uptimeIntervalLabel(minutes: number) {
+  const value = Math.max(1, Math.round(Number(minutes) || 1));
+  return value === 1 ? "Every minute" : `Every ${value} minutes`;
+}
+
+export function uptimeIncidentCause(cause: unknown) {
+  const value = String(cause || "Monitor request failed").trim();
+  const match = value.match(/^HTTP\s+(\d{3})$/i);
+  if (!match) return value;
+  const labels: Record<string, string> = {
+    "400": "Bad request",
+    "401": "Unauthorised",
+    "403": "Forbidden",
+    "404": "Not found",
+    "408": "Request timeout",
+    "429": "Too many requests",
+    "500": "Internal server error",
+    "502": "Bad gateway",
+    "503": "Service unavailable",
+    "504": "Gateway timeout",
+  };
+  return labels[match[1]] ? `HTTP ${match[1]} · ${labels[match[1]]}` : `HTTP ${match[1]}`;
+}
+
+export function formatUptimeEmailTimestamp(value: unknown, timeZone = "Europe/London") {
+  if (!value || !Number.isFinite(Date.parse(String(value)))) return "Not recorded";
+  try {
+    return new Intl.DateTimeFormat("en-GB", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+      timeZone,
+      timeZoneName: "short",
+    }).format(new Date(String(value)));
+  } catch {
+    return new Date(String(value)).toISOString();
+  }
+}
+
+export function uptimeIncidentDuration(openedAt: unknown, resolvedAt: unknown) {
+  const opened = Date.parse(String(openedAt || ""));
+  const resolved = Date.parse(String(resolvedAt || ""));
+  if (!Number.isFinite(opened) || !Number.isFinite(resolved) || resolved < opened) return "Ongoing";
+  let seconds = Math.max(0, Math.round((resolved - opened) / 1000));
+  const hours = Math.floor(seconds / 3600);
+  seconds -= hours * 3600;
+  const minutes = Math.floor(seconds / 60);
+  seconds -= minutes * 60;
+  const parts = [
+    hours ? `${hours} ${hours === 1 ? "hour" : "hours"}` : "",
+    minutes ? `${minutes} ${minutes === 1 ? "minute" : "minutes"}` : "",
+    seconds || (!hours && !minutes) ? `${seconds} ${seconds === 1 ? "second" : "seconds"}` : "",
+  ].filter(Boolean);
+  return parts.join(" ");
+}
+
+export function uptimeMonitoringPromotion({
+  plan,
+  intervalMinutes,
+  appUrl,
+  billingUrl,
+}: {
+  plan: "Free" | "Essentials" | "Scale" | "Pro";
+  intervalMinutes: number;
+  appUrl: string;
+  billingUrl: string;
+}) {
+  const minimum = plan === "Pro" ? 1 : plan === "Scale" ? 2 : plan === "Essentials" ? 5 : 15;
+  if (intervalMinutes > minimum) return {
+    title: "Your plan can check sooner.",
+    body: `This monitor checks every ${intervalMinutes} minutes. Your ${plan} plan supports ${uptimeIntervalLabel(minimum).toLowerCase()}, so you can detect incidents sooner.`,
+    cta: "Update monitoring",
+    url: appUrl,
+  };
+  if (plan === "Free") return {
+    title: "Know sooner.",
+    body: `This monitor checks every ${intervalMinutes} minutes. Paid plans support checks from every 5 minutes, with Pro monitoring every minute, so incidents can reach you sooner.`,
+    cta: "Compare plans",
+    url: billingUrl,
+  };
+  if (plan !== "Pro") return {
+    title: "Need even faster alerts?",
+    body: `${plan} monitoring checks ${uptimeIntervalLabel(intervalMinutes).toLowerCase()}. Pro can monitor every minute, helping you start investigating sooner.`,
+    cta: "Compare plans",
+    url: billingUrl,
+  };
+  return {
+    title: "Monitoring at full speed.",
+    body: "This monitor is using Pro's one-minute checking interval, Claritude's fastest available monitoring frequency.",
+    cta: "Manage monitoring",
+    url: appUrl,
+  };
+}
+
 export function renderUptimeAlertEmail({
   property,
   incident,
   kind,
   appOrigin,
   test = false,
+  monitorIntervalMinutes = 5,
+  failureThreshold = 2,
+  plan = "Free",
+  billingUrl,
+  timeZone = "Europe/London",
 }: {
   property: { id: string; name: string; url?: string | null };
   incident: { opened_at: string; resolved_at?: string | null; cause?: string | null };
   kind: "down" | "recovered";
   appOrigin: string;
   test?: boolean;
+  monitorIntervalMinutes?: number;
+  failureThreshold?: number;
+  plan?: "Free" | "Essentials" | "Scale" | "Pro";
+  billingUrl?: string;
+  timeZone?: string;
 }) {
-  const heading = kind === "down" ? "Website unavailable" : "Website recovered";
-  const detail = kind === "down"
-    ? "Claritude opened an incident after the configured failure threshold."
-    : "Claritude confirmed a successful response and closed the incident.";
   const dashboardUrl = `${appOrigin.replace(/\/$/, "")}/uptime?property=${encodeURIComponent(property.id)}`;
-  return `<!doctype html><html><body style="font-family:Arial,sans-serif;color:#171717;line-height:1.5">
-    ${test ? '<p style="font-weight:700;color:#b45309">TEST ALERT — sample incident data only</p>' : ""}
-    <h1>${escapeHtml(test ? `Test: ${heading}` : heading)}</h1>
-    <p>${escapeHtml(detail)}</p>
-    <table role="presentation" style="border-collapse:collapse"><tbody>
-      <tr><td style="padding:4px 16px 4px 0;color:#666">Property</td><td><b>${escapeHtml(property.name)}</b></td></tr>
-      <tr><td style="padding:4px 16px 4px 0;color:#666">URL</td><td>${escapeHtml(property.url || "Not supplied")}</td></tr>
-      <tr><td style="padding:4px 16px 4px 0;color:#666">Incident</td><td>${escapeHtml(incident.cause || "Monitor failure")}</td></tr>
-      <tr><td style="padding:4px 16px 4px 0;color:#666">Started</td><td>${escapeHtml(incident.opened_at)}</td></tr>
-      ${incident.resolved_at ? `<tr><td style="padding:4px 16px 4px 0;color:#666">Recovered</td><td>${escapeHtml(incident.resolved_at)}</td></tr>` : ""}
-    </tbody></table>
-    <p><a href="${escapeHtml(dashboardUrl)}">Open Claritude uptime</a></p>
-    ${test ? '<p style="color:#666">This test did not create an incident or change uptime statistics.</p>' : ""}
-  </body></html>`;
+  const accountUrl = billingUrl || `${appOrigin.replace(/\/$/, "")}/account`;
+  const promotion = uptimeMonitoringPromotion({ plan, intervalMinutes: monitorIntervalMinutes, appUrl: dashboardUrl, billingUrl: accountUrl });
+  const down = kind === "down";
+  const accent = down ? "#e11d2e" : "#00c989";
+  const heading = down ? `${property.name} is down` : `${property.name} is back online`;
+  const detail = down
+    ? "Claritude opened an incident after the configured failure threshold. We’ll email you again as soon as a successful response confirms recovery."
+    : "Claritude has confirmed a successful response and closed the incident.";
+  const row = (label: string, value: string) => `<tr><td style="padding:14px 0;border-bottom:1px solid #e4e4e7;color:#737373;font-size:13px;vertical-align:top;width:38%">${escapeHtml(label)}</td><td style="padding:14px 0;border-bottom:1px solid #e4e4e7;color:#171717;font-size:14px;font-weight:600;vertical-align:top;overflow-wrap:anywhere">${escapeHtml(value)}</td></tr>`;
+  const rows = [
+    row("Monitor", property.name),
+    row("Checked URL", property.url || "Not supplied"),
+    row("Root cause", uptimeIncidentCause(incident.cause)),
+    row("Incident started", formatUptimeEmailTimestamp(incident.opened_at, timeZone)),
+    ...(down ? [] : [
+      row("Recovered", formatUptimeEmailTimestamp(incident.resolved_at, timeZone)),
+      row("Duration", uptimeIncidentDuration(incident.opened_at, incident.resolved_at)),
+    ]),
+    row("Monitoring interval", uptimeIntervalLabel(monitorIntervalMinutes)),
+    row("Alert threshold", `${Math.max(1, failureThreshold)} consecutive failed ${Math.max(1, failureThreshold) === 1 ? "check" : "checks"}`),
+  ].join("");
+  return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;background:#f4f4f5;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;color:#171717;line-height:1.5"><div style="display:none;max-height:0;overflow:hidden">${escapeHtml(down ? `${property.name} is unavailable. Claritude has opened an incident.` : `${property.name} has recovered and the incident is closed.`)}</div><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f4f4f5"><tr><td align="center" style="padding:28px 12px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px">
+    <tr><td style="padding:0 4px 18px"><a href="https://claritude.io" style="color:#171717;text-decoration:none;font-size:22px;font-weight:800;letter-spacing:-.5px">Claritude<span style="color:#00c989">.</span></a><span style="float:right;color:#737373;font-size:12px;padding-top:7px">Website monitoring</span></td></tr>
+    ${test ? '<tr><td style="padding:10px 16px;background:#fff8df;border:1px solid #f3d58a;border-radius:10px;color:#7a4b00;font-size:13px;font-weight:700">TEST ALERT — sample incident data only</td></tr><tr><td style="height:12px"></td></tr>' : ""}
+    <tr><td style="background:#fff;border:1px solid #e4e4e7;border-top:5px solid ${accent};border-radius:12px;padding:30px">
+      <table role="presentation" cellspacing="0" cellpadding="0"><tr><td style="color:${accent};font-size:28px;line-height:1;padding-right:12px;vertical-align:middle">&#9679;</td><td style="vertical-align:middle"><div style="color:#737373;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">${down ? "Incident open" : "Incident resolved"}</div><h1 style="margin:2px 0 0;color:#171717;font-size:30px;line-height:1.2;letter-spacing:-.6px">${escapeHtml(heading)}</h1></td></tr></table>
+      <p style="margin:22px 0 18px;color:#3f3f46;font-size:16px">${escapeHtml(detail)}</p>
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-top:1px solid #e4e4e7">${rows}</table>
+      <div style="padding-top:24px"><a href="${escapeHtml(dashboardUrl)}" style="display:inline-block;background:#171717;color:#fff;text-decoration:none;font-size:14px;font-weight:700;padding:12px 18px;border-radius:8px;margin:0 8px 8px 0">View incident in Claritude</a>${property.url ? `<a href="${escapeHtml(property.url)}" style="display:inline-block;background:#fff;color:#171717;text-decoration:none;font-size:14px;font-weight:700;padding:11px 18px;border:1px solid #d4d4d8;border-radius:8px;margin:0 0 8px">Open website</a>` : ""}</div>
+    </td></tr>
+    <tr><td style="height:16px"></td></tr>
+    <tr><td style="background:#171717;border-radius:12px;padding:25px 28px"><h2 style="margin:0 0 8px;color:#fff;font-size:20px">${escapeHtml(promotion.title)}</h2><p style="margin:0 0 14px;color:#d4d4d8;font-size:14px">${escapeHtml(promotion.body)}</p><a href="${escapeHtml(promotion.url)}" style="color:#00c989;font-size:14px;font-weight:700;text-decoration:underline">${escapeHtml(promotion.cta)} →</a></td></tr>
+    <tr><td align="center" style="padding:22px 20px 4px;color:#737373;font-size:12px"><a href="https://claritude.io" style="color:#171717;font-weight:700;text-decoration:none">Claritude website</a><span style="padding:0 8px">·</span><a href="${escapeHtml(dashboardUrl)}" style="color:#171717;font-weight:700;text-decoration:none">Uptime dashboard</a><p style="margin:8px 0 0">This alert was sent to a recipient configured in this property’s Uptime settings.</p></td></tr>
+  </table></td></tr></table></body></html>`;
 }
 
 async function processDueBillingChanges(env: Env, db: SupabaseClient) {
