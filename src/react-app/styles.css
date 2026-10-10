@@ -810,6 +810,16 @@ tbody tr:hover {
 .status-pill.success { color: #087758; background: #e8f8f1; }
 .status-pill.danger { color: #b42335; background: #fff0f1; }
 .status-pill.neutral { color: #5f636b; background: #eff0f2; }
+.tracking-installation-status.script-found i {
+  animation: tracking-status-pulse 2.4s ease-in-out infinite;
+}
+@keyframes tracking-status-pulse {
+  0%, 100% { opacity: 0.65; box-shadow: 0 0 0 0 rgb(0 201 137 / 0); }
+  50% { opacity: 1; box-shadow: 0 0 0 4px rgb(0 201 137 / 0.16); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tracking-installation-status.script-found i { animation: none; }
+}
 .empty-state {
   display: grid;
   place-items: center;
@@ -1298,6 +1308,44 @@ tbody tr:hover {
   line-height: 1.65;
 }
 .settings-intro { max-width: 850px; color: var(--muted); }
+.tracking-setup-markers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 14px 0 8px;
+}
+.tracking-setup-markers span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid color-mix(in srgb, var(--green) 38%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--green) 9%, var(--panel));
+  color: var(--success-ink);
+  font-weight: 650;
+  cursor: default;
+}
+.tracking-setup-markers b {
+  display: inline-grid;
+  width: 17px;
+  height: 17px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--green);
+  color: #052e23;
+  font-size: 10px;
+}
+.tracking-troubleshooting {
+  max-width: 850px;
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--amber) 30%, var(--line));
+  border-radius: 8px;
+  background: var(--warning-bg);
+  color: var(--warning-ink);
+}
 .settings-footnote { margin-top: 16px; }
 .snippet-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .snippet-card { min-width: 0; }
