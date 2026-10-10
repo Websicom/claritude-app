@@ -483,7 +483,13 @@ function fallbackUserFacingSnapshot(technicalSnapshot: AuditRegistrySnapshot[]):
 }
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
-const TRACKER_VERSION = "2.3.3";
+const TRACKER_VERSION = "2.3.4";
+export const TRACKER_HEARTBEAT_WRITE_INTERVAL_MS = 24 * 60 * 60_000;
+export function shouldRecordTrackerHeartbeat(lastReceivedAt?: string | null, now = Date.now()) {
+  if (!lastReceivedAt) return true;
+  const receivedAt = Date.parse(lastReceivedAt);
+  return !Number.isFinite(receivedAt) || now - receivedAt >= TRACKER_HEARTBEAT_WRITE_INTERVAL_MS;
+}
 const SUPPORTED_TRACKER_VERSIONS = new Set(["2.0.0", "2.1.0", "2.1.1", "2.1.2", "2.1.3", "2.1.4", "2.1.5", "2.3.0", "2.3.2", TRACKER_VERSION]);
 app.use("*", secureHeaders({ crossOriginResourcePolicy: false }));
 app.use("*", async (c, next) => {
@@ -493,6 +499,10 @@ app.use("*", async (c, next) => {
 });
 app.use(
   "/collect",
+  cors({ origin: "*", allowMethods: ["POST", "OPTIONS"], maxAge: 86400 }),
+);
+app.use(
+  "/tracker-health",
   cors({ origin: "*", allowMethods: ["POST", "OPTIONS"], maxAge: 86400 }),
 );
 
@@ -821,6 +831,68 @@ app.post("/collect", async (c) => {
       .is("read_at", null);
   }
   return c.body(null, 202);
+});
+
+app.post("/tracker-health", async (c) => {
+  c.header("cache-control", "no-store");
+  const contentLength = Number(c.req.header("content-length") || 0);
+  if (contentLength > 512) return c.body(null, 413);
+  const origin = c.req.header("origin");
+  if (!origin) return c.body(null, 400);
+  let input: { property?: unknown; version?: unknown };
+  try {
+    const raw = await c.req.text();
+    if (raw.length > 512) return c.body(null, 413);
+    input = JSON.parse(raw);
+  } catch {
+    return c.body(null, 400);
+  }
+  const trackingId = String(input.property || "").slice(0, 80);
+  const trackerVersion = String(input.version || "").slice(0, 24);
+  if (!/^cl_[a-zA-Z0-9_-]{12,64}$/.test(trackingId) || !SUPPORTED_TRACKER_VERSIONS.has(trackerVersion))
+    return c.body(null, 400);
+
+  const db = admin(c.env);
+  const { data: property } = await db
+    .from("properties")
+    .select("id,canonical_host,tracking_enabled,verification_status,verified_at,last_tracker_heartbeat_at")
+    .eq("tracking_id", trackingId)
+    .maybeSingle();
+  if (!property?.tracking_enabled) return c.body(null, 404);
+  try {
+    if (!sameSiteHost(new URL(origin).hostname, property.canonical_host))
+      return c.body(null, 403);
+  } catch {
+    return c.body(null, 400);
+  }
+  if (!shouldRecordTrackerHeartbeat(property.last_tracker_heartbeat_at)) {
+    c.header("x-claritude-heartbeat", "recent");
+    return c.body(null, 204);
+  }
+
+  const now = new Date().toISOString();
+  const staleBefore = new Date(Date.now() - TRACKER_HEARTBEAT_WRITE_INTERVAL_MS).toISOString();
+  const { data: updated, error } = await db
+    .from("properties")
+    .update({
+      last_tracker_heartbeat_at: now,
+      verification_status: "verified",
+      verified_at: property.verified_at || now,
+    })
+    .eq("id", property.id)
+    .or(`last_tracker_heartbeat_at.is.null,last_tracker_heartbeat_at.lt.${staleBefore}`)
+    .select("id")
+    .maybeSingle();
+  if (error) return c.body(null, 503);
+  if (updated) {
+    await db.from("notifications")
+      .update({ read_at: now })
+      .eq("property_id", property.id)
+      .eq("category", "tracking_problems")
+      .is("read_at", null);
+  }
+  c.header("x-claritude-heartbeat", updated ? "recorded" : "recent");
+  return c.body(null, 204);
 });
 
 export type BillingEnvironment = "test" | "live";
@@ -5432,7 +5504,7 @@ app.post("/api/properties/:id/verify", async (c) => {
   const db = c.get("db");
   const { data: property, error } = await db
     .from("properties")
-    .select("id,url,tracking_id,workspace_id,tracking_last_received_at")
+    .select("id,url,tracking_id,workspace_id,tracking_last_received_at,last_tracker_heartbeat_at")
     .eq("id", c.req.param("id"))
     .single();
   if (error || !property) return c.json({ error: "property_not_found" }, 404);
@@ -5462,18 +5534,18 @@ app.post("/api/properties/:id/verify", async (c) => {
         .eq("property_id", property.id)
         .eq("category", "tracking_problems")
         .is("read_at", null);
-      if (!property.tracking_last_received_at)
+      if (!property.tracking_last_received_at && !property.last_tracker_heartbeat_at)
         await createPropertyNotification(c.env, property.id, {
           category: "tracking_problems",
-          title: "Tracking installed — awaiting first visit",
-          body: "Visit the published site once to start analytics collection. Clear site or CDN caches if the code was just added.",
+          title: "Tracking installed — awaiting tracker communication",
+          body: "Open the published site once to let the tracker confirm installation. Clear site or CDN caches if the code was just added.",
           severity: "warning",
           dedupeKey: `tracking-first-visit:${property.id}`,
         });
     }
     return c.json({
       verified,
-      trackingActive: Boolean(property.tracking_last_received_at),
+      trackingActive: Boolean(property.tracking_last_received_at || property.last_tracker_heartbeat_at),
       method: verified
         ? html.includes(property.tracking_id.toLowerCase())
           ? "tracking_script"
@@ -7552,22 +7624,36 @@ app.get("/api/properties/:id/analytics/events/:name", async (c) => {
 });
 
 app.get("/api/properties/:id/tracking-diagnostics", async (c) => {
-  const { data, error } = await c.get("db")
-    .from("analytics_events")
-    .select("event_type,metadata,received_at")
-    .eq("property_id", c.req.param("id"))
-    .order("received_at", { ascending: false })
-    .limit(1000);
-  if (error) return c.json({ error: error.message }, 400);
-  const rows = data || [];
+  const db = c.get("db");
+  const propertyId = c.req.param("id");
+  const [eventsResult, propertyResult] = await Promise.all([
+    db.from("analytics_events")
+      .select("event_type,metadata,received_at")
+      .eq("property_id", propertyId)
+      .order("received_at", { ascending: false })
+      .limit(1000),
+    db.from("properties")
+      .select("verification_status,verified_at,last_tracker_heartbeat_at,tracking_last_received_at")
+      .eq("id", propertyId)
+      .single(),
+  ]);
+  if (eventsResult.error) return c.json({ error: eventsResult.error.message }, 400);
+  if (propertyResult.error) return c.json({ error: "property_not_found" }, 404);
+  const rows = eventsResult.data || [];
+  const property = propertyResult.data;
   const counts: Record<string, number> = {};
   rows.forEach((row: any) => { counts[row.event_type] = (counts[row.event_type] || 0) + 1; });
   const latestVersion = rows.find((row: any) => row.metadata?.tracker_version)?.metadata?.tracker_version || null;
+  const lastAnalyticsReceivedAt = property.tracking_last_received_at || rows[0]?.received_at || null;
   return c.json({
     currentTrackerVersion: TRACKER_VERSION,
     receivedTrackerVersion: latestVersion,
     updateRequired: Boolean(latestVersion && latestVersion !== TRACKER_VERSION),
-    lastReceivedAt: rows[0]?.received_at || null,
+    verificationStatus: property.verification_status,
+    scriptDetectedAt: property.verified_at,
+    lastTrackerHeartbeatAt: property.last_tracker_heartbeat_at,
+    lastAnalyticsReceivedAt,
+    lastReceivedAt: lastAnalyticsReceivedAt,
     sampleSize: rows.length,
     signals: {
       pageviews: counts.pageview || 0,
@@ -11826,8 +11912,9 @@ export function trackerEventNames(element: any) {
 
 export const TRACKER_SOURCE = `(()=>{
   let s=document.currentScript;if(!s){const scripts=document.getElementsByTagName('script');for(let i=scripts.length-1;i>=0;i--){const candidate=scripts[i],src=candidate.getAttribute('src')||'';if(candidate.getAttribute('data-property')&&/(?:\\/c|\\/tracker)\\.js(?:[?#]|$)/.test(src)){s=candidate;break}}}
-  const p=s&&s.getAttribute('data-property'),endpoint=s&&new URL('/collect',s.src).href,base=s&&new URL('/',s.src).href;
-  if(!p||!endpoint||window.__claritude)return;window.__claritude=1;
+  const p=s&&s.getAttribute('data-property'),endpoint=s&&new URL('/collect',s.src).href,healthEndpoint=s&&new URL('/tracker-health',s.src).href,base=s&&new URL('/',s.src).href;
+  if(!p||!endpoint||!healthEndpoint||window.__claritude)return;window.__claritude=1;
+  const heartbeat=()=>{const version='${TRACKER_VERSION}',key='_claritude_health_'+p,now=Date.now();try{const stored=sessionStorage.getItem(key);if(stored===version)return;const parts=(stored||'').split(':');if(parts[0]===version&&now-Number(parts[1])<3600000)return;sessionStorage.setItem(key,version+':'+now)}catch(storageError){}fetch(healthEndpoint,{method:'POST',headers:{'content-type':'text/plain;charset=UTF-8'},body:JSON.stringify({property:p,version}),credentials:'omit',referrerPolicy:'no-referrer',keepalive:true}).then(response=>{if(response.ok)try{sessionStorage.setItem(key,version)}catch(storageError){}}).catch(()=>{})};heartbeat();
   const uuid=()=>{try{return crypto.randomUUID()}catch(uuidError){const b=new Uint8Array(16);try{crypto.getRandomValues(b)}catch(randomError){for(let i=0;i<b.length;i++)b[i]=Math.floor(Math.random()*256)}b[6]=b[6]&15|64;b[8]=b[8]&63|128;return Array.prototype.map.call(b,(x,i)=>(i===4||i===6||i===8||i===10?'-':'')+x.toString(16).padStart(2,'0')).join('')}};
   let q=[],timer,retryTimer,stateTimer,retryDelay=1000,sending=false,lastUrl=location.href,view=uuid(),generation=0,active=0,lastCheckpointActive=0,lastActivity=Date.now(),maxScroll=0,checkpointSequence=0,pageStartedAt=new Date().toISOString(),dirty=true,vitalsReady=null,vitalState={},keyEventCounts={};
   const marks=new Set,visibleSections=new Set,observedSections=new WeakSet;
