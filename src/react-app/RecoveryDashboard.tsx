@@ -5045,7 +5045,7 @@ function PropertySettingsView({
                         <button onClick={async () => {
                           setViewerMenu(null);
                           try {
-                            await api(session, `/api/properties/${property.id}/viewers/${viewer.user_id}/resend`, { method: "POST" });
+                            await api(session!, `/api/properties/${property.id}/viewers/${viewer.user_id}/resend`, { method: "POST" });
                             notify("Viewer invitation resent");
                           } catch (error: any) {
                             notify(error.message);
@@ -7414,13 +7414,13 @@ function AccountView({
                     <div className="row-actions">
                       {!user?.confirmedAt && <button className="btn" onClick={async () => {
                         try {
-                          await api(session, `/api/properties/${membership.property_id}/viewers/${membership.user_id}/resend`, { method: "POST" });
+                          await api(session!, `/api/properties/${membership.property_id}/viewers/${membership.user_id}/resend`, { method: "POST" });
                           notify("Viewer invitation resent");
                         } catch (error: any) { notify(error.message); }
                       }}>Resend invite</button>}
                       <button className="danger-solid" onClick={async () => {
                         try {
-                          await api(session, `/api/properties/${membership.property_id}/viewers/${membership.user_id}`, { method: "DELETE" });
+                          await api(session!, `/api/properties/${membership.property_id}/viewers/${membership.user_id}`, { method: "DELETE" });
                           await refreshUsers();
                           reload();
                           notify("Property viewer access removed");
