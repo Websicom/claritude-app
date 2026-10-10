@@ -1206,6 +1206,15 @@ export function financeMetrics(input: {
   });
 }
 
+export function stripePaymentMethodSummary(paymentIntent: any) {
+  const charge = typeof paymentIntent?.latest_charge === "object" ? paymentIntent.latest_charge : null;
+  const details = charge?.payment_method_details;
+  const card = details?.card;
+  const last4 = String(card?.last4 || "").replace(/\D/g, "").slice(-4);
+  if (details?.type !== "card" || !card?.brand || last4.length !== 4) return null;
+  return { type: "card", brand: String(card.brand).toLowerCase(), last4 };
+}
+
 async function projectStripeSubscription(env: Env, subscription: any, eventCreated: number) {
   const billingEnvironment = billingEnvironmentForLivemode(subscription.livemode);
   const relation = await billingAccountForObject(env, subscription, billingEnvironment);
@@ -3550,11 +3559,41 @@ app.get("/api/billing/:accountId", async (c) => {
   const catalogueStatus = approvedCatalogueStatus(catalogue.data || [], billingEnvironment);
   const checkoutReady = Boolean(provider.configured && config?.checkout_enabled && config?.tax_enabled && config?.tax_reviewed_at && catalogueStatus.missing.length === 0 && catalogueStatus.issues.length === 0);
   const effective = await effectiveEntitlements(c.env, accountId);
+  let paymentRows = payments.data || [];
+  const paymentMissingCardSummary = paymentRows.find((payment: any) =>
+    ["succeeded", "paid"].includes(String(payment.status || "").toLowerCase()) &&
+    !payment.payment_method_summary?.last4,
+  );
+  if (provider.client && paymentMissingCardSummary?.provider_payment_intent_id) {
+    try {
+      const paymentIntent = await provider.client.paymentIntents.retrieve(
+        paymentMissingCardSummary.provider_payment_intent_id,
+        { expand: ["latest_charge"] },
+      );
+      const paymentMethodSummary = stripePaymentMethodSummary(paymentIntent);
+      if (paymentMethodSummary) {
+        await db.from("billing_payments")
+          .update({ payment_method_summary: paymentMethodSummary, updated_at: new Date().toISOString() })
+          .eq("billing_environment", billingEnvironment)
+          .eq("provider_payment_intent_id", paymentMissingCardSummary.provider_payment_intent_id);
+        paymentRows = paymentRows.map((payment: any) =>
+          payment.provider_payment_intent_id === paymentMissingCardSummary.provider_payment_intent_id
+            ? { ...payment, payment_method_summary: paymentMethodSummary }
+            : payment,
+        );
+      }
+    } catch (error) {
+      console.error("billing_payment_method_summary_refresh_failed", {
+        accountId,
+        error: errorMessage(error),
+      });
+    }
+  }
   let usage = null;
   let usageError = null;
   try { usage = await accountBillingUsage(c.env, accountId, subscriptions.data || [], effective); }
   catch (error) { usageError = errorMessage(error); }
-  return c.json({ accountId, billingEnvironment, isTestAccount: account.data.is_test_account, canManage: access.canManage, providerMode: provider.client ? billingEnvironment : "unconfigured", checkoutReady, portalReady: Boolean(provider.client && (config?.portal_configuration_id || provider.portalConfigurationId)), configuration: config || null, customer: customer.data || null, subscriptions: subscriptions.data || [], invoices: invoices.data || [], payments: payments.data || [], refunds: refunds.data || [], disputes: disputes.data || [], catalogue: catalogue.data || [], complimentaryGrant: grant.data || null, effectiveEntitlements: effective, usage, usageError });
+  return c.json({ accountId, billingEnvironment, isTestAccount: account.data.is_test_account, canManage: access.canManage, providerMode: provider.client ? billingEnvironment : "unconfigured", checkoutReady, portalReady: Boolean(provider.client && (config?.portal_configuration_id || provider.portalConfigurationId)), configuration: config || null, customer: customer.data || null, subscriptions: subscriptions.data || [], invoices: invoices.data || [], payments: paymentRows, refunds: refunds.data || [], disputes: disputes.data || [], catalogue: catalogue.data || [], complimentaryGrant: grant.data || null, effectiveEntitlements: effective, usage, usageError });
 });
 
 export function checkoutSelectionMatches(attempt: Record<string, any> | null | undefined, selection: { packageVersionId: string; currency: string; interval: string; includedEditingSeats: number }) {
