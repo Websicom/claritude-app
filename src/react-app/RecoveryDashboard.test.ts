@@ -48,6 +48,7 @@ import {
   sortWorkspaceProperties,
   supportedTimezones,
   trafficSeriesKey,
+  trackingInstallationState,
   uptimePeriodQuery,
   uptimeIntervalsForPlan,
   responseChartLabel,
@@ -212,7 +213,28 @@ describe("top selector searches", () => {
       audit_runs: [{ status: "completed", score: 84 }],
     } as any);
     expect(checks.map((check) => check.complete)).toEqual([true, true, true, true]);
+    expect(propertyOnboardingChecks({
+      verification_status: "verified",
+      last_tracker_heartbeat_at: "2026-10-04T09:00:00Z",
+    } as any).map((check) => check.complete)).toEqual([true, false, true, false]);
     expect(propertyOnboardingChecks({ verification_status: "pending" } as any).map((check) => check.complete)).toEqual([false, false, false, false]);
+  });
+
+  it("derives tracking installation state only from persisted backend evidence", () => {
+    expect(trackingInstallationState({ verification_status: "pending" })).toBe("not_active");
+    expect(trackingInstallationState({ verification_status: "verified" })).toBe("script_found");
+    expect(trackingInstallationState({
+      verification_status: "pending",
+      verified_at: "2026-10-10T09:00:00Z",
+    })).toBe("script_found");
+    expect(trackingInstallationState({
+      verification_status: "verified",
+      last_tracker_heartbeat_at: "2026-10-10T09:01:00Z",
+    })).toBe("tracking");
+    expect(trackingInstallationState({
+      verification_status: "pending",
+      tracking_last_received_at: "2026-10-10T09:02:00Z",
+    })).toBe("tracking");
   });
 
   it("prioritises offline workspace properties and otherwise sorts alphabetically", () => {
