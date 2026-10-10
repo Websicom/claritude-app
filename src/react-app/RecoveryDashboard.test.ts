@@ -9,6 +9,7 @@ import {
   auditRunCategoryScores,
   auditScoreBand,
   billingUpgradeHref,
+  billingCheckoutErrorMessage,
   buildAuditFixPrompt,
   configuredEventAttributeNames,
   configuredEventType,
@@ -68,6 +69,20 @@ describe("property switching", () => {
       .toBe("/analytics?property=new&analyticsTab=Pages");
     expect(propertySwitchDestination("/analytics", "?property=old&analyticsTab=Sources&sourceDetail=Google", "new"))
       .toBe("/analytics?property=new&analyticsTab=Sources");
+  });
+});
+
+describe("billing checkout errors", () => {
+  it("turns operation-lock codes into actionable customer copy", () => {
+    expect(billingCheckoutErrorMessage(new Error("financial_operation_in_progress"))).toBe(
+      "Checkout is still being prepared. Please wait a moment and try again.",
+    );
+    expect(billingCheckoutErrorMessage(new Error("checkout_session_expired"))).toBe(
+      "Your previous checkout expired. Please choose the package again.",
+    );
+    expect(billingCheckoutErrorMessage(new Error("stripe_checkout_failed"))).toBe(
+      "Stripe could not open checkout. No payment was taken. Please try again.",
+    );
   });
 });
 
