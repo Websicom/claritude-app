@@ -115,6 +115,10 @@ export function customEventPlan(entitlement: unknown): CustomEventPlan {
   return "Free";
 }
 
+export function uptimeRecoveryAlertsEnabled(entitlement: unknown) {
+  return customEventPlan(entitlement) !== "Free";
+}
+
 export function customEventAllowance(entitlement: unknown, used: number) {
   const plan = customEventPlan(entitlement);
   const limits: Record<CustomEventPlan, number | null> = {
@@ -6590,6 +6594,13 @@ app.delete("/api/properties/:id/alert-recipients/:recipientId", async (c) => {
   return error ? c.json({ error: error.message }, 400) : c.json({ deleted: true });
 });
 
+export const TEST_ALERT_LIMIT = 3;
+export const TEST_ALERT_WINDOW_MS = 6 * 60 * 60_000;
+
+export function testAlertWindowStart(now = Date.now()) {
+  return new Date(now - TEST_ALERT_WINDOW_MS).toISOString();
+}
+
 app.post("/api/properties/:id/test-alert", async (c) => {
   const db = c.get("db");
   const propertyId = c.req.param("id");
@@ -6607,16 +6618,21 @@ app.post("/api/properties/:id/test-alert", async (c) => {
     return c.json({ error: "property_manage_access_required" }, 403);
   if (!c.env.RESEND_API_KEY || !c.env.RESEND_FROM)
     return c.json({ error: "email_delivery_not_configured" }, 503);
-  const fiveMinutesAgo = new Date(Date.now() - 5 * 60_000).toISOString();
-  const { count: recentTests } = await admin(c.env)
+  const { count: recentTests, error: recentTestsError } = await admin(c.env)
     .from("activity_log")
     .select("id", { count: "exact", head: true })
-    .eq("actor_id", c.get("userId"))
     .eq("property_id", propertyId)
     .eq("action", "uptime.test_alert_sent")
-    .gte("created_at", fiveMinutesAgo);
-  if ((recentTests || 0) >= 3)
-    return c.json({ error: "test_alert_rate_limit", retryAfterSeconds: 300 }, 429);
+    .gte("created_at", testAlertWindowStart());
+  if (recentTestsError)
+    return c.json({ error: "test_alert_usage_unavailable" }, 503);
+  if ((recentTests || 0) >= TEST_ALERT_LIMIT)
+    return c.json({
+      error: "test_alert_rate_limit",
+      limit: TEST_ALERT_LIMIT,
+      windowHours: TEST_ALERT_WINDOW_MS / 3_600_000,
+      retryAfterSeconds: TEST_ALERT_WINDOW_MS / 1000,
+    }, 429);
   const key = `test:${propertyId}:${c.get("userId")}:${crypto.randomUUID()}`;
   const sampleIncident = {
     id: `test-${crypto.randomUUID()}`,
@@ -8888,6 +8904,8 @@ async function sendAlert(
     ? await db.from("accounts").select("billing_environment,is_test_account,test_notification_recipients,entitlement").eq("id", accountId).maybeSingle()
     : { data: null };
   const isTest = account?.billing_environment === "test" || account?.is_test_account === true;
+  const plan = customEventPlan(account?.entitlement);
+  if (kind === "recovered" && !uptimeRecoveryAlertsEnabled(account?.entitlement)) return;
   const notificationAccess = await processingAccess(env, "uptime_notifications", accountId);
   if (!notificationAccess.allowed) {
     await db.from("platform_alerts").insert({ title: "Uptime customer notification suppressed", details: { incidentId: incident.id, kind, reason: notificationAccess.error, accountId } });
@@ -8918,7 +8936,6 @@ async function sendAlert(
   const billingUrl = accountId
     ? `${env.APP_ORIGIN.replace(/\/$/, "")}/account?accountTab=${encodeURIComponent("Billing & plan")}&billingAccount=${encodeURIComponent(accountId)}`
     : `${env.APP_ORIGIN.replace(/\/$/, "")}/account`;
-  const plan = customEventPlan(account?.entitlement);
   const monitorIntervalMinutes = Math.max(1, Number(monitor?.interval_minutes) || 5);
   const promotion = uptimeMonitoringPromotion({ plan, intervalMinutes: monitorIntervalMinutes, appUrl, billingUrl });
   const timeZone = String(property?.settings?.timezone || "Europe/London");

@@ -19,6 +19,10 @@ import {
   fourWeekAuditCreditLimit,
   allowedUptimeIntervals,
   uptimeMinimumInterval,
+  uptimeRecoveryAlertsEnabled,
+  TEST_ALERT_LIMIT,
+  TEST_ALERT_WINDOW_MS,
+  testAlertWindowStart,
   cleanPath,
   editableWorkspaceRole,
   encodeAuditContinuationPayload,
@@ -102,6 +106,20 @@ describe("worker evidence pipelines", () => {
     expect(uptimeMinimumInterval("pro_early_access")).toBe(1);
     expect(allowedUptimeIntervals("free")).toEqual([15, 30, 60]);
     expect(allowedUptimeIntervals("scale")).toEqual([2, 5, 10, 15, 30, 60]);
+  });
+
+  it("enforces the per-property test-alert safeguard over a six-hour rolling window", () => {
+    const now = Date.parse("2026-10-10T12:00:00.000Z");
+    expect(TEST_ALERT_LIMIT).toBe(3);
+    expect(TEST_ALERT_WINDOW_MS).toBe(21_600_000);
+    expect(testAlertWindowStart(now)).toBe("2026-10-10T06:00:00.000Z");
+  });
+
+  it("only enables recovery alerts for paid plans", () => {
+    expect(uptimeRecoveryAlertsEnabled("free")).toBe(false);
+    expect(uptimeRecoveryAlertsEnabled("essentials")).toBe(true);
+    expect(uptimeRecoveryAlertsEnabled("scale")).toBe(true);
+    expect(uptimeRecoveryAlertsEnabled("pro_early_access")).toBe(true);
   });
 
   it("routes live uptime alerts to every enabled property recipient", () => {
