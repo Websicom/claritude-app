@@ -140,7 +140,9 @@ jobs:
           : "${SUPABASE_DB_PASSWORD:?Missing production secret SUPABASE_DB_PASSWORD}"
           : "${SUPABASE_PROJECT_ID:?Missing production variable SUPABASE_PROJECT_ID}"
           export PGPASSWORD="$SUPABASE_DB_PASSWORD"
-          psql "host=db.${SUPABASE_PROJECT_ID}.supabase.co port=5432 dbname=postgres user=postgres sslmode=require" \
+          pooler_host="$(node -e 'const s=require("fs").readFileSync("supabase/.temp/pooler-url","utf8").trim();const m=s.match(/@([^:/]+):([0-9]+)/);if(!m)process.exit(1);process.stdout.write(m[1])')"
+          pooler_port="$(node -e 'const s=require("fs").readFileSync("supabase/.temp/pooler-url","utf8").trim();const m=s.match(/@([^:/]+):([0-9]+)/);if(!m)process.exit(1);process.stdout.write(m[2])')"
+          psql "host=$pooler_host port=$pooler_port dbname=postgres user=postgres.${SUPABASE_PROJECT_ID} sslmode=require" \
             --set ON_ERROR_STOP=1 \
             --file scripts/reconcile-stage3-billing.sql
 
