@@ -14,6 +14,8 @@ import {
   compactAuditResult,
   customEventAllowance,
   customEventPlan,
+  checkoutAttemptIsStale,
+  checkoutSelectionMatches,
   finiteAllocationCapacity,
   allocationWorkspaceLimit,
   fourWeekAuditCreditLimit,
@@ -82,6 +84,24 @@ import {
 import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
 import { webpDimensions } from "../shared/avatar";
+
+describe("checkout recovery", () => {
+  const selection = { packageVersionId: "package-one", currency: "gbp", interval: "year", includedEditingSeats: 2 };
+
+  it("matches an existing attempt only when every billed selection field agrees", () => {
+    const attempt = { package_version_id: "package-one", currency: "GBP", interval: "year", editing_seats: 2 };
+    expect(checkoutSelectionMatches(attempt, selection)).toBe(true);
+    expect(checkoutSelectionMatches({ ...attempt, interval: "month" }, selection)).toBe(false);
+    expect(checkoutSelectionMatches({ ...attempt, editing_seats: 3 }, selection)).toBe(false);
+  });
+
+  it("allows a short in-flight grace period before treating an unlinked attempt as stale", () => {
+    const now = Date.parse("2026-10-10T12:02:00.000Z");
+    expect(checkoutAttemptIsStale("2026-10-10T12:01:01.000Z", now)).toBe(false);
+    expect(checkoutAttemptIsStale("2026-10-10T12:00:00.000Z", now)).toBe(true);
+    expect(checkoutAttemptIsStale("not-a-date", now)).toBe(true);
+  });
+});
 
 describe("worker evidence pipelines", () => {
   it("preserves actionable property provisioning errors from the atomic RPC", () => {

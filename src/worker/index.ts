@@ -3557,6 +3557,19 @@ app.get("/api/billing/:accountId", async (c) => {
   return c.json({ accountId, billingEnvironment, isTestAccount: account.data.is_test_account, canManage: access.canManage, providerMode: provider.client ? billingEnvironment : "unconfigured", checkoutReady, portalReady: Boolean(provider.client && (config?.portal_configuration_id || provider.portalConfigurationId)), configuration: config || null, customer: customer.data || null, subscriptions: subscriptions.data || [], invoices: invoices.data || [], payments: payments.data || [], refunds: refunds.data || [], disputes: disputes.data || [], catalogue: catalogue.data || [], complimentaryGrant: grant.data || null, effectiveEntitlements: effective, usage, usageError });
 });
 
+export function checkoutSelectionMatches(attempt: Record<string, any> | null | undefined, selection: { packageVersionId: string; currency: string; interval: string; includedEditingSeats: number }) {
+  return Boolean(attempt)
+    && String(attempt?.package_version_id || "") === selection.packageVersionId
+    && String(attempt?.currency || "").toLowerCase() === selection.currency
+    && String(attempt?.interval || "") === selection.interval
+    && Number(attempt?.editing_seats) === selection.includedEditingSeats;
+}
+
+export function checkoutAttemptIsStale(createdAt: unknown, now = Date.now(), graceMs = 120_000) {
+  const created = Date.parse(String(createdAt || ""));
+  return !Number.isFinite(created) || now - created >= graceMs;
+}
+
 app.post("/api/billing/:accountId/checkout", async (c) => {
   const accountId = c.req.param("accountId");
   const access = await billingAccess(c.env, c.get("userId"), accountId);
@@ -3590,14 +3603,41 @@ app.post("/api/billing/:accountId/checkout", async (c) => {
   const base = (prices.data || []).find((price) => price.component === "base" && price.provider_livemode === (billingEnvironment === "live"));
   const expectedAmount = approvedCatalogueAmount(packageVersion.data?.package_key, currency, interval, "base");
   if (!base || expectedAmount == null || Number(base.unit_amount_minor) !== expectedAmount || base.tax_behavior !== "exclusive" || !base.metadata?.productTaxCode) return c.json({ error: "verified_approved_gbp_catalogue_price_missing", detail: "The approved GBP base price, exclusive tax behaviour, and SaaS product tax code are required.", includedEditingSeats }, 409);
+
+  const selection = { packageVersionId: body.packageVersionId, currency, interval, includedEditingSeats };
   const idempotencyKey = `checkout:${billingEnvironment}:${operationKey}`;
-  const priorOperation = await db.from("billing_financial_operations").select("provider_reference,state,response").eq("billing_environment", billingEnvironment).eq("operation_type", "checkout").eq("operation_key", operationKey).maybeSingle();
-  if (priorOperation.data?.provider_reference) return c.json({ sessionId: priorOperation.data.provider_reference, ...(priorOperation.data.response || {}), reused: true });
-  const prior = await db.from("billing_checkout_attempts").select("provider_session_id,state").eq("billing_environment", billingEnvironment).eq("idempotency_key", idempotencyKey).maybeSingle();
-  if (prior.data?.provider_session_id) return c.json({ sessionId: prior.data.provider_session_id, reused: true });
-  const operation = await db.from("billing_financial_operations").insert({ billing_environment: billingEnvironment, operation_key: operationKey, operation_type: "checkout", account_id: accountId, requested_by: c.get("userId"), request: { packageVersionId: body.packageVersionId, currency, interval, includedEditingSeats } }).select("id").maybeSingle();
-  if (operation.error?.code === "23505") return c.json({ error: "financial_operation_in_progress", operationKey }, 409);
-  if (operation.error || !operation.data) return c.json({ error: "financial_operation_persistence_failed" }, 503);
+  const integrationIdentifier = `claritude_${operationKey.replaceAll("-", "")}`;
+  let priorOperation = await db.from("billing_financial_operations").select("id,provider_reference,state,response,request").eq("billing_environment", billingEnvironment).eq("operation_type", "checkout").eq("operation_key", operationKey).maybeSingle();
+  const priorRequest = priorOperation.data?.request as Record<string, any> | null | undefined;
+  if (priorRequest && (String(priorRequest.packageVersionId || "") !== selection.packageVersionId || String(priorRequest.currency || "").toLowerCase() !== currency || String(priorRequest.interval || "") !== interval)) {
+    return c.json({ error: "checkout_operation_selection_changed" }, 409);
+  }
+
+  const persistRecoveredSession = async (session: Stripe.Checkout.Session, attemptId: string | null, operationId: string | null) => {
+    const updatedAt = new Date().toISOString();
+    const writes: PromiseLike<any>[] = [];
+    if (attemptId) writes.push(db.from("billing_checkout_attempts").update({ provider_session_id: session.id, state: session.status === "open" ? "created" : session.status === "complete" ? "completed" : "expired", updated_at: updatedAt }).eq("id", attemptId));
+    if (operationId) writes.push(db.from("billing_financial_operations").update({ provider_reference: session.id, state: "completed", response: { sessionId: session.id, url: session.url }, updated_at: updatedAt }).eq("id", operationId));
+    await Promise.all(writes);
+  };
+  const usableSessionResponse = async (session: Stripe.Checkout.Session, attemptId: string | null, operationId: string | null) => {
+    await persistRecoveredSession(session, attemptId, operationId);
+    if (session.status === "open" && session.url) return c.json({ sessionId: session.id, url: session.url, includedEditingSeats, additionalSeats: 0, reused: true });
+    if (session.status === "complete") return c.json({ sessionId: session.id, completed: true, reused: true });
+    return c.json({ error: "checkout_session_expired" }, 409);
+  };
+  const retrieveSession = async (sessionId: string | null | undefined): Promise<Stripe.Checkout.Session | null> => {
+    if (!sessionId) return null;
+    try { return await stripe.checkout.sessions.retrieve(sessionId); }
+    catch { return null; }
+  };
+
+  let priorAttempt = await db.from("billing_checkout_attempts").select("id,provider_session_id,state,package_version_id,currency,interval,editing_seats,created_at").eq("billing_environment", billingEnvironment).eq("idempotency_key", idempotencyKey).maybeSingle();
+  if (priorOperation.data?.provider_reference || priorAttempt.data?.provider_session_id) {
+    const session = await retrieveSession(priorOperation.data?.provider_reference || priorAttempt.data?.provider_session_id);
+    if (session) return usableSessionResponse(session, priorAttempt.data?.id || null, priorOperation.data?.id || null);
+  }
+
   let customer = await db.from("billing_customers").select("provider_customer_id").eq("account_id", accountId).eq("billing_environment", billingEnvironment).maybeSingle();
   let customerId = customer.data?.provider_customer_id || null;
   if (!customerId) {
@@ -3605,13 +3645,68 @@ app.post("/api/billing/:accountId/checkout", async (c) => {
     customerId = created.id;
     await db.from("billing_customers").upsert({ account_id: accountId, billing_environment: billingEnvironment, provider_customer_id: customerId, provider: "stripe", currency, sync_state: "pending", metadata: { livemode: billingEnvironment === "live" } }, { onConflict: "account_id,billing_environment" });
   }
-  const attempt = await db.from("billing_checkout_attempts").insert({ account_id: accountId, billing_environment: billingEnvironment, requested_by: c.get("userId"), package_version_id: body.packageVersionId, currency, interval, editing_seats: includedEditingSeats, idempotency_key: idempotencyKey }).select("id").single();
-  if (attempt.error) return c.json({ error: "checkout_attempt_persistence_failed" }, 503);
+
+  const findProviderSession = async (attemptId: string | null | undefined, identifier?: string) => {
+    const sessions = await stripe.checkout.sessions.list({ customer: customerId!, limit: 20 });
+    return sessions.data.find((session) =>
+      (attemptId && session.metadata?.checkoutAttemptId === attemptId)
+      || (identifier && session.integration_identifier === identifier)
+    ) || null;
+  };
+
+  if (priorAttempt.data && !priorAttempt.data.provider_session_id) {
+    const recovered = await findProviderSession(priorAttempt.data.id, integrationIdentifier);
+    if (recovered) return usableSessionResponse(recovered, priorAttempt.data.id, priorOperation.data?.id || null);
+  }
+
+  let operationId = priorOperation.data?.id || null;
+  if (!operationId) {
+    const inserted = await db.from("billing_financial_operations").insert({ billing_environment: billingEnvironment, operation_key: operationKey, operation_type: "checkout", account_id: accountId, requested_by: c.get("userId"), request: selection }).select("id").maybeSingle();
+    if (inserted.error?.code === "23505") {
+      priorOperation = await db.from("billing_financial_operations").select("id,provider_reference,state,response,request").eq("billing_environment", billingEnvironment).eq("operation_type", "checkout").eq("operation_key", operationKey).maybeSingle();
+      operationId = priorOperation.data?.id || null;
+    } else if (inserted.error || !inserted.data) {
+      return c.json({ error: "financial_operation_persistence_failed" }, 503);
+    } else {
+      operationId = inserted.data.id;
+    }
+  }
+  if (!operationId) return c.json({ error: "checkout_initialisation_in_progress" }, 409);
+
+  if (!priorAttempt.data) {
+    const activeAttempt = await db.from("billing_checkout_attempts").select("id,provider_session_id,state,package_version_id,currency,interval,editing_seats,created_at").eq("account_id", accountId).eq("billing_environment", billingEnvironment).in("state", ["pending", "created"]).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (activeAttempt.data) {
+      let activeSession = await retrieveSession(activeAttempt.data.provider_session_id);
+      if (!activeSession && !activeAttempt.data.provider_session_id) activeSession = await findProviderSession(activeAttempt.data.id);
+      if (activeSession?.status === "open" && activeSession.url && checkoutSelectionMatches(activeAttempt.data, selection)) {
+        return usableSessionResponse(activeSession, activeAttempt.data.id, operationId);
+      }
+      if (activeSession?.status === "open") {
+        await stripe.checkout.sessions.expire(activeSession.id);
+        await db.from("billing_checkout_attempts").update({ state: "expired", updated_at: new Date().toISOString() }).eq("id", activeAttempt.data.id);
+      } else if (!activeSession && !checkoutAttemptIsStale(activeAttempt.data.created_at)) {
+        return c.json({ error: "checkout_initialisation_in_progress" }, 409);
+      } else {
+        await db.from("billing_checkout_attempts").update({ state: activeSession?.status === "complete" ? "completed" : activeSession?.status === "expired" ? "expired" : "failed", updated_at: new Date().toISOString() }).eq("id", activeAttempt.data.id);
+      }
+    }
+    const insertedAttempt = await db.from("billing_checkout_attempts").insert({ account_id: accountId, billing_environment: billingEnvironment, requested_by: c.get("userId"), package_version_id: body.packageVersionId, currency, interval, editing_seats: includedEditingSeats, idempotency_key: idempotencyKey }).select("id,provider_session_id,state,package_version_id,currency,interval,editing_seats,created_at").single();
+    if (insertedAttempt.error?.code === "23505") {
+      priorAttempt = await db.from("billing_checkout_attempts").select("id,provider_session_id,state,package_version_id,currency,interval,editing_seats,created_at").eq("billing_environment", billingEnvironment).eq("idempotency_key", idempotencyKey).maybeSingle();
+    } else if (insertedAttempt.error || !insertedAttempt.data) {
+      await db.from("billing_financial_operations").update({ state: "failed", error: "checkout_attempt_persistence_failed", updated_at: new Date().toISOString() }).eq("id", operationId);
+      return c.json({ error: "checkout_attempt_persistence_failed" }, 503);
+    } else {
+      priorAttempt = { data: insertedAttempt.data, error: null } as typeof priorAttempt;
+    }
+  }
+  if (!priorAttempt.data) return c.json({ error: "checkout_initialisation_in_progress" }, 409);
+
   try {
     const activePromotions = await db.from("promotion_rules").select("id").eq("billing_environment", billingEnvironment).eq("enabled", true).limit(1);
     const session = await stripe.checkout.sessions.create({
       mode: "subscription", customer: customerId,
-      integration_identifier: `claritude_${operationKey.replaceAll("-", "")}`,
+      integration_identifier: integrationIdentifier,
       line_items: [{ price: base.provider_price_id, quantity: 1 }],
       allow_promotion_codes: Boolean(activePromotions.data?.length),
       automatic_tax: { enabled: true },
@@ -3621,15 +3716,14 @@ app.post("/api/billing/:accountId/checkout", async (c) => {
       name_collection: { business: { enabled: true, optional: true } },
       success_url: `${c.env.APP_ORIGIN.replace(/\/$/, "")}/account?accountTab=Billing%20%26%20plan&checkout=success&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${c.env.APP_ORIGIN.replace(/\/$/, "")}/account?accountTab=Billing%20%26%20plan&checkout=cancelled`,
-      metadata: { claritudeAccountId: accountId, billingEnvironment, packageVersionId: body.packageVersionId, checkoutAttemptId: attempt.data.id, includedEditingSeats: String(includedEditingSeats), additionalSeats: "0" },
+      metadata: { claritudeAccountId: accountId, billingEnvironment, packageVersionId: body.packageVersionId, checkoutAttemptId: priorAttempt.data.id, includedEditingSeats: String(includedEditingSeats), additionalSeats: "0" },
       subscription_data: { metadata: { claritudeAccountId: accountId, billingEnvironment, packageVersionId: body.packageVersionId, includedEditingSeats: String(includedEditingSeats) } },
     }, { idempotencyKey });
-    await db.from("billing_checkout_attempts").update({ provider_session_id: session.id, state: "created", updated_at: new Date().toISOString() }).eq("id", attempt.data.id);
-    await db.from("billing_financial_operations").update({ provider_reference: session.id, state: "completed", response: { sessionId: session.id, url: session.url }, updated_at: new Date().toISOString() }).eq("id", operation.data.id);
+    await persistRecoveredSession(session, priorAttempt.data.id, operationId);
     return c.json({ sessionId: session.id, url: session.url, includedEditingSeats, additionalSeats: 0 });
   } catch (error) {
-    await db.from("billing_checkout_attempts").update({ state: "failed", error: errorMessage(error).slice(0, 1000), updated_at: new Date().toISOString() }).eq("id", attempt.data.id);
-    await db.from("billing_financial_operations").update({ state: "failed", error: errorMessage(error).slice(0, 1000), updated_at: new Date().toISOString() }).eq("id", operation.data.id);
+    await db.from("billing_checkout_attempts").update({ state: "failed", error: errorMessage(error).slice(0, 1000), updated_at: new Date().toISOString() }).eq("id", priorAttempt.data.id);
+    await db.from("billing_financial_operations").update({ state: "failed", error: errorMessage(error).slice(0, 1000), updated_at: new Date().toISOString() }).eq("id", operationId);
     return c.json({ error: "stripe_checkout_failed" }, 503);
   }
 });
