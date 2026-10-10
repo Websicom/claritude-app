@@ -2098,7 +2098,8 @@ function PropertyOverview({
     [latestAudit, setLatestAudit] = useState<AuditRun | null>(null),
     [uptimeStatus, setUptimeStatus] = useState<Monitor | undefined>(property?.uptime_monitors?.[0]),
     [uptimeRefreshing, setUptimeRefreshing] = useState(false),
-    [auditStarting, setAuditStarting] = useState(false);
+    [auditStarting, setAuditStarting] = useState(false),
+    [auditLimitOpen, setAuditLimitOpen] = useState(false);
   useEffect(() => {
     setAuditStarting(false);
   }, [property?.id]);
@@ -2147,10 +2148,10 @@ function PropertyOverview({
       if (auditPage && error.message === "audit_already_active") {
         notify("An audit is already running");
         navigate(`/audit?property=${property.id}&auditPage=${auditPage.id}`);
+      } else if (isWeeklyAuditLimitError(error.message)) {
+        setAuditLimitOpen(true);
       } else {
         notify(error.message);
-        if (isWeeklyAuditLimitError(error.message))
-          navigate(billingUpgradeHref(property.account_id));
       }
     } finally {
       setAuditStarting(false);
@@ -2394,6 +2395,9 @@ function PropertyOverview({
               <ActivityList property={property} />
             </Panel>
           ) : null}
+          {auditLimitOpen && (
+            <AuditLimitDialog accountId={property.account_id} close={() => setAuditLimitOpen(false)} />
+          )}
         </>
       )}
     </Page>
@@ -3628,6 +3632,7 @@ function AuditView({
     [pageSaveState, setPageSaveState] = useState<"idle" | "saving" | "success">("idle"),
     [pageError, setPageError] = useState(""),
     [openCategories, setOpenCategories] = useState<Set<string>>(new Set()),
+    [auditLimitOpen, setAuditLimitOpen] = useState(false),
     [earlierRunId, setEarlierRunId] = useState(auditParams.get("auditEarlier") || ""),
     [laterRunId, setLaterRunId] = useState(auditParams.get("auditLater") || "");
   const requestSequence = useRef(0);
@@ -3908,9 +3913,8 @@ function AuditView({
         setBusy(next.some(isFreshActiveRun));
       }
     } catch (e: any) {
-      notify(e.message);
-      if (isWeeklyAuditLimitError(e.message))
-        auditNavigate(billingUpgradeHref(property!.account_id));
+      if (isWeeklyAuditLimitError(e.message)) setAuditLimitOpen(true);
+      else notify(e.message);
       setBusy(false);
     } finally {
       if (!session) setBusy(false);
@@ -4181,6 +4185,9 @@ function AuditView({
             onEarlierChange={(id) => { setEarlierRunId(id); updateAuditLocation({ auditEarlier: id }); }}
             onLaterChange={(id) => { setLaterRunId(id); updateAuditLocation({ auditLater: id }); }}
           /></div>
+      )}
+      {auditLimitOpen && (
+        <AuditLimitDialog accountId={property.account_id} close={() => setAuditLimitOpen(false)} />
       )}
       {addPage && (
         <Modal title="Add page to audit" close={() => setAddPage(false)}>
@@ -4759,7 +4766,6 @@ function PropertySettingsView({
     [viewerEmail, setViewerEmail] = useState(""),
     [viewers, setViewers] = useState<any[]>([]),
     [workspaceAccess, setWorkspaceAccess] = useState<any[]>([]),
-    [viewerMenu, setViewerMenu] = useState<string | null>(null),
     [viewerToRemove, setViewerToRemove] = useState<any | null>(null),
     [deleteOpen, setDeleteOpen] = useState(false),
     [deleteConfirmation, setDeleteConfirmation] = useState(""),
@@ -4800,19 +4806,6 @@ function PropertySettingsView({
   useEffect(() => {
     if (requestedSettingsTab && settingsTabs.includes(requestedSettingsTab)) setTab(requestedSettingsTab);
   }, [requestedSettingsTab]);
-  useEffect(() => {
-    if (!viewerMenu) return;
-    const dismiss = (event: PointerEvent) => {
-      if (!(event.target as Element).closest(".viewer-row-menu")) setViewerMenu(null);
-    };
-    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setViewerMenu(null); };
-    document.addEventListener("pointerdown", dismiss);
-    document.addEventListener("keydown", escape);
-    return () => {
-      document.removeEventListener("pointerdown", dismiss);
-      document.removeEventListener("keydown", escape);
-    };
-  }, [viewerMenu]);
   if (!property)
     return (
       <Empty
@@ -4820,7 +4813,7 @@ function PropertySettingsView({
         detail="Property settings require a selected property."
       />
     );
-  async function save() {
+  async function saveGeneralSettings() {
     setBusy(true);
     try {
       if (session)
@@ -4838,6 +4831,26 @@ function PropertySettingsView({
                 .split(",")
                 .map((value: string) => value.trim())
                 .filter(Boolean),
+            },
+          }),
+        });
+      notify("General settings saved");
+      reload();
+    } catch (e: any) {
+      notify(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function saveAiVisibilitySettings() {
+    setBusy(true);
+    try {
+      if (session)
+        await api(session, `/api/properties/${property!.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            name,
+            settings: {
               ai_visibility: {
                 business_name: businessName,
                 industry,
@@ -4848,7 +4861,7 @@ function PropertySettingsView({
             },
           }),
         });
-      notify("Property settings saved");
+      notify("AI Visibility details saved");
       reload();
     } catch (e: any) {
       notify(e.message);
@@ -4866,118 +4879,138 @@ function PropertySettingsView({
     last_tracker_heartbeat_at: trackingDiagnostics?.lastTrackerHeartbeatAt ?? property.last_tracker_heartbeat_at,
     tracking_last_received_at: trackingDiagnostics?.lastAnalyticsReceivedAt ?? property.tracking_last_received_at,
   };
+  const trackingState = trackingInstallationState(trackingEvidence);
   return (
     <Page
       title="Property settings"
       status={<Status value={property.verification_status} />}
     >
-      <Tabs
-        labels={settingsTabs}
-        value={tab}
-        onChange={setTab}
-      />
+      <div className="settings-tabs-row">
+        <Tabs
+          labels={settingsTabs}
+          value={tab}
+          onChange={setTab}
+        />
+        <span className="settings-tabs-identity property-settings-identity" title={property.name}>
+          <PropertyFavicon property={property} />
+        </span>
+      </div>
       {tab === "General" ? (
         <>
-        <Panel title="General">
-          <label className="field">
-            Property name
-            <input value={name} onChange={(e) => setName(e.target.value)} />
-          </label>
-          <label className="field">
-            Website URL
-            <input value={property.url} readOnly className="readonly" />
-          </label>
-          <div className="form-two">
-            <label className="field">
-              Timezone
-              <TimezoneSelect value={timezone} onChange={setTimezone} />
-            </label>
-            <label className="field">
-              Reporting currency
-              <select value={currency} onChange={(event) => setCurrency(event.target.value)}>
-                <option value="GBP">GBP (£)</option>
-                <option value="USD">USD ($)</option>
-                <option value="EUR">EUR (€)</option>
-              </select>
-            </label>
+          <div className="settings-panel-grid property-general-grid">
+            <Panel title="General">
+              <label className="field">
+                Property name
+                <input value={name} onChange={(e) => setName(e.target.value)} />
+              </label>
+              <label className="field">
+                Website URL
+                <input value={property.url} readOnly className="readonly" />
+              </label>
+              <div className="form-two">
+                <label className="field">
+                  Timezone
+                  <TimezoneSelect value={timezone} onChange={setTimezone} />
+                </label>
+                <label className="field">
+                  Reporting currency
+                  <select value={currency} onChange={(event) => setCurrency(event.target.value)}>
+                    <option value="GBP">GBP (£)</option>
+                    <option value="USD">USD ($)</option>
+                    <option value="EUR">EUR (€)</option>
+                  </select>
+                </label>
+              </div>
+              <div className="settings-actions right">
+                <button
+                  className="primary"
+                  disabled={busy || !name}
+                  onClick={() => void saveGeneralSettings()}
+                >
+                  Save general settings
+                </button>
+              </div>
+            </Panel>
+            <Panel title="AI Visibility details">
+              <p className="panel-subtitle">Optional details used to suggest natural discovery phrases. They do not affect traffic attribution.</p>
+              <div className="form-two">
+                <label className="field">
+                  Business or brand name
+                  <input value={businessName} onChange={(event) => setBusinessName(event.target.value)} placeholder={property.name} />
+                </label>
+                <label className="field">
+                  Industry
+                  <input
+                    list="claritude-industries"
+                    value={industryLabel}
+                    onChange={(event) => {
+                      const label = event.target.value;
+                      setIndustryLabel(label);
+                      setIndustry(AI_INDUSTRIES.find((item) => item.label.toLocaleLowerCase() === label.trim().toLocaleLowerCase())?.value || "");
+                    }}
+                    placeholder="Search industries"
+                  />
+                  <datalist id="claritude-industries">
+                    {AI_INDUSTRIES.map((item) => <option key={item.value} value={item.label}>{item.group}</option>)}
+                  </datalist>
+                </label>
+                {industry === "other" && <label className="field">
+                  Describe your industry
+                  <input value={industryCustom} onChange={(event) => setIndustryCustom(event.target.value)} placeholder="e.g. Marine surveying" />
+                </label>}
+                <label className="field">
+                  Location
+                  <input value={businessLocation} onChange={(event) => setBusinessLocation(event.target.value)} placeholder="City, town or region" />
+                </label>
+                <label className="field">
+                  Country
+                  <input
+                    list="claritude-countries"
+                    value={countrySearch}
+                    onChange={(event) => {
+                      const label = event.target.value;
+                      setCountrySearch(label);
+                      setCountry(AI_COUNTRIES.find((item) => item.label.toLocaleLowerCase() === label.trim().toLocaleLowerCase() || item.value === label.trim().toUpperCase())?.value || "");
+                    }}
+                    placeholder="Search countries"
+                  />
+                  <datalist id="claritude-countries">
+                    {AI_COUNTRIES.map((item) => <option key={item.value} value={item.label}>{item.value}</option>)}
+                  </datalist>
+                </label>
+              </div>
+              <div className="settings-actions right">
+                <button
+                  className="primary"
+                  disabled={busy || !name}
+                  onClick={() => void saveAiVisibilitySettings()}
+                >
+                  Save AI Visibility details
+                </button>
+              </div>
+            </Panel>
           </div>
-          <div className="settings-actions right">
-            <button
-              className="primary"
-              disabled={busy || !name}
-              onClick={save}
-            >
-              Save general settings
-            </button>
-          </div>
-          <div className="settings-section-heading">
-            <h3>AI Visibility details</h3>
-            <p>Optional details used to suggest natural discovery phrases. They do not affect traffic attribution.</p>
-          </div>
-          <div className="form-two">
-            <label className="field">
-              Business or brand name
-              <input value={businessName} onChange={(event) => setBusinessName(event.target.value)} placeholder={property.name} />
-            </label>
-            <label className="field">
-              Industry
-              <input
-                list="claritude-industries"
-                value={industryLabel}
-                onChange={(event) => {
-                  const label = event.target.value;
-                  setIndustryLabel(label);
-                  setIndustry(AI_INDUSTRIES.find((item) => item.label.toLocaleLowerCase() === label.trim().toLocaleLowerCase())?.value || "");
-                }}
-                placeholder="Search industries"
-              />
-              <datalist id="claritude-industries">
-                {AI_INDUSTRIES.map((item) => <option key={item.value} value={item.label}>{item.group}</option>)}
-              </datalist>
-            </label>
-            {industry === "other" && <label className="field">
-              Describe your industry
-              <input value={industryCustom} onChange={(event) => setIndustryCustom(event.target.value)} placeholder="e.g. Marine surveying" />
-            </label>}
-            <label className="field">
-              Location
-              <input value={businessLocation} onChange={(event) => setBusinessLocation(event.target.value)} placeholder="City, town or region" />
-            </label>
-            <label className="field">
-              Country
-              <input
-                list="claritude-countries"
-                value={countrySearch}
-                onChange={(event) => {
-                  const label = event.target.value;
-                  setCountrySearch(label);
-                  setCountry(AI_COUNTRIES.find((item) => item.label.toLocaleLowerCase() === label.trim().toLocaleLowerCase() || item.value === label.trim().toUpperCase())?.value || "");
-                }}
-                placeholder="Search countries"
-              />
-              <datalist id="claritude-countries">
-                {AI_COUNTRIES.map((item) => <option key={item.value} value={item.label}>{item.value}</option>)}
-              </datalist>
-            </label>
-          </div>
-        </Panel>
-        <SetupPanel property={property} />
+          <SetupPanel property={property} />
         </>
       ) : tab === "Tracking" ? (
         <>
           <Panel title="Install analytics code">
             <p className="settings-intro">Add the script to the site-wide <code>&lt;head&gt;</code> template so it loads once on every measured page. Claritude automatically detects common browser history navigation in single-page applications; call <code>claritude.pageview()</code> only when a router does not update browser history.</p>
             <p className="settings-intro"><b>Publish the change, clear any website, plugin or CDN cache, then open the public site in a new or private tab.</b> Installation verification confirms that the code is present; Tracking appears when Claritude receives the lightweight tracker heartbeat or analytics data.</p>
-            <div className="tracking-setup-markers" aria-label="Tracking installation steps">
-              <span><b>1</b> Add code</span>
-              <span><b>2</b> Clear cache</span>
-              <span><b>3</b> Visit page incognito</span>
-            </div>
+            {trackingState !== "tracking" && (
+              <div className="tracking-setup-markers" aria-label="Tracking installation steps">
+                <span><b>1</b> Add code</span>
+                <span><b>2</b> Clear cache</span>
+                <span><b>3</b> Visit page incognito</span>
+              </div>
+            )}
             <pre className="install-code install-code-dark">{snippet}</pre>
             <CopyButton text={snippet} label="Copy snippet" successMessage="Tracking snippet copied" notify={notify} />
-            <p className="tracking-troubleshooting">
-              If tracking remains on “Script Found”, clear your website/CDN cache and check that optimisation plugins are not delaying the Claritude script until user interaction. Normal script defer is supported; delay-until-interaction may prevent tracking from starting until the page is interacted with.
-            </p>
+            {trackingState === "script_found" && (
+              <p className="tracking-troubleshooting">
+                If tracking remains on “Script Found”, clear your website/CDN cache and check that optimisation plugins are not delaying the Claritude script until user interaction. Normal script defer is supported; delay-until-interaction may prevent tracking from starting until the page is interacted with.
+              </p>
+            )}
           </Panel>
           <Panel title="Tracking status">
             <KeyValues
@@ -5078,10 +5111,9 @@ function PropertySettingsView({
               "Analytics",
               "Audit",
               "Uptime",
-              "",
             ]}
             rows={[
-              ["Account holder", "Account owner", <StatusPill tone="success">Active</StatusPill>, "Allowed", "Allowed", "Allowed", ""],
+              ["Account holder", "Account owner", <StatusPill tone="success">Active</StatusPill>, "Allowed", "Allowed", "Allowed"],
               ...workspaceAccess.map((access) => [
                 access.user?.name || access.user?.email || "Workspace user",
                 `${cap(access.role)} · inherited from workspace`,
@@ -5089,7 +5121,6 @@ function PropertySettingsView({
                 "Allowed",
                 "Allowed",
                 "Allowed",
-                <span className="subtle">Managed in Account settings</span>,
               ]),
               ...viewers.map((viewer) => [
                 viewer.name || viewer.email,
@@ -5098,25 +5129,21 @@ function PropertySettingsView({
                 "View only",
                 "View only",
                 "View only",
-                <span className="row-action-wrap viewer-row-menu">
-                  <button className="iconbtn" aria-label={`${viewer.name || viewer.email} actions`} onClick={() => setViewerMenu(viewerMenu === viewer.user_id ? null : viewer.user_id)}><MoreHorizontal /></button>
-                  {viewerMenu === viewer.user_id && (
-                    <span className="action-menu row-action-menu">
-                      {!viewer.confirmedAt && (
-                        <button onClick={async () => {
-                          setViewerMenu(null);
-                          try {
-                            await api(session!, `/api/properties/${property.id}/viewers/${viewer.user_id}/resend`, { method: "POST" });
-                            notify("Viewer invitation resent");
-                          } catch (error: any) {
-                            notify(error.message);
-                          }
-                        }}><RefreshCw /> Resend invite</button>
-                      )}
-                      <button onClick={() => { setViewerMenu(null); setViewerToRemove(viewer); }}><Trash2 /> Remove access</button>
-                    </span>
-                  )}
-                </span>,
+              ]),
+            ]}
+            rowActions={[
+              [],
+              ...workspaceAccess.map(() => []),
+              ...viewers.map((viewer) => [
+                ...(!viewer.confirmedAt ? [{
+                  label: "Resend invite",
+                  onClick: () => {
+                    void api(session!, `/api/properties/${property.id}/viewers/${viewer.user_id}/resend`, { method: "POST" })
+                      .then(() => notify("Viewer invitation resent"))
+                      .catch((error) => notify(error.message));
+                  },
+                }] : []),
+                { label: "Remove access", danger: true, onClick: () => setViewerToRemove(viewer) },
               ]),
             ]}
           />
@@ -7289,63 +7316,70 @@ function AccountView({
       title="Account settings"
       status={<span className="tag">Account holder</span>}
     >
-      <Tabs labels={tabs} value={tab} onChange={setTab} />
+      <div className="settings-tabs-row">
+        <Tabs labels={tabs} value={tab} onChange={setTab} />
+        <ProfileAvatar profile={data.profile} name={name} className="settings-tabs-identity account-settings-identity" />
+      </div>
       {tab === "Profile" ? (
-        <Panel title="Personal profile">
-          <div className="profile-identity">
-            <ProfileAvatar profile={data.profile} name={name} className="profile-avatar" />
-            <span>
-              <h2>{name || "Claritude user"}</h2>
-              <small>Personal profile</small>
-            </span>
-            <span className="profile-avatar-actions">
-              <label className="btn avatar-upload-button">
-                <Upload /> {avatarBusy ? "Uploading…" : "Upload image"}
-                <input
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp,image/gif"
-                  disabled={avatarBusy}
-                  onChange={(event) => {
-                    void uploadAvatar(event.target.files?.[0]);
-                    event.target.value = "";
-                  }}
-                />
-              </label>
-              {profileAvatarUrl(data.profile) && (
-                <button className="btn" disabled={avatarBusy} onClick={() => void deleteAvatar()}>
-                  <Trash2 /> Remove
-                </button>
-              )}
-            </span>
-          </div>
-          <label className="field">
-            Display name
-            <input value={name} onChange={(e) => setName(e.target.value)} />
-          </label>
-          <label className="field">
-            Email
-            <input
-              value={session?.user.email || "fixture@claritude.local"}
-              readOnly
-            />
-          </label>
-          <label className="field">
-            Timezone
-            <TimezoneSelect value={timezone} onChange={setTimezone} />
-          </label>
-          <label className="field">
-            Date format
-            <select value={dateFormat} onChange={(event) => setDateFormat(event.target.value)}>
-              <option value="DD/MM/YYYY">DD/MM/YYYY</option>
-              <option value="MM/DD/YYYY">MM/DD/YYYY</option>
-              <option value="YYYY-MM-DD">YYYY-MM-DD</option>
-            </select>
-          </label>
-          <button className="primary" onClick={save}>
-            Save profile
-          </button>
-          <Preferences session={session} profile={data.profile} reload={reload} notify={notify} />
-        </Panel>
+        <div className="settings-panel-grid account-profile-grid">
+          <Panel title="Personal profile">
+            <div className="profile-identity">
+              <ProfileAvatar profile={data.profile} name={name} className="profile-avatar" />
+              <span>
+                <h2>{name || "Claritude user"}</h2>
+                <small>Personal profile</small>
+              </span>
+              <span className="profile-avatar-actions">
+                <label className="btn avatar-upload-button">
+                  <Upload /> {avatarBusy ? "Uploading…" : "Upload image"}
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    disabled={avatarBusy}
+                    onChange={(event) => {
+                      void uploadAvatar(event.target.files?.[0]);
+                      event.target.value = "";
+                    }}
+                  />
+                </label>
+                {profileAvatarUrl(data.profile) && (
+                  <button className="btn" disabled={avatarBusy} onClick={() => void deleteAvatar()}>
+                    <Trash2 /> Remove
+                  </button>
+                )}
+              </span>
+            </div>
+            <label className="field">
+              Display name
+              <input value={name} onChange={(e) => setName(e.target.value)} />
+            </label>
+            <label className="field">
+              Email
+              <input
+                value={session?.user.email || "fixture@claritude.local"}
+                readOnly
+              />
+            </label>
+            <label className="field">
+              Timezone
+              <TimezoneSelect value={timezone} onChange={setTimezone} />
+            </label>
+            <label className="field">
+              Date format
+              <select value={dateFormat} onChange={(event) => setDateFormat(event.target.value)}>
+                <option value="DD/MM/YYYY">DD/MM/YYYY</option>
+                <option value="MM/DD/YYYY">MM/DD/YYYY</option>
+                <option value="YYYY-MM-DD">YYYY-MM-DD</option>
+              </select>
+            </label>
+            <button className="primary" onClick={save}>
+              Save profile
+            </button>
+          </Panel>
+          <Panel title="Notification preferences">
+            <Preferences session={session} profile={data.profile} reload={reload} notify={notify} />
+          </Panel>
+        </div>
       ) : tab === "Workspace" ? (
         <Panel
           title="Workspace"
@@ -8108,6 +8142,20 @@ function PlanLimitNotice({
     </div>
   );
 }
+function AuditLimitDialog({ accountId, close }: { accountId?: string; close: () => void }) {
+  return (
+    <Modal title="Weekly audit allowance used" close={close}>
+      <p>You have used all audits available on your current plan for this week. Upgrade your plan to run more audits now.</p>
+      <div className="dialog-actions">
+        <button className="btn" onClick={close}>Close</button>
+        <Link className="primary" to={billingUpgradeHref(accountId)} onClick={close} autoFocus>
+          View upgrade options
+        </Link>
+      </div>
+    </Modal>
+  );
+}
+
 function ReportPreview({
   report,
   close,
@@ -8537,13 +8585,13 @@ function DataTable({
               {r.map((x, j) => (
                 <td className={isPendingDataText(x) ? "pending-data-text" : ""} key={j}>{x}</td>
               ))}
-              {rowActions && <td className="admin-actions-column"><div className="admin-row-menu">
+              {rowActions && <td className="admin-actions-column">{(rowActions[originalIndex] || []).length ? <div className="admin-row-menu">
                 <button className="iconbtn" aria-label="Open row actions" aria-expanded={openMenu === originalIndex} onClick={(event) => { if (openMenu === originalIndex) { setOpenMenu(null); setMenuPosition(null); return; } const bounds = event.currentTarget.getBoundingClientRect(); const estimatedHeight = Math.min(420, (rowActions[originalIndex]?.length || 1) * 42 + 10); setMenuPosition({ top: Math.max(12, Math.min(bounds.bottom + 6, window.innerHeight - estimatedHeight - 12)), right: Math.max(12, window.innerWidth - bounds.right) }); setOpenMenu(originalIndex); }}><MoreHorizontal /></button>
                 {openMenu === originalIndex && menuPosition && typeof document !== "undefined" && createPortal(<div className="admin-row-menu-popover admin-row-menu-popover-portal" role="menu" style={{ top: menuPosition.top, right: menuPosition.right }}>{(rowActions[originalIndex] || []).map((action) => action.to
                   ? <Link key={action.label} role="menuitem" className={action.danger ? "danger" : ""} to={action.to} onClick={() => { setOpenMenu(null); setMenuPosition(null); }}>{action.label}</Link>
                   : <button key={action.label} role="menuitem" className={action.danger ? "danger" : ""} disabled={action.disabled} onClick={() => { setOpenMenu(null); setMenuPosition(null); action.onClick?.(); }}>{action.label}</button>
                 )}</div>, document.body)}
-              </div></td>}
+              </div> : null}</td>}
             </tr>
           ))}
           {!visible.length && <tr><td colSpan={headers.length + (rowActions ? 1 : 0)}><div className="table-empty-state">No records match the current filters.</div></td></tr>}
@@ -10588,6 +10636,14 @@ function EventsPanel({
   useEffect(() => setEventPage(1), [eventBreakdown.length, property.id]);
   return (
     <>
+      {eventLimitReached && (
+        <div className="event-allowance limit-reached" role="status">
+          <span>{eventUsage} Your {eventAllowance?.plan} plan allowance has been reached.</span>
+          <Link className="primary plan-limit-upgrade" to={billingUpgradeHref(property.account_id)}>
+            Upgrade plan
+          </Link>
+        </div>
+      )}
       <Panel
         title={data ? `Events · ${fmt(data.keyEvents || 0)} total` : "Configured events"}
         actions={
@@ -10605,17 +10661,11 @@ function EventsPanel({
           </>
         }
       >
-        <div className={`event-allowance${eventLimitReached ? " limit-reached" : ""}`}>
-          <span>{eventUsage}</span>
-          {eventLimitReached && (
-            <span>
-              Your {eventAllowance?.plan} plan allowance has been reached.{" "}
-              <Link className="primary plan-limit-upgrade" to={billingUpgradeHref(property.account_id)}>
-                Upgrade plan
-              </Link>
-            </span>
-          )}
-        </div>
+        {!eventLimitReached && (
+          <div className="event-allowance">
+            <span>{eventUsage}</span>
+          </div>
+        )}
         {data && filters && options && onFilterChange ? (
           <>
             <AnalyticsPageFilterToolbar filters={filters} options={options} onChange={onFilterChange} title="Events" categories={analyticsFilterConfigs.Events.categories} />
@@ -11902,11 +11952,8 @@ function Preferences({
     }
   }
   return (
-    <section className="profile-notification-preferences" aria-labelledby="notification-preferences-title">
-      <div className="settings-section-heading">
-        <h3 id="notification-preferences-title">Notification preferences</h3>
-        <p>Choose which account updates are sent by email and shown in the app.</p>
-      </div>
+    <section className="profile-notification-preferences" aria-label="Notification preferences">
+      <p className="panel-subtitle">Choose which account updates are sent by email and shown in the app.</p>
       {labels.map(([key, label]) => (
         <label className="pref-row" key={key}>
           <input
