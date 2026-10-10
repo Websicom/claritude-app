@@ -26,7 +26,8 @@
     "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_zNc8TQjoFQ-OI2nKbiNOPA_5ukCoCY6",
     "APP_ORIGIN": "https://app.claritude.io",
     "RESEND_FROM": "Claritude <alerts@claritude.io>",
-    "STRIPE_TEST_PORTAL_CONFIGURATION_ID": "bpc_1UNbGa0N1c5vQhvimkvR8FyN"
+    "STRIPE_TEST_PORTAL_CONFIGURATION_ID": "bpc_1UNbGa0N1c5vQhvimkvR8FyN",
+    "STRIPE_LIVE_PORTAL_CONFIGURATION_ID": "bpc_1UOp1gP3P2wne7LSdcQWgd0G"
   },
   "observability": { "enabled": true, "head_sampling_rate": 1 }
 }
