@@ -167,6 +167,91 @@ export function planName(entitlement: unknown): "Free" | "Essentials" | "Scale" 
   return "Free";
 }
 
+type BillingPlanName = "Free" | "Essentials" | "Scale" | "Pro";
+
+const BILLING_PLAN_ORDER: BillingPlanName[] = ["Free", "Essentials", "Scale", "Pro"];
+
+const BILLING_PLAN_FEATURES: Record<BillingPlanName, string[]> = {
+  Free: [
+    "2 properties",
+    "1 workspace",
+    "1 editing seat",
+    "2 audit pages per property",
+    "10 audits per week across the account",
+    "10k monthly account pageviews",
+    "15-minute uptime monitoring",
+    "1 viewer per property",
+    "2 custom events per property",
+  ],
+  Essentials: [
+    "5 properties",
+    "3 workspaces",
+    "1 editing seat",
+    "5 audit pages per property",
+    "25 audits per week across the account",
+    "100k monthly account pageviews",
+    "5-minute uptime monitoring",
+    "2 viewers per property",
+    "5 custom events per property",
+    "Uptime recovery emails",
+    "Full report access",
+  ],
+  Scale: [
+    "50 properties",
+    "Unlimited workspaces",
+    "2 editing seats",
+    "15 audit pages per property",
+    "100 audits per week across the account",
+    "1m monthly account pageviews",
+    "2-minute uptime monitoring",
+    "3 viewers per property",
+    "10 custom events per property",
+    "Uptime recovery emails",
+    "Full report access",
+  ],
+  Pro: [
+    "200 properties",
+    "Unlimited workspaces",
+    "3 editing seats",
+    "25 audit pages per property",
+    "250 audits per week across the account",
+    "5m monthly account pageviews",
+    "1-minute uptime monitoring",
+    "5 viewers per property",
+    "25 custom events per property",
+    "Uptime recovery emails",
+    "Full report access",
+  ],
+};
+
+export function billingPlanFeatures(plan: unknown) {
+  return [...BILLING_PLAN_FEATURES[planName(plan)]];
+}
+
+export function billingPlanActionLabel(current: unknown, candidate: unknown, hasSubscription: boolean) {
+  const currentPlan = planName(current);
+  const candidatePlan = planName(candidate);
+  if (candidatePlan === "Free" && currentPlan !== "Free") return "Contact support to downgrade";
+  if (candidatePlan === currentPlan) return hasSubscription ? "Plan details" : "Current plan";
+  if (!hasSubscription) return "Upgrade";
+  return BILLING_PLAN_ORDER.indexOf(candidatePlan) > BILLING_PLAN_ORDER.indexOf(currentPlan)
+    ? "Upgrade"
+    : "Downgrade";
+}
+
+export function latestPaymentCard(payments: any[] | null | undefined) {
+  const payment = (payments || []).find((item: any) =>
+    ["succeeded", "paid"].includes(String(item?.status || "").toLowerCase()) &&
+    item?.payment_method_summary?.last4,
+  );
+  if (!payment) return null;
+  const brand = String(payment.payment_method_summary.brand || "card").toLowerCase();
+  const last4 = String(payment.payment_method_summary.last4 || "").replace(/\D/g, "").slice(-4);
+  if (!last4) return null;
+  const label = brand === "mastercard" ? "Mastercard" : brand === "visa" ? "Visa" : brand === "amex" ? "American Express" : cap(brand);
+  return { brand, last4, label };
+}
+
 export function uptimeIntervalsForPlan(entitlement: unknown) {
   const plan = planName(entitlement);
   const minimum = plan === "Pro" ? 1 : plan === "Scale" ? 2 : plan === "Essentials" ? 5 : 15;
@@ -786,7 +871,7 @@ export function ClaritudeApplication({
             <img src="/assets/building-complex.svg" alt="" />
           </span>
           <b>{platformContext ? "Claritude platform" : fixture ? "Websi workspace" : workspace.name || "Shared properties"}</b>
-          <span className="badge">{platformContext ? "SuperAdmin" : activePlan}</span>
+          <span className={`badge ${!platformContext && activePlan !== "Free" ? "paid-plan" : ""}`}>{platformContext ? "SuperAdmin" : activePlan}</span>
           <img className="selector-chevrons" src="/assets/chevrons-up-down.svg" alt="" />
         </button>
         <button
@@ -2052,7 +2137,7 @@ function Notifications({
         ) : items.length ? (
           items.map((notification: any) => (
             <div className="notification-card" key={notification.id}>
-              <CircleAlert />
+              {notification.severity === "success" ? <CheckCircle2 className="notification-success-icon" /> : <CircleAlert />}
               <span>
                 <b>{notification.title}</b>
                 <small>
@@ -7885,6 +7970,7 @@ function Billing({ fixture, notify, data, session, reload }: { fixture: boolean;
     viewerUsers: { used: 0, limit: 10 },
   } : null);
   const currentSubscription = billingData?.subscriptions?.find((item: any) => ["active", "trialing", "past_due", "unpaid", "incomplete"].includes(item.status));
+  const paymentCard = latestPaymentCard(billingData?.payments);
   async function openPortal() {
     if (!session || !accountId) return;
     setBillingBusy(true);
@@ -7953,7 +8039,7 @@ function Billing({ fixture, notify, data, session, reload }: { fixture: boolean;
       {accountOptions.length > 1 && <Panel title="Billing account"><label className="field">Account<select value={accountId} onChange={(event) => { const nextId = event.target.value; setSelectedAccountId(nextId); const params = new URLSearchParams(location.search); params.set("accountTab", "Billing & plan"); params.set("billingAccount", nextId); navigate(`${location.pathname}?${params.toString()}`, { replace: true }); }}>
         {accountOptions.map((account: any) => <option key={account.id} value={account.id}>{account.name}{account.is_test_account ? " · Test" : " · Live"}</option>)}
       </select></label><p className="subtle">Billing data, checkout and entitlements are isolated to the selected account’s server-validated environment.</p></Panel>}
-      {checkoutReturnStatus === "confirming" && <div className="checkout-return-banner pending" role="status"><RefreshCw className="audit-spin" /><span><b>Payment received</b><small>Confirming your subscription and refreshing your account…</small></span></div>}
+      {checkoutReturnStatus === "confirming" && <div className="checkout-return-banner success" role="status"><CheckCircle2 /><span><b>Payment received</b><small>Confirming your subscription and refreshing your account…</small></span></div>}
       {checkoutReturnStatus === "success" && <div className="checkout-return-banner success" role="status"><CheckCircle2 /><span><b>Payment successful</b><small>Your subscription and account allowances have been updated.</small></span></div>}
       {checkoutReturnStatus === "delayed" && <div className="checkout-return-banner pending" role="status"><RefreshCw /><span><b>Payment is still processing</b><small>Your account will update when Stripe confirms the subscription.</small></span></div>}
       {billingData?.billingEnvironment === "test" && <div className="test-environment-banner" role="status"><b>Test environment: no real payments</b><span>Use Stripe test cards. Sandbox purchases never grant live-paid access.</span></div>}
@@ -7982,18 +8068,59 @@ function Billing({ fixture, notify, data, session, reload }: { fixture: boolean;
         </Panel>
       </div>
       <div className="grid equal">
-        <Panel title="Payment method"><p>{billingData?.customer && billingData?.portalReady ? "Payment methods are managed securely in the verified Stripe customer portal configuration." : billingData?.customer ? "A Stripe customer exists, but the environment-specific portal configuration is not verified." : "No Stripe billing customer exists for this account."}</p><button className="btn" disabled={billingBusy || !billingData?.canManage || !billingData?.customer || !billingData?.portalReady} onClick={() => void openPortal()}>Update payment method</button><p className="subtle">Claritude never stores card details.</p></Panel>
+        <Panel title="Payment method">{paymentCard ? <PaymentMethodCard payment={paymentCard} /> : <p>{billingData?.customer && billingData?.portalReady ? "No completed card payment is available to display yet. Payment methods are managed securely in Stripe." : billingData?.customer ? "A Stripe customer exists, but the environment-specific portal configuration is not verified." : "No Stripe billing customer exists for this account."}</p>}<button className="btn" disabled={billingBusy || !billingData?.canManage || !billingData?.customer || !billingData?.portalReady} onClick={() => void openPortal()}>Update payment method</button><p className="subtle">Only the card brand and last four digits from Stripe are shown. Claritude never stores full card details.</p></Panel>
         <Panel title="Invoice history">{billingData?.invoices?.length ? <DataTable headers={["Invoice", "Status", "Subtotal", "Discount", "VAT / tax", "Total", "Paid", "Date"]} rows={billingData.invoices.map((invoice: any) => [invoice.number || invoice.provider_invoice_id, cap(invoice.status || "unknown"), formatMinor(invoice.subtotal_minor, invoice.currency), formatMinor(invoice.discount_minor, invoice.currency), formatMinor(invoice.tax_minor, invoice.currency), formatMinor(invoice.total_minor, invoice.currency), formatMinor(invoice.amount_paid_minor, invoice.currency), invoice.provider_created_at ? fmtDate(invoice.provider_created_at) : "—"])} /> : <EmptyCompact title="No invoice history" detail={billingData?.checkoutReady ? "Invoices will appear after the first successful subscription invoice." : "Checkout is not yet enabled for this account."} />}</Panel>
       </div>
       <div id="plans"><Panel title="Choose a plan" actions={<span className="seg"><button className={annual ? "active" : ""} onClick={() => setAnnual(true)}>Annual</button><button className={!annual ? "active" : ""} onClick={() => setAnnual(false)}>Monthly</button></span>}>
         <div className="plans">
-          {["Free", "Essentials", "Scale", "Pro"].map((candidate) => { const mapped = billingData?.catalogue?.find((item: any) => item.component === "base" && item.currency === "gbp" && item.interval === (annual ? "year" : "month") && item.package_versions?.display_name === candidate); const includedSeats = candidate === "Free" ? 1 : Number(mapped?.package_versions?.allowances?.editingSeats); const seatsResolved = Number.isSafeInteger(includedSeats) && includedSeats > 0; const configuredCustomEventLimit = mapped?.package_versions?.allowances?.customEventsPerProperty; const customEventLimit = configuredCustomEventLimit == null ? ({ Free: 2, Essentials: 5, Scale: 10, Pro: 25 } as Record<string, number>)[candidate] : Number(configuredCustomEventLimit); const sandboxBaseOnly = Boolean(billingData?.isTestAccount && mapped?.metadata?.sandboxFixture); const billedMinor = Number(mapped?.unit_amount_minor || 0); const displayMinor = annual ? Math.round(billedMinor / 12) : billedMinor; return <div className={`plan ${candidate === plan ? "current" : ""}`} key={candidate}><h2>{candidate}</h2><div className="price">{candidate === "Free" ? formatMinor(0, "gbp") : mapped ? `${formatMinor(displayMinor, "gbp")} / month` : "Pricing unavailable"}</div>{candidate !== "Free" && mapped && <p className="subtle">{annual ? `${formatMinor(billedMinor, "gbp")} billed annually` : "Billed monthly"} · excluding VAT</p>}{sandboxBaseOnly && <StatusPill tone="neutral">Sandbox fixture · no real payment</StatusPill>}<p>{Number.isFinite(customEventLimit) ? `${customEventLimit} configured custom events per property.` : "Custom-event allowance unavailable."}</p><p className="subtle">{seatsResolved ? `${includedSeats} editing ${includedSeats === 1 ? "seat" : "seats"} included at no extra charge.` : "Included editing-seat allowance unavailable."} Property viewers are separate.</p><button className="btn" disabled={billingBusy || complimentary || (candidate === plan && !currentSubscription) || candidate === "Free" || !mapped || !seatsResolved || !billingData?.checkoutReady || !billingData?.canManage} onClick={() => mapped && void (currentSubscription ? previewChange(mapped.package_version_id) : checkout(mapped.package_version_id))}>{candidate === "Free" ? "Contact support to downgrade" : !seatsResolved ? "Seat allowance unavailable" : currentSubscription ? candidate === plan ? "Review interval" : "Review change" : candidate === plan ? "Current plan" : mapped ? "Choose plan" : "Unavailable"}</button></div>; })}
+          {(["Free", "Essentials", "Scale", "Pro"] as BillingPlanName[]).map((candidate) => {
+            const mapped = billingData?.catalogue?.find((item: any) => item.component === "base" && item.currency === "gbp" && item.interval === (annual ? "year" : "month") && item.package_versions?.display_name === candidate);
+            const includedSeats = candidate === "Free" ? 1 : Number(mapped?.package_versions?.allowances?.editingSeats);
+            const seatsResolved = Number.isSafeInteger(includedSeats) && includedSeats > 0;
+            const sandboxBaseOnly = Boolean(billingData?.isTestAccount && mapped?.metadata?.sandboxFixture);
+            const billedMinor = Number(mapped?.unit_amount_minor || 0);
+            const displayMinor = annual ? Math.round(billedMinor / 12) : billedMinor;
+            const actionLabel = !seatsResolved
+              ? "Seat allowance unavailable"
+              : !mapped && candidate !== "Free"
+                ? "Unavailable"
+                : billingPlanActionLabel(plan, candidate, Boolean(currentSubscription));
+            const upgradeAction = actionLabel === "Upgrade";
+            return <div className={`plan ${candidate === plan ? "current" : ""}`} key={candidate}>
+              <h2>{candidate}</h2>
+              <div className="price">{candidate === "Free" ? formatMinor(0, "gbp") : mapped ? `${formatMinor(displayMinor, "gbp")} / month` : "Pricing unavailable"}</div>
+              {candidate !== "Free" && mapped && <p className="subtle">{annual ? `${formatMinor(billedMinor, "gbp")} billed annually` : "Billed monthly"} · excluding VAT</p>}
+              {sandboxBaseOnly && <StatusPill tone="neutral">Sandbox fixture · no real payment</StatusPill>}
+              <ul className="plan-features">{billingPlanFeatures(candidate).map((feature) => <li key={feature}><Check />{feature}</li>)}</ul>
+              <button className={upgradeAction ? "primary plan-action" : "btn plan-action"} disabled={billingBusy || complimentary || (candidate === plan && !currentSubscription) || candidate === "Free" || !mapped || !seatsResolved || !billingData?.checkoutReady || !billingData?.canManage} onClick={() => mapped && void (currentSubscription ? previewChange(mapped.package_version_id) : checkout(mapped.package_version_id))}>{actionLabel}</button>
+            </div>;
+          })}
         </div>
         <p className="subtle">Prices are in GBP and exclude VAT. Stripe calculates tax from the customer’s billing address and validated tax status; Checkout shows subtotal, discount, tax and total before payment. {complimentary ? "This complimentary account cannot enter paid checkout unless its grant is explicitly revoked through the audited SuperAdmin workflow." : billingData?.checkoutReady ? "Plan selection is validated again on the server. Existing subscriptions are managed through the portal to prevent duplicates." : "Checkout stays disabled until every approved price, webhook secret and tax policy is verified."} Downgrading never deletes workspaces, properties, reports, audits or analytics history.</p>
       </Panel></div>
-      {changePreview && <Panel title="Proration preview" actions={<button className="btn" onClick={() => { setChangePreview(null); setPendingChange(null); }}>Close</button>}><Metrics values={[["Due now", formatMinor(changePreview.amountDueMinor, changePreview.currency), "Stripe preview"], ["Subtotal", formatMinor(changePreview.subtotalMinor, changePreview.currency), "Before discounts and tax"], ["Discount", formatMinor(changePreview.discountMinor, changePreview.currency), "Applicable provider discounts"], ["Tax", formatMinor(changePreview.taxMinor, changePreview.currency), "Provider-calculated"]]} /><DataTable headers={["Line", "Amount", "Proration", "Period"]} rows={(changePreview.lines || []).map((line: any) => [line.description || "Subscription line", formatMinor(line.amountMinor, changePreview.currency), line.proration ? "Yes" : "No", line.periodStart && line.periodEnd ? `${fmtDate(line.periodStart)} – ${fmtDate(line.periodEnd)}` : "—"])} /><div className="button-row"><button className="primary" disabled={billingBusy} onClick={() => void applyChange("now")}>Apply now</button><button className="btn" disabled={billingBusy} onClick={() => void applyChange("period_end")}>Schedule at period end</button></div><p className="subtle">This preview and the immediate update share the same proration timestamp. A period-end change is persisted and applied by the billing scheduler without carrying sandbox resources into live billing.</p></Panel>}
+      {changePreview && createPortal(
+        <div className="overlay" role="presentation">
+          <section className="dialog proration-dialog" role="dialog" aria-modal="true" aria-labelledby="proration-preview-title">
+            <div className="panel-head"><h2 id="proration-preview-title">Proration preview</h2><button className="iconbtn" aria-label="Close proration preview" onClick={() => { setChangePreview(null); setPendingChange(null); }}><X /></button></div>
+            <Metrics values={[["Due now", formatMinor(changePreview.amountDueMinor, changePreview.currency), "Stripe preview"], ["Subtotal", formatMinor(changePreview.subtotalMinor, changePreview.currency), "Before discounts and tax"], ["Discount", formatMinor(changePreview.discountMinor, changePreview.currency), "Applicable provider discounts"], ["Tax", formatMinor(changePreview.taxMinor, changePreview.currency), "Provider-calculated"]]} />
+            <DataTable headers={["Line", "Amount", "Proration", "Period"]} rows={(changePreview.lines || []).map((line: any) => [line.description || "Subscription line", formatMinor(line.amountMinor, changePreview.currency), line.proration ? "Yes" : "No", line.periodStart && line.periodEnd ? `${fmtDate(line.periodStart)} – ${fmtDate(line.periodEnd)}` : "—"])} />
+            <div className="dialog-actions"><button className="primary" disabled={billingBusy} onClick={() => void applyChange("now")}>Apply now</button><button className="btn" disabled={billingBusy} onClick={() => void applyChange("period_end")}>Schedule at period end</button></div>
+            <p className="subtle">This preview and the immediate update share the same proration timestamp. A period-end change is persisted and applied by the billing scheduler.</p>
+          </section>
+        </div>,
+        document.body,
+      )}
     </>
   );
+}
+
+function PaymentMethodCard({ payment }: { payment: { brand: string; last4: string; label: string } }) {
+  return <div className="payment-method-card">
+    <span className={`card-brand-mark ${payment.brand}`} aria-label={payment.label}>
+      {payment.brand === "mastercard" ? <><i /><i /></> : <b>{payment.brand === "visa" ? "VISA" : payment.label}</b>}
+    </span>
+    <span><b>{payment.label}</b><small>•••• {payment.last4}</small></span>
+  </div>;
 }
 
 function UsageBar({ label, used = 0, limit, loading = false, resetsAt }: { label: string; used?: number; limit?: number | null; loading?: boolean; resetsAt?: string }) {
