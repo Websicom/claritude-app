@@ -183,6 +183,15 @@ export function alertRecipientLimitForPlan(entitlement: unknown) {
   return plan === "Pro" ? 10 : plan === "Scale" ? 5 : plan === "Essentials" ? 2 : 1;
 }
 
+export function recoveryAlertsEnabledForPlan(entitlement: unknown) {
+  return planName(entitlement) !== "Free";
+}
+
+export function uptimeFailureThresholdLabel(value: unknown) {
+  const threshold = Math.max(1, Math.floor(Number(value) || 1));
+  return `${threshold} failed ${threshold === 1 ? "check" : "checks"}`;
+}
+
 const PLAN_LIMIT_ERROR_MESSAGES: Record<string, string> = {
   property_limit_reached: "This account has reached its property limit.",
   workspace_limit_reached: "This account has reached its workspace limit.",
@@ -4884,6 +4893,7 @@ function PropertySettingsView({
     <Page
       title="Property settings"
       status={<Status value={property.verification_status} />}
+      showOptions={false}
     >
       <div className="settings-tabs-row">
         <Tabs
@@ -4898,28 +4908,32 @@ function PropertySettingsView({
       {tab === "General" ? (
         <>
           <div className="settings-panel-grid property-general-grid">
-            <Panel title="General">
-              <label className="field">
-                Property name
-                <input value={name} onChange={(e) => setName(e.target.value)} />
-              </label>
-              <label className="field">
-                Website URL
-                <input value={property.url} readOnly className="readonly" />
-              </label>
-              <div className="form-two">
-                <label className="field">
-                  Timezone
-                  <TimezoneSelect value={timezone} onChange={setTimezone} />
-                </label>
-                <label className="field">
-                  Reporting currency
-                  <select value={currency} onChange={(event) => setCurrency(event.target.value)}>
-                    <option value="GBP">GBP (£)</option>
-                    <option value="USD">USD ($)</option>
-                    <option value="EUR">EUR (€)</option>
-                  </select>
-                </label>
+            <Panel title="General" className="property-general-panel">
+              <div className="property-settings-field-rows">
+                <div className="form-two">
+                  <label className="field">
+                    Property name
+                    <input value={name} onChange={(e) => setName(e.target.value)} />
+                  </label>
+                  <label className="field">
+                    Website URL
+                    <input value={property.url} readOnly className="readonly" />
+                  </label>
+                </div>
+                <div className="form-two">
+                  <label className="field">
+                    Timezone
+                    <TimezoneSelect value={timezone} onChange={setTimezone} />
+                  </label>
+                  <label className="field">
+                    Reporting currency
+                    <select value={currency} onChange={(event) => setCurrency(event.target.value)}>
+                      <option value="GBP">GBP (£)</option>
+                      <option value="USD">USD ($)</option>
+                      <option value="EUR">EUR (€)</option>
+                    </select>
+                  </label>
+                </div>
               </div>
               <div className="settings-actions right">
                 <button
@@ -4931,8 +4945,10 @@ function PropertySettingsView({
                 </button>
               </div>
             </Panel>
-            <Panel title="AI Visibility details">
-              <p className="panel-subtitle">Optional details used to suggest natural discovery phrases. They do not affect traffic attribution.</p>
+            <Panel
+              title={<span className="settings-panel-title-help">AI Visibility details <InfoHelp label="AI Visibility details" help="Optional details used to suggest natural discovery phrases. They do not affect traffic attribution." /></span>}
+              className="ai-visibility-panel"
+            >
               <div className="form-two">
                 <label className="field">
                   Business or brand name
@@ -5064,7 +5080,7 @@ function PropertySettingsView({
           </Panel>
         </>
       ) : tab === "Uptime" ? (
-        <>
+        <div className="uptime-settings-grid">
           <MonitorPanel
             session={session}
             monitor={property.uptime_monitors?.[0]}
@@ -5079,7 +5095,7 @@ function PropertySettingsView({
             fixture={false}
             notify={notify}
           />
-        </>
+        </div>
       ) : tab === "Events" ? (
         <EventsPanel
           session={session}
@@ -7315,6 +7331,7 @@ function AccountView({
     <Page
       title="Account settings"
       status={<span className="tag">Account holder</span>}
+      showOptions={false}
     >
       <div className="settings-tabs-row">
         <Tabs labels={tabs} value={tab} onChange={setTab} />
@@ -9303,6 +9320,8 @@ function AlertPanel({
   }, [session, property.id]);
   const recipientLimit = alertRecipientLimitForPlan(plan);
   const recipientLimitReached = recipients.filter((recipient) => recipient.enabled !== false).length >= recipientLimit;
+  const failureThreshold = property.uptime_monitors?.[0]?.failure_threshold;
+  const recoveryAlertsEnabled = recoveryAlertsEnabledForPlan(plan);
   async function addRecipient() {
     const normalized = email.trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
@@ -9371,21 +9390,23 @@ function AlertPanel({
         ? "Submitted to the email provider. Delivery is not confirmed until provider delivery evidence is available."
         : "The provider did not accept this test alert.");
     } catch (error: any) {
-      setTestState(error.message || "The test alert could not be sent.");
+      setTestState(String(error.message || "").includes("test_alert_rate_limit")
+        ? "This property has reached the safeguard of 3 test alerts in 6 hours. Try again after the six-hour window."
+        : error.message || "The test alert could not be sent.");
     } finally {
       setTesting(false);
     }
   }
   return (
     <>
-    <div className="grid equal">
+    <div className="uptime-alert-column">
       <Panel title="Recipients">
         <DataTable
           headers={["Email", "Down", "Recovery", ""]}
           rows={recipients.map((recipient) => [
             recipient.email,
             recipient.enabled ? "On" : "Off",
-            recipient.enabled ? "On" : "Off",
+            recoveryAlertsEnabled ? (recipient.enabled ? "On" : "Off") : "Not available",
             <span className="row-actions">
               <button className="btn" onClick={() => void toggleRecipient(recipient)}>
                 {recipient.enabled ? "Disable" : "Enable"}
@@ -9410,16 +9431,16 @@ function AlertPanel({
           <PlanLimitNotice
             message="alert_recipient_limit_reached"
             accountId={property.account_id}
+            className="event-allowance limit-reached uptime-recipient-limit"
           />
         )}
       </Panel>
       <Panel title="Alert policy">
         <KeyValues
           rows={[
-            ["Confirmation threshold", "2 failed checks"],
-            ["Recovery alerts", "Enabled"],
+            ["Confirmation threshold", uptimeFailureThresholdLabel(failureThreshold)],
+            ["Recovery alerts", recoveryAlertsEnabled ? "Enabled" : "Not available on Free"],
             ["Deduplication", "One alert per incident"],
-            ["Email delivery", "Resend"],
           ]}
         />
         <button
@@ -9433,6 +9454,7 @@ function AlertPanel({
     {testOpen && (
       <Modal title="Send test alert" close={() => !testing && setTestOpen(false)}>
         <p className="subtle">Send a sample uptime incident alert for <b>{property.name}</b>. This will not create an incident, change uptime statistics or save the address as a recipient.</p>
+        <p className="subtle">Safeguard: up to 3 test alerts can be sent per property in any 6-hour period.</p>
         <label className="field">
           Email address
           <input
