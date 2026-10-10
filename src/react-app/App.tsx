@@ -1,5 +1,5 @@
 import { type Session } from "@supabase/supabase-js";
-import { Check } from "lucide-react";
+import { Check, Eye, EyeOff } from "lucide-react";
 import { type FormEvent, lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { apiRequest as api } from "./api";
@@ -238,6 +238,7 @@ function Auth() {
     mode = useLocation().pathname.split("/").pop() || "sign-in";
   const [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
+    [showPassword, setShowPassword] = useState(false),
     [message, setMessage] = useState(""),
     [busy, setBusy] = useState(false);
   const title =
@@ -286,6 +287,20 @@ function Auth() {
       setBusy(false);
     }
   }
+  async function continueWithGoogle() {
+    setBusy(true);
+    setMessage("");
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo: `${location.origin}/auth/confirmed` },
+      });
+      if (error) throw error;
+    } catch (reason: any) {
+      setMessage(reason.message);
+      setBusy(false);
+    }
+  }
   return (
     <main className="auth-preview">
       <header className="auth-top">
@@ -308,6 +323,20 @@ function Auth() {
                 : "Sign in to manage your websites."}
           </p>
         </div>
+        {(mode === "sign-in" || mode === "register") && (
+          <>
+            <button className="btn google-auth-button" type="button" disabled={busy} onClick={() => void continueWithGoogle()}>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path fill="#4285F4" d="M21.6 12.23c0-.71-.06-1.39-.18-2.05H12v3.87h5.38a4.6 4.6 0 0 1-2 3.02v2.51h3.24c1.9-1.75 2.98-4.33 2.98-7.35Z"/>
+                <path fill="#34A853" d="M12 22c2.7 0 4.97-.9 6.62-2.42l-3.24-2.51c-.9.6-2.04.96-3.38.96-2.61 0-4.82-1.76-5.61-4.13H3.04v2.59A10 10 0 0 0 12 22Z"/>
+                <path fill="#FBBC05" d="M6.39 13.9A6 6 0 0 1 6.08 12c0-.66.11-1.3.31-1.9V7.51H3.04A10 10 0 0 0 2 12c0 1.61.38 3.14 1.04 4.49l3.35-2.59Z"/>
+                <path fill="#EA4335" d="M12 5.97c1.47 0 2.79.51 3.83 1.5l2.87-2.88A9.62 9.62 0 0 0 12 2a10 10 0 0 0-8.96 5.51l3.35 2.59C7.18 7.73 9.39 5.97 12 5.97Z"/>
+              </svg>
+              Continue with Google
+            </button>
+            <div className="auth-divider"><span>or continue with email</span></div>
+          </>
+        )}
         <form onSubmit={submit}>
           {mode !== "update-password" && (
             <label className="field">
@@ -324,16 +353,27 @@ function Auth() {
           {mode !== "forgot" && (
             <label className="field">
               {mode === "update-password" ? "New password" : "Password"}
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                minLength={10}
-                autoComplete={
-                  mode === "register" ? "new-password" : "current-password"
-                }
-                required
-              />
+              <span className="password-field">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  minLength={10}
+                  autoComplete={
+                    mode === "register" || mode === "update-password" ? "new-password" : "current-password"
+                  }
+                  required
+                />
+                <button
+                  className="password-visibility"
+                  type="button"
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                  aria-pressed={showPassword}
+                  onClick={() => setShowPassword((visible) => !visible)}
+                >
+                  {showPassword ? <EyeOff /> : <Eye />}
+                </button>
+              </span>
             </label>
           )}
           <button className="primary login-submit" disabled={busy}>
@@ -358,6 +398,7 @@ function Auth() {
 
 function Onboarding({ session, done }: { session: Session; done: () => void }) {
   const [step, setStep] = useState(1),
+    [profileName, setProfileName] = useState(String(session.user.user_metadata?.full_name || "")),
     [accountName, setAccountName] = useState(""),
     [workspaceName, setWorkspaceName] = useState(""),
     [propertyName, setPropertyName] = useState(""),
@@ -370,6 +411,7 @@ function Onboarding({ session, done }: { session: Session; done: () => void }) {
       await api(session, "/api/onboarding", {
         method: "POST",
         body: JSON.stringify({
+          profileName,
           accountName,
           workspaceName,
           propertyName,
@@ -414,9 +456,18 @@ function Onboarding({ session, done }: { session: Session; done: () => void }) {
                   start on the Free plan.
                 </p>
                 <label className="field">
-                  Account name
+                  Your name
                   <input
                     autoFocus
+                    value={profileName}
+                    onChange={(e) => setProfileName(e.target.value)}
+                    autoComplete="name"
+                    placeholder="Your name"
+                  />
+                </label>
+                <label className="field">
+                  Account name
+                  <input
                     value={accountName}
                     onChange={(e) => setAccountName(e.target.value)}
                     placeholder="Your company"
@@ -474,7 +525,7 @@ function Onboarding({ session, done }: { session: Session; done: () => void }) {
               className="primary"
               disabled={
                 busy ||
-                (step === 1 && !accountName) ||
+                (step === 1 && (!profileName.trim() || !accountName.trim())) ||
                 (step === 2 && !workspaceName)
               }
               onClick={() => (step < 3 ? setStep(step + 1) : void finish())}

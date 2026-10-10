@@ -1267,10 +1267,15 @@ tbody tr:hover {
   padding: 14px 0;
   border-bottom: 1px solid var(--line);
 }
-.advanced-row > span {
+.advanced-row > span:first-child {
   display: grid;
   gap: 3px;
   flex: 1;
+  min-width: 0;
+}
+.advanced-row > :last-child {
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 .advanced-row small {
   color: var(--muted);
@@ -1538,6 +1543,64 @@ input[type="checkbox"]:checked:after {
 .login-submit {
   width: 100%;
   height: 38px;
+}
+.google-auth-button {
+  width: 100%;
+  min-height: 40px;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  font-weight: 650;
+}
+.google-auth-button svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: var(--line);
+}
+.password-field {
+  position: relative;
+  display: block;
+}
+.password-field input {
+  width: 100%;
+  padding-right: 42px;
+}
+.password-visibility {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+}
+.password-visibility:hover,
+.password-visibility:focus-visible {
+  color: var(--ink);
+}
+.password-visibility svg {
+  width: 17px;
+  height: 17px;
 }
 .login-options {
   display: flex;
