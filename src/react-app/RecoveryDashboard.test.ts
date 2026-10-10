@@ -28,6 +28,7 @@ import {
   initialTableSortDirection,
   isFixFirstAuditResult,
   isPlanLimitError,
+  isWeeklyAuditLimitError,
   nextConfiguredEventAttribute,
   paginateResults,
   planLimitMessage,
@@ -80,6 +81,8 @@ describe("plan presentation", () => {
   it("routes genuine plan-limit failures to Billing & plan", () => {
     expect(isPlanLimitError("property_limit_reached")).toBe(true);
     expect(isPlanLimitError("weekly_audit_credit_limit_reached")).toBe(true);
+    expect(isWeeklyAuditLimitError("weekly_audit_credit_limit_reached")).toBe(true);
+    expect(isWeeklyAuditLimitError("platform_concurrent_audit_limit_reached")).toBe(false);
     expect(isPlanLimitError("platform_concurrent_audit_limit_reached")).toBe(false);
     expect(planLimitMessage("custom_event_plan_limit_reached")).toBe(
       "This property has reached its custom event allowance.",
