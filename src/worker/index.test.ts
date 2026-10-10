@@ -81,6 +81,7 @@ import {
   financeMetrics,
   calculateSubscriptionMrr,
   stripeKeyEnvironment,
+  stripePaymentMethodSummary,
 } from "./index";
 import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
@@ -103,6 +104,23 @@ describe("checkout return ownership", () => {
     expect(checkoutSessionMatchesAccount({ ...session, customer: "cus_other" }, input)).toBe(false);
     expect(checkoutSessionMatchesAccount({ ...session, livemode: true }, input)).toBe(false);
     expect(checkoutSessionMatchesAccount({ ...session, metadata: { ...session.metadata, checkoutAttemptId: "attempt-other" } }, input)).toBe(false);
+  });
+});
+
+describe("Stripe payment method summaries", () => {
+  it("extracts only a safe card brand and last four digits", () => {
+    expect(stripePaymentMethodSummary({
+      latest_charge: {
+        payment_method_details: {
+          type: "card",
+          card: { brand: "Visa", last4: "4242", exp_month: 2, exp_year: 2028 },
+        },
+      },
+    })).toEqual({ type: "card", brand: "visa", last4: "4242" });
+    expect(stripePaymentMethodSummary({ latest_charge: "ch_unexpanded" })).toBeNull();
+    expect(stripePaymentMethodSummary({
+      latest_charge: { payment_method_details: { type: "card", card: { brand: "visa", last4: "42" } } },
+    })).toBeNull();
   });
 });
 
