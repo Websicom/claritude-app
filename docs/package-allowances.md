@@ -1,7 +1,7 @@
 # Claritude package allowances
 
-Last reconciled: 9 October 2026  
-Code revision: updated with the allocation-capacity correction on 9 October 2026
+Last reconciled: 10 October 2026  
+Code revision: updated with property-viewer and analytics-event allowances on 10 October 2026
 
 This document records the package configuration currently represented by the production database migrations and enforced by the application. It is a reference for checking and approving future package changes; the database remains the runtime source of truth.
 
@@ -30,6 +30,8 @@ All four public packages are version 1 and currently `published`.
 | Audit credits per week, pooled across the account | 10 | 25 | 100 | 250 |
 | Custom analytics event definitions per property | 2 | 5 | 10 | 25 |
 | Uptime alert contacts per property | 1 | 2 | 5 | 10 |
+| Property viewers per property | 1 | 2 | 3 | 5 |
+| Analytics events per UTC month, pooled across the account | 20,000 | 500,000 | 5,000,000 | 25,000,000 |
 | Fastest uptime check interval | 15 minutes | 5 minutes | 2 minutes | 1 minute |
 | Tracked pageviews per UTC month, pooled across the account | 10,000 | 100,000 | 1,000,000 | 5,000,000 |
 | Pageview grace above the nominal allowance | 0% | 5% | 5% | 5% |
@@ -63,6 +65,8 @@ Its standard allowances currently mirror Pro:
 - 25 audit pages per property
 - 250 audit credits per week
 - 25 custom event definitions per property
+- 5 property viewers per property
+- 25,000,000 analytics events per UTC month
 - 1-minute minimum uptime interval
 - Pro analytics quotas and retention
 - Feature flag: `complimentaryEarlyAccess: true`
@@ -71,7 +75,7 @@ Websi and Claritude each have a permanent complimentary grant to the published s
 
 ## SuperAdmin allocation-capacity arithmetic
 
-The allocation view reports the maximum configured customer capacity, not physical infrastructure capacity. Per-property allowances are multiplied by each account's effective maximum property allowance. Audit credits are shown as a four-week equivalent so the displayed period matches the sum of four weekly allowance windows. Analytics events use the global safety ceiling of 50,000 accepted events per property per UTC day and are not presented as a monthly package allowance.
+The allocation view reports the maximum configured customer capacity, not physical infrastructure capacity. Per-property allowances are multiplied by each account's effective maximum property allowance. Audit credits are shown as a four-week equivalent so the displayed period matches the sum of four weekly allowance windows. Analytics events use the account's monthly package allowance. Property-viewer capacity uses each account's effective property allowance multiplied by its per-property viewer allowance.
 
 For the current live mix of two Free accounts and two complimentary Pro accounts, the expected totals are:
 
@@ -81,7 +85,8 @@ For the current live mix of two Free accounts and two complimentary Pro accounts
 | Workspaces, capacity-view cap | `(2 × 1) + (2 × 200)` | 402 |
 | Included editing users | `(2 × 1) + (2 × 3)` | 8 |
 | Tracked pageviews / month | `(2 × 10,000) + (2 × 5,000,000)` | 10,020,000 |
-| Analytics events / UTC day ceiling | `404 × 50,000` | 20,200,000 |
+| Analytics events / month | `(2 × 20,000) + (2 × 25,000,000)` | 50,040,000 |
+| Property viewers | `(2 × 2 × 1) + (2 × 200 × 5)` | 2,004 |
 | Custom event definitions | `(2 × 2 × 2) + (2 × 200 × 25)` | 10,008 |
 | Audit pages | `(2 × 2 × 2) + (2 × 200 × 25)` | 10,008 |
 | Uptime alert contacts | `(2 × 2 × 1) + (2 × 200 × 10)` | 4,004 |
@@ -95,7 +100,6 @@ For the current live mix of two Free accounts and two complimentary Pro accounts
 - No package currently enables `billableAdditionalEditingSeats`; only the included editing users above can be selected in the sandbox base-subscription scenario.
 - Additional-seat eligibility, pricing and billing rules remain unresolved.
 - Live tax configuration remains unresolved.
-- Property-viewer allowances remain unresolved for every package.
 - The package records still carry a broader `retention` unresolved marker even though the analytics retention layers above are configured. Non-analytics/package-level retention policy needs an explicit commercial/product decision before that marker should be cleared.
 - Package feature maps are otherwise empty; capabilities such as audits, analytics, uptime and reports currently rely on allowances and global service controls rather than tier-specific feature flags.
 
@@ -103,11 +107,11 @@ The unresolved markers currently expected on the package versions are:
 
 | Package | Unresolved markers |
 |---|---|
-| Free | `propertyViewers`, `retention` |
-| Essentials | `price`, `propertyViewers`, `retention` |
-| Scale | `price`, `propertyViewers`, `retention` |
-| Pro | `price`, `propertyViewers`, `retention` |
-| Pro early access | `futurePrice`, `propertyViewers`, `retention` |
+| Free | `retention` |
+| Essentials | `price`, `retention` |
+| Scale | `price`, `retention` |
+| Pro | `price`, `retention` |
+| Pro early access | `futurePrice`, `retention` |
 
 ### Test-only Stripe catalogue fixtures
 
@@ -135,6 +139,7 @@ When changing a package:
 
 ## Implementation references
 
+- `supabase/migrations/20261010123000_account_access_allowances_and_email_evidence.sql`
 - `supabase/migrations/20261009123000_publish_pro_and_correct_plan_allowances.sql`
 - `supabase/migrations/20261009130000_correct_allocation_capacity_and_complimentary_pro.sql`
 - `supabase/migrations/20261007211210_analytics_retention_rollups_and_limits.sql`
