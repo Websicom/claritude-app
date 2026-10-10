@@ -1215,7 +1215,7 @@ async function projectStripeSubscription(env: Env, subscription: any, eventCreat
   if (existing.data?.last_event_created_at && Date.parse(existing.data.last_event_created_at) > eventCreated * 1000) return relation;
   const items = subscription.items?.data || [];
   const priceIds = items.map((item: any) => typeof item.price === "string" ? item.price : item.price?.id).filter(Boolean);
-  const mappingsResponse = priceIds.length ? await db.from("billing_catalogue_prices").select("provider_price_id,package_version_id,interval,component,unit_amount_minor,active,provider_livemode,billing_environment,package_versions(allowances,unresolved_values)").eq("billing_environment", billingEnvironment).in("provider_price_id", priceIds) : { data: [] };
+  const mappingsResponse = priceIds.length ? await db.from("billing_catalogue_prices").select("provider_price_id,package_version_id,interval,component,unit_amount_minor,active,provider_livemode,billing_environment,package_versions(allowances,unresolved_values,state,effective_at)").eq("billing_environment", billingEnvironment).eq("active", true).eq("provider_livemode", billingEnvironment === "live").in("provider_price_id", priceIds) : { data: [] };
   const mappingByPrice = new Map((mappingsResponse.data || []).map((mapping: any) => [mapping.provider_price_id, mapping]));
   const baseItem = items.find((item: any) => mappingByPrice.get(typeof item.price === "string" ? item.price : item.price?.id)?.component === "base");
   const basePriceId = baseItem ? (typeof baseItem.price === "string" ? baseItem.price : baseItem.price?.id) : null;
@@ -1319,8 +1319,8 @@ async function applyVerifiedBillingEvent(env: Env, event: Stripe.Event) {
   }
   else if (event.type.startsWith("payment_intent.")) {
     relation = await billingAccountForObject(env, object, billingEnvironment);
-    const existing = await db.from("billing_payments").select("last_event_created_at").eq("provider_payment_intent_id", object.id).eq("billing_environment", billingEnvironment).maybeSingle();
-    if (relation && (!existing.data?.last_event_created_at || Date.parse(existing.data.last_event_created_at) <= event.created * 1000)) await db.from("billing_payments").upsert({ billing_environment: billingEnvironment, provider_payment_intent_id: object.id, account_id: relation.accountId, provider_invoice_id: typeof object.invoice === "string" ? object.invoice : object.invoice?.id || null, status: object.status, currency: object.currency, amount_minor: Number(object.amount || 0), amount_received_minor: Number(object.amount_received || 0), payment_method_summary: { type: object.payment_method_types?.[0] || null }, failure_code: object.last_payment_error?.code || null, failure_message: object.last_payment_error?.message || null, provider_created_at: stripeTimestamp(object.created), livemode: Boolean(object.livemode), metadata: object.metadata || {}, last_event_created_at: stripeTimestamp(event.created), updated_at: new Date().toISOString() }, { onConflict: "billing_environment,provider_payment_intent_id" });
+    const existing = await db.from("billing_payments").select("last_event_created_at,payment_method_summary").eq("provider_payment_intent_id", object.id).eq("billing_environment", billingEnvironment).maybeSingle();
+    if (relation && (!existing.data?.last_event_created_at || Date.parse(existing.data.last_event_created_at) <= event.created * 1000)) await db.from("billing_payments").upsert({ billing_environment: billingEnvironment, provider_payment_intent_id: object.id, account_id: relation.accountId, provider_invoice_id: typeof object.invoice === "string" ? object.invoice : object.invoice?.id || null, status: object.status, currency: object.currency, amount_minor: Number(object.amount || 0), amount_received_minor: Number(object.amount_received || 0), payment_method_summary: { ...(existing.data?.payment_method_summary || {}), type: object.payment_method_types?.[0] || existing.data?.payment_method_summary?.type || null }, failure_code: object.last_payment_error?.code || null, failure_message: object.last_payment_error?.message || null, provider_created_at: stripeTimestamp(object.created), livemode: Boolean(object.livemode), metadata: object.metadata || {}, last_event_created_at: stripeTimestamp(event.created), updated_at: new Date().toISOString() }, { onConflict: "billing_environment,provider_payment_intent_id" });
   } else if (event.type.startsWith("charge.") && !event.type.startsWith("charge.dispute.")) {
     relation = await billingAccountForObject(env, object, billingEnvironment);
     const paymentIntentId = typeof object.payment_intent === "string" ? object.payment_intent : object.payment_intent?.id;
@@ -4500,8 +4500,8 @@ app.post("/api/superadmin/billing/catalogue", async (c) => {
   const stripe = stripeClient(c.env, body.billingEnvironment!);
   if (!stripe) return c.json({ error: "stripe_credentials_required" }, 409);
   const db = admin(c.env);
-  const packageVersion = await db.from("package_versions").select("id,package_key,display_name").eq("id", body.packageVersionId).maybeSingle();
-  if (!packageVersion.data || !["essentials", "scale", "pro"].includes(packageVersion.data.package_key)) return c.json({ error: "paid_package_version_required" }, 400);
+  const packageVersion = await db.from("package_versions").select("id,package_key,display_name,state,effective_at").eq("id", body.packageVersionId).maybeSingle();
+  if (!packageVersion.data || !["essentials", "scale", "pro"].includes(packageVersion.data.package_key) || packageVersion.data.state !== "published" || !packageVersion.data.effective_at || Date.parse(packageVersion.data.effective_at) > Date.now()) return c.json({ error: "effective_published_paid_package_version_required" }, 400);
   const price = await stripe.prices.retrieve(body.priceId, { expand: ["product"] });
   const product: any = price.product;
   if (!price.active || !price.recurring || price.unit_amount == null || typeof product === "string" || !product.active) return c.json({ error: "active_recurring_price_and_product_required" }, 409);

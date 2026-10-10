@@ -10,6 +10,8 @@ import {
   auditScoreBand,
   billingUpgradeHref,
   billingCheckoutErrorMessage,
+  billingPlanActionLabel,
+  billingPlanFeatures,
   checkoutReturnDetails,
   clearCheckoutReturnSearch,
   buildAuditFixPrompt,
@@ -32,6 +34,7 @@ import {
   isFixFirstAuditResult,
   isPlanLimitError,
   isWeeklyAuditLimitError,
+  latestPaymentCard,
   nextConfiguredEventAttribute,
   paginateResults,
   planLimitMessage,
@@ -117,6 +120,32 @@ describe("plan presentation", () => {
     expect(uptimeFailureThresholdLabel(2)).toBe("2 failed checks");
     expect(recoveryAlertsEnabledForPlan("free")).toBe(false);
     expect(recoveryAlertsEnabledForPlan("essentials")).toBe(true);
+  });
+
+  it("presents the approved allowances and unambiguous change actions for every plan", () => {
+    expect(billingPlanFeatures("Free")).toContain("2 custom events per property");
+    expect(billingPlanFeatures("Essentials")).toEqual(expect.arrayContaining([
+      "5 properties",
+      "25 audits per week across the account",
+      "100k monthly account pageviews",
+      "5 custom events per property",
+      "Uptime recovery emails",
+      "Full report access",
+    ]));
+    expect(billingPlanFeatures("Scale")).toContain("10 custom events per property");
+    expect(billingPlanFeatures("Pro")).toContain("25 custom events per property");
+    expect(billingPlanActionLabel("Essentials", "Essentials", true)).toBe("Plan details");
+    expect(billingPlanActionLabel("Essentials", "Scale", true)).toBe("Upgrade");
+    expect(billingPlanActionLabel("Scale", "Essentials", true)).toBe("Downgrade");
+    expect(billingPlanActionLabel("Free", "Essentials", false)).toBe("Upgrade");
+  });
+
+  it("shows only Stripe-safe card identification from the latest successful payment", () => {
+    expect(latestPaymentCard([
+      { status: "failed", payment_method_summary: { brand: "visa", last4: "0002" } },
+      { status: "succeeded", payment_method_summary: { brand: "mastercard", last4: "4444" } },
+    ])).toEqual({ brand: "mastercard", last4: "4444", label: "Mastercard" });
+    expect(latestPaymentCard([{ status: "succeeded", payment_method_summary: { type: "card" } }])).toBeNull();
   });
 
   it("routes genuine plan-limit failures to Billing & plan", () => {
