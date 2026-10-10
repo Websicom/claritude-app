@@ -214,6 +214,10 @@ export function planLimitMessage(message: unknown) {
   return code ? PLAN_LIMIT_ERROR_MESSAGES[code] : value;
 }
 
+export function isWeeklyAuditLimitError(message: unknown) {
+  return String(message || "").toLowerCase().includes("weekly_audit_credit_limit_reached");
+}
+
 export function billingUpgradeHref(accountId?: string) {
   const params = new URLSearchParams({ accountTab: "Billing & plan" });
   if (accountId) params.set("billingAccount", accountId);
@@ -2085,6 +2089,9 @@ function PropertyOverview({
     [uptimeRefreshing, setUptimeRefreshing] = useState(false),
     [auditStarting, setAuditStarting] = useState(false);
   useEffect(() => {
+    setAuditStarting(false);
+  }, [property?.id]);
+  useEffect(() => {
     setUptimeStatus(property?.uptime_monitors?.[0]);
   }, [property?.id, property?.uptime_monitors?.[0]?.last_checked_at, property?.uptime_monitors?.[0]?.last_status]);
   async function refreshUptimeStatus() {
@@ -2129,7 +2136,11 @@ function PropertyOverview({
       if (auditPage && error.message === "audit_already_active") {
         notify("An audit is already running");
         navigate(`/audit?property=${property.id}&auditPage=${auditPage.id}`);
-      } else notify(error.message);
+      } else {
+        notify(error.message);
+        if (isWeeklyAuditLimitError(error.message))
+          navigate(billingUpgradeHref(property.account_id));
+      }
     } finally {
       setAuditStarting(false);
     }
@@ -3495,15 +3506,15 @@ function AnalyticsView({
         </>
       ) : tab === "Engagement" ? (
         <>
-          <Panel title="Visits by day and time">
-            <VisitTimeHeatmap cells={engagement.visitTimes || []} timeZone={analyticsTimeZone} />
-          </Panel>
           <Metrics values={[
             [<MetricTerm term="Bounce rate" />, engagement.bounceRate == null ? "Unavailable" : `${engagement.bounceRate.toFixed(1)}%`, <MetricComparison current={engagement.bounceRate} previous={previousEngagement.bounceRate} direction="lower" />],
             ["Engaged sessions", engagement.engagedSessions == null ? "Unavailable" : fmt(engagement.engagedSessions), <MetricComparison current={engagement.engagedSessions} previous={previousEngagement.engagedSessions} direction="higher" />],
             [<MetricTerm term="Average active session duration" />, engagement.averageActiveSessionSeconds == null ? "Unavailable" : durationLabel(engagement.averageActiveSessionSeconds), <MetricComparison current={engagement.averageActiveSessionSeconds} previous={previousEngagement.averageActiveSessionSeconds} direction="higher" />],
             [<MetricTerm term="Median active session duration" />, engagement.medianActiveSessionSeconds == null ? "Unavailable" : durationLabel(engagement.medianActiveSessionSeconds), <MetricComparison current={engagement.medianActiveSessionSeconds} previous={previousEngagement.medianActiveSessionSeconds} direction="higher" />],
           ]} />
+          <Panel title="Visits by day and time">
+            <VisitTimeHeatmap cells={engagement.visitTimes || []} timeZone={analyticsTimeZone} />
+          </Panel>
           {filtersToolbar}
           <div className="grid equal">
             <Panel title="Scroll depth"><AnalyticsValueTable headers={["Depth", "Pageviews"]} rows={(engagement.scrollDepth || []).map((row: any) => ({ label: `${row.depth}% reached`, value: row.pageviews }))} /></Panel>
@@ -3621,9 +3632,16 @@ function AuditView({
   }
   useEffect(() => {
     if (session && property) {
+      const sequence = ++requestSequence.current;
+      loadedAuditScope.current = "";
+      setBusy(false);
+      setPropertyRuns([]);
+      setRuns([]);
+      setSelectedPage(null);
       setAuditDataLoading(true);
       api<any[]>(session, `/api/properties/${property.id}/audit-pages`)
         .then((pages) => {
+          if (requestSequence.current !== sequence) return;
           const next = [...pages].sort((left, right) => left.path === "/" ? -1 : right.path === "/" ? 1 : left.name.localeCompare(right.name));
           setAuditPages(next);
           const chosen = next.find((page) => page.id === requestedPageId) || next[0] || null;
@@ -3631,7 +3649,12 @@ function AuditView({
           if (chosen && chosen.id !== requestedPageId) updateAuditLocation({ auditPage: chosen.id });
           if (!chosen) setAuditDataLoading(false);
         })
-        .catch(() => { setAuditPages([]); setSelectedPage(null); setAuditDataLoading(false); });
+        .catch(() => {
+          if (requestSequence.current !== sequence) return;
+          setAuditPages([]);
+          setSelectedPage(null);
+          setAuditDataLoading(false);
+        });
     } else if (fixture) {
       const pages = [
         { id: "fixture-homepage", name: "Homepage", path: "/" },
@@ -3875,6 +3898,8 @@ function AuditView({
       }
     } catch (e: any) {
       notify(e.message);
+      if (isWeeklyAuditLimitError(e.message))
+        auditNavigate(billingUpgradeHref(property!.account_id));
       setBusy(false);
     } finally {
       if (!session) setBusy(false);
@@ -4151,7 +4176,11 @@ function AuditView({
           <label className="field">Page name<input value={pageName} onChange={(event) => setPageName(event.target.value)} placeholder="About" autoFocus /></label>
           <label className="field">URL or path<input value={pagePath} onChange={(event) => setPagePath(event.target.value)} placeholder="/about/" /></label>
           <p className="subtle">Only pages on {property.canonical_host} can be added. Adding a page does not start an audit.</p>
-          {pageError && <div className="error-note" role="alert">{pageError}</div>}
+          {pageError && (
+            isPlanLimitError(pageError)
+              ? <PlanLimitNotice message={pageError} accountId={property.account_id} onUpgrade={() => setAddPage(false)} className="event-allowance limit-reached audit-page-limit-notice" />
+              : <div className="error-note" role="alert">{pageError}</div>
+          )}
           {pageSaveState === "success" && <div className="notice" role="status">Page saved and selected.</div>}
           <div className="dialog-actions">
             <button className="btn" onClick={() => setAddPage(false)} disabled={pageSaveState === "saving"}>Cancel</button>
@@ -5003,6 +5032,15 @@ function PropertySettingsView({
           notify={notify}
         />
       ) : tab === "Sharing" ? (
+        <>
+        {viewerLimitReached && (
+          <div className="event-allowance limit-reached sharing-allowance" role="status">
+            <span>Your {plan} plan viewer allowance has been reached.</span>
+            <Link className="primary plan-limit-upgrade" to={billingUpgradeHref(property.account_id)}>
+              Upgrade plan
+            </Link>
+          </div>
+        )}
         <Panel
           title="Property access"
           actions={viewerLimitReached
@@ -5061,6 +5099,7 @@ function PropertySettingsView({
           />
           <p className="subtle settings-footnote">Property invitations are view-only. Workspace access is inherited and managed from Account settings.</p>
         </Panel>
+        </>
       ) : (
         <>
         <Panel title="Advanced actions">
@@ -10991,13 +11030,15 @@ function AuditFilterMenu({ results, filters, onChange, kinds }: { results: any[]
 function AuditScore({ run }: { run?: AuditRun }) {
   const categoryScores = auditRunCategoryScores(run);
   const complete = isAuditRunComplete(run);
+  const partial = Boolean(run) && !complete;
   const score = run?.score;
   return (
     <div className="audit-score-row">
       <div className="audit-overall-score">
         <div
-          className={`audit-score ${(score || 0) >= 80 ? "good" : "warn"} ${complete ? "" : "partial"}`}
+          className={`audit-score ${(score || 0) >= 80 ? "good" : "warn"} ${partial ? "partial" : ""}`}
           style={{ "--score": score || 0 } as any}
+          aria-label={partial ? `Incomplete audit score: ${score ?? "unavailable"} out of 100` : `Audit score: ${score ?? "unavailable"} out of 100`}
         >
           <span>{score ?? "—"}</span>
         </div>
