@@ -3570,6 +3570,15 @@ export function checkoutAttemptIsStale(createdAt: unknown, now = Date.now(), gra
   return !Number.isFinite(created) || now - created >= graceMs;
 }
 
+export function checkoutSessionMatchesAccount(session: Record<string, any>, input: { accountId: string; billingEnvironment: BillingEnvironment; customerId: string; attemptId: string }) {
+  const sessionCustomerId = typeof session.customer === "string" ? session.customer : session.customer?.id;
+  return session.metadata?.claritudeAccountId === input.accountId
+    && session.metadata?.billingEnvironment === input.billingEnvironment
+    && session.metadata?.checkoutAttemptId === input.attemptId
+    && sessionCustomerId === input.customerId
+    && Boolean(session.livemode) === (input.billingEnvironment === "live");
+}
+
 app.post("/api/billing/:accountId/checkout", async (c) => {
   const accountId = c.req.param("accountId");
   const access = await billingAccess(c.env, c.get("userId"), accountId);
@@ -3714,8 +3723,8 @@ app.post("/api/billing/:accountId/checkout", async (c) => {
       customer_update: { address: "auto", name: "auto" },
       tax_id_collection: { enabled: true },
       name_collection: { business: { enabled: true, optional: true } },
-      success_url: `${c.env.APP_ORIGIN.replace(/\/$/, "")}/account?accountTab=Billing%20%26%20plan&checkout=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${c.env.APP_ORIGIN.replace(/\/$/, "")}/account?accountTab=Billing%20%26%20plan&checkout=cancelled`,
+      success_url: `${c.env.APP_ORIGIN.replace(/\/$/, "")}/account?accountTab=Billing%20%26%20plan&billingAccount=${encodeURIComponent(accountId)}&checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${c.env.APP_ORIGIN.replace(/\/$/, "")}/account?accountTab=Billing%20%26%20plan&billingAccount=${encodeURIComponent(accountId)}&checkout=cancelled`,
       metadata: { claritudeAccountId: accountId, billingEnvironment, packageVersionId: body.packageVersionId, checkoutAttemptId: priorAttempt.data.id, includedEditingSeats: String(includedEditingSeats), additionalSeats: "0" },
       subscription_data: { metadata: { claritudeAccountId: accountId, billingEnvironment, packageVersionId: body.packageVersionId, includedEditingSeats: String(includedEditingSeats) } },
     }, { idempotencyKey });
@@ -3726,6 +3735,54 @@ app.post("/api/billing/:accountId/checkout", async (c) => {
     await db.from("billing_financial_operations").update({ state: "failed", error: errorMessage(error).slice(0, 1000), updated_at: new Date().toISOString() }).eq("id", operationId);
     return c.json({ error: "stripe_checkout_failed" }, 503);
   }
+});
+
+
+app.post("/api/billing/:accountId/checkout/confirm", async (c) => {
+  const accountId = c.req.param("accountId");
+  const access = await billingAccess(c.env, c.get("userId"), accountId);
+  if (!access.canManage) return c.json({ error: "billing_manage_access_required" }, 403);
+  const body = await c.req.json<{ sessionId?: string }>().catch(() => ({} as { sessionId?: string }));
+  const sessionId = String(body.sessionId || "");
+  if (!/^cs_(?:test_|live_)?[A-Za-z0-9]+$/.test(sessionId)) return c.json({ error: "invalid_checkout_session" }, 400);
+
+  const db = admin(c.env);
+  const account = await db.from("accounts").select("billing_environment").eq("id", accountId).maybeSingle();
+  const billingEnvironment = account.data?.billing_environment as BillingEnvironment | undefined;
+  if (!billingEnvironment) return c.json({ error: "account_not_found" }, 404);
+  const stripe = stripeClient(c.env, billingEnvironment);
+  if (!stripe) return c.json({ error: "stripe_credentials_required_for_account_environment", environment: billingEnvironment }, 409);
+
+  let checkoutSession: Stripe.Checkout.Session;
+  try {
+    checkoutSession = await stripe.checkout.sessions.retrieve(sessionId);
+  } catch {
+    return c.json({ error: "checkout_session_not_found" }, 404);
+  }
+  const attemptId = String(checkoutSession.metadata?.checkoutAttemptId || "");
+  const customer = await db.from("billing_customers").select("provider_customer_id").eq("account_id", accountId).eq("billing_environment", billingEnvironment).maybeSingle();
+  const attempt = attemptId
+    ? await db.from("billing_checkout_attempts").select("id").eq("id", attemptId).eq("account_id", accountId).eq("billing_environment", billingEnvironment).maybeSingle()
+    : { data: null };
+  if (!customer.data?.provider_customer_id || !attempt.data || !checkoutSessionMatchesAccount(checkoutSession as any, { accountId, billingEnvironment, customerId: customer.data.provider_customer_id, attemptId })) {
+    return c.json({ error: "checkout_session_account_mismatch" }, 403);
+  }
+  if (checkoutSession.status !== "complete") {
+    return c.json({ complete: false, status: checkoutSession.status, paymentStatus: checkoutSession.payment_status });
+  }
+
+  const subscriptionId = typeof checkoutSession.subscription === "string" ? checkoutSession.subscription : checkoutSession.subscription?.id;
+  if (!subscriptionId) return c.json({ complete: false, status: checkoutSession.status, paymentStatus: checkoutSession.payment_status, pending: true });
+  const subscription = await stripe.subscriptions.retrieve(subscriptionId, { expand: ["discounts.source.coupon"] });
+  const relation = await projectStripeSubscription(c.env, subscription, Math.floor(Date.now() / 1000));
+  if (!relation || relation.accountId !== accountId) return c.json({ error: "checkout_subscription_projection_failed" }, 503);
+
+  const updatedAt = new Date().toISOString();
+  await Promise.all([
+    db.from("billing_checkout_attempts").update({ provider_session_id: checkoutSession.id, state: "completed", updated_at: updatedAt, error: null }).eq("id", attemptId),
+    db.from("billing_financial_operations").update({ provider_reference: checkoutSession.id, state: "completed", response: { sessionId: checkoutSession.id, completed: true }, updated_at: updatedAt, error: null }).eq("account_id", accountId).eq("billing_environment", billingEnvironment).eq("operation_type", "checkout").eq("provider_reference", checkoutSession.id),
+  ]);
+  return c.json({ complete: true, status: checkoutSession.status, paymentStatus: checkoutSession.payment_status, subscriptionId, packageVersionId: checkoutSession.metadata?.packageVersionId || null });
 });
 
 app.post("/api/billing/:accountId/portal", async (c) => {
