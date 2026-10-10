@@ -16,6 +16,7 @@ import {
   customEventPlan,
   checkoutAttemptIsStale,
   checkoutSelectionMatches,
+  checkoutSessionMatchesAccount,
   finiteAllocationCapacity,
   allocationWorkspaceLimit,
   fourWeekAuditCreditLimit,
@@ -84,6 +85,26 @@ import {
 import { AUDIT_REGISTRY } from "../shared/audit-registry.generated";
 import { AUDIT_EVALUATOR_KEYS } from "../shared/audit-evaluator-map.generated";
 import { webpDimensions } from "../shared/avatar";
+
+describe("checkout return ownership", () => {
+  const session = {
+    livemode: false,
+    customer: "cus_test",
+    metadata: {
+      claritudeAccountId: "account-one",
+      billingEnvironment: "test",
+      checkoutAttemptId: "attempt-one",
+    },
+  };
+
+  it("requires matching account, environment, customer and attempt metadata", () => {
+    const input = { accountId: "account-one", billingEnvironment: "test" as const, customerId: "cus_test", attemptId: "attempt-one" };
+    expect(checkoutSessionMatchesAccount(session, input)).toBe(true);
+    expect(checkoutSessionMatchesAccount({ ...session, customer: "cus_other" }, input)).toBe(false);
+    expect(checkoutSessionMatchesAccount({ ...session, livemode: true }, input)).toBe(false);
+    expect(checkoutSessionMatchesAccount({ ...session, metadata: { ...session.metadata, checkoutAttemptId: "attempt-other" } }, input)).toBe(false);
+  });
+});
 
 describe("checkout recovery", () => {
   const selection = { packageVersionId: "package-one", currency: "gbp", interval: "year", includedEditingSeats: 2 };
