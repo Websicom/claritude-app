@@ -742,7 +742,11 @@ export function ClaritudeApplication({
       document.querySelectorAll<HTMLDetailsElement>("details[open]").forEach((details) => {
         if (!details.contains(target)) details.open = false;
       });
-      if (target.closest(".action-menu, [role='menu'], button[aria-expanded='true']")) return;
+      // State-driven popovers listen for Escape so they can share this global
+      // outside-click fallback. Never broadcast Escape while the pointer is
+      // inside an interactive surface: doing so unmounts the surface during
+      // pointerdown, before its links, fields and buttons receive their click.
+      if (target.closest(".action-menu, .user-popover, .overlay, [role='dialog'], [role='menu'], button[aria-expanded='true']")) return;
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     };
     document.addEventListener("pointerdown", dismissOpenMenus);
