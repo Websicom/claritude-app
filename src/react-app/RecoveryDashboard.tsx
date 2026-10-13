@@ -737,6 +737,18 @@ export function ClaritudeApplication({
     [],
   );
   useEffect(() => {
+    const dismissOpenMenus = (event: PointerEvent) => {
+      const target = event.target as Element;
+      document.querySelectorAll<HTMLDetailsElement>("details[open]").forEach((details) => {
+        if (!details.contains(target)) details.open = false;
+      });
+      if (target.closest(".action-menu, [role='menu'], button[aria-expanded='true']")) return;
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    };
+    document.addEventListener("pointerdown", dismissOpenMenus);
+    return () => document.removeEventListener("pointerdown", dismissOpenMenus);
+  }, []);
+  useEffect(() => {
     const refreshDelegation = () => {
       try {
         const value = JSON.parse(localStorage.getItem("claritude-delegation") || "null");
@@ -765,18 +777,27 @@ export function ClaritudeApplication({
   useEffect(() => {
     setNotificationSummary(null);
     if (fixture || !session || platformContext) return;
-    const controller = new AbortController();
-    const params = new URLSearchParams();
-    if (property?.id) params.set("propertyId", property.id);
-    else if (notificationAccountId) params.set("accountId", notificationAccountId);
-    void api<NotificationSummary>(session, `/api/notifications/summary${params.size ? `?${params}` : ""}`, { signal: controller.signal })
-      .then(setNotificationSummary)
-      .catch((error) => {
-        if (!(error instanceof DOMException && error.name === "AbortError"))
-          console.error("notification_summary_failed", error);
-      });
-    return () => controller.abort();
-  }, [fixture, session, platformContext, property?.id, notificationAccountId, data.notifications]);
+    let controller = new AbortController();
+    const loadSummary = () => {
+      controller.abort();
+      controller = new AbortController();
+      const params = new URLSearchParams();
+      if (property?.id) params.set("propertyId", property.id);
+      else if (notificationAccountId) params.set("accountId", notificationAccountId);
+      void api<NotificationSummary>(session, `/api/notifications/summary${params.size ? `?${params}` : ""}`, { signal: controller.signal })
+        .then(setNotificationSummary)
+        .catch((error) => {
+          if (!(error instanceof DOMException && error.name === "AbortError"))
+            console.error("notification_summary_failed", error);
+        });
+    };
+    loadSummary();
+    window.addEventListener("claritude:notifications-changed", loadSummary);
+    return () => {
+      controller.abort();
+      window.removeEventListener("claritude:notifications-changed", loadSummary);
+    };
+  }, [fixture, session, platformContext, property?.id, notificationAccountId]);
   const title = workspaceContext
     ? loc.pathname === "/" ? "Workspace Overview" : "Workspace Notifications"
     : platformContext
@@ -1245,6 +1266,7 @@ export function ClaritudeApplication({
                   fixture={fixture}
                   canManage={canManageWorkspace}
                   notify={notify}
+                  plan={activePlan}
                 />
               }
             />
@@ -1574,6 +1596,9 @@ function WorkspaceOverview({
     [pageSize, setPageSize] = useState(25),
     [filterOpen, setFilterOpen] = useState(false),
     [rowMenu, setRowMenu] = useState<string | null>(null),
+    [trafficMetric, setTrafficMetric] = useState<TrafficMetric>("Pageviews"),
+    [measuredLoading, setMeasuredLoading] = useState(!fixture),
+    [workspaceTraffic, setWorkspaceTraffic] = useState<any[]>([]),
     [measured, setMeasured] = useState<Record<string, any>>(() =>
       fixture
         ? Object.fromEntries(
@@ -1607,31 +1632,29 @@ function WorkspaceOverview({
   useEffect(() => {
     if (fixture || !session || !properties.length) return;
     let cancelled = false;
+    setMeasuredLoading(true);
+    const workspaceIds = [...new Set(properties.map((property) => property.workspace_id))];
     Promise.all(
-      properties.map(async (property) => {
+      workspaceIds.map(async (workspaceId) => {
         try {
-          const monitor = property.uptime_monitors?.[0];
-          const [summary, checks] = await Promise.all([
-            api<any>(session, `/api/properties/${property.id}/analytics?${livePeriod}&view=overview`),
-            monitor
-              ? api<any>(session, `/api/monitors/${monitor.id}/checks?${livePeriod}`)
-              : Promise.resolve(null),
-          ]);
-          return [
-            property.id,
-            {
-              ...summary,
-              availability: checks?.summary?.availability ?? null,
-              performanceScore: webVitalsScore(summary.vitals),
-            },
-          ] as const;
+          return await api<any>(session, `/api/workspaces/${workspaceId}/traffic?${livePeriod}`);
         } catch {
-          return [property.id, null] as const;
+          return { properties: {}, series: [] };
         }
       }),
-    ).then((entries) => {
-      if (!cancelled) setMeasured(Object.fromEntries(entries));
-    });
+    ).then((summaries) => {
+      if (cancelled) return;
+      setMeasured(Object.assign({}, ...summaries.map((summary) => summary.properties || {})));
+      const days = new Map<string, any>();
+      for (const summary of summaries) for (const point of summary.series || []) {
+        const current = days.get(point.day) || { day: point.day, pageviews: 0, dailyVisitors: 0, events: 0 };
+        current.pageviews += Number(point.pageviews || 0);
+        current.dailyVisitors += Number(point.dailyVisitors || 0);
+        current.events += Number(point.events || 0);
+        days.set(point.day, current);
+      }
+      setWorkspaceTraffic([...days.values()].sort((a, b) => a.day.localeCompare(b.day)));
+    }).finally(() => { if (!cancelled) setMeasuredLoading(false); });
     return () => { cancelled = true; };
   }, [fixture, session, properties.map((property) => property.id).join(","), livePeriod]);
   const workspaceRoles = new Map(
@@ -1654,13 +1677,14 @@ function WorkspaceOverview({
     }),
     { views: 0, events: 0 },
   );
-  const workspaceSeries = Array.from(
-        Object.values(measured).reduce((days: Map<string, number>, summary: any) => {
-          for (const point of summary?.series || [])
-            days.set(point.day, (days.get(point.day) || 0) + Number(point.pageviews || 0));
-          return days;
-        }, new Map<string, number>()),
-      ).map(([label, value]) => ({ label, value }));
+  const workspaceSeries = workspaceTraffic.map((point) => ({
+    label: point.day,
+    value: Number(point[trafficSeriesKey(trafficMetric)] || 0),
+  }));
+  const workspacePeriod = new URLSearchParams(workspaceLocation.search);
+  const workspaceTo = workspacePeriod.get("to") || new Date().toISOString().slice(0, 10);
+  const workspaceFrom = workspacePeriod.get("from") || new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10);
+  const workspaceDays = Math.max(1, Math.round((Date.parse(`${workspaceTo}T00:00:00Z`) - Date.parse(`${workspaceFrom}T00:00:00Z`)) / 864e5) + 1);
   return (
     <Page
       title="Workspace Overview"
@@ -1815,7 +1839,7 @@ function WorkspaceOverview({
                 />,
                 measured[p.id]?.availability != null
                   ? formatPercentage(Number(measured[p.id].availability))
-                  : "Pending",
+                  : cap(p.uptime_monitors?.[0]?.last_status || "pending"),
                 <TrackingStatus property={p} />,
                 measured[p.id] ? fmt(measured[p.id].pageviews || 0) : "Pending",
                 measured[p.id]
@@ -1884,15 +1908,15 @@ function WorkspaceOverview({
           </Panel>
           <Panel
             title="Workspace traffic"
-            actions={<ChartSwitch notify={notify} />}
+            actions={<ChartSwitch notify={notify} value={trafficMetric} onChange={setTrafficMetric} />}
           >
-            <SeriesChart points={workspaceSeries} emptyTitle="No measured workspace traffic yet" />
+            {measuredLoading ? <ChartLoading label="Loading workspace traffic" /> : <SeriesChart points={workspaceSeries} emptyTitle="No measured workspace traffic yet" />}
           </Panel>
         </div>
       ) : tab === "Traffic" ? (
         <Panel
           title="Workspace traffic"
-          actions={<ChartSwitch notify={notify} />}
+          actions={<ChartSwitch notify={notify} value={trafficMetric} onChange={setTrafficMetric} />}
         >
           <Metrics
             values={[
@@ -1911,10 +1935,10 @@ function WorkspaceOverview({
                 properties.filter((p) => p.tracking_last_received_at).length,
                 "Active tracking",
               ],
-              ["Period", "30 days", `${shortDate(new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10))} – ${shortDate(new Date().toISOString().slice(0, 10))}`],
+              ["Period", `${workspaceDays} ${workspaceDays === 1 ? "day" : "days"}`, `${shortDate(workspaceFrom)} – ${shortDate(workspaceTo)}`],
             ]}
           />
-          <SeriesChart points={workspaceSeries} emptyTitle="No measured workspace traffic yet" />
+          {measuredLoading ? <ChartLoading label="Loading workspace traffic" /> : <SeriesChart points={workspaceSeries} emptyTitle="No measured workspace traffic yet" />}
         </Panel>
       ) : tab === "Incidents" ? (
         <IncidentTable
@@ -2000,7 +2024,7 @@ function Notifications({
     scope === "Account" ? ["account"] : [];
   const notificationState = scope === "Archived" ? "archived" : "active";
   function notificationListParams(offset = 0) {
-    const params = new URLSearchParams({ limit: "100", offset: String(offset), state: notificationState });
+    const params = new URLSearchParams({ limit: "50", offset: String(offset), state: notificationState });
     if (selectedProperty) params.set("propertyId", selectedProperty);
     else if (accountId) params.set("accountId", accountId);
     if (notificationCategories.length) params.set("categories", notificationCategories.join(","));
@@ -2026,7 +2050,7 @@ function Notifications({
       active = false;
       controller.abort();
     };
-  }, [fixture, session, selectedProperty, accountId, scope, data.notifications]);
+  }, [fixture, session, selectedProperty, accountId, scope]);
   const source = fixture ? fixtureItems.filter((notification: any) =>
     notificationMatchesScope(notification, selectedProperty || undefined, selectedProperty ? undefined : accountId),
   ) : liveItems;
@@ -2055,7 +2079,7 @@ function Notifications({
       await api(session, `/api/notifications/${id}/read`, { method: "PATCH" });
       setLiveItems((current) => current.filter((item) => item.id !== id));
       setTotal((current) => Math.max(0, current - 1));
-      void reload();
+      window.dispatchEvent(new Event("claritude:notifications-changed"));
       notify("Notification marked as read");
     } catch (error: any) {
       notify(error.message);
@@ -2074,7 +2098,7 @@ function Notifications({
       });
       setLiveItems([]);
       setTotal(0);
-      void reload();
+      window.dispatchEvent(new Event("claritude:notifications-changed"));
       notify(`${result.updated} notifications marked as read`);
     } catch (error: any) {
       notify(error.message);
@@ -2136,8 +2160,8 @@ function Notifications({
           <Empty title="Loading notifications" detail="Retrieving notifications for this scope." />
         ) : items.length ? (
           items.map((notification: any) => (
-            <div className="notification-card" key={notification.id}>
-              {notification.severity === "success" ? <CheckCircle2 className="notification-success-icon" /> : <CircleAlert />}
+            <div className={`notification-card${/website recovered/i.test(notification.title || "") ? " recovered" : ""}`} key={notification.id}>
+              {notification.severity === "success" || /website recovered/i.test(notification.title || "") ? <CheckCircle2 className="notification-success-icon" /> : <CircleAlert />}
               <span>
                 <b>{notification.title}</b>
                 <small>
@@ -2544,6 +2568,12 @@ function UptimeView({
     [uptimeError, setUptimeError] = useState(""),
     [chartMenuOpen, setChartMenuOpen] = useState(false),
     [showPreviousChecks, setShowPreviousChecks] = useState(false);
+  useEffect(() => {
+    if (!chartMenuOpen) return;
+    const dismiss = (event: KeyboardEvent) => { if (event.key === "Escape") setChartMenuOpen(false); };
+    document.addEventListener("keydown", dismiss);
+    return () => document.removeEventListener("keydown", dismiss);
+  }, [chartMenuOpen]);
   const loadMaintenance = () => {
     if (!canManage || !session || !property?.uptime_monitors?.[0]) return Promise.resolve();
     return api<any[]>(
@@ -2591,16 +2621,9 @@ function UptimeView({
       setIncidentData([]);
       setUptimeError("");
       void loadUptime();
-      const refreshVisibleUptime = () => {
-        if (document.visibilityState === "visible") void loadUptime();
-      };
-      window.addEventListener("focus", refreshVisibleUptime);
-      document.addEventListener("visibilitychange", refreshVisibleUptime);
       return () => {
         active = false;
         requestNumber += 1;
-        window.removeEventListener("focus", refreshVisibleUptime);
-        document.removeEventListener("visibilitychange", refreshVisibleUptime);
       };
     }
     if (fixture) {
@@ -3058,6 +3081,7 @@ function AiVisibilityView({
   const [error, setError] = useState("");
   const [reloadToken, setReloadToken] = useState(0);
   const [phrase, setPhrase] = useState("");
+  const [suggestionIndex, setSuggestionIndex] = useState(0);
   const [copyRecovery, setCopyRecovery] = useState("");
   const phraseInput = useRef<HTMLInputElement>(null);
 
@@ -3083,7 +3107,8 @@ function AiVisibilityView({
   }, [filterQuery, fixture, livePeriod, property?.id, reloadToken, session]);
 
   if (!property) return <Empty title="Select a property" detail="AI visibility is property-specific." />;
-  const suggestion = suggestedAiPhrase(property);
+  const suggestions = suggestedAiPhrases(property);
+  const suggestion = suggestions[suggestionIndex % Math.max(1, suggestions.length)] || "";
   const current = data || {};
   const previous = current.previous || {};
   const incomplete = ["partial", "unavailable"].includes(current.coverage);
@@ -3209,27 +3234,28 @@ function AiVisibilityView({
             </div>
 
             <div className="ai-visibility-secondary">
+              {(current.pages || []).length > 0 && (
+                <Panel className="ai-pages-panel" title="Top pages from AI">
+                  <p className="panel-subtitle">Landing pages receiving AI referral visits.</p>
+                  <div className="ai-insight"><Sparkles /><span>{String(current.insight || "").replace(/(^|\s)\/(\s|$)/g, "$1/home/$2")}</span></div>
+                  <div className="table-wrap"><table className="ai-bar-table ai-pages-table"><thead><tr><th>Page</th><th>Visits</th><th>Sources</th></tr></thead><tbody>{current.pages.slice(0, 5).map((page: any) => <tr key={page.path}><td><Link className="ai-bar-cell" style={{ "--bar-size": `${page.visits / maxPageVisits * 100}%` } as CSSProperties} to={analyticsHref(page.path)} title={page.path}><span>{page.path === "/" ? "/home/" : (page.title || page.path)}</span></Link></td><td>{fmt(page.visits)}</td><td><span className="ai-source-logos">{page.sources.map((source: string) => { const platform = AI_PLATFORMS.find((item) => item.id === source); return platform ? <img key={source} src={platform.icon} alt={platform.name} title={platform.name} /> : null; })}</span></td></tr>)}</tbody></table></div>
+                  <Link className="text-link ai-view-all" to={analyticsHref()}>View all {fmt(current.landingPages)} pages <ChevronRight /></Link>
+                </Panel>
+              )}
               <Panel className="ai-phrase-panel" title="Check a phrase">
                 <p className="panel-subtitle">Open a discovery phrase on a supported AI platform. Claritude does not retrieve or record the answer.</p>
                 <label className="ai-phrase-input"><span className="sr-only">Phrase</span><input ref={phraseInput} value={phrase} onChange={(event) => { setPhrase(event.target.value); setCopyRecovery(""); }} placeholder={suggestion} /></label>
-                <button className="text-link ai-use-suggestion" type="button" onClick={() => { if (!phrase) setPhrase(suggestion); phraseInput.current?.focus(); }}>Use suggestion</button>
+                <button className="text-link ai-use-suggestion" type="button" onClick={() => { setPhrase(suggestion); setSuggestionIndex((value) => (value + 1) % Math.max(1, suggestions.length)); phraseInput.current?.focus(); }}>Use suggestion</button>
                 <div className="ai-platform-grid">{AI_PLATFORMS.map((platform) => <button type="button" key={platform.id} onClick={() => openPlatform(platform)}><img src={platform.icon} alt="" /><span>{platform.name}</span></button>)}</div>
                 <button className="btn ai-copy-prompt" type="button" onClick={() => void copyPhrase()}><Copy /> Copy prompt</button>
                 <p className="ai-provider-help">Prompt links are used where verified. Copilot opens separately and copies the visible phrase for pasting.</p>
                 {copyRecovery && <label className="ai-copy-recovery">Copy this phrase manually<textarea readOnly value={copyRecovery} onFocus={(event) => event.currentTarget.select()} /></label>}
               </Panel>
 
-              <Panel className="ai-pages-panel" title="Top pages from AI">
-                <p className="panel-subtitle">Landing pages receiving AI referral visits.</p>
-                <div className="ai-insight"><Sparkles /><span>{current.insight}</span></div>
-                {(current.pages || []).length ? <div className="table-wrap"><table className="ai-bar-table ai-pages-table"><thead><tr><th>Page</th><th>Visits</th><th>Sources</th></tr></thead><tbody>{current.pages.slice(0, 5).map((page: any) => <tr key={page.path}><td><Link className="ai-bar-cell" style={{ "--bar-size": `${page.visits / maxPageVisits * 100}%` } as CSSProperties} to={analyticsHref(page.path)} title={page.path}><span>{page.path === "/" ? "/home/" : (page.title || page.path)}</span></Link></td><td>{fmt(page.visits)}</td><td><span className="ai-source-logos">{page.sources.map((source: string) => { const platform = AI_PLATFORMS.find((item) => item.id === source); return platform ? <img key={source} src={platform.icon} alt={platform.name} title={platform.name} /> : null; })}</span></td></tr>)}</tbody></table></div> : <Empty title="No AI landing pages" detail="This does not mean the property has never been mentioned by an AI platform." />}
-                {(current.pages || []).length > 0 && <Link className="text-link ai-view-all" to={analyticsHref()}>View all {fmt(current.landingPages)} pages <ChevronRight /></Link>}
-              </Panel>
-
               <Panel className="ai-engagement-panel" title="AI visitor engagement">
                 <p className="panel-subtitle">Compared with other traffic.</p>
-                <div className="table-wrap"><table><thead><tr><th>Metric</th><th>AI visits</th><th>Other traffic</th></tr></thead><tbody><tr><td><AiMetricLabel help="The existing Claritude engagement definition: at least 10 seconds active, 50% scroll depth or a tracked key event.">Engagement rate</AiMetricLabel></td><td>{current.engagement?.ai?.engagementRate == null ? "Unavailable" : `${current.engagement.ai.engagementRate.toFixed(1)}%`}</td><td>{current.engagement?.other?.engagementRate == null ? "Unavailable" : `${current.engagement.other.engagementRate.toFixed(1)}%`}</td></tr><tr><td>Tracked conversions</td><td colSpan={2}>Not configured</td></tr><tr><td>Conversion rate</td><td colSpan={2}>Unavailable</td></tr></tbody></table></div>
-                <p className="ai-engagement-foot">Based on tracked visits and configured conversion events. <Link to={`/settings?property=${property.id}&settingsTab=Events`}>Review event setup</Link></p>
+                <div className="table-wrap"><table><thead><tr><th>Metric</th><th>AI visits</th><th>Other traffic</th></tr></thead><tbody><tr><td><AiMetricLabel help="The existing Claritude engagement definition: at least 10 seconds active, 50% scroll depth or a tracked key event.">Engagement rate</AiMetricLabel></td><td>{current.engagement?.ai?.engagementRate == null ? "Unavailable" : `${current.engagement.ai.engagementRate.toFixed(1)}%`}</td><td>{current.engagement?.other?.engagementRate == null ? "Unavailable" : `${current.engagement.other.engagementRate.toFixed(1)}%`}</td></tr><tr><td><AiMetricLabel help="A visit converts when it records at least one tracked click, outbound click or confirmed form-success event.">Tracked conversions</AiMetricLabel></td><td>{current.engagement?.ai?.conversions == null ? "Unavailable" : fmt(current.engagement.ai.conversions)}</td><td>{current.engagement?.other?.conversions == null ? "Unavailable" : fmt(current.engagement.other.conversions)}</td></tr><tr><td><AiMetricLabel help="Converted measured visits divided by all measured visits in the same traffic group.">Conversion rate</AiMetricLabel></td><td>{current.engagement?.ai?.conversionRate == null ? "Unavailable" : `${current.engagement.ai.conversionRate.toFixed(1)}%`}</td><td>{current.engagement?.other?.conversionRate == null ? "Unavailable" : `${current.engagement.other.conversionRate.toFixed(1)}%`}</td></tr></tbody></table></div>
+                <p className="ai-engagement-foot">Create meaningful click or confirmed form-success events, then Claritude counts visits containing one as conversions. <Link to={`/settings?property=${property.id}&settingsTab=Events`}>Review event setup</Link></p>
               </Panel>
             </div>
           </div>
@@ -3289,6 +3315,12 @@ function AnalyticsView({
   const defaultFrom = params.get("from") || new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10);
   const [rangeFrom, setRangeFrom] = useState(defaultFrom);
   const [rangeTo, setRangeTo] = useState(defaultTo);
+  useEffect(() => {
+    if (!chartMenuOpen) return;
+    const dismiss = (event: KeyboardEvent) => { if (event.key === "Escape") setChartMenuOpen(false); };
+    document.addEventListener("keydown", dismiss);
+    return () => document.removeEventListener("keydown", dismiss);
+  }, [chartMenuOpen]);
 
   const changeTab = (nextTab: string) => {
     const next = new URLSearchParams(location.search);
@@ -3309,6 +3341,13 @@ function AnalyticsView({
     const next = new URLSearchParams(location.search);
     Object.entries(changes).forEach(([key, value]) => value == null ? next.delete(key) : next.set(key, value));
     navigate(`${location.pathname}?${next.toString()}`, { replace });
+  };
+  const openAudienceDimension = (key: "device" | "country" | "browser", value: string) => {
+    const next = new URLSearchParams(location.search);
+    next.set("analyticsTab", "Audience");
+    for (const filterKey of analyticsFilterParamKeys) next.delete(filterKey);
+    writeAnalyticsFilters(next, { [key]: value });
+    navigate(`${location.pathname}?${next.toString()}`);
   };
 
   useEffect(() => {
@@ -3495,12 +3534,12 @@ function AnalyticsView({
           </Panel>
           <div className="grid equal">
             <Panel title="Top pages"><AnalyticsTable pages={pages} property={property} groupedLimit={5} eventHeader="Key events" onDetail={(page) => updateAnalyticsParams({ analyticsTab: "Pages", pagePath: page })} /></Panel>
-            <Panel title="Traffic sources"><AnalyticsSourceTable sources={scoped.sources || []} /></Panel>
+            <Panel title="Traffic sources"><AnalyticsSourceTable sources={scoped.sources || []} onDetail={(source) => updateAnalyticsParams({ analyticsTab: "Sources", sourceDetail: source })} /></Panel>
           </div>
           <div className="grid analytics-overview-bottom">
-            <Panel title="Key events"><AnalyticsValueTable headers={["Event", "Count", "%"]} rows={(scoped.eventBreakdown || []).slice(0, 5).map((row: any) => ({ label: eventLabel(row.name), value: row.count, secondary: scoped.keyEvents ? `${Math.round(row.count / scoped.keyEvents * 100)}%` : "0%" }))} /></Panel>
-            <Panel title="Devices"><AnalyticsValueTable headers={["Device", "Share"]} rows={shareRows(scoped.devices, scoped.pageviews, "device")} /></Panel>
-            <CountriesPanel rows={scoped.countries || []} total={scoped.pageviews || 0} onOpen={() => updateAnalyticsParams({ countryList: "all" })} />
+            <Panel title="Key events"><AnalyticsValueTable headers={["Event", "Count", "%"]} rows={(scoped.eventBreakdown || []).slice(0, 5).map((row: any) => ({ label: eventLabel(row.name), value: row.count, secondary: scoped.keyEvents ? `${Math.round(row.count / scoped.keyEvents * 100)}%` : "0%", onClick: () => updateAnalyticsParams({ analyticsTab: "Events", eventDetail: row.name }) }))} /></Panel>
+            <Panel title="Devices"><AnalyticsValueTable headers={["Device", "Share"]} rows={shareRows(scoped.devices, scoped.pageviews, "device").map((row: any, index: number) => ({ ...row, onClick: () => openAudienceDimension("device", String(scoped.devices[index]?.name || row.label)) }))} /></Panel>
+            <CountriesPanel rows={scoped.countries || []} total={scoped.pageviews || 0} onOpen={() => updateAnalyticsParams({ countryList: "all" })} onCountry={(country) => openAudienceDimension("country", country)} />
           </div>
         </>
       ) : tab === "Pages" && detailPage ? (
@@ -3607,9 +3646,9 @@ function AnalyticsView({
           ]} />
           {filtersToolbar}
           <div className="grid equal">
-            <Panel title="Browsers"><AnalyticsValueTable headers={["Browser", "Share"]} rows={shareRows(scoped.browsers, scoped.pageviews, "browser")} /></Panel>
+            <Panel title="Browsers"><AnalyticsValueTable headers={["Browser", "Share"]} rows={shareRows(scoped.browsers, scoped.pageviews, "browser").map((row: any, index: number) => ({ ...row, onClick: () => openAudienceDimension("browser", String(scoped.browsers[index]?.name || row.label)) }))} /></Panel>
             <CountriesPanel rows={scoped.countries || []} total={scoped.pageviews || 0} onOpen={() => updateAnalyticsParams({ countryList: "all" })} />
-            <Panel title="Devices"><AnalyticsValueTable headers={["Device", "Share"]} rows={shareRows(scoped.devices, scoped.pageviews, "device")} /></Panel>
+            <Panel title="Devices"><AnalyticsValueTable headers={["Device", "Share"]} rows={shareRows(scoped.devices, scoped.pageviews, "device").map((row: any, index: number) => ({ ...row, onClick: () => openAudienceDimension("device", String(scoped.devices[index]?.name || row.label)) }))} /></Panel>
             <Panel title="Screen categories"><AnalyticsValueTable headers={["Width", "Share"]} rows={shareRows(scoped.screens, scoped.pageviews)} /></Panel>
           </div>
         </>
@@ -3977,7 +4016,10 @@ function AuditView({
     completedCategoryCount = Object.values(auditRunCategoryScores(latest)).filter((score) => score != null).length,
     partial = Boolean(latest) && !isAuditRunComplete(latest),
     actionable = results.filter(isFixFirstAuditResult),
-    filteredActionable = filterUserFacingAuditResults(actionable, auditFilters, { hideUnableByDefault: false }),
+    filteredActionable = filterUserFacingAuditResults(actionable, auditFilters, { hideUnableByDefault: false }).sort((left: any, right: any) => {
+      const priority = { critical: 0, security: 1, warning: 2 } as Record<string, number>;
+      return (priority[auditSeverityGroup(left)] ?? 9) - (priority[auditSeverityGroup(right)] ?? 9);
+    }),
     countableActionable = filterUserFacingAuditResults(actionable, { ...auditFilters, types: [] }, { hideUnableByDefault: false });
   const resultCounts = {
     critical: countableActionable.filter((result: any) => auditSeverityGroup(result) === "critical").length,
@@ -4453,17 +4495,24 @@ function ReportsView({
   fixture,
   canManage,
   notify,
+  plan,
 }: {
   session: Session | null;
   property?: Property;
   fixture: boolean;
   canManage: boolean;
   notify: Notify;
+  plan: "Free" | "Essentials" | "Scale" | "Pro";
 }) {
   const reportsLocation = useLocation();
   const livePeriod = periodQuery(reportsLocation.search);
   const [tab, setTab] = useState(canManage ? "Quick reports" : "Saved reports"),
     [preview, setPreview] = useState<any>(),
+    [builderOpen, setBuilderOpen] = useState(false),
+    [reportName, setReportName] = useState(""),
+    [reportDescription, setReportDescription] = useState(""),
+    [reportSections, setReportSections] = useState(["analytics"]),
+    [includeGraphs, setIncludeGraphs] = useState(true),
     [scheduleOpen, setScheduleOpen] = useState(false),
     [scheduleCadence, setScheduleCadence] = useState("monthly"),
     [scheduleRecipient, setScheduleRecipient] = useState("client@example.com"),
@@ -4476,6 +4525,7 @@ function ReportsView({
     [footerNote, setFooterNote] = useState(
       property?.settings?.report_branding?.footer_note || "",
     ),
+    [logoUrl, setLogoUrl] = useState(property?.settings?.report_branding?.logo_url || ""),
     [savedReports, setSavedReports] = useState<any[]>([]),
     [schedules, setSchedules] = useState<any[]>(
       fixture
@@ -4501,10 +4551,9 @@ function ReportsView({
       })
       .catch((error) => notify(error.message));
   }, [fixture, notify, property, session]);
-  async function create(name: string) {
+  async function create(name: string, configuration?: any) {
     if (!property) return;
-    setPreview(
-      session
+    const generated = session
         ? await api(session, `/api/properties/${property.id}/report?${livePeriod}`)
         : {
             property,
@@ -4520,8 +4569,8 @@ function ReportsView({
               "Prioritise the hero image for mobile LCP.",
               "Review event trends next month.",
             ],
-          },
-    );
+          };
+    setPreview({ ...(generated as any), reportName: name, configuration });
     notify(`${name} preview generated`);
   }
   async function saveReport() {
@@ -4530,7 +4579,7 @@ function ReportsView({
       ? await api<any>(session, `/api/properties/${property.id}/saved-reports`, {
           method: "POST",
           body: JSON.stringify({
-            name: `${property.name} ${preview.period || "website"} report`,
+            name: preview.reportName || `${property.name} ${preview.period || "website"} report`,
             periodStart: preview.periodStart,
             periodEnd: preview.periodEnd,
             dataSnapshot: preview,
@@ -4538,7 +4587,7 @@ function ReportsView({
         })
       : {
           id: crypto.randomUUID(),
-          name: `${property.name} ${preview.period || "website"} report`,
+          name: preview.reportName || `${property.name} ${preview.period || "website"} report`,
           period_start: "2026-09-01",
           period_end: "2026-09-30",
           data_snapshot: preview,
@@ -4559,6 +4608,7 @@ function ReportsView({
               agency_name: agencyName,
               accent_colour: accentColour,
               footer_note: footerNote,
+              logo_url: logoUrl,
             },
           },
         }),
@@ -4568,6 +4618,18 @@ function ReportsView({
       notify(error.message);
     }
   }
+  async function uploadLogo(file?: File) {
+    if (!file || !session || !property) return;
+    try {
+      const result = await api<{ url: string }>(session, `/api/properties/${property.id}/report-logo`, {
+        method: "PUT",
+        headers: { "content-type": file.type },
+        body: file,
+      });
+      setLogoUrl(result.url);
+      notify("Report logo uploaded. Save branding to apply it.");
+    } catch (error: any) { notify(error.message); }
+  }
   return (
     <Page
       title="Reports"
@@ -4576,7 +4638,7 @@ function ReportsView({
         <button
           className="primary"
           disabled={!property}
-          onClick={() => create("Custom report")}
+          onClick={() => setBuilderOpen(true)}
         >
           <Plus />
           Create report
@@ -4591,30 +4653,19 @@ function ReportsView({
       {tab === "Quick reports" ? (
         <div className="template-grid">
           {[
-            "Monthly overview",
-            "Uptime & incidents",
-            "Audit & fixes",
-            "Traffic & events",
-            "Visitor performance",
-            "Client summary",
-          ].map((x, i) => (
-            <Panel title={x} key={x}>
+            { name: "Last 30 days Analytics overview", detail: "Traffic, visitors, sources and engagement for the last 30 days.", icons: [BarChart3] },
+            { name: "Last audit report", detail: "Latest scores and a concise prioritised issue list.", icons: [ShieldAlert, ClipboardCheck] },
+            { name: "Uptime Report · last 30 days", detail: "Availability, downtime incidents and recorded reasons.", icons: [Activity] },
+            { name: "Events triggered · last 30 days", detail: "Custom and organic events shown separately.", icons: [SquareDashedMousePointer] },
+            { name: "Top pages review", detail: "Popular and engaging pages with AI referral results.", icons: [Globe2, Sparkles] },
+            { name: "Overview snapshot", detail: "Uptime, analytics, AI visibility and audit health in one view.", icons: [LayoutGrid, Activity] },
+          ].map((template) => (
+            <Panel title={template.name} key={template.name}>
               <div className="report-thumb">
-                <FileChartColumn />
+                {template.icons.map((Icon, index) => <Icon key={index} />)}
               </div>
-              <p className="subtle">
-                {
-                  [
-                    "All key client metrics in one concise report.",
-                    "Availability, checks and incident history.",
-                    "Prioritised findings with evidence and fixes.",
-                    "Traffic, pages, sources and configured events.",
-                    "Core Web Vitals and browser samples.",
-                    "Executive summary with agency commentary.",
-                  ][i]
-                }
-              </p>
-              <button className="btn" onClick={() => create(x)}>
+              <p className="subtle">{template.detail}</p>
+              <button className="btn" onClick={() => create(template.name)}>
                 Use template
               </button>
             </Panel>
@@ -4698,6 +4749,11 @@ function ReportsView({
               Footer note
               <input value={footerNote} onChange={(event) => setFooterNote(event.target.value)} />
             </label>
+            <label className="field">
+              Report logo
+              <input type="file" accept="image/png,image/jpeg,image/webp" disabled={!(["Scale", "Pro"] as string[]).includes(plan)} onChange={(event) => void uploadLogo(event.target.files?.[0])} />
+              <small>{["Scale", "Pro"].includes(plan) ? "PNG, JPEG or WebP up to 512 KB." : "Custom logos are available on Scale and Pro."}</small>
+            </label>
             <button
               className="primary"
               onClick={saveBranding}
@@ -4706,12 +4762,13 @@ function ReportsView({
             </button>
           </Panel>
           <Panel title="Preview">
-            <div className="brand-preview">
-              <img src="/assets/claritude-logo.svg" />
+            <div className="brand-preview" style={{ "--report-accent": accentColour } as CSSProperties}>
+              {(logoUrl || plan !== "Pro") && <img src={logoUrl || "/assets/claritude-logo.svg"} alt="Report logo" />}
               <h2>{property?.name || "Website"} performance report</h2>
               <p>1 – 30 Sep 2026</p>
-              <hr />
+              <hr style={{ borderColor: accentColour }} />
               <b>{footerNote || (agencyName ? `Prepared by ${agencyName}` : "Claritude report")}</b>
+              {plan === "Scale" && <small>Powered by Claritude</small>}
             </div>
           </Panel>
         </div>
@@ -4723,6 +4780,16 @@ function ReportsView({
           onSave={saveReport}
         />
       )}{" "}
+      {builderOpen && (
+        <Modal title="Create a report" close={() => setBuilderOpen(false)}>
+          <label className="field">Report name<input value={reportName} onChange={(event) => setReportName(event.target.value)} placeholder={`${property?.name || "Website"} report`} /></label>
+          <label className="field">Description<textarea value={reportDescription} onChange={(event) => setReportDescription(event.target.value)} /></label>
+          <fieldset className="report-section-picker"><legend>Sections</legend>{["Uptime", "Analytics", "AI", "Audits"].map((section) => <label key={section}><input type="checkbox" checked={reportSections.includes(section.toLowerCase())} onChange={(event) => setReportSections((current) => event.target.checked ? [...current, section.toLowerCase()] : current.filter((item) => item !== section.toLowerCase()))} />{section}</label>)}</fieldset>
+          <label className="checkbox-row"><input type="checkbox" checked={includeGraphs} onChange={(event) => setIncludeGraphs(event.target.checked)} /> Include graphs where data is available</label>
+          <p className="subtle">Each section uses the current report date range. You can change the page date range before generating the report.</p>
+          <div className="dialog-actions"><button className="btn" onClick={() => setBuilderOpen(false)}>Cancel</button><button className="primary" disabled={!reportSections.length} onClick={() => { void create(reportName.trim() || `${property?.name || "Website"} report`, { description: reportDescription.trim(), sections: reportSections, includeGraphs }); setBuilderOpen(false); }}>Generate report</button></div>
+        </Modal>
+      )}
       {scheduleOpen && (
         <SimpleDialog
           title="Add schedule"
@@ -4800,7 +4867,11 @@ const AI_COUNTRY_CODES = ["AR", "AU", "AT", "BE", "BR", "CA", "CL", "CN", "CO", 
 const AI_COUNTRIES = AI_COUNTRY_CODES.map((value) => ({ value, label: countryLabel(value) }));
 
 export function suggestedAiPhrase(property?: Property) {
-  if (!property) return "";
+  return suggestedAiPhrases(property)[0] || "";
+}
+
+export function suggestedAiPhrases(property?: Property) {
+  if (!property) return [];
   const details = property.settings?.ai_visibility || {};
   const businessName = String(details.business_name || property.name || "this company").trim();
   const location = String(details.location || "").trim();
@@ -4815,9 +4886,20 @@ export function suggestedAiPhrase(property?: Property) {
       accounting: `Accountants in ${place}`,
       "software-saas": `Software companies in ${place}`,
     };
-    return template[industry] || `${label} in ${place}`;
+    const discovery = template[industry] || `${label} in ${place}`;
+    return [
+      discovery,
+      `Which ${discovery.toLowerCase()} would you recommend and why?`,
+      `Compare the best ${label.toLowerCase()} providers in ${place}.`,
+      `Is ${businessName} a good choice for ${label.toLowerCase()} in ${place}?`,
+    ];
   }
-  return `What services does ${businessName} offer?`;
+  return [
+    `What services does ${businessName} offer?`,
+    `What services does ${businessName} offer, and who are they best suited to?`,
+    `Why would a customer choose ${businessName} over alternatives?`,
+    `Summarise ${businessName}'s main services and areas of expertise.`,
+  ];
 }
 
 function PropertySettingsView({
@@ -5899,6 +5981,14 @@ function SuperAdminView({ session, fixture = false, staff }: { session: Session 
     await load();
   }
 
+  async function toggleAllActivity(paused: boolean) {
+    if (!session || fixture) return;
+    const reason = window.prompt(`Reason to ${paused ? "pause" : "resume"} all platform activity:`)?.trim();
+    if (!reason) return;
+    await api(session, "/api/superadmin/emergency-controls", { method: "PATCH", body: JSON.stringify({ paused, reason }) });
+    await load();
+  }
+
   async function queueExport(scope: string, format: "csv" | "json") {
     if (!session || fixture) return;
     const reason = window.prompt(`Reason for exporting ${scope}:`);
@@ -5970,7 +6060,7 @@ function SuperAdminView({ session, fixture = false, staff }: { session: Session 
   else if (view === "coupons") content = <PromotionsControlDesk activeTab={activeTab} platform={platform} payload={payload} session={session} fixture={fixture} billingEnvironment={billingEnvironment} canWrite={Boolean(staff?.permissions.includes("financials.write"))} refresh={load} />;
   else if (view === "audits") content = <AuditControlsDesk activeTab={activeTab} platform={platform} session={session} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("audits.write"))} refresh={load} />;
   else if (view === "health") content = <PlatformHealthDesk activeTab={activeTab} platform={platform} payload={payload} />;
-  else if (view === "infrastructure") content = <InfrastructureDesk activeTab={activeTab} platform={platform} payload={payload} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("operations.write"))} toggleControl={toggleControl} session={session} refresh={load} />;
+  else if (view === "infrastructure") content = <InfrastructureDesk activeTab={activeTab} platform={platform} payload={payload} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("operations.write"))} toggleControl={toggleControl} toggleAllActivity={toggleAllActivity} session={session} refresh={load} />;
   else if (view === "analytics-rules") content = <AnalyticsRulesDesk activeTab={activeTab} platform={platform} session={session} fixture={fixture} canWrite={Boolean(staff?.permissions.includes("operations.write"))} refresh={load} />;
   else if (view === "email") content = <EmailControlDesk activeTab={activeTab} platform={platform} session={session} fixture={fixture} refresh={load} />;
   else if (view === "alerts") content = <AlertsControlDesk activeTab={activeTab} platform={platform} payload={payload} session={session} fixture={fixture} refresh={load} />;
@@ -6288,10 +6378,10 @@ function AnalyticsRulesDesk({ activeTab, platform, session, fixture, canWrite, r
   return <div className="superadmin-overview"><Panel title="Analytics storage estimates" actions={<button className="btn" disabled={!canWrite || fixture || refreshing} onClick={() => void refreshStorage()}><RefreshCw className={refreshing ? "audit-spin" : ""} />{refreshing ? "Refreshing…" : "Refresh estimates"}</button>}><p className="subtle">Cached daily logical row-size estimates. A manual refresh scans analytics rows, so use it for investigation rather than live polling. Values exclude shared indexes, TOAST overhead and Supabase platform overhead.</p>{message && <p role="status">{message}</p>}<KeyValues rows={[["Snapshot", newestDate ? fmtDate(newestDate) : "Not measured"], ["Source", latest[0]?.source ? cap(latest[0].source.replaceAll("_", " ")) : "Unavailable"], ["Accounts measured", accounts.length], ["Properties measured", properties.length]]} /></Panel><Panel title="Account sizes"><DataTable headers={["Account", "Detailed data", "Rollups", "Estimated total", "Measured"]} rows={accounts.map((row: any) => [row.accounts?.name || row.account_id, formatBytes(row.detailed_bytes), formatBytes(row.rollup_bytes), <b>{formatBytes(row.total_bytes)}</b>, fmtDate(row.measured_at)])} />{!accounts.length && <Empty title="No storage snapshot yet" detail="Run Refresh estimates or wait for the daily maintenance task." />}</Panel><Panel title="Property sizes"><DataTable headers={["Property", "Domain", "Detailed data", "Rollups", "Estimated total"]} rows={properties.map((row: any) => [row.properties?.name || row.property_id, row.properties?.canonical_host || "—", formatBytes(row.detailed_bytes), formatBytes(row.rollup_bytes), <b>{formatBytes(row.total_bytes)}</b>])} /></Panel></div>;
 }
 
-function InfrastructureDesk({ activeTab, platform, payload, fixture, canWrite, toggleControl, session, refresh }: any) {
+function InfrastructureDesk({ activeTab, platform, payload, fixture, canWrite, toggleControl, toggleAllActivity, session, refresh }: any) {
   const accountName = (id: string | null | undefined) => payload?.accounts?.find((account: any) => account.id === id)?.name || id || "Platform";
   const propertyName = (id: string | null | undefined) => payload?.properties?.find((property: any) => property.id === id)?.name || id || "—";
-  if (activeTab === "Operational controls") return <Panel title="Authoritative operational controls"><p className="subtle">A control permits new work; it does not mean a job is running. Pausing stops new work at each execution entry point. Queued and running work retain their recorded state and are not silently discarded.</p><DataTable headers={["Capability", "Permission", "Effective feature state", "Jobs running", "Reason", "Changed"]} rows={(platform?.controls || []).map((item: any) => { const derived = item.key === "campaigns" ? platform?.featureStates?.campaigns : null; return [cap(item.key.replaceAll("_", " ")), item.paused ? <StatusPill tone="danger">Paused</StatusPill> : <StatusPill tone="success">Permitted</StatusPill>, derived ? featureStatePill(derived.state) : "Controlled at execution entry", derived?.runningJobs || 0, derived?.reason || item.reason || "—", item.changed_at ? fmtDate(item.changed_at) : "Default"]; })} rowActions={(platform?.controls || []).map((item: any) => [{ label: item.paused ? "Resume capability" : "Pause capability", disabled: fixture || !canWrite, danger: !item.paused, onClick: () => void toggleControl(item) }])} /></Panel>;
+  if (activeTab === "Operational controls") { const activityKeys = new Set(["new_audits", "scheduled_audits", "browser_collection", "uptime_checks", "uptime_notifications", "analytics_ingestion", "reports", "campaigns"]); const activityControls = (platform?.controls || []).filter((item: any) => activityKeys.has(item.key)); const allPaused = activityControls.length > 0 && activityControls.every((item: any) => item.paused); return <Panel title="Authoritative operational controls" actions={<button className={allPaused ? "btn" : "danger-solid"} disabled={fixture || !canWrite} onClick={() => void toggleAllActivity(!allPaused)}>{allPaused ? <RefreshCw /> : <Pause />}{allPaused ? "Resume all activity" : "Pause all activity"}</button>}><p className="subtle">A control permits new work; it does not mean a job is running. Pausing stops new work at each execution entry point. Queued and running work retain their recorded state and are not silently discarded. Free sign-ups are controlled separately so existing accounts can continue operating.</p><DataTable headers={["Capability", "Permission", "Effective feature state", "Jobs running", "Reason", "Changed"]} rows={(platform?.controls || []).map((item: any) => { const derived = item.key === "campaigns" ? platform?.featureStates?.campaigns : null; return [item.key === "free_signups" ? "Free account sign-ups" : cap(item.key.replaceAll("_", " ")), item.paused ? <StatusPill tone="danger">Paused</StatusPill> : <StatusPill tone="success">Permitted</StatusPill>, derived ? featureStatePill(derived.state) : "Controlled at execution entry", derived?.runningJobs || 0, derived?.reason || item.reason || "—", item.changed_at ? fmtDate(item.changed_at) : "Default"]; })} rowActions={(platform?.controls || []).map((item: any) => [{ label: item.paused ? "Resume capability" : "Pause capability", disabled: fixture || !canWrite, danger: !item.paused, onClick: () => void toggleControl(item) }])} /></Panel>; }
   if (activeTab === "Safety limits") return <SafetyLimitsEditor platform={platform} session={session} fixture={fixture} canWrite={canWrite} refresh={refresh} />;
   const events = platform?.infrastructure?.events || [];
   const db = platform?.infrastructure?.database;
@@ -8387,6 +8477,18 @@ function ReportPreview({
   close: () => void;
   onSave: () => void | Promise<void>;
 }) {
+  const requestedSections = new Set<string>(report.configuration?.sections || []);
+  const reportName = String(report.reportName || "").toLowerCase();
+  const allSections = !requestedSections.size || reportName.includes("overview snapshot");
+  const showAnalytics = allSections || requestedSections.has("analytics") || /analytics|traffic|events|top pages/.test(reportName);
+  const showUptime = allSections || requestedSections.has("uptime") || /uptime/.test(reportName);
+  const showAudit = allSections || requestedSections.has("audits") || /audit/.test(reportName);
+  const showAi = allSections || requestedSections.has("ai") || /top pages/.test(reportName);
+  const includeGraphs = report.configuration?.includeGraphs !== false;
+  const latestAudit = report.audits?.[0];
+  const auditIssues = (latestAudit?.audit_results || []).filter((result: any) => result.outcome === "failed");
+  const customEventNames = new Set((report.eventDefinitions || []).map((definition: any) => definition.name));
+  const eventRows = report.analytics?.eventBreakdown || [];
   const reportMetrics = {
     incidents: String(report.incidents?.length || 0),
     pageviews: fmt(report.analytics?.pageviews || 0),
@@ -8417,6 +8519,7 @@ function ReportPreview({
   return (
     <Modal title={`${report.property.name} · ${report.period}`} close={close}>
       <div className="report-preview">
+        <header className="report-document-heading"><h1>{report.reportName || `${report.property.name} report`}</h1>{report.configuration?.description && <p>{report.configuration.description}</p>}<small>{report.period}</small></header>
         <Metrics
           values={[
             ["Incidents", reportMetrics.incidents],
@@ -8425,14 +8528,10 @@ function ReportPreview({
             ["Audit", reportMetrics.audit],
           ]}
         />
-        <h2>Traffic</h2>
-        <SeriesChart
-          points={(report.analytics?.series || []).map((point: any) => ({
-            label: point.day,
-            value: point.pageviews,
-          }))}
-          emptyTitle="No measured traffic in this report period"
-        />
+        {showAnalytics && <><h2>Analytics</h2>{includeGraphs && <SeriesChart points={(report.analytics?.series || []).map((point: any) => ({ label: point.day, value: point.pageviews }))} emptyTitle="No measured traffic in this report period" />}{reportName.includes("events") && <DataTable headers={["Event", "Type", "Count"]} rows={eventRows.map((row: any) => [eventLabel(row.name), customEventNames.has(row.name) ? "Custom" : "Organic", fmt(row.count)])} />}{reportName.includes("top pages") && <DataTable headers={["Page", "Pageviews", "Key events"]} rows={(report.analytics?.pages || []).slice(0, 10).map((row: any) => [row.path === "/" ? "/home/" : row.path, fmt(row.pageviews), fmt(row.events)])} />}</>}
+        {showUptime && <><h2>Uptime</h2>{report.incidents?.length ? <DataTable headers={["Started", "Resolved", "Reason"]} rows={report.incidents.map((incident: any) => [fmtDate(incident.opened_at), incident.resolved_at ? fmtDate(incident.resolved_at) : "Ongoing", incident.cause || "No reason recorded"])} /> : <p>No downtime incidents were recorded in this period.</p>}</>}
+        {showAudit && <><h2>Latest audit</h2><p>{latestAudit?.score == null ? "No completed audit score is available." : `Score ${latestAudit.score}/100 · ${latestAudit.coverage || 0}% coverage`}</p>{auditIssues.length ? <DataTable headers={["Issue", "Outcome"]} rows={auditIssues.slice(0, 20).map((result: any) => [result.title_snapshot || result.check_id, "Failed"])} /> : <p>No failed issues were recorded in the latest audit.</p>}</>}
+        {showAi && <><h2>AI visibility</h2><p>{fmt(report.aiVisibility?.aiVisits || 0)} AI referral visits across {fmt(report.aiVisibility?.landingPages || 0)} landing pages.</p>{report.aiVisibility?.pages?.length ? <DataTable headers={["Landing page", "AI visits"]} rows={report.aiVisibility.pages.slice(0, 10).map((row: any) => [row.path === "/" ? "/home/" : row.path, fmt(row.visits)])} /> : <p>No AI referral landing pages were measured.</p>}</>}
         <h2>Recommendations</h2>
         {report.recommendations?.length ? (
           <ol>
@@ -9058,6 +9157,16 @@ function ChartSwitch({
         ),
       )}
     </span>
+  );
+}
+function ChartLoading({ label }: { label: string }) {
+  return (
+    <div className="chart-loading" role="status" aria-label={label}>
+      <span />
+      <span />
+      <span />
+      <small>{label}…</small>
+    </div>
   );
 }
 function SeriesChart({
@@ -10044,9 +10153,6 @@ function AnalyticsTable({
                     </button>
                   ) : (
                     <span className="page-link-cell">
-                      {onDetail ? (
-                        <button className="table-detail-link" onClick={() => onDetail(page.page)}>{page.page}</button>
-                      ) : <b>{page.page}</b>}
                       <a
                         className="page-open-link"
                         href={new URL(page.page, property.url).href}
@@ -10057,6 +10163,9 @@ function AnalyticsTable({
                       >
                         <ExternalLink />
                       </a>
+                      {onDetail ? (
+                        <button className="table-detail-link" onClick={() => onDetail(page.page)}>{page.page}</button>
+                      ) : <b>{page.page}</b>}
                     </span>
                   )}
                 </InCellBar>
@@ -10238,12 +10347,12 @@ function AnalyticsValueTable({
   );
 }
 
-function CountriesPanel({ rows, total, onOpen }: { rows: any[]; total: number; onOpen: () => void }) {
+function CountriesPanel({ rows, total, onOpen, onCountry }: { rows: any[]; total: number; onOpen: () => void; onCountry?: (country: string) => void }) {
   const ordered = [...rows].sort((left, right) => Number(right.count || 0) - Number(left.count || 0));
   const top = ordered.slice(0, 10);
   return (
     <Panel title="Countries">
-      <AnalyticsValueTable headers={["Country", "Visitors"]} rows={shareRows(top, total, "country")} />
+      <AnalyticsValueTable headers={["Country", "Visitors"]} rows={shareRows(top, total, "country").map((row: any, index: number) => ({ ...row, onClick: onCountry ? () => onCountry(String(top[index]?.name || "")) : undefined }))} />
       {ordered.length > 10 && <button className="btn countries-more" onClick={onOpen}>Other countries</button>}
     </Panel>
   );

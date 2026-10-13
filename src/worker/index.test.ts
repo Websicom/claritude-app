@@ -479,7 +479,6 @@ describe("worker evidence pipelines", () => {
     expect(html).toContain("Open website");
     expect(html).toContain("Compare plans");
   });
-
   it("renders the recovery notification with the incident recovery time", () => {
     const html = renderUptimeAlertEmail({
       property: { id: "property-1", name: "Recovered property", url: "https://example.com" },

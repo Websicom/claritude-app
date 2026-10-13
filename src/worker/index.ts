@@ -641,7 +641,7 @@ async function requireStaff(c: any, permission: StaffPermission) {
   return { staff, response: null };
 }
 
-type EmergencyControlKey = "new_audits" | "scheduled_audits" | "browser_collection" | "uptime_checks" | "uptime_notifications" | "analytics_ingestion" | "reports" | "campaigns";
+type EmergencyControlKey = "new_audits" | "scheduled_audits" | "browser_collection" | "uptime_checks" | "uptime_notifications" | "analytics_ingestion" | "reports" | "campaigns" | "free_signups";
 
 async function processingAccess(env: Env, key: EmergencyControlKey, accountId?: string | null) {
   const db = admin(env);
@@ -700,7 +700,7 @@ app.get("/api/config", (c) =>
 
 const serveTracker = (c: any) => {
   c.header("content-type", "application/javascript; charset=utf-8");
-  c.header("cache-control", "public, max-age=60, must-revalidate");
+  c.header("cache-control", "public, max-age=300, stale-while-revalidate=86400");
   c.header("cross-origin-resource-policy", "cross-origin");
   c.header("access-control-allow-origin", "*");
   c.header("x-claritude-tracker-version", TRACKER_VERSION);
@@ -2102,6 +2102,9 @@ app.post("/api/onboarding", async (c) => {
   }>();
   if (!body.profileName?.trim() || !body.accountName?.trim() || !body.workspaceName?.trim())
     return c.json({ error: "profile_account_and_workspace_required" }, 400);
+  const signupAccess = await processingAccess(c.env, "free_signups");
+  if (!signupAccess.allowed)
+    return c.json({ error: "free_account_signups_paused" }, 503);
   const fullName = body.profileName.trim().replace(/\s+/g, " ").slice(0, 100);
   const profileUpdate = await c.get("db").from("profiles").update({
     full_name: fullName,
@@ -2319,6 +2322,54 @@ app.patch("/api/properties/:id", async (c) => {
   return c.json(data);
 });
 
+app.put("/api/properties/:id/report-logo", async (c) => {
+  const propertyId = c.req.param("id");
+  const contentType = (c.req.header("content-type") || "").split(";")[0].toLowerCase();
+  const allowedTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
+  if (!allowedTypes.has(contentType)) return c.json({ error: "report_logo_type_not_supported" }, 415);
+  const maximumBytes = 512 * 1024;
+  if (Number(c.req.header("content-length") || 0) > maximumBytes)
+    return c.json({ error: "report_logo_too_large" }, 413);
+  const bytes = new Uint8Array(await c.req.arrayBuffer());
+  const validSignature = contentType === "image/png"
+    ? bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+    : contentType === "image/jpeg"
+      ? bytes[0] === 0xff && bytes[1] === 0xd8
+      : bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46;
+  if (!bytes.byteLength || bytes.byteLength > maximumBytes || !validSignature)
+    return c.json({ error: "invalid_report_logo" }, 400);
+  const db = c.get("db");
+  const { data: property } = await db
+    .from("properties")
+    .select("workspace_id,workspaces(account_id)")
+    .eq("id", propertyId)
+    .maybeSingle();
+  if (!property || !(await canManageWorkspace(db, c.get("userId"), property.workspace_id)))
+    return c.json({ error: "workspace_manage_access_required" }, 403);
+  const accountId = (property.workspaces as any)?.account_id;
+  const entitlements = accountId ? await effectiveEntitlements(c.env, accountId).catch(() => null) : null;
+  const packageKey = String(entitlements?.packageKey || "free").toLowerCase();
+  if (!packageKey.startsWith("pro") && !packageKey.startsWith("scale"))
+    return c.json({ error: "report_logo_requires_scale_or_pro" }, 409);
+  const service = admin(c.env);
+  const { error: bucketError } = await service.storage.getBucket("report-branding");
+  if (bucketError) {
+    const { error: createError } = await service.storage.createBucket("report-branding", {
+      public: true,
+      fileSizeLimit: maximumBytes,
+      allowedMimeTypes: [...allowedTypes],
+    });
+    if (createError && !/already exists|duplicate/i.test(createError.message))
+      return c.json({ error: createError.message }, 400);
+  }
+  const extension = contentType === "image/png" ? "png" : contentType === "image/jpeg" ? "jpg" : "webp";
+  const path = `${propertyId}/logo.${extension}`;
+  const storage = service.storage.from("report-branding");
+  const { error: uploadError } = await storage.upload(path, bytes, { contentType, cacheControl: "31536000", upsert: true });
+  if (uploadError) return c.json({ error: uploadError.message }, 400);
+  return c.json({ url: `${storage.getPublicUrl(path).data.publicUrl}?v=${Date.now()}` });
+});
+
 app.patch("/api/profile", async (c) => {
   const body = await c.req.json<{
     full_name?: string;
@@ -2462,6 +2513,19 @@ app.post("/api/workspaces", async (c) => {
   return error
     ? c.json({ error: error.message }, error.message.includes("workspace_limit_reached") ? 409 : 400)
     : c.json(data, 201);
+});
+
+app.get("/api/workspaces/:id/traffic", async (c) => {
+  const from = String(c.req.query("from") || new Date(Date.now() - 29 * 864e5).toISOString().slice(0, 10));
+  const to = String(c.req.query("to") || new Date().toISOString().slice(0, 10));
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to)
+    return c.json({ error: "invalid_date_range" }, 400);
+  const { data, error } = await c.get("db").rpc("workspace_traffic_summary", {
+    p_workspace_id: c.req.param("id"),
+    p_from: from,
+    p_to: to,
+  });
+  return error ? c.json({ error: error.message }, 400) : c.json(data || { properties: {}, series: [] });
 });
 
 app.get("/api/users", async (c) => {
@@ -5176,6 +5240,39 @@ app.patch("/api/superadmin/emergency-controls/:key", async (c) => {
   return c.json({ control: data });
 });
 
+app.patch("/api/superadmin/emergency-controls", async (c) => {
+  const authorization = await requireStaff(c, "operations.write");
+  if (authorization.response) return authorization.response;
+  const body = await c.req.json<{ paused?: boolean; reason?: string }>().catch(() => ({} as any));
+  const reason = String(body.reason || "").trim();
+  if (typeof body.paused !== "boolean" || reason.length < 3 || reason.length > 500)
+    return c.json({ error: "paused_and_reason_required" }, 400);
+  const service = admin(c.env);
+  const processingKeys: EmergencyControlKey[] = [
+    "new_audits", "scheduled_audits", "browser_collection", "uptime_checks",
+    "uptime_notifications", "analytics_ingestion", "reports", "campaigns",
+  ];
+  const { data: previous, error: previousError } = await service
+    .from("emergency_controls")
+    .select("*")
+    .in("key", processingKeys);
+  if (previousError) return c.json({ error: previousError.message }, 400);
+  const { data, error } = await service
+    .from("emergency_controls")
+    .update({ paused: body.paused, reason, changed_by: authorization.staff!.userId, changed_at: new Date().toISOString() })
+    .in("key", processingKeys)
+    .select();
+  if (error) return c.json({ error: error.message }, 400);
+  await recordAdminActivity(c.env, authorization.staff!.userId, "emergency_control.all_changed", "success", {
+    targetType: "emergency_control",
+    targetId: "all_activity",
+    reason,
+    previousValues: previous,
+    newValues: data,
+  });
+  return c.json({ controls: data });
+});
+
 app.patch("/api/superadmin/settings/:key", async (c) => {
   const authorization = await requireStaff(c, "settings.write");
   if (authorization.response) return authorization.response;
@@ -7877,7 +7974,7 @@ app.get("/api/properties/:id/report", async (c) => {
   const id = c.req.param("id");
   const window = requestedWindow(c);
   if (!window) return c.json({ error: "invalid_date_range" }, 400);
-  const [property, incidents, audits, analytics] = await Promise.all([
+  const [property, incidents, audits, analytics, eventDefinitions] = await Promise.all([
     db.from("properties").select("*").eq("id", id).single(),
     db
       .from("incidents")
@@ -7889,13 +7986,14 @@ app.get("/api/properties/:id/report", async (c) => {
       .limit(20),
     db
       .from("audit_runs")
-      .select("*")
+      .select("*,audit_results(check_id,outcome,title_snapshot,evidence)")
       .eq("property_id", id)
       .gte("created_at", window.from)
       .lte("created_at", window.to)
       .order("created_at", { ascending: false })
-      .limit(5),
+      .limit(1),
     loadAnalyticsWindow(db, id, window.from, window.to, true),
+    db.from("event_definitions").select("name,event_type").eq("property_id", id).eq("enabled", true),
   ]);
   if (property.error) return c.json({ error: "property_not_found" }, 404);
   return c.json({
@@ -7915,6 +8013,8 @@ app.get("/api/properties/:id/report", async (c) => {
       analytics.rollups,
       analytics.views,
     ),
+    aiVisibility: buildAiVisibilitySummary([], analytics.views, window.from, window.to, window.timeZone),
+    eventDefinitions: eventDefinitions.data || [],
     limitations: [
       "Visitor totals are aggregate estimates; no persistent visitor identifiers are used.",
     ],
@@ -9107,7 +9207,7 @@ async function sendAlert(
     body: kind === "down"
       ? `${property?.name || "A property"} exceeded its configured failure threshold.`
       : `${property?.name || "A property"} returned a successful response and the incident was closed.`,
-    severity: kind === "down" ? "critical" : "info",
+    severity: kind === "down" ? "critical" : "success",
     dedupeKey: `${incident.id}:${kind}:in_app`,
   });
   const { data: configuredRecipients } = await db
@@ -10255,9 +10355,12 @@ export function buildAiVisibilitySummary(
     const engaged = eligible.filter((visit) =>
       visit.activeSeconds >= 10 || visit.maxScroll >= 50 || visit.keyEvents > 0,
     );
+    const conversions = eligible.filter((visit) => visit.keyEvents > 0).length;
     return {
       eligibleVisits: eligible.length,
       engagementRate: eligible.length ? engaged.length / eligible.length * 100 : null,
+      conversions,
+      conversionRate: eligible.length ? conversions / eligible.length * 100 : null,
     };
   };
   const platforms = AI_PLATFORMS.map((platform) => ({
@@ -10297,9 +10400,7 @@ export function buildAiVisibilitySummary(
     engagement: {
       ai: measuredEngagement(aiVisits),
       other: measuredEngagement(allVisits.filter((visit) => !visit.platformId)),
-      conversions: null,
-      conversionRate: null,
-      conversionStatus: "No conversion designation is configured for tracked events.",
+      conversionStatus: "Visits with at least one tracked click, outbound click or confirmed form-success event are counted as converted.",
     },
   };
 }
@@ -11715,6 +11816,9 @@ function sanitizePropertySettings(input?: Record<string, unknown>) {
         ? branding.accent_colour
         : "#111111",
       footer_note: String(branding.footer_note || "").trim().slice(0, 240),
+      logo_url: /^https:\/\//i.test(String(branding.logo_url || ""))
+        ? String(branding.logo_url).slice(0, 1000)
+        : "",
     };
   }
   return output;
@@ -12149,7 +12253,8 @@ export const TRACKER_SOURCE = `(()=>{
   const loadVitals=()=>vitalsReady||(vitalsReady=new Promise(resolve=>{if(window.webVitals){resolve();return}const script=document.createElement('script');script.src=new URL('/vendor/web-vitals.js',base).href;script.async=true;script.crossOrigin='anonymous';script.onload=resolve;script.onerror=resolve;document.head.appendChild(script)}));
   const page=()=>{emit('pageview',{source:acquisition.source});checkpoint(true);observeSections();requestAnimationFrame(checkScroll);loadVitals().then(initVitals)};page();
   const navigation=(forcedPath)=>{if(!forcedPath&&location.href===lastUrl)return;checkpoint(true);send();lastUrl=location.href;view=uuid();generation+=1;active=0;lastCheckpointActive=0;lastActivity=Date.now();maxScroll=0;checkpointSequence=0;pageStartedAt=new Date().toISOString();dirty=true;vitalState={};keyEventCounts={};marks.clear();visibleSections.clear();page()};
-  new MutationObserver(()=>{navigation();observeSections();checkScroll()}).observe(document,{subtree:true,childList:true});
+  let mutationFrame=0;
+  new MutationObserver(()=>{if(mutationFrame)return;mutationFrame=requestAnimationFrame(()=>{mutationFrame=0;navigation();observeSections();checkScroll()})}).observe(document,{subtree:true,childList:true});
   ['pushState','replaceState'].forEach(k=>{const original=history[k];history[k]=function(){const result=original.apply(this,arguments);Promise.resolve().then(()=>navigation());return result}});
   addEventListener('popstate',()=>navigation());
   addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){checkpoint(true);send()}else lastActivity=Date.now()});

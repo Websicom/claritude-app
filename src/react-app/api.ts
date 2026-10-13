@@ -3,14 +3,24 @@ import type { Session } from "@supabase/supabase-js";
 const inFlightReads = new Map<string, Promise<unknown>>();
 const analyticsReadCache = new Map<string, { expiresAt: number; value: unknown }>();
 const RETRYABLE_READ_STATUSES = new Set([502, 503, 504]);
-const ANALYTICS_CACHE_MS = 30_000;
+const ANALYTICS_CACHE_MS = 5 * 60_000;
 
 function readKey(session: Session, path: string) {
   return `${session.user.id}:${path}`;
 }
 
 function isCacheableAnalyticsRead(path: string) {
-  return /^\/api\/properties\/[^/]+\/(?:overview\?|ai-visibility\?|analytics(?:\?|\/pages\?))/.test(path);
+  return /^\/api\/(?:properties\/[^/]+\/(?:overview\?|ai-visibility\?|analytics(?:\?|\/pages\?))|workspaces\/[^/]+\/traffic\?)/.test(path);
+}
+
+function invalidateRelatedReads(session: Session, path: string) {
+  const scope = path.match(/^\/api\/(properties|workspaces)\/([^/?]+)/);
+  const userPrefix = `${session.user.id}:`;
+  for (const key of analyticsReadCache.keys()) {
+    if (!key.startsWith(userPrefix)) continue;
+    if (!scope || key.includes(`/api/${scope[1]}/${scope[2]}/`))
+      analyticsReadCache.delete(key);
+  }
 }
 
 function retryDelay(attempt: number) {
@@ -37,7 +47,11 @@ export async function apiRequest<T>(
   init?: RequestInit,
 ): Promise<T> {
   const method = (init?.method || "GET").toUpperCase();
-  if (method !== "GET") return request<T>(session, path, init, false);
+  if (method !== "GET") {
+    const result = await request<T>(session, path, init, false);
+    invalidateRelatedReads(session, path);
+    return result;
+  }
 
   const key = readKey(session, path);
   const cached = analyticsReadCache.get(key);
